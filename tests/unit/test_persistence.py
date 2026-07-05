@@ -89,6 +89,17 @@ async def test_latest_session_tracks_most_recent_update(tmp_path: Path) -> None:
         await store.close()
 
 
+async def test_compaction_state_roundtrip(tmp_path: Path) -> None:
+    store = await SessionStore.open(tmp_path / "s.db")
+    try:
+        sid = await store.create_session()
+        assert await store.load_compaction(sid) == (None, 0)  # default before any save
+        await store.save_compaction(sid, "the running summary", 12)
+        assert await store.load_compaction(sid) == ("the running summary", 12)
+    finally:
+        await store.close()
+
+
 async def test_persistence_survives_reopen(tmp_path: Path) -> None:
     path = tmp_path / "s.db"
     store = await SessionStore.open(path)

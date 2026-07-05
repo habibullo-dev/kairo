@@ -123,10 +123,19 @@ class AgentLoop:
 
         # Auto-recall runs once per turn, on the new user message (not per iteration).
         recall_block = await self._recall_block(messages)
+        # Freeze the compaction cut + summary for the whole turn: the summary stays
+        # stable across iterations, and within-turn growth is absorbed by elision.
+        frozen_cut, summary = 0, None
+        if self.context_manager is not None:
+            frozen_cut, summary = await self.context_manager.summary_for(messages)
 
         for iteration in range(limits.max_iterations):
             # Compact the *view* sent to the API; `messages` (full history) is untouched.
-            view = self.context_manager.view(messages) if self.context_manager else None
+            view = (
+                self.context_manager.view(messages, cut=frozen_cut)
+                if self.context_manager
+                else None
+            )
             if view is not None and view.overflow:
                 emit(TurnCompleted(text="", stop_reason="max_context"))
                 self.log.warning("turn_end", stop_reason="max_context", iterations=iteration)
@@ -143,7 +152,7 @@ class AgentLoop:
 
             response = await self.client.create(
                 model=self.config.models.main,
-                system=self._system_with_extras(recall_block, summary=None),
+                system=self._system_with_extras(recall_block, summary=summary),
                 messages=api_messages,
                 tools=self.registry.specs(),
                 max_tokens=limits.max_output_tokens,

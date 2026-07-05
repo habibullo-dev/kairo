@@ -31,7 +31,19 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from jarvis.core.client import LLMClient
 from jarvis.observability.cost import Usage
+
+_SUMMARY_SYSTEM = """\
+You are compacting a long assistant/user conversation so it fits the context \
+window. Produce a dense, faithful summary that preserves everything needed to \
+continue the work:
+- decisions made and their rationale
+- facts and values established (file paths, names, numbers, tool results)
+- open threads and what the user still wants
+- the user's intent and any constraints they set
+Write compact prose or bullets. Invent nothing. If given a PRIOR SUMMARY, extend \
+it with the new messages rather than repeating it."""
 
 
 @dataclass
@@ -55,6 +67,29 @@ def _is_real_user_turn(message: dict) -> bool:
     return message.get("role") == "user" and not _has_tool_result(message.get("content"))
 
 
+def _render_for_summary(messages: list[dict]) -> str:
+    """Flatten messages to plain text for the summarizer (thinking blocks dropped)."""
+    lines: list[str] = []
+    for m in messages:
+        role = str(m.get("role", "?")).upper()
+        content = m.get("content")
+        if isinstance(content, str):
+            lines.append(f"{role}: {content}")
+            continue
+        for b in content if isinstance(content, list) else []:
+            t = b.get("type")
+            if t == "text":
+                lines.append(f"{role}: {b.get('text', '')}")
+            elif t == "tool_use":
+                args = json.dumps(b.get("input", {}), ensure_ascii=False)[:200]
+                lines.append(f"{role} called {b.get('name')}({args})")
+            elif t == "tool_result":
+                body = b.get("content")
+                body = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+                lines.append(f"TOOL RESULT: {body[:500]}")
+    return "\n".join(lines)
+
+
 def _message_chars(message: dict) -> int:
     content = message.get("content")
     if isinstance(content, str):
@@ -69,17 +104,32 @@ class ContextManager:
         context_token_budget: int = 180_000,
         compaction_threshold: float = 0.7,
         keep_fraction: float = 0.5,
+        summarizer: LLMClient | None = None,
+        utility_model: str = "claude-sonnet-5",
     ) -> None:
         self.budget = context_token_budget
         self.threshold = compaction_threshold
         self.keep_fraction = keep_fraction
+        self.summarizer = summarizer  # None => drop the prefix without a summary
+        self.utility_model = utility_model
         self._observed_input = 0  # last real input-token count (a floor for the estimate)
+        self._summary: str | None = None  # covers full_messages[:_covered_cut]
+        self._covered_cut = 0
 
     def observe(self, usage: Usage) -> None:
         """Record the last response's context cost (all input-side token buckets)."""
         self._observed_input = (
             usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens
         )
+
+    # --- summary state (persisted on the session, restored on --resume) ----
+
+    def state(self) -> tuple[str | None, int]:
+        return self._summary, self._covered_cut
+
+    def restore(self, summary: str | None, cut: int | None) -> None:
+        self._summary = summary
+        self._covered_cut = cut or 0
 
     # --- estimation --------------------------------------------------------
 
@@ -96,13 +146,53 @@ class ContextManager:
 
     # --- view --------------------------------------------------------------
 
-    def view(self, messages: list[dict]) -> CompactionView:
-        """The message list to send to the API (never mutates ``messages``)."""
-        if not messages or not self.should_compact(messages):
+    def view(self, messages: list[dict], *, cut: int | None = None) -> CompactionView:
+        """The message list to send to the API (never mutates ``messages``).
+
+        ``cut`` may be supplied to *freeze* the drop point for a whole turn (so the
+        summary and cut stay stable across iterations); when omitted, the cut is
+        computed from the current messages (used by tests and the no-freeze path)."""
+        if not messages:
             return CompactionView(messages, cut=0, elided=0, overflow=False)
-        cut = self._find_cut(messages)
+        if cut is None:
+            if not self.should_compact(messages):
+                return CompactionView(messages, cut=0, elided=0, overflow=False)
+            cut = self._find_cut(messages)
+        cut = min(cut, len(messages))
         tail, elided, overflow = self._elide_to_fit(messages[cut:])
         return CompactionView(tail, cut=cut, elided=elided, overflow=overflow)
+
+    async def summary_for(self, messages: list[dict]) -> tuple[int, str | None]:
+        """Decide this turn's frozen (cut, summary). Call once per turn.
+
+        The summary covers everything before the cut and is built *incrementally* —
+        only the newly-dropped messages are folded into the prior summary, so we
+        re-summarize a slice, not the whole prefix, each time the cut advances."""
+        if not self.should_compact(messages):
+            return 0, None
+        cut = self._find_cut(messages)
+        if cut > self._covered_cut:
+            self._summary = await self._summarize(self._summary, messages[self._covered_cut : cut])
+            self._covered_cut = cut
+        # Return the covered cut: the view drops exactly what the summary represents,
+        # so no message is ever both summarized *and* shown.
+        return self._covered_cut, self._summary
+
+    async def _summarize(self, prior: str | None, new_messages: list[dict]) -> str | None:
+        if self.summarizer is None or not new_messages:
+            return prior
+        parts = []
+        if prior:
+            parts.append(f"PRIOR SUMMARY:\n{prior}\n")
+        parts.append("NEW MESSAGES TO FOLD IN:\n" + _render_for_summary(new_messages))
+        response = await self.summarizer.create(
+            model=self.utility_model,
+            system=_SUMMARY_SYSTEM,
+            messages=[{"role": "user", "content": "\n".join(parts)}],
+            tools=[],
+            max_tokens=2000,
+        )
+        return response.text or prior
 
     def _find_cut(self, messages: list[dict]) -> int:
         """Index of the first kept message: the earliest real-user boundary whose

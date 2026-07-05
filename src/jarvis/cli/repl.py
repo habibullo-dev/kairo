@@ -19,6 +19,7 @@ from jarvis.cli.render import ConsoleRenderer
 from jarvis.config import Config
 from jarvis.core import AgentLoop, AnthropicClient
 from jarvis.core.client import LLMClient, ToolCall
+from jarvis.core.context import ContextManager
 from jarvis.core.prompts import build_system
 from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder
 from jarvis.observability import cost_of, get_logger
@@ -51,7 +52,20 @@ def _call_summary(call: ToolCall) -> str:
     return ""
 
 
-def _build_memory(config: Config, db, console: Console) -> MemoryService | None:
+def _utility_client(config: Config) -> AnthropicClient:
+    """The utility model with thinking OFF — used for dedup adjudication, compaction
+    summaries, and reflection (forced tool calls require thinking off)."""
+    return AnthropicClient(
+        api_key=config.secrets.anthropic_api_key,
+        effort=config.limits.effort,
+        max_retries=config.limits.max_retries,
+        thinking=False,
+    )
+
+
+def _build_memory(
+    config: Config, db, console: Console, utility: AnthropicClient
+) -> MemoryService | None:
     """Construct the memory service, or return None (disabled / no key) with a note.
 
     Shares ``db`` with the SessionStore — a second connection to one SQLite file
@@ -62,20 +76,22 @@ def _build_memory(config: Config, db, console: Console) -> MemoryService | None:
         console.print("[dim]Long-term memory off: set VOYAGE_API_KEY in .env to enable it.[/]")
         get_logger("jarvis.memory").warning("memory_disabled", reason="no_voyage_key")
         return None
-    # Utility client for dedup adjudication (and summaries/reflection later): the
-    # utility model, thinking OFF (fast classification; also required for the forced
-    # tool calls used by reflection).
-    utility = AnthropicClient(
-        api_key=config.secrets.anthropic_api_key,
-        effort=config.limits.effort,
-        max_retries=config.limits.max_retries,
-        thinking=False,
-    )
     return MemoryService(
         store=MemoryStore(db),
         embedder=VoyageEmbedder.from_config(config),
         config=config.memory,
         utility_client=utility,
+        utility_model=config.models.utility,
+    )
+
+
+def _build_context_manager(config: Config, utility: AnthropicClient) -> ContextManager:
+    """Compaction is always on live (independent of memory); summaries use the
+    utility model."""
+    return ContextManager(
+        context_token_budget=config.limits.context_token_budget,
+        compaction_threshold=config.limits.compaction_threshold,
+        summarizer=utility,
         utility_model=config.models.utility,
     )
 
@@ -90,6 +106,7 @@ class Repl:
         store: SessionStore | None = None,
         session_id: int | None = None,
         memory: MemoryService | None = None,
+        context_manager: ContextManager | None = None,
     ) -> None:
         self.config = config
         self.console = console or Console()
@@ -97,6 +114,7 @@ class Repl:
         self.store = store
         self.session_id = session_id
         self.memory = memory
+        self.context_manager = context_manager
 
         self.registry = ToolRegistry()
         self.registry.discover("jarvis.tools.builtin", ToolContext(config=config, memory=memory))
@@ -115,6 +133,8 @@ class Repl:
             config=config,
             approver=self._approve,
             system=build_system(memory_enabled=memory is not None),
+            context_manager=context_manager,
+            memory=memory,
         )
 
         self.messages: list[dict] = []
@@ -231,6 +251,9 @@ class Repl:
             return
         try:
             await self.store.save_messages(self.session_id, self.messages)
+            if self.context_manager is not None:
+                summary, cut = self.context_manager.state()
+                await self.store.save_compaction(self.session_id, summary, cut)
         except Exception as exc:  # noqa: BLE001 - a save failure must not kill the session
             self.log.warning("persist_failed", error=str(exc))
 
@@ -247,14 +270,27 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
     db = await connect(config.data_dir / "jarvis.db")
     store = SessionStore(db)
     try:
-        memory = _build_memory(config, db, console)
+        utility = _utility_client(config)
+        memory = _build_memory(config, db, console, utility)
+        context_manager = _build_context_manager(config, utility)
 
         session_id = await store.latest_session_id() if resume else None
         history = await store.load_messages(session_id) if session_id else []
         if session_id is None:
             session_id = await store.create_session()
+        elif resume:
+            # restore the frozen compaction summary + cut so we don't re-summarize
+            summary, cut = await store.load_compaction(session_id)
+            context_manager.restore(summary, cut)
 
-        repl = Repl(config, console=console, store=store, session_id=session_id, memory=memory)
+        repl = Repl(
+            config,
+            console=console,
+            store=store,
+            session_id=session_id,
+            memory=memory,
+            context_manager=context_manager,
+        )
         repl.messages = history
         if resume and history:
             console.print(f"[dim]Resumed session {session_id} ({len(history)} messages).[/]\n")

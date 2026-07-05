@@ -73,3 +73,23 @@ class SessionStore:
         )
         row = await cursor.fetchone()
         return row[0] if row else None
+
+    async def save_compaction(self, session_id: int, summary: str | None, cut: int) -> None:
+        """Persist the ContextManager's frozen summary + cut so ``--resume`` restores
+        the exact working state instead of re-summarizing (and getting a different
+        summary than the session was running with)."""
+        await self.db.execute(
+            "UPDATE sessions SET compaction_summary = ?, compaction_cut = ? WHERE id = ?",
+            (summary, cut, session_id),
+        )
+        await self.db.commit()
+
+    async def load_compaction(self, session_id: int) -> tuple[str | None, int]:
+        cursor = await self.db.execute(
+            "SELECT compaction_summary, compaction_cut FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None, 0
+        return row[0], row[1] or 0

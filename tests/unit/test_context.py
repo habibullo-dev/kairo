@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from jarvis.core import FakeClient, text_message
 from jarvis.core.context import CompactionView, ContextManager, _has_tool_result
 from jarvis.observability.cost import Usage
 
@@ -214,3 +215,69 @@ def test_observed_usage_floors_the_estimate() -> None:
     # the real tokenizer reported a large context last call — trust it as a floor
     cm.observe(Usage(input_tokens=600, cache_read_input_tokens=300))
     assert cm.should_compact(tiny) is True  # 900 > 0.7 * 1000
+
+
+# --- summaries -------------------------------------------------------------
+
+
+def _summarizing_cm(responses: list) -> ContextManager:
+    return ContextManager(
+        context_token_budget=2000,
+        compaction_threshold=0.7,
+        keep_fraction=0.5,
+        summarizer=FakeClient(responses),
+        utility_model="claude-sonnet-5",
+    )
+
+
+async def test_no_summary_when_under_budget() -> None:
+    cm = _summarizing_cm([])
+    cut, summary = await cm.summary_for(_conversation(2))
+    assert cut == 0 and summary is None
+    assert cm.summarizer.calls == []  # no summarization call
+
+
+async def test_summary_generated_when_compacting() -> None:
+    cm = _summarizing_cm([text_message("SUMMARY v1")])
+    cut, summary = await cm.summary_for(_conversation(30))
+    assert cut > 0
+    assert summary == "SUMMARY v1"
+    assert len(cm.summarizer.calls) == 1
+
+
+async def test_summary_regenerates_only_when_cut_advances() -> None:
+    cm = _summarizing_cm([text_message("SUMMARY v1"), text_message("SUMMARY v2")])
+    full = _conversation(30)
+    cut1, s1 = await cm.summary_for(full)
+    assert s1 == "SUMMARY v1" and len(cm.summarizer.calls) == 1
+    # same messages -> same cut -> cached, no new call
+    cut2, s2 = await cm.summary_for(full)
+    assert cut2 == cut1 and s2 == "SUMMARY v1" and len(cm.summarizer.calls) == 1
+    # more conversation -> cut advances -> regenerate incrementally (prior folded in)
+    _, s3 = await cm.summary_for(full + _conversation(20))
+    assert s3 == "SUMMARY v2" and len(cm.summarizer.calls) == 2
+    folded = cm.summarizer.calls[1]["messages"][0]["content"]
+    assert "PRIOR SUMMARY" in folded and "SUMMARY v1" in folded
+
+
+async def test_restore_avoids_resummarizing() -> None:
+    cm = _summarizing_cm([text_message("should not be used")])
+    full = _conversation(30)
+    cut = cm._find_cut(full)
+    cm.restore("restored summary", cut)
+    rcut, summary = await cm.summary_for(full)
+    assert rcut == cut and summary == "restored summary"
+    assert cm.summarizer.calls == []  # nothing re-summarized
+
+
+async def test_no_summarizer_still_compacts_without_summary() -> None:
+    cm = ContextManager(context_token_budget=2000, compaction_threshold=0.7, keep_fraction=0.5)
+    cut, summary = await cm.summary_for(_conversation(30))
+    assert cut > 0  # prefix still dropped
+    assert summary is None  # but no summary (degraded)
+
+
+def test_state_roundtrips_through_restore() -> None:
+    cm = ContextManager()
+    cm.restore("s", 5)
+    assert cm.state() == ("s", 5)

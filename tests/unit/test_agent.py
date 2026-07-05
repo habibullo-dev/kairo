@@ -401,3 +401,48 @@ async def test_no_recall_block_leaves_system_unchanged() -> None:
     loop = build_loop([text_message("ok")], memory=NoneMemory())
     await loop.run_turn(user("hi"))
     assert loop.client.calls[0]["system"] == loop.system
+
+
+def _compacting_manager(summary_responses: list):
+    from jarvis.core.context import ContextManager
+
+    return ContextManager(
+        context_token_budget=2000,
+        compaction_threshold=0.7,
+        keep_fraction=0.5,
+        summarizer=FakeClient(summary_responses),
+        utility_model="claude-sonnet-5",
+    )
+
+
+async def test_summary_frozen_and_injected_across_iterations() -> None:
+    cm = _compacting_manager([text_message("FROZEN SUMMARY")])
+    history = _long_history(30)
+    history.append({"role": "user", "content": "the final question"})
+    loop = build_loop(
+        [tool_use_message([ToolCall("t1", "echo", {"text": "x"})]), text_message("done")],
+        context_manager=cm,
+    )
+    await loop.run_turn(history)
+
+    systems = [c["system"] for c in loop.client.calls]
+    assert len(systems) == 2  # a two-iteration turn (tool call, then answer)
+    assert all("FROZEN SUMMARY" in s for s in systems)  # same summary both times
+    assert len(cm.summarizer.calls) == 1  # summarized once for the turn, not per iteration
+
+
+async def test_system_extras_ordered_identity_then_summary_then_recall() -> None:
+    cm = _compacting_manager([text_message("THE-SUMMARY")])
+
+    class FakeMemory:
+        async def auto_recall_context(self, text: str) -> str:
+            return "THE-RECALL"
+
+    history = _long_history(30)
+    history.append({"role": "user", "content": "final"})
+    loop = build_loop([text_message("done")], context_manager=cm, memory=FakeMemory())
+    await loop.run_turn(history)
+
+    system = loop.client.calls[0]["system"]
+    assert system.startswith(loop.system)  # identity/guidance first
+    assert system.index("THE-SUMMARY") < system.index("THE-RECALL")  # summary before recall

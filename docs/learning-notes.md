@@ -565,3 +565,37 @@ non-obvious *implementation* decisions per task.
 - **Optional collaborators keep the null path exact.** `context_manager` and
   `memory` default to None; a test asserts that with both None the client receives
   the full messages and the base system verbatim — Phase 1 behavior, unchanged.
+
+## P2 Task 7 — ContextManager (summaries)
+
+- **The dropped prefix becomes a system-prompt summary, computed once per turn.**
+  Task 6 dropped old turns; here `summary_for(messages)` (async, called once at turn
+  start) summarizes them via sonnet-5 and freezes both the cut *and* the summary for
+  the whole turn. The loop then applies that frozen cut on every iteration
+  (`view(messages, cut=frozen)`), so the model sees a *stable* context across a
+  multi-step turn — and within-turn growth is absorbed by elision, not by shifting
+  the cut mid-turn.
+- **Summarization is incremental, not from-scratch.** The manager caches
+  `(summary, covered_cut)`. When the cut advances, it folds only the *newly dropped*
+  messages into the prior summary (`PRIOR SUMMARY: … NEW MESSAGES TO FOLD IN: …`),
+  rather than re-summarizing the whole history every time. A test pins that the
+  summarizer is called once for a turn (not per iteration) and only again when the
+  cut actually advances — and that the prior summary is passed back in.
+- **Return the covered cut, not the raw cut.** `summary_for` returns `_covered_cut`
+  (which is ≥ the freshly computed cut after a regen). This guarantees the view
+  drops *exactly* what the summary represents — no message is ever both summarized
+  and shown, and nothing between them is silently lost.
+- **Summary + cut persist on the session, so `--resume` doesn't re-summarize.**
+  Without persistence, resuming a long session would pay a fresh sonnet pass and
+  produce a *different* summary than the session was running with. Two columns on
+  `sessions` (added in Task 2) hold it; `restore()` loads them into a fresh manager,
+  and a test proves a restored summary is reused with zero summarizer calls.
+- **System extras are ordered stable → volatile: identity → summary → recall.**
+  The summary changes only when the cut advances; the recall block changes every
+  turn. Ordering most-stable-first means a future `cache_control` breakpoint after
+  the identity (or after the summary) still hits — the volatile recall block sits
+  last where it can't invalidate everything above it.
+- **Compaction is independent of memory.** The REPL builds a ContextManager even
+  when long-term memory is off (no Voyage key) — running out of context is a problem
+  regardless of whether you remember things. Both the summarizer (compaction) and
+  the dedup/reflection utility calls share one thinking-off utility client.
