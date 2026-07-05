@@ -1,0 +1,22 @@
+# Non-secret configuration. Secrets (API keys) live in .env — never here.
+# Every value has a code default in src/jarvis/config.py; this file overrides them.
+
+models:
+  # Quality-first: the most capable model at every tier (API cost is not a constraint).
+  main: claude-opus-4-8       # the agent's reasoning + tool-use model
+  utility: claude-sonnet-5    # summarization / memory extraction (NOT a small model,
+                              # so background work can't silently corrupt context/memory)
+  judge: claude-opus-4-8      # LLM-as-judge for evals (phase 5)
+  embedding: voyage-3-large   # long-term memory embeddings (phase 2)
+
+limits:
+  max_iterations: 25            # hard stop on the agent loop (runaway guard)
+  tool_timeout_seconds: 60      # per-tool execution timeout
+  max_tool_result_chars: 24000  # truncate tool output (~6k tokens) to protect context
+  context_token_budget: 180000  # compaction target headroom below the 1M window
+  compaction_threshold: 0.7     # compact when history exceeds this fraction of the budget
+  max_output_tokens: 16000      # non-streaming-safe default; streaming raises this later
+
+paths:
+  data_dir: data   # SQLite db (relative to project root)
+  logs_dir: logs   # JSON-lines audit/trace logs

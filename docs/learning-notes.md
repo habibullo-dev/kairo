@@ -24,3 +24,27 @@ Each entry captures the *non-obvious* decisions and their rationale.
 - **Console script points at `jarvis.__main__:main`.** One entry function backs
   both `python -m jarvis` and the `jarvis` command, so there's a single place the
   REPL gets wired in at task 8.
+
+## Task 2 — Config
+
+- **Secrets and settings are split by trust level, not just tidiness.** API keys
+  load from `.env` via `pydantic-settings` (never committed); model IDs/limits/paths
+  load from `config/settings.yaml` (safe to commit). Mixing them would either leak
+  secrets into git or force the whole team to share one `.env` for non-secret tuning.
+- **Keys are optional at load, required on demand.** `Secrets` fields default to
+  `""` so config builds with no keys (every offline task + all unit tests). A key's
+  presence is enforced only when a code path actually needs it, via
+  `config.require("anthropic")`, which raises a `ConfigError` naming the missing env
+  var and pointing at `.env.example`. This turns a future opaque 401 into an
+  actionable startup error, without coupling offline code to key availability.
+- **Loading is pure; directory creation is explicit.** `load_config` never touches
+  the filesystem beyond reading; `ensure_dirs()` (the side effect) is called by the
+  app at startup. That keeps tests from littering `data/`/`logs/` into the repo and
+  makes `load_config` trivially safe to call anywhere.
+- **`root` is injectable.** `load_config(root=...)` + `env_file=None` lets tests
+  point at a temp dir and read secrets from monkeypatched env only — no dependence
+  on the real `.env`. An autouse fixture clears ambient keys so a developer's
+  exported `ANTHROPIC_API_KEY` can't make the "missing key" test spuriously pass.
+- **Every setting has a code default; YAML only overrides.** A missing or partial
+  `settings.yaml` still yields a working `Config`. `pydantic-settings` precedence
+  (init args > env vars > `.env` > defaults) is relied on and pinned by a test.
