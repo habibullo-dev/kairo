@@ -24,8 +24,9 @@ rationale are in [`docs/PLAN-2-memory.md`](docs/PLAN-2-memory.md).
 **Phase 1 (MVP) — complete.** A streaming terminal assistant that plans, calls
 tools (asking approval for risky ones), remembers a conversation across restarts,
 and reports what it did with sources. Verified end-to-end by a live smoke-eval
-suite. Later phases (tasks/scheduling, deeper web research, evaluation harness,
-multi-agent, voice, web UI) are laid out in [`docs/PLAN.md`](docs/PLAN.md) §2.
+suite. Later phases (tasks/scheduling, research + a Markdown knowledge base,
+evaluation harness, multi-agent, voice, web UI) are laid out in
+[`docs/PLAN.md`](docs/PLAN.md) §2.
 
 ## Requirements
 

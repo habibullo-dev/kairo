@@ -735,3 +735,24 @@ non-obvious *implementation* decisions per task.
   (`status='missed'`, `finished_at` set), while crash orphans are `running` rows
   the startup sweep flips to `aborted` — and never silently re-runs, because
   their side effects may have completed before the process died.
+
+## Task 4 — Triggers
+
+- **"Strictly after" is the one-word spec that prevents an infinite loop.** The
+  service advances a task by asking for the next fire after the time it just
+  serviced; CronTrigger's native semantics are >= now, which would return the
+  same instant forever. A one-microsecond nudge encodes strictness — and the test
+  `test_cron_is_strictly_after` pins it, because this is exactly the kind of bug
+  that survives review and fires at 9am daily.
+- **Intervals anchor to the scheduled time, not completion.** Passing the
+  serviced fire time as IntervalTrigger's `previous_fire_time` gives
+  `previous + interval`: a 10-minute job on an hourly interval stays hourly
+  instead of drifting to 70 minutes. Cron is immune to this by construction;
+  intervals are not.
+- **DST is why cron is evaluated in the task's zone and stored in UTC.** The
+  spring-forward test shows noon-in-New-York shifting from 17:00Z to 16:00Z
+  across one weekend — either convention alone (all-UTC or all-local) gets one of
+  "same wall-clock time" or "sortable storage" wrong; the pair gets both.
+- **`validate` returns prose, not booleans, because the model reads it.** A tool
+  error like "interval must be at least 60 seconds, got 5" lets the model
+  self-correct in the next iteration; `False` would just make it guess.

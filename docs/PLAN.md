@@ -63,7 +63,7 @@ Each phase produces a working, shippable assistant that is strictly better than 
 | **1. MVP agent** | REPL + agent loop + filesystem/shell/web tools + permissions + sessions + audit log | The agent loop; tool-use protocol; safety gating |
 | **2. Memory** | Long-term memory (embeddings + recall), conversation compaction, end-of-session reflection | Context engineering; what to remember and when to inject it |
 | **3. Tasks & scheduling** | Task store, reminders, background jobs that wake the agent | Agents that act without being prompted |
-| **4. Web research** | Search + fetch + extract pipeline; multi-step research behavior | Grounding; multi-step tool composition |
+| **4. Research + Knowledge Base** | Search/fetch/ingest pipeline plus a self-maintained Markdown "LLM Wiki" | Grounding; source ingestion; durable external knowledge |
 | **5. Evaluation & hardening** | Eval harness (scenario suites, LLM-as-judge), regression gate | How you know the agent actually works |
 | **6. Multi-agent** | `spawn_agent` tool: planner delegates to scoped sub-agents with isolated contexts | Orchestration, context isolation, result synthesis |
 | **7. Voice** | Push-to-talk STT → agent → TTS; optional wake word | Realtime UX constraints on the loop |
@@ -90,6 +90,7 @@ Simple pytest unit tests exist from Phase 1; Phase 5 is where *agent-level* eval
 | Vector search | Cosine sim in **numpy** over SQLite-stored vectors | At personal-assistant scale (<100k memories) this is fine; swap to sqlite-vec later if needed |
 | Web search | **Tavily API** | Agent-oriented answers + sources |
 | Web fetch/extract | **httpx + trafilatura** | Clean article text from raw HTML |
+| Document-to-Markdown conversion (P4) | **Microsoft MarkItDown** first, model cleanup second | Deterministic conversion is cheaper, auditable, and preserves structure for LLM pipelines; use model tokens for semantic cleanup, summaries, cross-links, and contradiction checks rather than raw extraction |
 | Logging | **structlog** → JSON lines | Machine-parseable audit + traces |
 | Scheduling (P3) | **APScheduler** | Cron + interval jobs in-process |
 | Voice (P7) | **OpenAI Whisper API or faster-whisper large-v3** (STT) + **ElevenLabs** (TTS) | Best transcription accuracy and the most natural voice available — quality first |
@@ -195,6 +196,16 @@ Three tiers:
 1. **Unit** (pytest): tools, gate, registry, loop with mocked client.
 2. **Scenario evals**: YAML files (`tests/evals/scenarios/*.yaml`) with prompt, allowed tools, and programmatic assertions (expected tool called with matching args / file created with expected content / final answer regex). A runner executes them against the live API in a sandboxed temp dir. Since cost is free, **run each scenario N=3 times** and require all passes — agents are stochastic, and single-run evals hide flakiness.
 3. **LLM-as-judge** (P5): grade final answers on a rubric (groundedness, completeness, safety) using Opus 4.8 as judge, with 3 independent judge votes per answer (majority wins); track scores across git revisions to catch regressions.
+
+### Phase 4 direction: Research + LLM Wiki
+Steal the best idea from Hermes/Karpathy-style LLM Wiki systems: Jarvis should not only remember personal facts in the `memories` table; it should maintain an external Markdown knowledge base that compounds over time.
+
+Planned shape:
+- **Raw sources are immutable**: PDFs, docs, webpages, videos/transcripts, notes, and imports are kept as source artifacts with provenance and hashes.
+- **Markdown is the agent-facing layer**: convert sources into Markdown, then let Jarvis build wiki pages, indexes, summaries, entity pages, backlinks, and research briefs.
+- **Use deterministic converters before model tokens**: Microsoft MarkItDown is the default candidate for converting PDFs, Office docs, HTML, text formats, ZIP contents, YouTube URLs, and similar files into Markdown. The model should spend tokens on semantic work — cleaning rough sections, extracting claims, linking concepts, resolving contradictions, and writing durable wiki pages — not on recreating basic file parsing.
+- **Conversion is gated like file reads**: MarkItDown performs I/O with the process's privileges, so any `convert_to_markdown` tool must reuse Jarvis's path resolver, sensitive-path floor, bounded output caps, and permission/audit model. Plugins/OCR/cloud analyzers are opt-in, not silently enabled.
+- **Core operations**: `ingest_source`, `query_knowledge_base`, and `lint_knowledge_base` (orphans, stale claims, contradictions, missing citations). This becomes the bridge between memory (what Jarvis knows about the user) and knowledge (what Jarvis knows about the world/projects).
 
 ---
 
