@@ -8,9 +8,11 @@ license = { text = "MIT" }
 authors = [{ name = "Habibulloh Utboev", email = "habibullochutboev@gmail.com" }]
 dependencies = [
     "anthropic>=0.116.0",
+    "prompt-toolkit>=3.0.52",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "pyyaml>=6.0.3",
+    "rich>=15.0.0",
     "structlog>=26.1.0",
     "trafilatura>=2.1.0",
 ]

@@ -224,3 +224,31 @@ Each entry captures the *non-obvious* decisions and their rationale.
 - **Real filesystem + shell tests, mocked web.** Filesystem/shell tests exercise the
   actual OS (shell guarded by `skipif(pwsh is None)`); only the web layer is mocked,
   because that's the only piece that needs the network or a paid key.
+
+## Task 8 — REPL
+
+- **The REPL is a thin event consumer.** It wires config→client→registry→gate→loop,
+  then just renders the loop's events, prompts for approvals, and tracks totals. All
+  the payoff of the thin-interface rule: `ConsoleRenderer` is ~60 lines and a web UI
+  would be a different consumer of the same events, no loop changes.
+- **Force UTF-8 stdio on Windows — a real crash, not cosmetics.** The first live run
+  died with `UnicodeEncodeError` on `✓`: Windows stdout defaults to cp1252, which
+  can't encode the model's Unicode (em-dashes, box glyphs, checkmarks). `main()`
+  calls `stream.reconfigure(encoding="utf-8", errors="replace")` before any output.
+  `errors="replace"` means even an unforeseen glyph degrades to `?` instead of
+  crashing a turn.
+- **Ctrl+C cancels the turn, not the session.** `run_turn` runs the loop as a task;
+  on `KeyboardInterrupt` it cancels that task, drains it, and returns to the prompt.
+  Awaiting a task does receive the interrupt while leaving the task cancellable —
+  the standard asyncio pattern for "interrupt the work, keep the shell alive."
+- **`PromptSession` is created in `run()`, not `__init__`.** prompt_toolkit opens the
+  terminal on construction and throws `NoConsoleScreenBufferError` under pytest.
+  Deferring it keeps `Repl` constructible headless, so the approver and a full turn
+  are unit-tested against `FakeClient` with a `StringIO` console — no TTY, no network.
+- **"Always allow" persists as narrowly as the tool allows.** For `run_shell` it
+  writes a prefix rule for that command, for `write_file` it allowlists the parent
+  dir, and only otherwise sets a blanket tool allow — so one approval never opens
+  more than the user actually approved.
+- **Approvals block on `input()` via `asyncio.to_thread`.** The loop already
+  resolves permissions sequentially, so a threaded blocking prompt is safe and keeps
+  approval UX simple; the main input line uses prompt_toolkit for history/editing.
