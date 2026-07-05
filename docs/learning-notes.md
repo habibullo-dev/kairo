@@ -638,3 +638,25 @@ non-obvious *implementation* decisions per task.
   the cross-session recall test) and `needs_memory` (builds a real Voyage-backed
   service in the temp workdir). Voyage is required only when a memory scenario is
   actually loaded, so the original keyless-except-Anthropic/Tavily scenarios still run.
+
+## P2 follow-up — reflection freshness on resumed sessions
+
+- **`reflected_at` is a freshness marker, so it must be invalidated on write.** The
+  bug: reflection marked a session `reflected_at`, but `save_messages` (called every
+  turn) didn't clear it. So resuming a reflected session, adding turns, then dying
+  before a clean exit left `reflected_at` non-null — and startup catch-up
+  (`WHERE reflected_at IS NULL`) skipped the new turns forever. Fix: `save_messages`
+  sets `reflected_at = NULL`. New content ⇒ stale reflection ⇒ eligible for catch-up.
+  The lesson generalizes: a "processed at" timestamp on mutable data is only correct
+  if every mutation clears it.
+- **Gate the on-exit reflection on `needs_reflection`.** With `save_messages` clearing
+  the flag, a session with new turns is always dirty on clean exit (correct to
+  reflect). The one case that would otherwise waste an API call — resume a session,
+  read it, exit *without* adding turns — is skipped, because `reflected_at` is still
+  set. The on-exit path now mirrors catch-up exactly: reflect iff the session has
+  unreflected content.
+- **Simple-but-full reflection is the accepted trade-off.** Each qualifying exit
+  re-reflects the *whole* transcript; dedup keeps memories from piling up, but it
+  re-reads everything. The cheaper design (a `reflected_through_seq` watermark that
+  reflects only new messages) is noted as a future optimization — deferred because
+  correctness (never miss content) mattered more than the extra utility-model tokens.

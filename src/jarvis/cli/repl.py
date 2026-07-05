@@ -347,7 +347,15 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
             console.print(f"[dim]Resumed session {session_id} ({len(history)} messages).[/]\n")
         await repl.run()
     finally:
-        if reflect_on and memory is not None and utility is not None and session_id is not None:
+        # Reflect the current session on exit — but only if it has unreflected content
+        # (a resume-and-read with no new turns is already reflected; don't redo it).
+        if (
+            reflect_on
+            and memory is not None
+            and utility is not None
+            and session_id is not None
+            and await store.needs_reflection(session_id)
+        ):
             await _reflect_session(
                 store, memory, utility, config.models.utility, session_id, console, announce=True
             )

@@ -110,6 +110,54 @@ async def test_unreflected_sessions_and_mark(tmp_path: Path) -> None:
         await store.close()
 
 
+async def test_save_messages_clears_reflected_at(tmp_path: Path) -> None:
+    store = await SessionStore.open(tmp_path / "s.db")
+    try:
+        sid = await store.create_session()
+        await store.save_messages(sid, [{"role": "user", "content": "hi"}])
+        await store.mark_reflected(sid)
+        assert await store.needs_reflection(sid) is False  # reflected, unchanged
+        # new content arrives -> reflection is now stale
+        await store.save_messages(sid, [{"role": "user", "content": "and another thing"}])
+        assert await store.needs_reflection(sid) is True
+    finally:
+        await store.close()
+
+
+async def test_needs_reflection_requires_content(tmp_path: Path) -> None:
+    store = await SessionStore.open(tmp_path / "s.db")
+    try:
+        sid = await store.create_session()
+        assert await store.needs_reflection(sid) is False  # no messages yet
+        await store.save_messages(sid, [{"role": "user", "content": "x"}])
+        assert await store.needs_reflection(sid) is True
+    finally:
+        await store.close()
+
+
+async def test_resumed_session_stays_catchable_after_new_turns(tmp_path: Path) -> None:
+    # The bug: reflect a session, resume it, add turns, crash before clean exit.
+    # Startup catch-up must still find it (reflected_at was cleared by the new save).
+    store = await SessionStore.open(tmp_path / "s.db")
+    try:
+        sid = await store.create_session()
+        await store.save_messages(sid, [{"role": "user", "content": "first session"}])
+        await store.mark_reflected(sid)  # clean exit reflected it
+        # ...later: resume, add a turn (save), then the process dies (no clean exit)
+        await store.save_messages(
+            sid,
+            [
+                {"role": "user", "content": "first session"},
+                {"role": "user", "content": "a new thing added after resume"},
+            ],
+        )
+        # a *different* current session so `sid` isn't excluded from catch-up
+        current = await store.create_session()
+        assert sid in await store.unreflected_session_ids(exclude=current)
+    finally:
+        await store.close()
+
+
 async def test_compaction_state_roundtrip(tmp_path: Path) -> None:
     store = await SessionStore.open(tmp_path / "s.db")
     try:

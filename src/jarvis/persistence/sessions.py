@@ -44,7 +44,12 @@ class SessionStore:
         return cursor.lastrowid
 
     async def save_messages(self, session_id: int, messages: list[dict]) -> None:
-        """Persist the full conversation for a session (replaces prior rows)."""
+        """Persist the full conversation for a session (replaces prior rows).
+
+        Also clears ``reflected_at``: new content means the session's reflection is
+        stale, so it must be reflected again (on clean exit, or by startup catch-up
+        if the process dies first). Without this, resuming a reflected session and
+        adding turns would leave ``reflected_at`` set and the new turns unreflected."""
         now = _now()
         rows = [
             (session_id, seq, m["role"], json.dumps(m.get("content")), now)
@@ -56,7 +61,10 @@ class SessionStore:
             "VALUES (?, ?, ?, ?, ?)",
             rows,
         )
-        await self.db.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+        await self.db.execute(
+            "UPDATE sessions SET updated_at = ?, reflected_at = NULL WHERE id = ?",
+            (now, session_id),
+        )
         await self.db.commit()
 
     async def load_messages(self, session_id: int) -> list[dict]:
@@ -112,3 +120,15 @@ class SessionStore:
             "UPDATE sessions SET reflected_at = ? WHERE id = ?", (_now(), session_id)
         )
         await self.db.commit()
+
+    async def needs_reflection(self, session_id: int) -> bool:
+        """True if the session has content and hasn't been reflected since its last
+        change (``reflected_at IS NULL``). Lets the on-exit path skip re-reflecting a
+        session that was only resumed and read, not modified."""
+        cursor = await self.db.execute(
+            "SELECT 1 FROM sessions s "
+            "WHERE s.id = ? AND s.reflected_at IS NULL "
+            "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)",
+            (session_id,),
+        )
+        return await cursor.fetchone() is not None
