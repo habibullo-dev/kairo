@@ -756,3 +756,27 @@ non-obvious *implementation* decisions per task.
 - **`validate` returns prose, not booleans, because the model reads it.** A tool
   error like "interval must be at least 60 seconds, got 5" lets the model
   self-correct in the next iteration; `False` would just make it guess.
+
+## Task 5 — TaskService
+
+- **The whole lifecycle marches to an injected clock, so no test sleeps.** A
+  `Clock` object with `advance(hours=…)` drives due-classification, misfire, and
+  recurrence deterministically — the 3-days-of-missed-cron test runs in
+  microseconds. Time is a dependency, not an ambient fact; inject it and the hard
+  cases become table tests.
+- **A schedule error carries the current time because the model has no clock.**
+  Rejecting a past `once` with just "in the past" would make the model guess;
+  including "it is currently 2026-07-06 08:00 in UTC" lets it recompute. The
+  ≤2-minute tolerance is the other half: "remind me in one minute" must not lose
+  a race with the clock between the model deciding and the row being written.
+- **Missed recurring tasks collapse to one row and resume from *now*.** The naive
+  design loops `compute_next` over every skipped occurrence (3 days of hourly =
+  72 catch-up runs at startup). Because a task has a single `next_run_at`, "missed"
+  is inherently one gap: record one row, compute the next fire from the present,
+  move on.
+- **Debugging note — unclosed aiosqlite connections hang pytest at exit.** The
+  service tests open a connection per test; without closing them the connection
+  threads outlive the tests and the process blocks at teardown (tests pass, then
+  nothing). Diagnosed by seeing the python processes idle at ~0 CPU for minutes.
+  Fix: an autouse fixture that closes every connection opened during a test — the
+  same discipline `test_task_store.py` already had via try/finally.
