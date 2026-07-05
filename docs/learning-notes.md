@@ -712,3 +712,26 @@ non-obvious *implementation* decisions per task.
 - **Two tests are the contract here:** concurrent `save_messages` calls both
   survive (the lock works), and a mid-`transaction()` exception rolls everything
   back (the helper works). Everything else in the phase builds on those two.
+
+## Task 3 — TaskStore
+
+- **The store is mechanism; the service is policy.** `finish_run` doesn't know
+  *why* a task advances to a given time or flips to `failed` — it atomically
+  applies a `TaskAdvance` the service computed. This keeps trigger math and the
+  failure-cap rule out of SQL-land, and (more importantly) lets "close the run +
+  advance the task" be one transaction without the store needing a clock, a
+  trigger library, or config.
+- **Coalescing is a WHERE clause, not scheduler machinery.** `due()` excludes any
+  task with a `running` run (`NOT EXISTS`), so a slow job can never fire on top of
+  itself no matter how often the wake loop checks — `max_instances=1` enforced by
+  the data model instead of by remembering to check a flag.
+- **The atomicity test rides the schema CHECK.** Rather than mocking a crash
+  between statements, the test passes an *invalid* advance (terminal status with
+  `next_run_at` set): the CHECK fires mid-transaction and the assertion is that
+  the run-row update rolled back with it. Real constraint, real rollback path, no
+  mocks.
+- **A missed run is a closed row with no `started_at`.** "Nothing ran" and "ran
+  and died" must be distinguishable forever: missed rows are born finished
+  (`status='missed'`, `finished_at` set), while crash orphans are `running` rows
+  the startup sweep flips to `aborted` — and never silently re-runs, because
+  their side effects may have completed before the process died.
