@@ -24,6 +24,7 @@ from jarvis.observability import cost_of, get_logger
 from jarvis.observability.cost import Usage
 from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.gate import Decision
+from jarvis.persistence import SessionStore
 from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
 
 
@@ -34,10 +35,14 @@ class Repl:
         *,
         client: LLMClient | None = None,
         console: Console | None = None,
+        store: SessionStore | None = None,
+        session_id: int | None = None,
     ) -> None:
         self.config = config
         self.console = console or Console()
         self.log = get_logger("jarvis.repl")
+        self.store = store
+        self.session_id = session_id
 
         self.registry = ToolRegistry()
         self.registry.discover("jarvis.tools.builtin", ToolContext(config=config))
@@ -124,9 +129,37 @@ class Repl:
             return
         self.messages = result.messages
         self.usage = self.usage + result.usage
+        await self._persist()
         self._print_status()
+
+    async def _persist(self) -> None:
+        if self.store is None or self.session_id is None:
+            return
+        try:
+            await self.store.save_messages(self.session_id, self.messages)
+        except Exception as exc:  # noqa: BLE001 - a save failure must not kill the session
+            self.log.warning("persist_failed", error=str(exc))
 
     def _print_status(self) -> None:
         cost = cost_of(self.config.models.main, self.usage)
         tokens = self.usage.input_tokens + self.usage.output_tokens
         self.console.print(f"[dim]session: {tokens:,} tokens · ${cost:.4f}[/]\n")
+
+
+async def run_repl(config: Config, *, resume: bool = False, console: Console | None = None) -> None:
+    """Open the session store, resume or start a session, and run the REPL."""
+    console = console or Console()
+    store = await SessionStore.open(config.data_dir / "jarvis.db")
+    try:
+        session_id = await store.latest_session_id() if resume else None
+        history = await store.load_messages(session_id) if session_id else []
+        if session_id is None:
+            session_id = await store.create_session()
+
+        repl = Repl(config, console=console, store=store, session_id=session_id)
+        repl.messages = history
+        if resume and history:
+            console.print(f"[dim]Resumed session {session_id} ({len(history)} messages).[/]\n")
+        await repl.run()
+    finally:
+        await store.close()

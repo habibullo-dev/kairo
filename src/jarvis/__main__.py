@@ -31,7 +31,7 @@ def main() -> None:
     # Imports deferred so `--version`/`--help` stay instant and never need a key.
     from rich.console import Console
 
-    from jarvis.cli.repl import Repl
+    from jarvis.cli.repl import run_repl
     from jarvis.config import ConfigError, load_config
     from jarvis.observability import configure_logging
 
@@ -45,11 +45,8 @@ def main() -> None:
     config.ensure_dirs()
     configure_logging(config.logs_dir)
 
-    repl = Repl(config)
-    if args.resume:
-        console.print("[dim](--resume lands in task 10; starting a fresh session.)[/]")
     try:
-        asyncio.run(repl.run())
+        asyncio.run(run_repl(config, resume=args.resume, console=console))
     except KeyboardInterrupt:
         console.print("\nBye.")
 

@@ -252,3 +252,27 @@ Each entry captures the *non-obvious* decisions and their rationale.
 - **Approvals block on `input()` via `asyncio.to_thread`.** The loop already
   resolves permissions sequentially, so a threaded blocking prompt is safe and keeps
   approval UX simple; the main input line uses prompt_toolkit for history/editing.
+
+## Task 10 — Persistence
+
+- **The model is stateless; SQLite is the memory.** The whole conversation lives in
+  the `messages` table and is reconstructed for every model call. This makes the
+  "model is stateless" architecture rule concrete — nothing about a turn depends on
+  process memory surviving.
+- **Message content is stored as JSON, verbatim.** Content is a string (user text)
+  or a list of blocks (assistant text/thinking/tool_use, or user tool_result).
+  `json.dumps`/`loads` preserves the exact structure — critically, thinking blocks
+  keep their `signature`, so a resumed session replays to the API unchanged. A test
+  round-trips a signature to pin this.
+- **Schema version via `PRAGMA user_version`, not a table.** SQLite has a built-in
+  per-db integer; the migration runner applies ordered `(version, sql)` tuples when
+  the db is behind. No ORM, no framework — the data model stays plain, visible SQL.
+- **Save-per-turn is delete-then-reinsert.** At conversation scale, replacing all
+  rows each turn is simpler and less bug-prone than tracking incremental appends
+  (a turn appends several messages: assistant + tool_results + assistant…). Correct
+  beats clever here.
+- **A save failure must not kill the session.** `_persist` catches and logs; losing
+  one turn's persistence is annoying, losing the live conversation is worse.
+- **`--resume` picks the most-recently-updated session.** `latest_session_id`
+  orders by `updated_at`, and every save touches it — so "resume" reliably means
+  "the conversation I was just having," even across many stored sessions.
