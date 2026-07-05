@@ -21,7 +21,7 @@ from jarvis.core import AgentLoop, AnthropicClient
 from jarvis.core.client import LLMClient, ToolCall
 from jarvis.core.context import ContextManager
 from jarvis.core.prompts import build_system
-from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder
+from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder, reflect
 from jarvis.observability import cost_of, get_logger
 from jarvis.observability.cost import Usage
 from jarvis.paths import is_safe_to_persist_dir, resolve_path
@@ -94,6 +94,44 @@ def _build_context_manager(config: Config, utility: AnthropicClient) -> ContextM
         summarizer=utility,
         utility_model=config.models.utility,
     )
+
+
+async def _reflect_session(
+    store: SessionStore,
+    memory: MemoryService,
+    utility: AnthropicClient,
+    model: str,
+    session_id: int,
+    console: Console,
+    *,
+    announce: bool,
+) -> None:
+    """Reflect one session into long-term memory, then mark it reflected — always,
+    even on skip/failure, so it never blocks exit and never retries forever."""
+    try:
+        transcript = await store.load_messages(session_id)
+        if len(transcript) < 2:  # nothing substantive to reflect on
+            return
+        if announce:
+            console.print("[dim]reflecting…[/]")
+        results = await reflect(
+            transcript=transcript,
+            session_id=session_id,
+            service=memory,
+            client=utility,
+            model=model,
+        )
+        if announce:
+            saved = sum(1 for r in results if r.action in ("inserted", "superseded"))
+            console.print(f"[dim]reflected: {saved} memories saved.[/]")
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        if announce:
+            console.print("[dim]reflection skipped.[/]")
+    except Exception as exc:  # noqa: BLE001 - reflection must never break exit
+        get_logger("jarvis.repl").warning("reflection_failed", error=str(exc))
+    finally:
+        with contextlib.suppress(Exception):
+            await store.mark_reflected(session_id)
 
 
 class Repl:
@@ -269,10 +307,15 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
     # One shared connection: SessionStore and MemoryStore both use it (see _build_memory).
     db = await connect(config.data_dir / "jarvis.db")
     store = SessionStore(db)
+    memory: MemoryService | None = None
+    utility: AnthropicClient | None = None
+    session_id: int | None = None
+    reflect_on = False
     try:
         utility = _utility_client(config)
         memory = _build_memory(config, db, console, utility)
         context_manager = _build_context_manager(config, utility)
+        reflect_on = memory is not None and config.memory.reflection
 
         session_id = await store.latest_session_id() if resume else None
         history = await store.load_messages(session_id) if session_id else []
@@ -282,6 +325,14 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
             # restore the frozen compaction summary + cut so we don't re-summarize
             summary, cut = await store.load_compaction(session_id)
             context_manager.restore(summary, cut)
+
+        # Catch-up: reflect on any past session that never got reflected (e.g. a
+        # crash/kill skipped its on-exit reflection). Quiet; never blocks startup.
+        if reflect_on:
+            for stale_id in await store.unreflected_session_ids(exclude=session_id):
+                await _reflect_session(
+                    store, memory, utility, config.models.utility, stale_id, console, announce=False
+                )
 
         repl = Repl(
             config,
@@ -296,4 +347,8 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
             console.print(f"[dim]Resumed session {session_id} ({len(history)} messages).[/]\n")
         await repl.run()
     finally:
+        if reflect_on and memory is not None and utility is not None and session_id is not None:
+            await _reflect_session(
+                store, memory, utility, config.models.utility, session_id, console, announce=True
+            )
         await db.close()

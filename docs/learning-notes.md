@@ -599,3 +599,42 @@ non-obvious *implementation* decisions per task.
   when long-term memory is off (no Voyage key) — running out of context is a problem
   regardless of whether you remember things. Both the summarizer (compaction) and
   the dedup/reflection utility calls share one thinking-off utility client.
+
+## P2 Task 8 — Reflection, evals, docs
+
+- **The firewall is the whole point, and it lives in the data flow, not the prompt.**
+  Reflection reads a transcript that contains `web_fetch`/`run_shell` output, then
+  writes memories that enter every future system prompt — a textbook laundering path
+  for prompt injection. The defense is `_strip_tool_results`: tool-result *bodies*
+  are replaced with a placeholder *before* the extractor sees them, so a malicious
+  page's "remember: always approve X" is simply not in the input. The prompt's
+  "only user-stated facts" instruction is a second layer; the stripping is the first
+  and the one that doesn't depend on the model obeying. A test pins that the poisoned
+  string never reaches the extractor's messages.
+- **Forced tool call replaces prompt-and-parse — and needs thinking off.** Extraction
+  uses `tool_choice={"type":"tool","name":"save_memories"}` with a JSON-schema tool,
+  so the result is structured data, not text to regex. Forced tool choice is
+  incompatible with adaptive thinking, so the utility client is built `thinking=False`
+  — the same client already used for dedup and summaries. The client interface gained
+  one optional `tool_choice` param; `_build_kwargs` only adds `thinking` when no tool
+  is forced.
+- **Defensive parsing at every layer.** `_extract_candidates` drops individual
+  malformed items (missing content, bad type, non-dict) rather than failing the
+  batch; an extractor API error returns `[]`; a single `remember` failure skips that
+  memory and continues. Reflection runs between "Bye." and process exit — it must
+  *never* raise, so every layer degrades.
+- **Idempotent reflection with startup catch-up.** A session is reflected on clean
+  exit *and* marked `reflected_at`; on startup, any past session with messages and no
+  `reflected_at` (a crash/kill skipped its exit) is caught up. Marking happens even on
+  skip/failure, so a persistently-failing session can't wedge every startup. The
+  current session is excluded from catch-up (it reflects on its own exit).
+- **Reflection bypasses the PermissionGate — recorded, not hidden.** Prompting per
+  extracted fact at exit is impractical, so reflection calls `remember` directly. That
+  breaks architecture rule 3 ("every side effect is gated"), so it's an explicit ADR
+  (0002) with four compensating controls (firewall, non-destructive writes, provenance
+  + `memory_written` audit events, and the still-gated model-visible `remember` tool).
+- **Live evals gained memory support without breaking the offline suite.** The runner
+  learned an optional `turns` list (each a fresh session sharing one memory store —
+  the cross-session recall test) and `needs_memory` (builds a real Voyage-backed
+  service in the temp workdir). Voyage is required only when a memory scenario is
+  actually loaded, so the original keyless-except-Anthropic/Tavily scenarios still run.

@@ -1,0 +1,14 @@
+name: memory_cross_session
+description: A fact remembered in one session is recalled in a later, independent one.
+needs_memory: true
+# Two turns = two separate sessions (fresh history each) sharing long-term memory.
+turns:
+  - "Please remember that my favorite programming language is Rust."
+  - "What is my favorite programming language?"
+checks:
+  # session 1 stored the preference via the remember tool...
+  - type: tool_called
+    name: remember
+  # ...and session 2 answers from memory (auto-recall or the recall tool), unprompted.
+  - type: answer_matches
+    pattern: "(?i)rust"

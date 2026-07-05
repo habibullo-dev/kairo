@@ -98,7 +98,13 @@ class AnthropicClient:
         )
 
     def _build_kwargs(
-        self, model: str, system: str, messages: list[dict], tools: list[dict], max_tokens: int
+        self,
+        model: str,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: int,
+        tool_choice: dict | None = None,
     ) -> dict:
         kwargs: dict = {
             "model": model,
@@ -109,7 +115,11 @@ class AnthropicClient:
         }
         if tools:
             kwargs["tools"] = tools
-        if self.thinking:
+        if tool_choice is not None:
+            # Forcing a tool is incompatible with extended thinking; callers that
+            # force a tool use a thinking-off client (utility). Belt and suspenders:
+            kwargs["tool_choice"] = tool_choice
+        if self.thinking and tool_choice is None:
             kwargs["thinking"] = {"type": "adaptive"}
         return kwargs
 
@@ -122,8 +132,9 @@ class AnthropicClient:
         tools: list[dict],
         max_tokens: int,
         on_text_delta: Callable[[str], None] | None = None,
+        tool_choice: dict | None = None,
     ) -> ModelResponse:
-        kwargs = self._build_kwargs(model, system, messages, tools, max_tokens)
+        kwargs = self._build_kwargs(model, system, messages, tools, max_tokens, tool_choice)
         async with self._client.messages.stream(**kwargs) as stream:  # type: ignore[attr-defined]
             async for text in stream.text_stream:
                 if on_text_delta:

@@ -26,10 +26,13 @@ import yaml
 
 from jarvis.config import ConfigError, load_config
 from jarvis.core import AgentLoop, AnthropicClient, ToolCall
+from jarvis.core.context import ContextManager
 from jarvis.core.events import Event, ToolStarted
+from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder
 from jarvis.observability.cost import cost_of
 from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.gate import Decision
+from jarvis.persistence.db import connect
 from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
 
 SCENARIOS_DIR = Path(__file__).parent / "scenarios"
@@ -84,6 +87,12 @@ def evaluate(checks: list[dict], workdir: Path, answer: str, called: list[str]) 
     return failures
 
 
+def _scenario_turns(scenario: dict) -> list[str]:
+    """A scenario is either a single ``prompt`` or a list of ``turns`` (each a fresh
+    session — new message history — sharing long-term memory, for cross-session tests)."""
+    return scenario.get("turns") or [scenario["prompt"]]
+
+
 async def run_once(config, scenario: dict) -> tuple[list[str], float, str]:
     workdir = Path(tempfile.mkdtemp(prefix="jarvis-eval-"))
     for name, content in scenario.get("setup", {}).get("files", {}).items():
@@ -96,8 +105,19 @@ async def run_once(config, scenario: dict) -> tuple[list[str], float, str]:
     policy_path = config.root / "config" / "permissions.yaml"
     run_config = config.model_copy(update={"root": workdir})
 
+    utility = AnthropicClient.from_config(run_config)
+    memory = None
+    if scenario.get("needs_memory"):
+        memory = MemoryService(
+            store=MemoryStore(await connect(workdir / "memory.db")),
+            embedder=VoyageEmbedder.from_config(run_config),
+            config=run_config.memory,
+            utility_client=utility,
+            utility_model=run_config.models.utility,
+        )
+
     registry = ToolRegistry()
-    registry.discover("jarvis.tools.builtin", ToolContext(config=run_config))
+    registry.discover("jarvis.tools.builtin", ToolContext(config=run_config, memory=memory))
     executor = ToolExecutor(
         timeout=run_config.limits.tool_timeout_seconds,
         max_result_chars=run_config.limits.max_tool_result_chars,
@@ -110,6 +130,8 @@ async def run_once(config, scenario: dict) -> tuple[list[str], float, str]:
         gate=gate,
         config=run_config,
         approver=make_approver(scenario.get("deny_tools", [])),
+        context_manager=ContextManager(summarizer=utility, utility_model=run_config.models.utility),
+        memory=memory,
     )
 
     called: list[str] = []
@@ -118,17 +140,21 @@ async def run_once(config, scenario: dict) -> tuple[list[str], float, str]:
         if isinstance(event, ToolStarted):
             called.append(event.name)
 
+    cost = 0.0
+    answer = ""
     cwd = Path.cwd()
     os.chdir(workdir)
     try:
-        result = await loop.run_turn(
-            [{"role": "user", "content": scenario["prompt"]}], on_event=on_event
-        )
+        # Each turn is an independent session (fresh history) sharing `memory`.
+        for turn in _scenario_turns(scenario):
+            result = await loop.run_turn([{"role": "user", "content": turn}], on_event=on_event)
+            cost += cost_of(run_config.models.main, result.usage)
+            answer = result.text
     finally:
         os.chdir(cwd)
 
-    failures = evaluate(scenario.get("checks", []), workdir, result.text, called)
-    return failures, cost_of(config.models.main, result.usage), result.text
+    failures = evaluate(scenario.get("checks", []), workdir, answer, called)
+    return failures, cost, answer
 
 
 async def run_scenario(config, scenario: dict, runs: int) -> tuple[bool, float]:
@@ -177,8 +203,13 @@ def main() -> None:
     parser.add_argument("--scenario", help="Run only this scenario by name.")
     args = parser.parse_args()
 
+    # Voyage is only required if a scenario actually exercises memory.
+    required = ["anthropic", "tavily"]
+    if any(s.get("needs_memory") for s in load_scenarios()):
+        required.append("voyage")
+
     try:
-        config = load_config(require=("anthropic", "tavily"))
+        config = load_config(require=tuple(required))
     except ConfigError as exc:
         print(f"Configuration error: {exc}")
         sys.exit(1)

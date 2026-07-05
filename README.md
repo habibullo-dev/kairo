@@ -14,12 +14,18 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 2 (long-term memory) — complete.** On top of the Phase 1 MVP, Jarvis now
+has durable memory: it remembers facts and preferences across sessions (embeddings
+recall + a `remember`/`recall`/`forget` toolset), automatically surfaces relevant
+memories as background context, compacts long conversations to stay within the
+context window, and distills durable facts from each session on exit. Design and
+rationale are in [`docs/PLAN-2-memory.md`](docs/PLAN-2-memory.md).
+
 **Phase 1 (MVP) — complete.** A streaming terminal assistant that plans, calls
 tools (asking approval for risky ones), remembers a conversation across restarts,
 and reports what it did with sources. Verified end-to-end by a live smoke-eval
-suite (3/3 scenarios). Later phases (long-term memory, tasks/scheduling, deeper web
-research, evaluation harness, multi-agent, voice, web UI) are laid out in
-[`docs/PLAN.md`](docs/PLAN.md) §2.
+suite. Later phases (tasks/scheduling, deeper web research, evaluation harness,
+multi-agent, voice, web UI) are laid out in [`docs/PLAN.md`](docs/PLAN.md) §2.
 
 ## Requirements
 
@@ -40,7 +46,7 @@ cp .env.example .env     # then fill in your API keys
 ```
 ANTHROPIC_API_KEY=...    # required
 TAVILY_API_KEY=...       # for web_search
-VOYAGE_API_KEY=...        # phase 2 (memory)
+VOYAGE_API_KEY=...        # for long-term memory (embeddings)
 ```
 
 ## Usage
@@ -58,7 +64,15 @@ uv run python tests/evals/runner.py --runs 1 # quick single pass
 
 In the REPL: type a request; watch Jarvis stream its reasoning and tool calls.
 Risky tools prompt for approval (`y` / `N` / `a`lways). `Ctrl+C` cancels the
-current turn without quitting; `exit` or `Ctrl+D` quits.
+current turn without quitting; `exit` or `Ctrl+D` quits. Type `memories` to list
+what Jarvis has remembered (with provenance — where each memory came from).
+
+**Long-term memory** (needs `VOYAGE_API_KEY`): tell Jarvis something worth keeping
+and it asks before saving it; on exit it reflects over the session and stores
+durable facts. Next session, relevant memories are recalled automatically. Try:
+tell it your favorite editor, `exit`, restart, and ask what your favorite editor
+is — it answers from memory. Set `memory.enabled: false` in `settings.yaml` (or
+omit the key) to turn it off.
 
 ## Safety model
 
@@ -86,6 +100,12 @@ audit log at `logs/jarvis-YYYY-MM-DD.jsonl`, correlated by a per-turn `trace_id`
   persist an over-broad grant (a drive root or your home directory).
 - **File reads are bounded** to a byte ceiling read straight from disk, so a huge
   file can't exhaust memory or evict the conversation.
+- **Memory writes are guarded against poisoning.** The `remember` tool asks first
+  (a memory persists into every future prompt, so a fetched web page can't silently
+  plant one), showing the full content at the approval prompt. End-of-session
+  reflection — which forms most memories — strips tool-result bodies before the
+  extractor sees them and only keeps facts the *user* stated, so untrusted fetched
+  content can't be laundered into permanent memory ([ADR-0002](docs/decisions/0002-reflection-writes-bypass-the-gate.md)).
 - **Tool failures, denials, and unknown tools become results the model reads** and
   recovers from — they never crash the session.
 
@@ -102,14 +122,15 @@ thinking, and high effort — API cost is treated as observability, not a constr
 ```
 src/jarvis/
   cli/          REPL + rich rendering
-  core/         agent loop, model clients (fake + Anthropic), prompts, events
-  tools/        Tool base, registry, executor, builtin/ (filesystem, shell, web)
+  core/         agent loop, context/compaction, model clients, prompts, events
+  tools/        Tool base, registry, executor, builtin/ (filesystem, shell, web, memory)
   permissions/  policy + gate
-  persistence/  SQLite sessions/messages + migrations
+  memory/       long-term memory: store, embeddings, service, reflection
+  persistence/  SQLite sessions/messages/memories + migrations
   observability/ structured logging + cost accounting
-  config.py     settings + secrets
+  config.py     settings + secrets   ·   paths.py  path resolution + secret floor
 tests/          unit tests + evals/ (live smoke scenarios)
-docs/           PLAN, architecture, learning notes, decisions/ (ADRs)
+docs/           PLAN, PLAN-2-memory, architecture, learning notes, decisions/ (ADRs)
 ```
 
 ## License

@@ -89,6 +89,27 @@ async def test_latest_session_tracks_most_recent_update(tmp_path: Path) -> None:
         await store.close()
 
 
+async def test_unreflected_sessions_and_mark(tmp_path: Path) -> None:
+    store = await SessionStore.open(tmp_path / "s.db")
+    try:
+        empty = await store.create_session()  # no messages -> not "unreflected with content"
+        with_msgs = await store.create_session()
+        await store.save_messages(with_msgs, [{"role": "user", "content": "hi"}])
+        current = await store.create_session()
+        await store.save_messages(current, [{"role": "user", "content": "now"}])
+
+        # only sessions that have messages and aren't the current one need catch-up
+        stale = await store.unreflected_session_ids(exclude=current)
+        assert with_msgs in stale
+        assert empty not in stale  # no messages
+        assert current not in stale  # excluded
+
+        await store.mark_reflected(with_msgs)
+        assert with_msgs not in await store.unreflected_session_ids(exclude=current)
+    finally:
+        await store.close()
+
+
 async def test_compaction_state_roundtrip(tmp_path: Path) -> None:
     store = await SessionStore.open(tmp_path / "s.db")
     try:

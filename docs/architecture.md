@@ -1,8 +1,9 @@
-# Architecture (as built — Phase 1)
+# Architecture (as built — Phase 2)
 
-This describes what exists after Milestone 1. For the forward-looking plan and
-phase roadmap, see [`PLAN.md`](PLAN.md). For the reasoning behind each decision,
-see [`learning-notes.md`](learning-notes.md).
+This describes what exists after Milestone 2 (long-term memory) on top of the
+Milestone 1 MVP. For the forward-looking plans see [`PLAN.md`](PLAN.md) and
+[`PLAN-2-memory.md`](PLAN-2-memory.md); for the reasoning behind each decision see
+[`learning-notes.md`](learning-notes.md).
 
 ## The one idea
 
@@ -24,6 +25,7 @@ interfaces → core → services → foundation
 │ cli/render.py    events → rich (panels, streaming text)   │
 ├─ core ───────────────────────────────────────────────────┤
 │ core/agent.py    AgentLoop.run_turn — the while-loop      │
+│ core/context.py  ContextManager — compaction (view+summary)│
 │ core/client.py   LLMClient interface + FakeClient         │
 │ core/anthropic_client.py  live streaming client           │
 │ core/prompts.py  system-prompt assembly                   │
@@ -31,8 +33,9 @@ interfaces → core → services → foundation
 ├─ services ───────────────────────────────────────────────┤
 │ tools/           Tool base, registry, executor, builtin/  │
 │ permissions/     policy + PermissionGate (allow/ask/deny) │
+│ memory/          store · embeddings · service · reflection│
 ├─ foundation ─────────────────────────────────────────────┤
-│ persistence/     SQLite sessions + messages + migrations  │
+│ persistence/     SQLite sessions/messages/memories + migr.│
 │ observability/   structlog audit log + cost accounting    │
 │ config.py        settings (yaml) + secrets (.env)         │
 │ paths.py         unified path resolution + secret floor   │
@@ -49,20 +52,28 @@ keep the loop.
 One user turn, `AgentLoop.run_turn(messages)`:
 
 1. Bind a `trace_id`; log `turn_start`.
-2. Loop, bounded by `max_iterations`:
-   - Call the model (streaming) with the system prompt, messages, and tool schemas.
+2. **Auto-recall (once):** if memory is on, embed the new user message and build a
+   background block of relevant memories for the system prompt (Phase 2).
+3. **Freeze compaction (once):** if a `ContextManager` is present, decide this turn's
+   cut + summary and hold them stable for the turn (Phase 2).
+4. Loop, bounded by `max_iterations`:
+   - Compute the **compacted view** of the messages (frozen cut + tail elision) and
+     the system prompt (identity → summary → recall). The full history is untouched.
+   - Call the model (streaming) with that view + tool schemas; `observe` the usage.
    - Log `model_call` with token usage + computed cost.
    - Append the assistant's content blocks **verbatim** (thinking/tool_use round-trip).
    - If `stop_reason != tool_use` → emit `TurnCompleted`, return.
    - Otherwise, handle tools: resolve permission for each **sequentially** (orderly
      prompts), then execute the approved ones **in parallel**; append one
      `tool_result` block per `tool_use` id.
-3. If the loop hits `max_iterations`, stop with that reason.
+5. Stop on `max_iterations`, or on `max_context` if a turn can't fit even after
+   elision.
 
 Invariants (each a classic agent bug when violated): tool errors/denials/unknown
 tools become `is_error` results the model recovers from; exactly one result per
 call; assistant blocks appended unchanged; results truncated to protect context;
-the iteration guard prevents runaways.
+the iteration guard prevents runaways. The memory/context collaborators are
+**optional** — with both absent, the loop is byte-for-byte the Phase 1 loop.
 
 ## Model boundary (`core/client.py`, `core/anthropic_client.py`)
 
@@ -98,13 +109,35 @@ decision and the action it authorizes always name the same file. The gate only
 decides — the interface prompts the human and the loop runs the tool. "Always allow"
 persists the narrowest rule, and refuses to persist an over-broad write directory.
 
+## Memory (`memory/`) — Phase 2
+
+Three tiers around the loop. **Working memory** is the message list, compacted by
+`core/context.py`: it produces a per-request *view* (token-weighted cut at a real
+user turn; oldest tool-result bodies elided when a single turn overflows) while the
+full history stays the source of truth, and the dropped prefix is represented by a
+`claude-sonnet-5` summary carried in the system prompt (frozen per turn, persisted
+so `--resume` doesn't re-summarize). **Long-term memory** is an embeddings-indexed
+`memories` store: `MemoryStore` (unit-normalized float32 vectors, cosine = one numpy
+matmul) under a `MemoryService` that owns remember (with sonnet-5 dedup
+adjudication), recall, and auto-recall. The `Embedder` seam (Voyage live, a
+deterministic fake in tests) mirrors the `LLMClient` pattern. **Episodic memory** is
+the transcript; on exit `memory/reflection.py` distills durable facts via a forced
+tool call — after **stripping tool-result bodies** so untrusted fetched content
+can't be laundered into permanent memory (see [ADR-0002](decisions/0002-reflection-writes-bypass-the-gate.md)).
+Memory is optional: no `VOYAGE_API_KEY` ⇒ the tools aren't registered and the loop
+runs exactly as in Phase 1.
+
 ## Persistence (`persistence/`)
 
-SQLite via aiosqlite. `sessions` + `messages` tables; schema version tracked by
-`PRAGMA user_version` with an ordered migration list. The model is stateless — the
-whole conversation lives here and is reconstructed each call. Message content is
-stored as JSON verbatim (thinking-block signatures survive, so a resumed session
-replays to the API unchanged). Saved per turn; `--resume` loads the most recent.
+SQLite via aiosqlite. `sessions` + `messages` + `memories` tables; schema version
+tracked by `PRAGMA user_version` with an ordered migration list (v2 adds memory +
+per-session compaction/reflection bookkeeping). The model is stateless — the whole
+conversation lives here and is reconstructed each call. Message content is stored as
+JSON verbatim (thinking-block signatures survive, so a resumed session replays to
+the API unchanged). Saved per turn; `--resume` loads the most recent (and its frozen
+compaction summary). Memories are never deleted — `supersede`/`forget` mark status,
+so recall filters to `live` while lineage stays auditable. `MemoryStore` shares the
+one connection with `SessionStore` (a second connection would deadlock on writes).
 
 ## Observability (`observability/`)
 
@@ -128,6 +161,9 @@ you → REPL → AgentLoop.run_turn(messages)
 
 ## Verification
 
-- `uv run pytest` — 120+ unit tests, no API key required (FakeClient, mocked web).
-- `uv run python tests/evals/runner.py` — live smoke evals (3 scenarios × 3 runs).
-- `uv run jarvis` — the assistant itself.
+- `uv run pytest` — 240+ unit tests, no API key required (FakeClient + FakeEmbedder,
+  mocked web). Includes the compacted-view validity property test and the reflection
+  firewall test.
+- `uv run python tests/evals/runner.py` — live smoke evals (file task, web research,
+  permission denial, memory tool roundtrip, cross-session recall).
+- `uv run jarvis` — the assistant itself; `memories` lists what it knows.

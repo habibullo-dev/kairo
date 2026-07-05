@@ -65,6 +65,7 @@ class LLMClient(Protocol):
         tools: list[dict],
         max_tokens: int,
         on_text_delta: Callable[[str], None] | None = None,
+        tool_choice: dict | None = None,
     ) -> ModelResponse: ...
 
 
@@ -125,6 +126,7 @@ class FakeClient:
         tools: list[dict],
         max_tokens: int,
         on_text_delta: Callable[[str], None] | None = None,
+        tool_choice: dict | None = None,
     ) -> ModelResponse:
         self.calls.append(
             {
@@ -133,6 +135,7 @@ class FakeClient:
                 "messages": copy.deepcopy(messages),
                 "tools": tools,
                 "max_tokens": max_tokens,
+                "tool_choice": tool_choice,
             }
         )
         if not self.responses:

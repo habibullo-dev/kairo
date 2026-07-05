@@ -93,3 +93,22 @@ class SessionStore:
         if not row:
             return None, 0
         return row[0], row[1] or 0
+
+    async def unreflected_session_ids(self, *, exclude: int | None = None) -> list[int]:
+        """Past sessions that have messages but were never reflected on (e.g. the
+        process was killed before exit). Used for startup catch-up."""
+        cursor = await self.db.execute(
+            "SELECT s.id FROM sessions s "
+            "WHERE s.reflected_at IS NULL "
+            "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id) "
+            "AND s.id != ? "
+            "ORDER BY s.id",
+            (exclude if exclude is not None else -1,),
+        )
+        return [row[0] for row in await cursor.fetchall()]
+
+    async def mark_reflected(self, session_id: int) -> None:
+        await self.db.execute(
+            "UPDATE sessions SET reflected_at = ? WHERE id = ?", (_now(), session_id)
+        )
+        await self.db.commit()

@@ -1,0 +1,11 @@
+name: memory_tool_roundtrip
+description: remember then recall a fact within a single session.
+needs_memory: true
+prompt: "Remember that my dog's name is Pixel, then recall my dog's name and tell me what it is."
+checks:
+  - type: tool_called
+    name: remember
+  - type: tool_called
+    name: recall
+  - type: answer_matches
+    pattern: "(?i)pixel"
