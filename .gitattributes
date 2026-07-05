@@ -1,0 +1,12 @@
+# Normalize all text files to LF in the repo and on checkout, so line endings
+# are deterministic across Windows/macOS/Linux and diffs stay clean.
+* text=auto eol=lf
+
+# Treat common binaries as binary (never touch their bytes).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.db binary
+*.sqlite binary
