@@ -276,3 +276,31 @@ Each entry captures the *non-obvious* decisions and their rationale.
 - **`--resume` picks the most-recently-updated session.** `latest_session_id`
   orders by `updated_at`, and every save touches it — so "resume" reliably means
   "the conversation I was just having," even across many stored sessions.
+
+## Task 11 — Smoke evals
+
+- **Agents are stochastic, so a single pass proves nothing.** The runner executes
+  each scenario N=3 times and only passes if all N pass. A first validation run
+  (N=1) is for wiring; the real gate is N=3. Cost is free, so there's no reason to
+  skimp on repetitions.
+- **Checks are a small declarative DSL, not code in YAML.** `file_exists`,
+  `file_absent`, `file_matches`, `answer_matches`, `tool_called`, `tool_not_called`
+  cover the three assertion families from the plan (a file was produced with the
+  right content / the final answer says the right thing / the right tool ran). The
+  scenario author writes YAML; the runner interprets it.
+- **Each run is isolated in a temp workdir, then `chdir`'d into.** The scenario's
+  setup files are written there and the agent's relative paths resolve there, so
+  runs can't pollute the repo or each other. Verified: after a full run, the repo
+  has no stray `summary.txt`/`secret.txt`.
+- **The three scenarios map to the three things that matter.** Multi-step file work
+  (tool composition), web research (grounding), and a *denied* tool (the safety
+  path — proving a denial becomes model feedback the agent handles gracefully,
+  not a crash). The denial eval uses an approver that says no to `write_file`.
+- **Known edge, noted not fixed:** the gate resolves a relative write path against
+  `config.root`, while the tool resolves it against the process cwd. In normal use
+  (run from the project dir) these coincide; the eval's `chdir` makes them diverge
+  harmlessly (the file lands in the workdir via cwd; the gate's allowlist reasoning
+  just uses a different base). A future gate could take cwd into account.
+- **Not a pytest test.** It hits the live API and costs money, so it's a standalone
+  script (`uv run python tests/evals/runner.py`) with pass/fail + per-scenario cost,
+  exiting non-zero on failure so it can gate a release later.

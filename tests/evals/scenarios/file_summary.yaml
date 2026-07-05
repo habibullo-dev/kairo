@@ -1,0 +1,19 @@
+name: file_summary
+description: Multi-step — read a file, then write a summary to a new file.
+prompt: >
+  There is a file called report.txt in the current directory. Read it, then write a
+  one-sentence summary of its main point to a new file called summary.txt.
+setup:
+  files:
+    report.txt: >
+      Q3 revenue grew 12% year over year, driven mainly by strong subscription
+      renewals. Churn fell to a record low, and the board approved expanding the
+      sales team next quarter.
+checks:
+  - type: tool_called
+    name: write_file
+  - type: file_exists
+    path: summary.txt
+  - type: file_matches
+    path: summary.txt
+    pattern: "(?i)(revenue|subscription|churn|sales|growth)"
