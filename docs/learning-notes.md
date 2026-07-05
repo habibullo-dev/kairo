@@ -780,3 +780,28 @@ non-obvious *implementation* decisions per task.
   nothing). Diagnosed by seeing the python processes idle at ~0 CPU for minutes.
   Fix: an autouse fixture that closes every connection opened during a test — the
   same discipline `test_task_store.py` already had via try/finally.
+
+## Task 6 — UnattendedGate + headless approver (the safety contract)
+
+- **"Deny every ASK" is necessary but not sufficient — policy ALLOWs are the real
+  escalation channel.** The gate resolves many calls to ALLOW *before* any approver
+  is consulted: persisted `tools: {x: allow}`, shell prefix rules, write-allowlist
+  dirs. Those grants were consented to interactively, while a human watched the
+  stream; unattended they'd apply unwatched. So the UnattendedGate demotes
+  side-effecting ALLOWs to DENY — the deny-ASK approver alone would have left this
+  wide open. This is the single most important idea in the phase.
+- **Composition over subclassing for the gate.** UnattendedGate *wraps* a
+  PermissionGate with the same `check()` signature rather than subclassing it: the
+  base gate's logic (sensitive-path floor, shell metacharacter escalation, prefix
+  rules) is reused untouched, and the wrapper only post-processes the decision.
+  The AgentLoop uses either interchangeably by duck-typed `check()`.
+- **Hard-deny is checked before policy; opt-in cannot override it.** schedule_task
+  / cancel_task / remember / forget return DENY before the inner gate runs, and the
+  `unattended_allow_tools` opt-in is only consulted for the demote set — so no
+  config or persisted allow can let a background job schedule more jobs (closing
+  the self-replication loop) or write to memory unattended.
+- **The "never reads stdin" test pins a hang, not just a policy.** A headless
+  approver that ever called `input()` would block forever with no TTY. The test
+  monkeypatches `input` to raise, then asserts the approver still returns DENY —
+  proving the safety property structurally, the same way the DB-lock tests prove
+  correctness rather than trusting discipline.
