@@ -1,0 +1,41 @@
+# Permission policy. Every tool call is gated by this before it runs.
+#
+# Per-tool decisions: allow (run silently) | ask (prompt the human) | deny (never).
+# Defaults are safe: reads are allowed; anything that writes, runs a shell, or
+# reaches the network asks first. "Always allow" at the prompt persists here.
+#
+# NOTE: this file may be rewritten when you choose "always allow" (comments are
+# not preserved on auto-persist).
+
+default: ask
+
+tools:
+  read_file: allow
+  list_dir: allow
+  glob_search: allow
+  web_search: allow
+  web_fetch: allow
+  write_file: ask
+  run_shell: ask
+
+filesystem:
+  # Writes inside these dirs (relative to the project root, or absolute) may be
+  # auto-allowed if write_file is set to `allow`; writes outside always escalate
+  # to `ask`, never silently proceed.
+  write_allowlist:
+    - .
+
+shell:
+  # Longest matching prefix wins. Lets you allow safe read-only commands while
+  # still gating destructive ones. A tool-level `deny` on run_shell overrides all.
+  rules:
+    - prefix: "git status"
+      decision: allow
+    - prefix: "git diff"
+      decision: allow
+    - prefix: "git log"
+      decision: allow
+    - prefix: "rm "
+      decision: ask
+    - prefix: "del "
+      decision: ask

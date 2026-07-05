@@ -105,3 +105,31 @@ Each entry captures the *non-obvious* decisions and their rationale.
 - **Discovery filters by `__module__`.** `register_from_module` only registers
   tool classes *authored* in that module, so importing the base `Tool` (or
   re-exporting a tool) never causes a double-registration collision.
+
+## Task 5 — Permissions
+
+- **Policy is data; the gate is behavior.** `Policy` (a pydantic model) round-trips
+  to `permissions.yaml`; `PermissionGate` interprets it. Keeping them apart makes
+  the gate a pure function that's trivially table-testable, and lets the policy be
+  edited/persisted without touching decision logic.
+- **Base-decision precedence: per-tool entry > tool's own default > policy default.**
+  This lets the shipped `permissions.yaml` be sparse (only the interesting
+  overrides) while each tool still carries a sensible built-in default and the
+  global default catches everything else.
+- **The allowlist can only tighten, never loosen.** A write outside the allowlist
+  with an `allow` base is escalated to `ask` — never the reverse. So mis-setting
+  `write_file: allow` can't silently grant writes to arbitrary absolute paths; the
+  worst case is an extra prompt. Paths are resolved (relative → project root) before
+  the containment check, which also neutralizes `..` traversal.
+- **A tool-level `deny` is absolute.** It short-circuits before shell/path
+  refinement, so an allow-listed `git status` rule can't re-enable a `run_shell`
+  that policy turned off entirely. Shell rules use longest-prefix-wins so a broad
+  `git` rule and a specific `git status` rule can coexist.
+- **`Decision` carries a reason, not just a verdict.** The reason feeds both the
+  approval prompt ("shell rule 'rm ' -> deny") and the audit log, so a human (or a
+  later debugging session) can see *why* a call was gated the way it was.
+- **Persistence is granular for shell, coarse for tools.** "Always allow" a shell
+  command persists a *prefix rule* (`persist_shell_rule`), not a blanket
+  `run_shell: allow` — allowing one command shouldn't open the whole shell.
+  Tradeoff noted: `save_policy` uses `yaml.safe_dump`, so hand-written comments in
+  `permissions.yaml` are lost when a rule is auto-persisted.
