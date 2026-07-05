@@ -133,3 +133,38 @@ Each entry captures the *non-obvious* decisions and their rationale.
   `run_shell: allow` — allowing one command shouldn't open the whole shell.
   Tradeoff noted: `save_policy` uses `yaml.safe_dump`, so hand-written comments in
   `permissions.yaml` are lost when a rule is auto-persisted.
+
+## Task 6 — Agent loop (mocked)
+
+- **The loop talks to an `LLMClient` interface, never the SDK.** That single seam
+  is what lets the entire loop be tested end-to-end against a scripted `FakeClient`
+  with zero network, and swapped for the real streaming client in task 7 without
+  touching loop code. `FakeClient` also records every `create` call so tests can
+  assert exactly what the loop sent back to the model.
+- **Assistant content blocks are appended verbatim.** The response's
+  `content_blocks` go onto the history unchanged — the API requires `tool_use`
+  blocks to round-trip exactly. A test pins this (`== call_block.content_blocks`)
+  so a future "helpful" transform can't silently break tool continuation.
+- **Every failure path becomes a `tool_result`, never an exception.** Tool errors
+  (executor), denials, and unknown-tool requests all produce an `is_error` result
+  block the model reads. Tests assert the loop *continues* to a final answer after
+  each — that resilience is the whole point of the loop.
+- **Exactly one `tool_result` per `tool_use` id, in order.** `asyncio.gather` over
+  the calls preserves both count and order; a parallel-tools test checks the two
+  results come back as `[a, b]` matching the requests. Mismatches here are the
+  single most common cause of API 400s in hand-rolled agents.
+- **Permissions resolve sequentially; approved tools run in parallel.** Splitting
+  `_handle_tools` into a sequential permission phase and a parallel execution phase
+  avoids firing several human approval prompts at once, while still parallelizing
+  the actual work. With no approver wired, an `ASK` safely defaults to `DENY`.
+- **The max-iteration guard is not optional.** `range(max_iterations)` bounds the
+  loop; a test scripts all-tool-use responses and asserts it stops at N with
+  `stop_reason="max_iterations"`. A runaway tool loop is a matter of when, not if.
+- **The loop owns audit logging.** It binds the `trace_id` and emits
+  `turn_start`/`model_call`/`permission_decision`/`tool_call`/`tool_result`/
+  `turn_end`; the executor and gate stay pure. A test uses
+  `structlog.testing.capture_logs` to assert the full event set appears.
+- **Events decouple the loop from any UI.** The loop emits typed events
+  (`TextDelta`, `ToolStarted`, `ToolFinished`, `TurnCompleted`) to an optional
+  sink; the REPL/web UI/tests each render them however they like. The loop imports
+  no rendering library — this is what makes task 8's REPL and a future web UI cheap.
