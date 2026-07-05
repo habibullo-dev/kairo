@@ -684,3 +684,31 @@ non-obvious *implementation* decisions per task.
   `zoneinfo` (matters for storing IANA zone names), and 4.x is an incompatible
   rewrite mid-flight — an unpinned "latest" would eventually swap the API out from
   under `triggers.py`, the one file allowed to import it.
+
+## Task 2 — Schema v3 + persistence hardening
+
+- **`sessions.kind` is one column fixing three bugs at once.** Background job
+  transcripts are ordinary sessions, so without a kind marker they (a) win
+  `latest_session_id()` and hijack `--resume` into a job transcript, (b) get
+  reflected into long-term memory by startup catch-up — laundering unattended web
+  content into permanent context with no human in the loop — and (c) can't be
+  rendered distinctly in any UI. Classify data at write time; filtering at read
+  time is then trivial and testable.
+- **The write lock lives in the persistence layer, not the call sites.** With
+  sqlite3's legacy implicit transactions on one shared connection, two coroutines
+  writing across await points join one open transaction and either's `commit()`
+  flushes the other's half-done statements — `save_messages`' DELETE could commit
+  without its INSERT. A REPL-level "turn lock" would protect this only as long as
+  every future writer remembers to hold it; a lock inside the stores (plus the
+  `transaction()` helper: BEGIN IMMEDIATE … COMMIT under the lock) makes the
+  invariant structural. Correctness by construction beats discipline.
+- **Split status machines: task lifecycle vs run outcome.** `tasks.status` says
+  what the *task* is (active/done/cancelled/failed/missed); `task_runs.status`
+  says what one *execution* did (running/ok/error/missed/aborted). Conflating them
+  makes basic questions ambiguous ("a cron task that failed once is... failed?")
+  and crash recovery undecidable. The `CHECK (status='active' OR next_run_at IS
+  NULL)` constraint makes "terminal states never look due" a database guarantee,
+  not a query convention.
+- **Two tests are the contract here:** concurrent `save_messages` calls both
+  survive (the lock works), and a mid-`transaction()` exception rolls everything
+  back (the helper works). Everything else in the phase builds on those two.

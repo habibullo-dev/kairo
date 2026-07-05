@@ -64,12 +64,13 @@ def _utility_client(config: Config) -> AnthropicClient:
 
 
 def _build_memory(
-    config: Config, db, console: Console, utility: AnthropicClient
+    config: Config, db, console: Console, utility: AnthropicClient, lock
 ) -> MemoryService | None:
     """Construct the memory service, or return None (disabled / no key) with a note.
 
-    Shares ``db`` with the SessionStore — a second connection to one SQLite file
-    would deadlock on the first concurrent write (reflection vs. save_messages)."""
+    Shares ``db`` *and the write lock* with the SessionStore — a second connection
+    to one SQLite file would deadlock on the first concurrent write, and a second
+    lock would let a memory write land inside a session-save transaction."""
     if not config.memory.enabled:
         return None
     if not config.secrets.voyage_api_key:
@@ -77,7 +78,7 @@ def _build_memory(
         get_logger("jarvis.memory").warning("memory_disabled", reason="no_voyage_key")
         return None
     return MemoryService(
-        store=MemoryStore(db),
+        store=MemoryStore(db, lock),
         embedder=VoyageEmbedder.from_config(config),
         config=config.memory,
         utility_client=utility,
@@ -313,7 +314,7 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
     reflect_on = False
     try:
         utility = _utility_client(config)
-        memory = _build_memory(config, db, console, utility)
+        memory = _build_memory(config, db, console, utility, store.lock)
         context_manager = _build_context_manager(config, utility)
         reflect_on = memory is not None and config.memory.reflection
 

@@ -13,13 +13,16 @@ visible. Two design points carry weight:
   "what did I forget, and why did I believe that?" always has an answer.
 
 Runs on the *same* aiosqlite connection as :class:`~jarvis.persistence.sessions.SessionStore`
-(a second connection to one file would deadlock on the first concurrent write).
+(a second connection to one file would deadlock on the first concurrent write) —
+and, since Phase 3, on the same shared write lock, so a memory write can never
+land inside another store's open transaction (see :mod:`jarvis.persistence.db`).
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import aiosqlite
 import numpy as np
@@ -92,6 +95,7 @@ class ScoredMemory:
 @dataclass
 class MemoryStore:
     db: aiosqlite.Connection
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # share with SessionStore
 
     # --- writes ------------------------------------------------------------
 
@@ -109,46 +113,49 @@ class MemoryStore:
         prov = provenance or Provenance()
         blob, _ = _to_unit_blob(embedding)
         now = _now()
-        cursor = await self.db.execute(
-            f"INSERT INTO memories ({_COLUMNS}) VALUES "
-            "(NULL, ?, ?, ?, ?, ?, 'live', NULL, ?, ?, ?, ?, ?, ?, ?, NULL, 0)",
-            (
-                type,
-                content,
-                blob,
-                embedding_model,
-                source,
-                prov.source_session_id,
-                prov.source_seq_start,
-                prov.source_seq_end,
-                prov.evidence_summary,
-                prov.confidence,
-                now,
-                now,
-            ),
-        )
-        await self.db.commit()
+        async with self.lock:
+            cursor = await self.db.execute(
+                f"INSERT INTO memories ({_COLUMNS}) VALUES "
+                "(NULL, ?, ?, ?, ?, ?, 'live', NULL, ?, ?, ?, ?, ?, ?, ?, NULL, 0)",
+                (
+                    type,
+                    content,
+                    blob,
+                    embedding_model,
+                    source,
+                    prov.source_session_id,
+                    prov.source_seq_start,
+                    prov.source_seq_end,
+                    prov.evidence_summary,
+                    prov.confidence,
+                    now,
+                    now,
+                ),
+            )
+            await self.db.commit()
         assert cursor.lastrowid is not None
         return cursor.lastrowid
 
     async def supersede(self, old_id: int, new_id: int) -> None:
         """Mark ``old_id`` superseded by ``new_id`` (keeps lineage; drops from recall)."""
-        await self.db.execute(
-            "UPDATE memories SET status='superseded', superseded_by=?, updated_at=? WHERE id=?",
-            (new_id, _now(), old_id),
-        )
-        await self.db.commit()
+        async with self.lock:
+            await self.db.execute(
+                "UPDATE memories SET status='superseded', superseded_by=?, updated_at=? WHERE id=?",
+                (new_id, _now(), old_id),
+            )
+            await self.db.commit()
 
     async def forget(self, memory_id: int) -> bool:
         """Mark a memory ``forgotten`` (gone from recall, kept for audit).
 
         Returns True if a live memory was forgotten, False if there was no such
         live memory (already forgotten/superseded, or unknown id)."""
-        cursor = await self.db.execute(
-            "UPDATE memories SET status='forgotten', updated_at=? WHERE id=? AND status='live'",
-            (_now(), memory_id),
-        )
-        await self.db.commit()
+        async with self.lock:
+            cursor = await self.db.execute(
+                "UPDATE memories SET status='forgotten', updated_at=? WHERE id=? AND status='live'",
+                (_now(), memory_id),
+            )
+            await self.db.commit()
         return cursor.rowcount > 0
 
     async def touch(self, ids: list[int]) -> None:
@@ -156,19 +163,21 @@ class MemoryStore:
         if not ids:
             return
         now = _now()
-        await self.db.executemany(
-            "UPDATE memories SET last_accessed_at=?, access_count=access_count+1 WHERE id=?",
-            [(now, i) for i in ids],
-        )
-        await self.db.commit()
+        async with self.lock:
+            await self.db.executemany(
+                "UPDATE memories SET last_accessed_at=?, access_count=access_count+1 WHERE id=?",
+                [(now, i) for i in ids],
+            )
+            await self.db.commit()
 
     async def update_content(self, memory_id: int, content: str) -> None:
         """Touch ``updated_at`` (used when remember() sees a near-verbatim duplicate)."""
-        await self.db.execute(
-            "UPDATE memories SET content=?, updated_at=? WHERE id=?",
-            (content, _now(), memory_id),
-        )
-        await self.db.commit()
+        async with self.lock:
+            await self.db.execute(
+                "UPDATE memories SET content=?, updated_at=? WHERE id=?",
+                (content, _now(), memory_id),
+            )
+            await self.db.commit()
 
     # --- reads -------------------------------------------------------------
 

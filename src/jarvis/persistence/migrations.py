@@ -61,8 +61,60 @@ ALTER TABLE sessions ADD COLUMN compaction_summary TEXT;
 ALTER TABLE sessions ADD COLUMN compaction_cut INTEGER;
 """
 
+# Phase 3: tasks & scheduling. Two status machines, deliberately split — a task's
+# *lifecycle* (tasks.status) vs one *execution's* outcome (task_runs.status). Nothing
+# is ever DELETEd: cancel/done/failed/missed are statuses; run history is audit.
+#
+# sessions.kind is load-bearing: background job transcripts are sessions too, and
+# without the column they'd win latest_session_id() (hijacking --resume) and be
+# reflected into long-term memory (laundering unattended web content into memories).
+_SCHEMA_V3 = """
+CREATE TABLE tasks (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind                 TEXT NOT NULL CHECK (kind IN ('reminder','job')),
+    title                TEXT NOT NULL,
+    payload              TEXT NOT NULL,      -- reminder text | job prompt, verbatim
+    schedule_kind        TEXT NOT NULL CHECK (schedule_kind IN ('once','cron','interval')),
+    schedule_spec        TEXT NOT NULL,      -- once: ISO-8601; cron: 5-field; interval: seconds
+    timezone             TEXT NOT NULL,      -- IANA zone cron is evaluated in
+    next_run_at          TEXT,               -- UTC ISO; NULL iff not active
+    status               TEXT NOT NULL DEFAULT 'active'
+                         CHECK (status IN ('active','done','cancelled','failed','missed')),
+    created_by           TEXT NOT NULL CHECK (created_by IN ('user','agent')),
+    source_session_id    INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_run_at          TEXT,
+    last_error           TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    CHECK (status = 'active' OR next_run_at IS NULL)   -- terminal states never look due
+);
+
+CREATE INDEX idx_tasks_due ON tasks(next_run_at) WHERE status = 'active';
+
+CREATE TABLE task_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id       INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    scheduled_for TEXT NOT NULL,             -- the fire time this run serviced (UTC ISO)
+    started_at    TEXT,
+    finished_at   TEXT,
+    status        TEXT NOT NULL CHECK (status IN ('running','ok','error','missed','aborted')),
+    session_id    INTEGER REFERENCES sessions(id) ON DELETE SET NULL,  -- job transcript
+    result_text   TEXT,                      -- final text (truncated) / delivery note
+    denied_count  INTEGER NOT NULL DEFAULT 0,-- ASK->DENY / demotion events during the run
+    error         TEXT,
+    cost_usd      REAL,
+    created_at    TEXT NOT NULL
+);
+
+CREATE INDEX idx_task_runs_task ON task_runs(task_id, id);
+
+ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'interactive'
+    CHECK (kind IN ('interactive','task'));
+"""
+
 # (target_version, sql). Append new tuples for future schema changes.
-MIGRATIONS: list[tuple[int, str]] = [(1, _SCHEMA_V1), (2, _SCHEMA_V2)]
+MIGRATIONS: list[tuple[int, str]] = [(1, _SCHEMA_V1), (2, _SCHEMA_V2), (3, _SCHEMA_V3)]
 
 
 async def migrate(db: aiosqlite.Connection) -> int:
