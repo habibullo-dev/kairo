@@ -136,6 +136,14 @@ class TaskService:
             return None
         return await self.store.get(task_id)
 
+    async def seconds_until_next(self) -> float | None:
+        """Seconds until the soonest active task fires (0 if already due), or None
+        if nothing is scheduled — the wake loop's sleep bound."""
+        iso = await self.store.earliest_next_run()
+        if iso is None:
+            return None
+        return max(0.0, (_parse(iso) - self.now()).total_seconds())
+
     # --- firing --------------------------------------------------------------
 
     async def due(self) -> list[Due]:

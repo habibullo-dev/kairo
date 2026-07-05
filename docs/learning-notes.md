@@ -805,3 +805,28 @@ non-obvious *implementation* decisions per task.
   monkeypatches `input` to raise, then asserts the approver still returns DENY —
   proving the safety property structurally, the same way the DB-lock tests prove
   correctness rather than trusting discipline.
+
+## Task 7 — BackgroundRunner + job execution
+
+- **Layering split: the runner owns *when*, the CLI owns *how*.** Running a job
+  needs the AgentLoop (core), but a "service" shouldn't import core. So the
+  BackgroundRunner (scheduler) fires due tasks and takes `run_job` as an opaque
+  callback; the callback — which builds the unattended AgentLoop — lives in
+  `cli/jobs.py`, the one layer that already composes core + services + the gate.
+  The runner stays core-free and its wake loop trivially testable.
+- **The unattended gate is mandatory by construction.** `JobRunner.run` builds the
+  `UnattendedGate` around the interactive gate itself — there is no constructor
+  parameter or code path that runs a job with the raw gate. Safety you can't
+  forget to turn on beats safety you configure.
+- **Reminders and jobs have opposite crash-ordering, on purpose.** A reminder
+  notifies *before* recording (a crash re-delivers — at-least-once, never a
+  dropped reminder); a job opens its `running` row *before* the work (a crash
+  leaves an orphan the sweep aborts — never a silent re-run of possibly-completed
+  side effects). Same system, two correctness goals, two orderings.
+- **`denied_count` sums two independent sources.** The `UnattendedGate` counts
+  ALLOW→DENY demotions and the `HeadlessApprover` counts ASK denials; the run's
+  reported count is their sum. Two mechanisms enforce the unattended contract, so
+  the visible "N denied" must reflect both.
+- **A non-`end_turn` stop is a reported failure, not silence.** A background run
+  that exhausts its iteration budget produces a failure notice and an `error` run
+  row — an unattended agent going quiet is worse than one that says it gave up.

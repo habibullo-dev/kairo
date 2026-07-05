@@ -150,6 +150,15 @@ class TaskStore:
         cursor = await self.db.execute(f"SELECT {_TASK_COLUMNS} FROM tasks {where}ORDER BY id")
         return [_row_to_task(r) for r in await cursor.fetchall()]
 
+    async def earliest_next_run(self) -> str | None:
+        """The soonest fire time among active tasks (UTC ISO), or None if none —
+        lets the wake loop sleep exactly until the next task instead of polling."""
+        cursor = await self.db.execute(
+            "SELECT MIN(next_run_at) FROM tasks WHERE status = 'active' AND next_run_at IS NOT NULL"
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else None
+
     async def due(self, now_iso: str) -> list[Task]:
         """Active tasks whose fire time has arrived and that aren't already running.
 
