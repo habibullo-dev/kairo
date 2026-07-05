@@ -13,8 +13,10 @@ import contextlib
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 
+from jarvis.cli.jobs import JobRunner
 from jarvis.cli.render import ConsoleRenderer
 from jarvis.config import Config
 from jarvis.core import AgentLoop, AnthropicClient
@@ -29,6 +31,9 @@ from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.gate import Decision
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
+from jarvis.scheduler.runner import BackgroundRunner
+from jarvis.scheduler.service import TaskService
+from jarvis.scheduler.store import TaskStore
 from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
 
 
@@ -187,6 +192,9 @@ class Repl:
         session_id: int | None = None,
         memory: MemoryService | None = None,
         context_manager: ContextManager | None = None,
+        tasks: TaskService | None = None,
+        runner: BackgroundRunner | None = None,
+        turn_lock: asyncio.Lock | None = None,
     ) -> None:
         self.config = config
         self.console = console or Console()
@@ -195,9 +203,17 @@ class Repl:
         self.session_id = session_id
         self.memory = memory
         self.context_manager = context_manager
+        self.tasks = tasks
+        self.runner = runner
+        # One lock serializes every model turn — interactive AND background — and
+        # everything that writes to the terminal (see BackgroundRunner). Shared with
+        # the runner when there is one; a private lock keeps a bare Repl usable.
+        self.turn_lock = turn_lock or asyncio.Lock()
 
         self.registry = ToolRegistry()
-        self.registry.discover("jarvis.tools.builtin", ToolContext(config=config, memory=memory))
+        self.registry.discover(
+            "jarvis.tools.builtin", ToolContext(config=config, memory=memory, tasks=tasks)
+        )
         self.executor = ToolExecutor(
             timeout=config.limits.tool_timeout_seconds,
             max_result_chars=config.limits.max_tool_result_chars,
@@ -212,9 +228,12 @@ class Repl:
             gate=self.gate,
             config=config,
             approver=self._approve,
-            system=build_system(memory_enabled=memory is not None),
+            system=build_system(memory_enabled=memory is not None, tasks_enabled=tasks is not None),
             context_manager=context_manager,
             memory=memory,
+            # With scheduling on, the model needs the current date to resolve
+            # relative times ("tomorrow 9am") — it has no clock otherwise.
+            add_time_context=tasks is not None,
         )
 
         self.messages: list[dict] = []
@@ -280,23 +299,76 @@ class Repl:
         self.console.print(
             "[bold cyan]Jarvis[/] — ask me anything. Type [bold]exit[/] or press Ctrl-D to quit.\n"
         )
-        while True:
-            try:
-                user_input = await session.prompt_async("you › ")
-            except (EOFError, KeyboardInterrupt):
-                self.console.print("\nBye.")
-                return
-            user_input = user_input.strip()
-            if not user_input:
-                continue
-            if user_input.lower() in ("exit", "quit"):
-                self.console.print("Bye.")
-                return
-            if user_input.lower() == "memories":
-                await self._show_memories()
-                continue
-            self.messages.append({"role": "user", "content": user_input})
-            await self.run_turn()
+        # patch_stdout routes a background notification printed while the prompt is
+        # idle to *above* the prompt, so it can't corrupt the line being typed.
+        with patch_stdout(raw=True):
+            while True:
+                try:
+                    user_input = await session.prompt_async("you › ")
+                except (EOFError, KeyboardInterrupt):
+                    self.console.print("\nBye.")
+                    return
+                user_input = user_input.strip()
+                if not user_input:
+                    continue
+                if user_input.lower() in ("exit", "quit"):
+                    self.console.print("Bye.")
+                    return
+                if user_input.lower() == "memories":
+                    await self._show_memories()
+                    continue
+                if user_input.lower() == "tasks" or user_input.lower().startswith("tasks "):
+                    await self._show_tasks(user_input[len("tasks") :].strip())
+                    continue
+                self.messages.append({"role": "user", "content": user_input})
+                await self.run_turn()
+                # A just-scheduled task should fire promptly, not wait out the cap.
+                if self.runner is not None:
+                    self.runner.kick()
+
+    async def _show_tasks(self, arg: str) -> None:
+        """`tasks` lists active tasks; `tasks all` includes finished; `tasks <id>`
+        shows one task's run history — so a surprising task is always traceable."""
+        if self.tasks is None:
+            self.console.print("[dim]Scheduling is not enabled.[/]\n")
+            return
+        if arg.isdigit():
+            await self._show_task_runs(int(arg))
+            return
+        include_finished = arg.lower() == "all"
+        items = await self.tasks.store.list(include_finished=include_finished)
+        if not items:
+            self.console.print("[dim]No tasks.[/]\n")
+            return
+        for t in items:
+            line = self.tasks.describe(t)
+            self.console.print(f"[bold]#{t.id}[/] {line} [dim]· by {t.created_by}[/]")
+            if t.last_error:
+                self.console.print(f"    [red]last error:[/] {t.last_error}")
+        self.console.print()
+
+    async def _show_task_runs(self, task_id: int) -> None:
+        task = await self.tasks.store.get(task_id)
+        if task is None:
+            self.console.print(f"[dim]No task #{task_id}.[/]\n")
+            return
+        desc = self.tasks.describe(task)
+        self.console.print(f"[bold]#{task.id}[/] {desc} [dim]· {task.status}[/]")
+        runs = await self.tasks.store.runs_for(task_id)
+        if not runs:
+            self.console.print("    [dim]no runs yet[/]\n")
+            return
+        for r in runs:
+            cost = f" · ${r.cost_usd:.4f}" if r.cost_usd is not None else ""
+            denied = f" · {r.denied_count} denied" if r.denied_count else ""
+            sess = f" · session {r.session_id}" if r.session_id is not None else ""
+            self.console.print(f"    [dim]{r.scheduled_for}[/] {r.status}{cost}{denied}{sess}")
+            if r.result_text:
+                preview = r.result_text.strip().splitlines()[0][:200]
+                self.console.print(f"      {preview}")
+            if r.error:
+                self.console.print(f"      [red]{r.error}[/]")
+        self.console.print()
 
     async def _show_memories(self) -> None:
         """`memories` command: list what Jarvis knows, with provenance (why it
@@ -318,21 +390,29 @@ class Repl:
         self.console.print()
 
     async def run_turn(self) -> None:
-        self.renderer.reset()
-        self.console.print("[bold green]jarvis ›[/] ", end="")
-        task = asyncio.create_task(self.loop.run_turn(self.messages, on_event=self.renderer))
-        try:
-            result = await task
-        except KeyboardInterrupt:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
-                await task
-            self.console.print("\n[yellow]Turn cancelled.[/]\n")
-            return
-        self.messages = result.messages
-        self.usage = self.usage + result.usage
-        await self._persist()
-        self._print_status()
+        # A background job may hold the turn lock; tell the user their message is
+        # queued rather than leaving them staring at a frozen prompt.
+        if self.turn_lock.locked() and self.runner is not None and self.runner.in_flight:
+            self.console.print(
+                f'[dim]background task "{self.runner.in_flight}" running — '
+                "your message is queued…[/]"
+            )
+        async with self.turn_lock:
+            self.renderer.reset()
+            self.console.print("[bold green]jarvis ›[/] ", end="")
+            task = asyncio.create_task(self.loop.run_turn(self.messages, on_event=self.renderer))
+            try:
+                result = await task
+            except KeyboardInterrupt:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
+                    await task
+                self.console.print("\n[yellow]Turn cancelled.[/]\n")
+                return
+            self.messages = result.messages
+            self.usage = self.usage + result.usage
+            await self._persist()
+            self._print_status()
 
     async def _persist(self) -> None:
         if self.store is None or self.session_id is None:
@@ -351,16 +431,32 @@ class Repl:
         self.console.print(f"[dim]session: {tokens:,} tokens · ${cost:.4f}[/]\n")
 
 
+def _build_scheduler(
+    config: Config, db, store: SessionStore, session_id: int
+) -> TaskService | None:
+    """Construct the TaskService on the shared connection + lock, or None if the
+    scheduler is disabled. ``bound_session_id`` makes tool-created tasks carry the
+    interactive session as provenance."""
+    if not config.scheduler.enabled:
+        return None
+    service = TaskService(TaskStore(db, store.lock), config.scheduler)
+    service.bound_session_id = session_id
+    return service
+
+
 async def run_repl(config: Config, *, resume: bool = False, console: Console | None = None) -> None:
-    """Open the database, resume or start a session, wire memory, and run the REPL."""
+    """Open the database, resume or start a session, wire memory + scheduling, run the REPL."""
     console = console or Console()
-    # One shared connection: SessionStore and MemoryStore both use it (see _build_memory).
+    # One shared connection + write lock: SessionStore, MemoryStore and TaskStore all
+    # use them (a second connection would deadlock; a second lock would let writes
+    # interleave inside each other's transactions).
     db = await connect(config.data_dir / "jarvis.db")
     store = SessionStore(db)
     memory: MemoryService | None = None
     utility: AnthropicClient | None = None
     session_id: int | None = None
     reflect_on = False
+    runner: BackgroundRunner | None = None
     try:
         utility = _utility_client(config)
         memory = _build_memory(config, db, console, utility, store.lock)
@@ -384,6 +480,7 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
                     store, memory, utility, config.models.utility, stale_id, console, announce=False
                 )
 
+        tasks = _build_scheduler(config, db, store, session_id)
         repl = Repl(
             config,
             console=console,
@@ -391,12 +488,25 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
             session_id=session_id,
             memory=memory,
             context_manager=context_manager,
+            tasks=tasks,
         )
         repl.messages = history
         if resume and history:
             console.print(f"[dim]Resumed session {session_id} ({len(history)} messages).[/]\n")
+
+        if tasks is not None:
+            runner = _build_runner(config, repl, store, tasks, memory, utility, console)
+            await _scheduler_startup(tasks, runner, console)
+            runner.start()
+
         await repl.run()
     finally:
+        # Stop the wake loop before reflecting/closing. stop() awaits any in-flight
+        # fire, so a background run completes and is recorded (never a torn write).
+        if runner is not None:
+            if runner.in_flight:
+                console.print(f'finishing task "{runner.in_flight}" before exit…', markup=False)
+            await runner.stop()
         # Reflect the current session on exit — but only if it has unreflected content
         # (a resume-and-read with no new turns is already reflected; don't redo it).
         if (
@@ -410,3 +520,46 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
                 store, memory, utility, config.models.utility, session_id, console, announce=True
             )
         await db.close()
+
+
+def _build_runner(
+    config: Config,
+    repl: Repl,
+    store: SessionStore,
+    tasks: TaskService,
+    memory: MemoryService | None,
+    utility: AnthropicClient,
+    console: Console,
+) -> BackgroundRunner:
+    """Wire the BackgroundRunner: it fires due tasks, and delegates job execution to
+    a JobRunner built from the REPL's already-composed collaborators (same registry,
+    executor, gate, client). Both share the REPL's turn lock, so a background run and
+    an interactive turn never overlap."""
+    job_runner = JobRunner(
+        session_store=store,
+        client=repl.client,
+        registry=repl.registry,
+        executor=repl.executor,
+        gate=repl.gate,
+        config=config,
+        memory=memory,
+        make_context_manager=lambda: _build_context_manager(config, utility),
+    )
+
+    def notify(line: str) -> None:
+        # markup off: task titles/payloads are data, not rich markup.
+        console.print(line, markup=False)
+
+    return BackgroundRunner(tasks, notify=notify, run_job=job_runner.run, turn_lock=repl.turn_lock)
+
+
+async def _scheduler_startup(
+    tasks: TaskService, runner: BackgroundRunner, console: Console
+) -> None:
+    """Recover crash orphans, then fire anything already due (catch-up) before the
+    first prompt."""
+    for note in await tasks.sweep_stale_runs():
+        console.print(f"[yellow]{note}[/]", markup=False)
+    handled = await runner.check_due()
+    if handled:
+        console.print(f"[dim]handled {handled} due task(s) on startup — see `tasks`.[/]")

@@ -71,6 +71,7 @@ class BackgroundRunner:
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self.in_flight: str | None = None  # title of a job currently running, for shutdown UX
 
     # --- the testable core ---------------------------------------------------
 
@@ -107,6 +108,7 @@ class BackgroundRunner:
         # Open the running row *before* the work: a crash leaves an orphan the
         # startup sweep aborts, never re-running possibly-completed side effects.
         run_id = await self.service.begin_run(due)
+        self.in_flight = task.title
         try:
             outcome = await self.run_job(task)
         except Exception as exc:  # a job blowing up must not kill the wake loop
@@ -115,6 +117,8 @@ class BackgroundRunner:
             await self.service.complete_run(due, run_id, ok=False, error=detail)
             self.notify(f'✗ job #{task.id} "{task.title}" failed: {detail}')
             return
+        finally:
+            self.in_flight = None
 
         ok = outcome.error is None
         await self.service.complete_run(

@@ -854,3 +854,31 @@ non-obvious *implementation* decisions per task.
   fixes tz=UTC); the tool test asserts only the stable shape ("in the past",
   the year, "future time"). Lesson: anything touching the local clock/zone is an
   environment input — pin it or don't assert on it.
+
+## Task 9 — REPL wiring
+
+- **One lock, shared by construction, serializes the terminal.** run_repl creates
+  the Repl (which owns a turn lock), then hands *that same lock* to the
+  BackgroundRunner. Interactive turns and background fires both take it, so they
+  never overlap and never interleave terminal output — and if a user submits while
+  a job holds it, run_turn prints "your message is queued" instead of freezing.
+- **The JobRunner is built from the REPL's already-composed collaborators.** Rather
+  than re-wire a registry/executor/gate/client for background jobs, the JobRunner
+  borrows the REPL's — they can't run concurrently (the lock), so sharing is safe
+  and guarantees a job sees exactly the same tools and policy as the interactive
+  agent, just behind the UnattendedGate.
+- **`patch_stdout` is what makes unprompted output usable.** A notification fired
+  while the user is mid-keystroke at `you ›` would otherwise splice into the line;
+  wrapping the prompt loop in prompt_toolkit's `patch_stdout(raw=True)` routes it
+  above the prompt. This is the small piece of plumbing that makes "acts without
+  being prompted" not feel broken.
+- **Graceful shutdown waits; the startup sweep covers hard kills.** `runner.stop()`
+  awaits any in-flight fire, so a job completes and is recorded rather than torn
+  mid-write — clean by default. The only way to get an orphaned `running` row is a
+  hard kill, which the startup `sweep_stale_runs` already aborts. Two mechanisms,
+  no gap, no need for a risky mid-run abort path.
+- **The model gets the date only when it can schedule.** `add_time_context` (a new
+  volatile last-line system extra) is on exactly when the scheduler is wired —
+  scheduling relative times is impossible without a clock, but adding it
+  unconditionally would have broken the null-path byte-identity the earlier phases
+  rely on. Gate the new behavior; keep the old path pixel-for-pixel.

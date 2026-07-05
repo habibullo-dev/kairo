@@ -19,6 +19,7 @@ tools execute in parallel.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -45,6 +46,11 @@ def _latest_user_text(messages: list[dict]) -> str | None:
         if message.get("role") == "user" and isinstance(message.get("content"), str):
             return message["content"]
     return None
+
+
+def _default_now() -> _dt.datetime:
+    """Current time as an aware datetime in the machine's local zone."""
+    return _dt.datetime.now().astimezone()
 
 
 # Called when a tool needs human approval; returns the resolved permission.
@@ -77,6 +83,8 @@ class AgentLoop:
         system: str | None = None,
         context_manager: ContextManager | None = None,
         memory: MemoryService | None = None,
+        add_time_context: bool = False,
+        now: Callable[[], _dt.datetime] = _default_now,
     ) -> None:
         self.client = client
         self.registry = registry
@@ -88,12 +96,19 @@ class AgentLoop:
         # Optional Phase-2 collaborators. Both None => byte-identical Phase-1 behavior.
         self.context_manager = context_manager
         self.memory = memory
+        # Phase-3: give the model the current date/time (it has no clock otherwise,
+        # so scheduling relative times is impossible without it). Off by default so
+        # the null path stays byte-identical to earlier phases.
+        self.add_time_context = add_time_context
+        self.now = now
         self.log = get_logger("jarvis.agent")
 
     def _system_with_extras(self, recall_block: str | None, summary: str | None) -> str:
         """Base system prompt plus dynamic extras, ordered stable → volatile
-        (identity/guidance → compaction summary → recalled memories)."""
+        (identity/guidance → compaction summary → recalled memories → current time)."""
         extras = [x for x in (summary, recall_block) if x]
+        if self.add_time_context:
+            extras.append(f"Current date and time: {self.now():%Y-%m-%d %H:%M %Z} (user's local).")
         if not extras:
             return self.system
         return self.system + "\n\n" + "\n\n".join(extras)
