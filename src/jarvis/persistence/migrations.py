@@ -30,8 +30,39 @@ CREATE TABLE messages (
 CREATE INDEX idx_messages_session ON messages(session_id, seq);
 """
 
+# Phase 2: long-term memory + compaction bookkeeping on sessions.
+_SCHEMA_V2 = """
+CREATE TABLE memories (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    type              TEXT NOT NULL CHECK (type IN ('fact','preference','project','episode')),
+    content           TEXT NOT NULL,
+    embedding         BLOB NOT NULL,        -- float32[dim] unit vector (little-endian)
+    embedding_model   TEXT NOT NULL,        -- never silently mix vector spaces
+    source            TEXT NOT NULL,        -- 'user' | 'agent' | 'reflection'
+    status            TEXT NOT NULL DEFAULT 'live'
+                      CHECK (status IN ('live','superseded','forgotten')),
+    superseded_by     INTEGER REFERENCES memories(id),
+    source_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    source_seq_start  INTEGER,
+    source_seq_end    INTEGER,
+    evidence_summary  TEXT,
+    confidence        REAL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    last_accessed_at  TEXT,
+    access_count      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_memories_live ON memories(status) WHERE status = 'live';
+CREATE INDEX idx_memories_type ON memories(type);
+
+ALTER TABLE sessions ADD COLUMN reflected_at TEXT;
+ALTER TABLE sessions ADD COLUMN compaction_summary TEXT;
+ALTER TABLE sessions ADD COLUMN compaction_cut INTEGER;
+"""
+
 # (target_version, sql). Append new tuples for future schema changes.
-MIGRATIONS: list[tuple[int, str]] = [(1, _SCHEMA_V1)]
+MIGRATIONS: list[tuple[int, str]] = [(1, _SCHEMA_V1), (2, _SCHEMA_V2)]
 
 
 async def migrate(db: aiosqlite.Connection) -> int:

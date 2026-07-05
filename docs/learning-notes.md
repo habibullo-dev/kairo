@@ -405,3 +405,31 @@ non-obvious *implementation* decisions per task.
   Cosine cutoffs are embedding-model-specific and will be tuned from real recall
   logs; hard-coding them would mean a code edit + redeploy to retune. They ship in
   `settings.yaml` with comments so the knobs are discoverable.
+
+## P2 Task 2 — Schema v2 + MemoryStore
+
+- **Store unit-normalized vectors so cosine collapses to a dot product.** Instead
+  of computing `dot(a,b)/(‖a‖‖b‖)` per row at query time, normalize once at write.
+  Then `search` is a single `matrix @ query` matmul over the live embeddings — the
+  norms are all 1, so the dot product *is* the cosine. Cheap, and it forces the
+  zero-vector guard (`norm > 0`) into exactly one place.
+- **`float32` BLOB round-trip is `tobytes()` / `frombuffer(..., float32)`.** The
+  test pins that a `[3,4,0]` input comes back as the unit `[0.6,0.8,0]` at float32
+  precision — because a silent dtype or endianness mismatch would corrupt every
+  similarity score with no error, just quietly wrong recall.
+- **`search` filters by `embedding_model`, not just vector dimension.** Two models
+  can share a dimension but live in incompatible vector spaces; comparing across
+  them yields meaningless cosines. The column + the `WHERE embedding_model=?`
+  filter mean switching embedders later degrades to "no matches from the old
+  space" rather than "subtly wrong matches."
+- **Three states, and only `DELETE` is forbidden.** `live` → recallable;
+  `supersede` marks the loser `superseded` + records `superseded_by` (lineage);
+  `forget` marks `forgotten`. Recall/search filter to `live`, but `get(id)` returns
+  *any* status — so "what did I forget?" and "what did this replace?" always have
+  answers. `forget` returns a bool (rowcount-based) so it's idempotent: forgetting
+  an already-forgotten memory is a no-op, not an error.
+- **The migration test simulates a real upgrade, not a fresh v2 db.** It hand-builds
+  a v1 schema, sets `user_version=1`, inserts a session + message, *then* runs
+  `migrate()` — proving the v1→v2 step preserves existing data and adds the new
+  columns/table. A test that just opened a fresh (already-v2) db would never
+  exercise the `ALTER TABLE`s on populated data.

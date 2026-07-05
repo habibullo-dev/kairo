@@ -38,7 +38,7 @@ async def test_migrations_set_user_version(tmp_path: Path) -> None:
     cursor = await db.execute("PRAGMA user_version")
     (version,) = await cursor.fetchone()
     await db.close()
-    assert version == 1
+    assert version == 2
 
 
 async def test_create_and_latest_session(tmp_path: Path) -> None:
