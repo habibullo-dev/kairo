@@ -21,9 +21,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from jarvis.config import Config
 from jarvis.core.client import LLMClient, ToolCall
+from jarvis.core.context import ContextManager
 from jarvis.core.events import Event, TextDelta, ToolFinished, ToolStarted, TurnCompleted
 from jarvis.core.prompts import build_system
 from jarvis.observability import bind_trace, get_logger
@@ -32,6 +34,18 @@ from jarvis.permissions.gate import Decision, PermissionGate
 from jarvis.tools.base import Permission
 from jarvis.tools.executor import ToolExecutor
 from jarvis.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from jarvis.memory.service import MemoryService
+
+
+def _latest_user_text(messages: list[dict]) -> str | None:
+    """The most recent plain-text user message (what auto-recall queries on)."""
+    for message in reversed(messages):
+        if message.get("role") == "user" and isinstance(message.get("content"), str):
+            return message["content"]
+    return None
+
 
 # Called when a tool needs human approval; returns the resolved permission.
 Approver = Callable[[ToolCall, Decision], Awaitable[Permission]]
@@ -61,6 +75,8 @@ class AgentLoop:
         config: Config,
         approver: Approver | None = None,
         system: str | None = None,
+        context_manager: ContextManager | None = None,
+        memory: MemoryService | None = None,
     ) -> None:
         self.client = client
         self.registry = registry
@@ -69,7 +85,24 @@ class AgentLoop:
         self.config = config
         self.approver = approver
         self.system = system if system is not None else build_system()
+        # Optional Phase-2 collaborators. Both None => byte-identical Phase-1 behavior.
+        self.context_manager = context_manager
+        self.memory = memory
         self.log = get_logger("jarvis.agent")
+
+    def _system_with_extras(self, recall_block: str | None, summary: str | None) -> str:
+        """Base system prompt plus dynamic extras, ordered stable → volatile
+        (identity/guidance → compaction summary → recalled memories)."""
+        extras = [x for x in (summary, recall_block) if x]
+        if not extras:
+            return self.system
+        return self.system + "\n\n" + "\n\n".join(extras)
+
+    async def _recall_block(self, messages: list[dict]) -> str | None:
+        if self.memory is None:
+            return None
+        text = _latest_user_text(messages)
+        return await self.memory.auto_recall_context(text) if text else None
 
     async def run_turn(
         self,
@@ -88,16 +121,37 @@ class AgentLoop:
 
         self.log.info("turn_start", trace_id=trace_id, model=self.config.models.main)
 
+        # Auto-recall runs once per turn, on the new user message (not per iteration).
+        recall_block = await self._recall_block(messages)
+
         for iteration in range(limits.max_iterations):
+            # Compact the *view* sent to the API; `messages` (full history) is untouched.
+            view = self.context_manager.view(messages) if self.context_manager else None
+            if view is not None and view.overflow:
+                emit(TurnCompleted(text="", stop_reason="max_context"))
+                self.log.warning("turn_end", stop_reason="max_context", iterations=iteration)
+                return TurnResult("", messages, "max_context", total, iteration)
+            api_messages = view.messages if view is not None else messages
+            if view is not None and (view.cut or view.elided):
+                self.log.info(
+                    "context_compacted",
+                    cut=view.cut,
+                    elided=view.elided,
+                    sent_messages=len(api_messages),
+                    full_messages=len(messages),
+                )
+
             response = await self.client.create(
                 model=self.config.models.main,
-                system=self.system,
-                messages=messages,
+                system=self._system_with_extras(recall_block, summary=None),
+                messages=api_messages,
                 tools=self.registry.specs(),
                 max_tokens=limits.max_output_tokens,
                 on_text_delta=lambda t: emit(TextDelta(t)),
             )
             total = total + response.usage
+            if self.context_manager is not None:
+                self.context_manager.observe(response.usage)
             self.log.info(
                 "model_call",
                 iteration=iteration,

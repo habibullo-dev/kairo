@@ -528,3 +528,40 @@ non-obvious *implementation* decisions per task.
   with provenance (type · source · confidence · why) instead of sending a message to
   the model. Memory you can't inspect is memory you can't trust; making formation
   *and* contents visible is the point.
+
+## P2 Task 6 — ContextManager (views)
+
+- **The validity property test was written before the loop was touched** (a
+  non-negotiable), and it's the load-bearing test of the whole phase: for a matrix
+  of conversation sizes × budgets, whatever cut/elision the manager picks, assert
+  the view (i) starts at a real user turn, (ii) has every `tool_use` id answered by
+  exactly one following `tool_result`, and (iii) is byte-identical to `full[cut:]`
+  except elided `tool_result` bodies. Compaction bugs are Anthropic-4xx-at-runtime
+  bugs; this converts them into fast unit failures.
+- **The full history is the source of truth; the view is derived per request.** The
+  loop appends to `messages` (full) and returns that in `TurnResult`; only
+  `context_manager.view(messages).messages` goes to the API. A test pins that the
+  client saw a *shorter* list than the one persisted. This is why a bad summary can
+  never corrupt history — the manager never writes back.
+- **Estimate the whole current list (chars/4), floored by the last real
+  `input_tokens`.** The naive "reuse last input_tokens" undercounts exactly when a
+  turn is exploding (it excludes the output + tool results appended since). Summing
+  chars/4 over all *current* messages counts everything present now, and over-counts
+  replayed thinking the server strips — erring early is the safe direction. The
+  observed-usage floor (`input + cache_creation + cache_read`) catches chars/4
+  under-estimating token-dense JSON. Works with zero usage too, which is the
+  `--resume` case (compact before the first call of a resumed session).
+- **The cut must land on a real user turn, chosen by token weight.** Walk the
+  user-boundary indices and take the *earliest* whose suffix fits the keep target —
+  the largest tail that fits. Snapping to a boundary guarantees a `tool_use` is
+  never separated from its `tool_result`, and dropping only whole messages is
+  API-legal (editing a replayed *assistant* block is not).
+- **Mid-turn overflow has a real escape hatch: elide, don't crash.** A single turn
+  (many tool iterations) can exceed the budget with no boundary to cut at. Then the
+  manager shrinks the *bodies* of the oldest `tool_result` blocks — unsigned
+  user-role data, safe to edit — preserving `tool_use_id`s and structure. Only if
+  even that can't fit does it report `overflow`, and the loop ends the turn with a
+  synthetic `max_context` stop instead of sending a request the API will reject.
+- **Optional collaborators keep the null path exact.** `context_manager` and
+  `memory` default to None; a test asserts that with both None the client receives
+  the full messages and the base system verbatim — Phase 1 behavior, unchanged.

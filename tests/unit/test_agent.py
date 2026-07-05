@@ -74,7 +74,14 @@ def make_config(**limit_overrides: object) -> Config:
     )
 
 
-def build_loop(responses: list, *, approver=None, config: Config | None = None) -> AgentLoop:
+def build_loop(
+    responses: list,
+    *,
+    approver=None,
+    config: Config | None = None,
+    context_manager=None,
+    memory=None,
+) -> AgentLoop:
     reg = ToolRegistry()
     reg.register(EchoTool())
     reg.register(DangerTool())
@@ -86,6 +93,8 @@ def build_loop(responses: list, *, approver=None, config: Config | None = None) 
         gate=PermissionGate(Policy(), Path.cwd()),
         config=config or make_config(),
         approver=approver,
+        context_manager=context_manager,
+        memory=memory,
     )
 
 
@@ -321,3 +330,74 @@ async def test_audit_events_logged() -> None:
         "turn_end",
     }
     assert expected <= names
+
+
+# --- Phase 2: context manager + memory integration (optional collaborators) ---
+
+
+def _long_history(n_turns: int) -> list[dict]:
+    """A long but simple alternating conversation (every user msg is a real boundary)."""
+    msgs: list[dict] = []
+    for i in range(n_turns):
+        msgs.append({"role": "user", "content": f"message {i} " + "x" * 200})
+        msgs.append({"role": "assistant", "content": [{"type": "text", "text": "ok " + "y" * 200}]})
+    return msgs
+
+
+async def test_null_path_sends_full_messages_unchanged() -> None:
+    # No context_manager, no memory => byte-identical Phase-1 behavior.
+    loop = build_loop([text_message("ok")])
+    await loop.run_turn(user("hi"))
+    assert loop.client.calls[0]["messages"] == [{"role": "user", "content": "hi"}]
+    assert loop.client.calls[0]["system"] == loop.system
+
+
+async def test_compaction_sends_view_but_persists_full_history() -> None:
+    from jarvis.core.context import ContextManager
+
+    history = _long_history(30)
+    history.append({"role": "user", "content": "the final question"})
+    cm = ContextManager(context_token_budget=2000, compaction_threshold=0.7, keep_fraction=0.5)
+    loop = build_loop([text_message("answer")], context_manager=cm)
+
+    result = await loop.run_turn(history)
+
+    sent = loop.client.calls[0]["messages"]
+    assert len(sent) < len(result.messages)  # the API saw a compacted view...
+    assert sent[0]["role"] == "user"  # ...that still starts at a real user turn
+    # ...while the full history is preserved for persistence (history + 1 assistant).
+    assert len(result.messages) == len(history) + 1
+    assert result.messages[: len(history)] == history
+
+
+async def test_context_overflow_stops_turn_without_calling_model() -> None:
+    from jarvis.core.context import ContextManager
+
+    # One giant user message: no boundary to cut, no tool_result to elide.
+    huge = [{"role": "user", "content": "x" * 400_000}]
+    cm = ContextManager(context_token_budget=2000, compaction_threshold=0.7)
+    loop = build_loop([text_message("unreached")], context_manager=cm)
+
+    result = await loop.run_turn(huge)
+    assert result.stop_reason == "max_context"
+    assert len(loop.client.calls) == 0  # never sent a doomed request
+
+
+async def test_auto_recall_injected_into_system_prompt() -> None:
+    class FakeMemory:
+        async def auto_recall_context(self, text: str) -> str:
+            return "MEMORY-BLOCK: the user prefers neovim"
+
+    loop = build_loop([text_message("ok")], memory=FakeMemory())
+    await loop.run_turn(user("what editor do I use?"))
+    assert "MEMORY-BLOCK" in loop.client.calls[0]["system"]
+
+
+async def test_no_recall_block_leaves_system_unchanged() -> None:
+    class NoneMemory:
+        async def auto_recall_context(self, text: str) -> None:
+            return None
+
+    loop = build_loop([text_message("ok")], memory=NoneMemory())
+    await loop.run_turn(user("hi"))
+    assert loop.client.calls[0]["system"] == loop.system

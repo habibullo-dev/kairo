@@ -65,5 +65,7 @@ class ConsoleRenderer:
             self._end_text()
             if event.stop_reason == "max_iterations":
                 self.console.print("[yellow]Stopped: reached the max tool-iteration guard.[/]")
+            elif event.stop_reason == "max_context":
+                self.console.print("[yellow]Stopped: conversation exceeds the context window.[/]")
             elif event.stop_reason == "refusal":
                 self.console.print("[yellow]The model declined to respond.[/]")
