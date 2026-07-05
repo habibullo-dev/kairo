@@ -1,0 +1,14 @@
+name: unattended_job_readonly
+description: A due background job reads a file and reports the number, unattended.
+needs_scheduler: true
+setup:
+  files:
+    notes.txt: "Weekly status: on track. The key figure this week is 42 widgets shipped."
+background_tasks:
+  - kind: job
+    title: weekly number
+    payload: "Read notes.txt in the current directory and report the single key number in it."
+checks:
+  - type: task_run_matches
+    status: ok
+    result_pattern: "42"

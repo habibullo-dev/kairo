@@ -1,8 +1,9 @@
-# Architecture (as built — Phase 2)
+# Architecture (as built — Phase 3)
 
-This describes what exists after Milestone 2 (long-term memory) on top of the
-Milestone 1 MVP. For the forward-looking plans see [`PLAN.md`](PLAN.md) and
-[`PLAN-2-memory.md`](PLAN-2-memory.md); for the reasoning behind each decision see
+This describes what exists after Milestone 3 (tasks & scheduling) on top of the
+Milestone 1 MVP and Milestone 2 (long-term memory). For the forward-looking plans
+see [`PLAN.md`](PLAN.md), [`PLAN-2-memory.md`](PLAN-2-memory.md), and
+[`PLAN-3-tasks.md`](PLAN-3-tasks.md); for the reasoning behind each decision see
 [`learning-notes.md`](learning-notes.md).
 
 ## The one idea
@@ -23,6 +24,7 @@ interfaces → core → services → foundation
 ┌─ interfaces ─────────────────────────────────────────────┐
 │ cli/repl.py      drives a turn, prompts approvals, status │
 │ cli/render.py    events → rich (panels, streaming text)   │
+│ cli/jobs.py      JobRunner — runs a job as one headless turn│
 ├─ core ───────────────────────────────────────────────────┤
 │ core/agent.py    AgentLoop.run_turn — the while-loop      │
 │ core/context.py  ContextManager — compaction (view+summary)│
@@ -32,10 +34,12 @@ interfaces → core → services → foundation
 │ core/events.py   typed events the loop emits              │
 ├─ services ───────────────────────────────────────────────┤
 │ tools/           Tool base, registry, executor, builtin/  │
-│ permissions/     policy + PermissionGate (allow/ask/deny) │
+│ permissions/     policy + PermissionGate + UnattendedGate │
 │ memory/          store · embeddings · service · reflection│
+│ scheduler/       store · triggers · service · runner      │
 ├─ foundation ─────────────────────────────────────────────┤
-│ persistence/     SQLite sessions/messages/memories + migr.│
+│ persistence/     SQLite sessions/messages/memories/tasks  │
+│                  + migrations + shared write lock         │
 │ observability/   structlog audit log + cost accounting    │
 │ config.py        settings (yaml) + secrets (.env)         │
 │ paths.py         unified path resolution + secret floor   │
@@ -45,7 +49,10 @@ interfaces → core → services → foundation
 Interfaces depend on core; core depends on services; everything may use the
 foundation. Nothing lower reaches up. This is why the REPL is thin (~an event
 consumer + an approval prompt) and a future web UI is cheap: swap the interface,
-keep the loop.
+keep the loop. Phase 3 keeps the direction honest: the `scheduler/` runner fires
+due tasks but takes job *execution* as an injected callback, so it never imports
+core; the callback that builds the unattended `AgentLoop` (`cli/jobs.py`) lives in
+the interface layer, where core + services are already composed.
 
 ## The agent loop (`core/agent.py`)
 
@@ -107,7 +114,16 @@ or redirect; a tool-level `deny` is absolute. The gate and the filesystem tools
 resolve paths through the *same* `resolve_path` (against the workspace root), so a
 decision and the action it authorizes always name the same file. The gate only
 decides — the interface prompts the human and the loop runs the tool. "Always allow"
-persists the narrowest rule, and refuses to persist an over-broad write directory.
+persists the narrowest rule, and refuses to persist an over-broad write directory
+(and refuses entirely for `schedule_task`/`cancel_task` — never silence-able).
+
+For unattended background runs, `UnattendedGate` wraps the gate: every `ask` becomes
+a `deny` (a `HeadlessApprover` that never touches stdin), interactive `allow`s for
+`run_shell`/`write_file` are demoted to `deny` unless explicitly opted in, and the
+state-mutating meta tools (`schedule_task`/`cancel_task`/`remember`/`forget`) are
+hard-denied regardless of policy. The key insight ([ADR-0003](decisions/0003-unattended-runs-deny-and-demote.md)):
+the real escalation channel is a policy `allow` resolved *before* any approver runs,
+not an `ask` — so deny-the-ask alone is insufficient; the demotion is what closes it.
 
 ## Memory (`memory/`) — Phase 2
 
@@ -127,17 +143,41 @@ can't be laundered into permanent memory (see [ADR-0002](decisions/0002-reflecti
 Memory is optional: no `VOYAGE_API_KEY` ⇒ the tools aren't registered and the loop
 runs exactly as in Phase 1.
 
+## Scheduling (`scheduler/`) — Phase 3
+
+Lets the agent act without being prompted. `TaskStore` persists `tasks` (kind
+reminder|job, a schedule, provenance, a lifecycle status) and `task_runs` (per-
+execution history) — two deliberately-split status machines, nothing ever deleted.
+`triggers.py` is the only APScheduler user: pure `validate` / `compute_next` over
+its cron/interval/date triggers (we take the hard timezone/DST math, not its
+scheduler — SQLite is the single source of truth). `TaskService` owns the semantics
+on an **injected clock** (so the whole lifecycle unit-tests without sleeping): first-
+fire computation, due classification (fire / fire-late / missed within a grace
+window), advancement from the *scheduled* time (no interval drift), a consecutive-
+failure cap, and a startup sweep that aborts crash-orphaned runs without re-running
+them. `BackgroundRunner` is a ~40-line asyncio wake loop that fires due tasks under
+the shared **turn lock** (so background and interactive turns never overlap);
+reminders notify-then-record (at-least-once), jobs open their run row first (crash-
+detectable). A **job** runs as one unattended `AgentLoop` turn in a fresh
+`kind='task'` session behind the [ADR-0003](decisions/0003-unattended-runs-deny-and-demote.md)
+gate. Optional: `scheduler.enabled: false` ⇒ no task tools, and the loop is
+byte-identical to Phase 2.
+
 ## Persistence (`persistence/`)
 
-SQLite via aiosqlite. `sessions` + `messages` + `memories` tables; schema version
-tracked by `PRAGMA user_version` with an ordered migration list (v2 adds memory +
-per-session compaction/reflection bookkeeping). The model is stateless — the whole
-conversation lives here and is reconstructed each call. Message content is stored as
-JSON verbatim (thinking-block signatures survive, so a resumed session replays to
-the API unchanged). Saved per turn; `--resume` loads the most recent (and its frozen
-compaction summary). Memories are never deleted — `supersede`/`forget` mark status,
-so recall filters to `live` while lineage stays auditable. `MemoryStore` shares the
-one connection with `SessionStore` (a second connection would deadlock on writes).
+SQLite via aiosqlite. `sessions` + `messages` + `memories` + `tasks`/`task_runs`
+tables; schema version tracked by `PRAGMA user_version` with an ordered migration
+list (v2 adds memory + compaction/reflection bookkeeping; v3 adds tasks + a
+`sessions.kind` marker). The model is stateless — the whole conversation lives here
+and is reconstructed each call. Message content is stored as JSON verbatim (thinking-
+block signatures survive, so a resumed session replays to the API unchanged). Saved
+per turn; `--resume` loads the most recent **interactive** session (a background
+job's `kind='task'` session never wins, and is excluded from reflection by default —
+one column that stops a job transcript hijacking the session or poisoning memory).
+Memories/tasks are never deleted — status flips keep lineage auditable. All stores
+share **one connection and one write lock**: a second connection would deadlock, and
+multi-statement writes go through a `transaction()` helper (`BEGIN IMMEDIATE` under
+the lock) so Phase 3's first real write concurrency can't tear a session's history.
 
 ## Observability (`observability/`)
 

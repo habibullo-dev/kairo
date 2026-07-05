@@ -16,14 +16,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import datetime as dt
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
 
 import yaml
 
+from jarvis.cli.jobs import JobRunner
 from jarvis.config import ConfigError, load_config
 from jarvis.core import AgentLoop, AnthropicClient, ToolCall
 from jarvis.core.context import ContextManager
@@ -32,10 +35,45 @@ from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder
 from jarvis.observability.cost import cost_of
 from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.gate import Decision
+from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
+from jarvis.scheduler.runner import BackgroundRunner
+from jarvis.scheduler.service import TaskService
+from jarvis.scheduler.store import TaskStore
 from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
 
 SCENARIOS_DIR = Path(__file__).parent / "scenarios"
+
+
+async def _seed_tasks(store: TaskStore, specs: list[dict]) -> None:
+    """Insert scenario ``background_tasks`` directly (bypassing the past-time guard),
+    defaulting to a fire time 30s ago so they're due-within-grace on ``check_due``."""
+    due = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=30)).isoformat()
+    for spec in specs:
+        await store.add(
+            kind=spec["kind"],
+            title=spec.get("title", "seeded task"),
+            payload=spec["payload"],
+            schedule_kind=spec.get("schedule_kind", "once"),
+            schedule_spec=spec.get("schedule_spec", due),
+            timezone=spec.get("timezone", "UTC"),
+            next_run_at=spec.get("next_run_at", due),
+            created_by=spec.get("created_by", "user"),
+        )
+
+
+def _query(db_path: Path, sql: str) -> list[tuple]:
+    """Read rows from the run's db with a plain sync connection (the async one is
+    closed before checks run). Missing file/table => no rows."""
+    if not db_path.exists():
+        return []
+    conn = sqlite3.connect(db_path)
+    try:
+        return list(conn.execute(sql))
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
 
 
 def _force_utf8() -> None:
@@ -59,9 +97,38 @@ def make_approver(deny_tools: list[str]):
 
 def evaluate(checks: list[dict], workdir: Path, answer: str, called: list[str]) -> list[str]:
     """Return a list of failure descriptions (empty == all checks passed)."""
+    db_path = workdir / "jarvis.db"
     failures: list[str] = []
     for check in checks:
         kind = check["type"]
+        if kind == "task_matches":
+            rows = _query(db_path, "SELECT kind, status, payload FROM tasks")
+            pat = check.get("payload_pattern")
+            hits = [
+                r
+                for r in rows
+                if check.get("kind") in (None, r[0])
+                and check.get("status") in (None, r[1])
+                and (pat is None or re.search(pat, r[2]))
+            ]
+            if len(hits) < check.get("min_count", 1):
+                failures.append(f"expected a task matching {check} (tasks: {rows})")
+            continue
+        if kind == "task_run_matches":
+            rows = _query(db_path, "SELECT status, result_text, denied_count FROM task_runs")
+            hits = [
+                r
+                for r in rows
+                if check.get("status") in (None, r[0])
+                and (
+                    check.get("result_pattern") is None
+                    or (r[1] and re.search(check["result_pattern"], r[1]))
+                )
+                and (r[2] or 0) >= check.get("min_denied", 0)
+            ]
+            if not hits:
+                failures.append(f"expected a task run matching {check} (runs: {rows})")
+            continue
         if kind == "file_exists":
             if not (workdir / check["path"]).exists():
                 failures.append(f"expected file {check['path']} to exist")
@@ -88,9 +155,12 @@ def evaluate(checks: list[dict], workdir: Path, answer: str, called: list[str]) 
 
 
 def _scenario_turns(scenario: dict) -> list[str]:
-    """A scenario is either a single ``prompt`` or a list of ``turns`` (each a fresh
-    session — new message history — sharing long-term memory, for cross-session tests)."""
-    return scenario.get("turns") or [scenario["prompt"]]
+    """A scenario is a single ``prompt``, a list of ``turns`` (each a fresh session —
+    new history — sharing long-term memory, for cross-session tests), or neither (a
+    pure background-task scenario driven only by ``check_due``)."""
+    if scenario.get("turns"):
+        return scenario["turns"]
+    return [scenario["prompt"]] if scenario.get("prompt") else []
 
 
 async def run_once(config, scenario: dict) -> tuple[list[str], float, str]:
@@ -116,8 +186,18 @@ async def run_once(config, scenario: dict) -> tuple[list[str], float, str]:
             utility_model=run_config.models.utility,
         )
 
+    # Scheduler (Phase 3): sessions + tasks share one connection + lock, as in prod.
+    tasks: TaskService | None = None
+    session_store: SessionStore | None = None
+    if scenario.get("needs_scheduler"):
+        session_store = SessionStore(await connect(workdir / "jarvis.db"))
+        tasks = TaskService(TaskStore(session_store.db, session_store.lock), run_config.scheduler)
+        await _seed_tasks(tasks.store, scenario.get("background_tasks", []))
+
     registry = ToolRegistry()
-    registry.discover("jarvis.tools.builtin", ToolContext(config=run_config, memory=memory))
+    registry.discover(
+        "jarvis.tools.builtin", ToolContext(config=run_config, memory=memory, tasks=tasks)
+    )
     executor = ToolExecutor(
         timeout=run_config.limits.tool_timeout_seconds,
         max_result_chars=run_config.limits.max_tool_result_chars,
@@ -132,6 +212,7 @@ async def run_once(config, scenario: dict) -> tuple[list[str], float, str]:
         approver=make_approver(scenario.get("deny_tools", [])),
         context_manager=ContextManager(summarizer=utility, utility_model=run_config.models.utility),
         memory=memory,
+        add_time_context=tasks is not None,
     )
 
     called: list[str] = []
@@ -150,8 +231,33 @@ async def run_once(config, scenario: dict) -> tuple[list[str], float, str]:
             result = await loop.run_turn([{"role": "user", "content": turn}], on_event=on_event)
             cost += cost_of(run_config.models.main, result.usage)
             answer = result.text
+        # Fire any due background tasks unattended (seeded jobs, or ones just
+        # scheduled by the model) — the real BackgroundRunner + JobRunner path.
+        if tasks is not None:
+            job_runner = JobRunner(
+                session_store=session_store,
+                client=AnthropicClient.from_config(run_config),
+                registry=registry,
+                executor=executor,
+                gate=gate,
+                config=run_config,
+                memory=memory,
+                make_context_manager=lambda: ContextManager(
+                    summarizer=utility, utility_model=run_config.models.utility
+                ),
+            )
+            runner = BackgroundRunner(
+                tasks, notify=lambda _l: None, run_job=job_runner.run, turn_lock=asyncio.Lock()
+            )
+            await runner.check_due()
     finally:
         os.chdir(cwd)
+
+    if session_store is not None:
+        # add background-run cost, then close so the sync checks can read the db
+        for (run_cost,) in _query(workdir / "jarvis.db", "SELECT cost_usd FROM task_runs"):
+            cost += run_cost or 0.0
+        await session_store.close()
 
     failures = evaluate(scenario.get("checks", []), workdir, answer, called)
     return failures, cost, answer

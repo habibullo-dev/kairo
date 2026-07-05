@@ -1,0 +1,11 @@
+name: schedule_via_tool
+description: The model schedules a recurring reminder via schedule_task (approved).
+needs_scheduler: true
+prompt: "Please remind me to stretch every hour."
+checks:
+  - type: tool_called
+    name: schedule_task
+  - type: task_matches
+    kind: reminder
+    status: active
+    min_count: 1

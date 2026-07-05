@@ -14,19 +14,25 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
-**Phase 2 (long-term memory) — complete.** On top of the Phase 1 MVP, Jarvis now
-has durable memory: it remembers facts and preferences across sessions (embeddings
-recall + a `remember`/`recall`/`forget` toolset), automatically surfaces relevant
-memories as background context, compacts long conversations to stay within the
-context window, and distills durable facts from each session on exit. Design and
-rationale are in [`docs/PLAN-2-memory.md`](docs/PLAN-2-memory.md).
+**Phase 3 (tasks & scheduling) — complete.** Jarvis can now act without being
+prompted: schedule **reminders** (delivered to you at a time) and **jobs** (a
+stored prompt it runs itself, unattended, on a once / cron / interval schedule)
+with a `schedule_task` / `list_tasks` / `cancel_task` toolset and a `tasks` REPL
+command. A background wake-loop fires due tasks in-process; missed tasks are caught
+up (within a grace window) on the next start. Unattended runs are deliberately
+constrained — see the safety model below and [ADR-0003](docs/decisions/0003-unattended-runs-deny-and-demote.md).
+Design and rationale are in [`docs/PLAN-3-tasks.md`](docs/PLAN-3-tasks.md).
+
+**Phase 2 (long-term memory) — complete.** Durable memory across sessions
+(embeddings recall + a `remember`/`recall`/`forget` toolset), automatic background
+recall, conversation compaction, and end-of-session reflection. Design in
+[`docs/PLAN-2-memory.md`](docs/PLAN-2-memory.md).
 
 **Phase 1 (MVP) — complete.** A streaming terminal assistant that plans, calls
 tools (asking approval for risky ones), remembers a conversation across restarts,
 and reports what it did with sources. Verified end-to-end by a live smoke-eval
-suite. Later phases (tasks/scheduling, research + a Markdown knowledge base,
-evaluation harness, multi-agent, voice, web UI) are laid out in
-[`docs/PLAN.md`](docs/PLAN.md) §2.
+suite. Later phases (research + a Markdown knowledge base, evaluation harness,
+multi-agent, voice, web UI) are laid out in [`docs/PLAN.md`](docs/PLAN.md) §2.
 
 ## Requirements
 
@@ -66,7 +72,16 @@ uv run python tests/evals/runner.py --runs 1 # quick single pass
 In the REPL: type a request; watch Jarvis stream its reasoning and tool calls.
 Risky tools prompt for approval (`y` / `N` / `a`lways). `Ctrl+C` cancels the
 current turn without quitting; `exit` or `Ctrl+D` quits. Type `memories` to list
-what Jarvis has remembered (with provenance — where each memory came from).
+what Jarvis has remembered (with provenance — where each memory came from), and
+`tasks` (or `tasks all` / `tasks <id>`) to see scheduled tasks and their run
+history.
+
+**Tasks & scheduling:** ask Jarvis to "remind me to stretch in 20 minutes" or
+"every weekday at 9am, summarize my notes.txt" — it schedules a reminder or an
+unattended job (you approve the schedule, and the prompt shows the full payload
+plus the computed local fire time). Reminders are delivered as a line at the
+prompt; jobs run themselves in the background and report a result. Set
+`scheduler.enabled: false` in `settings.yaml` to turn it off.
 
 **Long-term memory** (needs `VOYAGE_API_KEY`): tell Jarvis something worth keeping
 and it asks before saving it; on exit it reflects over the session and stores
@@ -107,6 +122,17 @@ audit log at `logs/jarvis-YYYY-MM-DD.jsonl`, correlated by a per-turn `trace_id`
   reflection — which forms most memories — strips tool-result bodies before the
   extractor sees them and only keeps facts the *user* stated, so untrusted fetched
   content can't be laundered into permanent memory ([ADR-0002](docs/decisions/0002-reflection-writes-bypass-the-gate.md)).
+- **Scheduling a task asks, and can never be "always"-allowed.** `schedule_task` is
+  a deferred-execution sink (the payload later runs with tools), so the approval
+  prompt shows the full untruncated payload and the computed local fire time, and
+  the "always" shortcut is refused for it.
+- **Unattended jobs run under a stricter gate** ([ADR-0003](docs/decisions/0003-unattended-runs-deny-and-demote.md)):
+  with no human to prompt, every `ask` becomes a `deny`; and — because it's the real
+  escalation channel — an interactive "always allow" for `run_shell` / `write_file`
+  does *not* extend to background runs (opt in explicitly via
+  `scheduler.unattended_allow_tools`). Memory/scheduling meta-tools are hard-denied,
+  so a job can't schedule more jobs or write memory on its own. Background sessions
+  are marked `kind='task'`, so they never hijack `--resume` or feed reflection.
 - **Tool failures, denials, and unknown tools become results the model reads** and
   recovers from — they never crash the session.
 
@@ -122,16 +148,17 @@ thinking, and high effort — API cost is treated as observability, not a constr
 
 ```
 src/jarvis/
-  cli/          REPL + rich rendering
+  cli/          REPL + rich rendering + background job execution (jobs.py)
   core/         agent loop, context/compaction, model clients, prompts, events
-  tools/        Tool base, registry, executor, builtin/ (filesystem, shell, web, memory)
-  permissions/  policy + gate
+  tools/        Tool base, registry, executor, builtin/ (filesystem, shell, web, memory, tasks)
+  permissions/  policy + gate + unattended gate (headless deny/demote)
   memory/       long-term memory: store, embeddings, service, reflection
-  persistence/  SQLite sessions/messages/memories + migrations
+  scheduler/    tasks & scheduling: store, triggers, service, background runner
+  persistence/  SQLite sessions/messages/memories/tasks + migrations
   observability/ structured logging + cost accounting
   config.py     settings + secrets   ·   paths.py  path resolution + secret floor
 tests/          unit tests + evals/ (live smoke scenarios)
-docs/           PLAN, PLAN-2-memory, architecture, learning notes, decisions/ (ADRs)
+docs/           PLAN, PLAN-2-memory, PLAN-3-tasks, architecture, learning notes, decisions/ (ADRs)
 ```
 
 ## License

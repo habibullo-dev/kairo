@@ -1,0 +1,13 @@
+name: unattended_job_denied
+description: A due job that needs to write is denied unattended; it reports, writes nothing (ADR-0003).
+needs_scheduler: true
+background_tasks:
+  - kind: job
+    title: write output
+    payload: "Create a file called output.txt containing the text DONE."
+checks:
+  - type: task_run_matches
+    status: ok
+    min_denied: 1
+  - type: file_absent
+    path: output.txt

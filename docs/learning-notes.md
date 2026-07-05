@@ -882,3 +882,24 @@ non-obvious *implementation* decisions per task.
   scheduling relative times is impossible without a clock, but adding it
   unconditionally would have broken the null-path byte-identity the earlier phases
   rely on. Gate the new behavior; keep the old path pixel-for-pixel.
+
+## Task 10 — ADR-0003, live evals, docs
+
+- **The unattended-denial eval *is* the ADR, executable.** ADR-0003 says a job that
+  needs to write is denied and reports it. `unattended_job_denied` seeds exactly
+  that job, fires it via the real BackgroundRunner + JobRunner + UnattendedGate, and
+  asserts `denied_count ≥ 1` and `output.txt` absent. A prose ADR states the policy;
+  a live eval proves the wiring enforces it against the real model.
+- **Seed background tasks directly, past the guard.** The scheduling *tool* rejects
+  past `once` times (a safety feature), but a *test* wants a task that's due right
+  now. The eval seeds via `store.add` with `next_run_at` 30s ago — bypassing the
+  service's guard — so `check_due` classifies it "fire" (within grace) immediately.
+  Test fixtures legitimately reach past the front door the product locks.
+- **Sync reads for post-run assertions.** The eval writes the task db via aiosqlite
+  during the run, then closes that connection and reads it back with plain stdlib
+  `sqlite3` in the (sync) `evaluate` — simpler than threading an async check through,
+  and safe because the writer is closed first.
+- **Background-run cost is invisible unless you go get it.** An interactive turn
+  reports its own usage, but a job's cost lives in its `task_runs` row. The eval sums
+  `task_runs.cost_usd` into the scenario total so unattended spend isn't hidden — the
+  same reason the `tasks` command shows per-run cost.

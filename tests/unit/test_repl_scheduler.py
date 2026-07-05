@@ -82,13 +82,23 @@ def test_scheduler_disabled_wires_nothing(tmp_path: Path) -> None:
 async def test_tasks_command_lists_with_provenance(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     await svc.schedule(
-        kind="reminder", title="stretch", payload="stand up", schedule_kind="cron",
-        schedule_spec="0 * * * *", created_by="user", timezone="UTC",
+        kind="reminder",
+        title="stretch",
+        payload="stand up",
+        schedule_kind="cron",
+        schedule_spec="0 * * * *",
+        created_by="user",
+        timezone="UTC",
     )
     svc.bound_session_id = None
     await svc.schedule(
-        kind="job", title="digest", payload="summarize", schedule_kind="interval",
-        schedule_spec="3600", created_by="agent", timezone="UTC",
+        kind="job",
+        title="digest",
+        payload="summarize",
+        schedule_kind="interval",
+        schedule_spec="3600",
+        created_by="agent",
+        timezone="UTC",
     )
     repl, buf = _repl(tmp_path, tasks=svc)
     await repl._show_tasks("")
@@ -100,8 +110,13 @@ async def test_tasks_command_lists_with_provenance(tmp_path: Path) -> None:
 async def test_tasks_command_shows_run_history(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     task = await svc.schedule(
-        kind="job", title="nightly", payload="do it", schedule_kind="interval",
-        schedule_spec="3600", created_by="user", timezone="UTC",
+        kind="job",
+        title="nightly",
+        payload="do it",
+        schedule_kind="interval",
+        schedule_spec="3600",
+        created_by="user",
+        timezone="UTC",
     )
     # simulate one completed run (session_id=None avoids the FK to sessions)
     svc.now = lambda: START + dt.timedelta(hours=1, minutes=1)
@@ -126,8 +141,13 @@ async def test_tasks_command_without_scheduler(tmp_path: Path) -> None:
 async def test_tasks_command_last_error_surfaced(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     task = await svc.schedule(
-        kind="job", title="flaky", payload="x", schedule_kind="interval",
-        schedule_spec="3600", created_by="user", timezone="UTC",
+        kind="job",
+        title="flaky",
+        payload="x",
+        schedule_kind="interval",
+        schedule_spec="3600",
+        created_by="user",
+        timezone="UTC",
     )
     svc.now = lambda: START + dt.timedelta(hours=1, minutes=1)
     (due,) = await svc.due()
