@@ -660,3 +660,27 @@ non-obvious *implementation* decisions per task.
   re-reads everything. The cheaper design (a `reflected_through_seq` watermark that
   reflects only new messages) is noted as a future optimization — deferred because
   correctness (never miss content) mattered more than the extra utility-model tokens.
+
+# Phase 3 — Tasks & scheduling (Milestone 3)
+
+## Task 1 — Plan doc + scaffold
+
+- **APScheduler as a trigger library, not a scheduler.** The tech stack said
+  APScheduler, but running its `AsyncIOScheduler` would mean a second source of
+  scheduling truth (its in-memory jobstore) to keep consistent with SQLite forever,
+  plus wall-clock timers you can only test by monkeypatching. We take exactly the
+  hard part — cron/DST next-fire math via its trigger classes — behind one pure
+  function, and keep firing in our own ~40-line asyncio loop. Frameworks are for
+  the parts you don't want to learn; this phase's whole point is the wake loop.
+- **`SchedulerConfig` mirrors `MemoryConfig` deliberately.** Every phase adds one
+  pydantic sub-config with code defaults + a YAML block, and one optional
+  `ToolContext` field that gates tool registration. Repeating the seam keeps the
+  "disabled ⇒ byte-identical previous phase" property testable per phase.
+- **`unattended_allow_tools: []` is config-as-policy-statement.** The empty default
+  encodes the phase's core safety rule (interactive grants are not unattended
+  grants) in a place the user can see and consciously widen — the comment in
+  settings.yaml is the first line of the ADR-0003 story, not decoration.
+- **Version-pin lesson: `apscheduler>=3.11,<4`.** 3.11 dropped pytz for stdlib
+  `zoneinfo` (matters for storing IANA zone names), and 4.x is an incompatible
+  rewrite mid-flight — an unpinned "latest" would eventually swap the API out from
+  under `triggers.py`, the one file allowed to import it.

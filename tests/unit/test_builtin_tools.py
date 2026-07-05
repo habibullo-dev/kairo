@@ -31,6 +31,13 @@ def is_error(r: object) -> bool:
     return isinstance(r, ToolResult) and r.is_error
 
 
+def test_tool_context_optional_services_default_to_none() -> None:
+    ctx = ToolContext()
+    assert ctx.config is None
+    assert ctx.memory is None
+    assert ctx.tasks is None  # scheduler disabled ⇒ task tools won't register
+
+
 # --- filesystem ------------------------------------------------------------
 
 

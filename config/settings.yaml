@@ -28,6 +28,16 @@ memory:
   dedup_trigger: 0.85   # cosine above which remember() asks sonnet-5 to adjudicate
   reflection: true      # distill durable facts from the transcript at session end
 
+scheduler:
+  # Tasks & scheduling (Phase 3): reminders + unattended background jobs.
+  enabled: true
+  misfire_grace_seconds: 3600    # due-jobs older than this on catch-up are 'missed', not run
+  max_consecutive_failures: 3    # recurring job flips 'failed' after this many errors
+  wake_cap_seconds: 30           # loop re-checks at least this often (survives laptop sleep)
+  max_job_iterations: 15         # unattended runaway bound (a denied-everything loop must not thrash)
+  reflect_job_sessions: false    # unattended transcripts do NOT feed long-term memory by default
+  unattended_allow_tools: []     # explicit opt-in: tools whose policy-ALLOW survives unattended demotion
+
 paths:
   data_dir: data   # SQLite db (relative to project root)
   logs_dir: logs   # JSON-lines audit/trace logs

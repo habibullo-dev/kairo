@@ -97,6 +97,20 @@ class MemoryConfig(BaseModel):
     reflection: bool = True  # end-of-session distillation into long-term memory
 
 
+class SchedulerConfig(BaseModel):
+    """Tasks & scheduling (Phase 3) knobs — reminders and unattended background jobs."""
+
+    enabled: bool = True
+    misfire_grace_seconds: int = 3600  # due-jobs older than this on catch-up are 'missed'
+    max_consecutive_failures: int = 3  # recurring job flips to 'failed' after this many errors
+    wake_cap_seconds: int = 30  # loop re-checks at least this often (survives laptop sleep)
+    max_job_iterations: int = 15  # unattended runaway bound (< limits.max_iterations)
+    reflect_job_sessions: bool = False  # unattended transcripts don't feed memory by default
+    # Tools whose policy-level ALLOW survives the unattended demotion (see D2 in
+    # docs/PLAN-3-tasks.md). Empty by default: interactive grants are not unattended grants.
+    unattended_allow_tools: list[str] = Field(default_factory=list)
+
+
 class PathsConfig(BaseModel):
     """Filesystem locations, relative to the project root unless absolute."""
 
@@ -110,8 +124,9 @@ class Config(BaseModel):
     root: Path
     models: ModelsConfig
     limits: LimitsConfig
-    # Phase 2; default_factory keeps direct Config(...) callers simple.
+    # Phase 2/3; default_factory keeps direct Config(...) callers simple.
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     paths: PathsConfig
     secrets: Secrets
 
@@ -187,6 +202,7 @@ def load_config(
             models=ModelsConfig(**data.get("models", {})),
             limits=LimitsConfig(**data.get("limits", {})),
             memory=MemoryConfig(**data.get("memory", {})),
+            scheduler=SchedulerConfig(**data.get("scheduler", {})),
             paths=PathsConfig(**data.get("paths", {})),
             secrets=secrets,
         )

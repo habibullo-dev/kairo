@@ -48,6 +48,29 @@ def test_memory_config_yaml_override(tmp_path: Path) -> None:
     assert cfg.memory.min_similarity == 0.35  # unspecified keeps default
 
 
+def test_scheduler_config_defaults(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.scheduler.enabled is True
+    assert cfg.scheduler.misfire_grace_seconds == 3600
+    assert cfg.scheduler.max_consecutive_failures == 3
+    assert cfg.scheduler.max_job_iterations == 15
+    assert cfg.scheduler.reflect_job_sessions is False
+    assert cfg.scheduler.unattended_allow_tools == []
+
+
+def test_scheduler_config_yaml_override(tmp_path: Path) -> None:
+    _write_settings(
+        tmp_path,
+        "scheduler:\n  enabled: false\n  misfire_grace_seconds: 60\n"
+        "  unattended_allow_tools: [web_fetch]\n",
+    )
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.scheduler.enabled is False
+    assert cfg.scheduler.misfire_grace_seconds == 60
+    assert cfg.scheduler.unattended_allow_tools == ["web_fetch"]
+    assert cfg.scheduler.wake_cap_seconds == 30  # unspecified keeps default
+
+
 def test_yaml_overrides_defaults(tmp_path: Path) -> None:
     _write_settings(
         tmp_path,

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 if TYPE_CHECKING:
     from jarvis.config import Config
     from jarvis.memory.service import MemoryService
+    from jarvis.scheduler.service import TaskService
 
 
 @dataclass
@@ -35,6 +36,7 @@ class ToolContext:
 
     config: Config | Any = None
     memory: MemoryService | Any = None  # None when long-term memory is disabled/unavailable
+    tasks: TaskService | Any = None  # None when the scheduler is disabled
 
 
 class Permission(StrEnum):
