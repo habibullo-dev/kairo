@@ -15,6 +15,15 @@ Public symbols are re-exported as each task lands.
 
 from __future__ import annotations
 
+from jarvis.memory.embeddings import Embedder, FakeEmbedder, VoyageEmbedder
 from jarvis.memory.store import Memory, MemoryStore, Provenance, ScoredMemory
 
-__all__ = ["Memory", "MemoryStore", "Provenance", "ScoredMemory"]
+__all__ = [
+    "Embedder",
+    "FakeEmbedder",
+    "Memory",
+    "MemoryStore",
+    "Provenance",
+    "ScoredMemory",
+    "VoyageEmbedder",
+]

@@ -433,3 +433,29 @@ non-obvious *implementation* decisions per task.
   `migrate()` — proving the v1→v2 step preserves existing data and adds the new
   columns/table. A test that just opened a fresh (already-v2) db would never
   exercise the `ALTER TABLE`s on populated data.
+
+## P2 Task 3 — Embeddings
+
+- **The `Embedder` protocol mirrors `LLMClient` exactly.** Same trick that let the
+  loop go from FakeClient to live with zero changes: the memory layer depends on an
+  interface with `embed_documents` / `embed_query`, so `FakeEmbedder` backs every
+  offline test and `VoyageEmbedder` drops in for real. Neither the store nor the
+  service ever imports `voyageai`.
+- **Two embed methods, not one, because Voyage has an `input_type`.** Documents and
+  queries are embedded into slightly different regions of the space on purpose;
+  calling `embed_documents` for stored memories and `embed_query` for lookups is
+  free retrieval quality. The protocol encodes that asymmetry so a backend can't
+  quietly ignore it, and the test asserts `VoyageEmbedder` passes the right
+  `input_type` for each.
+- **`FakeEmbedder` uses `hashlib`, not builtin `hash()`.** Python randomizes string
+  hashing per process (`PYTHONHASHSEED`), so `hash("tabs")` differs between test
+  runs — which would make similarity-threshold tests flaky. An md5-based bucket is
+  stable forever. The bag-of-words construction gives the one property tests need:
+  shared words ⇒ higher cosine.
+- **`.model` is part of the protocol, not an implementation detail.** The store tags
+  every vector with the model that produced it (to refuse mixing spaces), so the
+  embedder must advertise its identity. Putting it on the protocol means the service
+  reads `embedder.model` without caring which backend it is.
+- **Empty-batch short-circuit avoids a pointless API round-trip.** `embed_documents([])`
+  returns `[]` without calling Voyage — small, but it means callers don't have to
+  guard against empty inputs, and the test pins that no call was made.
