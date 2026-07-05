@@ -168,3 +168,31 @@ Each entry captures the *non-obvious* decisions and their rationale.
   (`TextDelta`, `ToolStarted`, `ToolFinished`, `TurnCompleted`) to an optional
   sink; the REPL/web UI/tests each render them however they like. The loop imports
   no rendering library — this is what makes task 8's REPL and a future web UI cheap.
+
+## Task 7 — Live Anthropic client
+
+- **Going live changed one file, not the loop.** `AnthropicClient` implements the
+  exact `LLMClient` interface the loop was tested against, so the switch from
+  `FakeClient` is a constructor swap. That's the payoff of the task-6 seam.
+- **Streaming is mandatory here, not optional.** With `max_tokens` at 32k the SDK
+  refuses a non-streaming call (HTTP-timeout guard), and streaming is also what
+  feeds the REPL live text. We iterate `stream.text_stream` for deltas and take
+  `await stream.get_final_message()` for the complete, all-blocks message.
+- **Opus 4.8 request shape is specific.** Adaptive thinking only
+  (`thinking={"type":"adaptive"}`; `budget_tokens` is a 400), depth via
+  `output_config={"effort": ...}` (default `high`, quality-first). No
+  `temperature`/`top_p`. The live smoke test confirmed the API accepts this shape.
+- **Content blocks are serialized from documented attributes, not a blind dump.**
+  `_serialize_block` reads `block.text` / `.thinking`+`.signature` / `.id`+`.name`+
+  `.input`, emitting only the fields the API accepts on resend — avoiding null/extra
+  fields a `model_dump()` might include. Unknown block types fall back to
+  `model_dump` so a new type degrades instead of crashing.
+- **Thinking blocks must round-trip unchanged.** When adaptive thinking emits a
+  thinking block, its `signature` is preserved so the next turn (same model)
+  validates. The default `display` is "omitted", so the block often has empty text
+  but still must be sent back intact — a unit test pins the signature preservation.
+- **Retries are the SDK's job.** We raise `max_retries` (4) and let the SDK do
+  exponential backoff on 429/5xx; a hand-rolled retry loop would only duplicate it.
+- **Injectable client = testable streaming.** `AnthropicClient(client=...)` accepts
+  a fake async-stream object, so the whole streaming + conversion path is unit-tested
+  with no network; `from_config` is the real-key path and fails fast without a key.

@@ -15,7 +15,9 @@ limits:
   max_tool_result_chars: 24000  # truncate tool output (~6k tokens) to protect context
   context_token_budget: 180000  # compaction target headroom below the 1M window
   compaction_threshold: 0.7     # compact when history exceeds this fraction of the budget
-  max_output_tokens: 16000      # non-streaming-safe default; streaming raises this later
+  max_output_tokens: 32000      # we stream, so this sits well under the 128k cap
+  effort: high                  # output_config effort: low|medium|high|xhigh|max
+  max_retries: 4                # SDK retries 429/5xx with exponential backoff
 
 paths:
   data_dir: data   # SQLite db (relative to project root)

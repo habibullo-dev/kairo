@@ -79,7 +79,9 @@ class LimitsConfig(BaseModel):
     max_tool_result_chars: int = 24_000
     context_token_budget: int = 180_000
     compaction_threshold: float = 0.7
-    max_output_tokens: int = 16_000
+    max_output_tokens: int = 32_000  # streaming, so well under the 128k cap; room for thinking
+    effort: str = "high"  # output_config effort: low|medium|high|xhigh|max (quality-first default)
+    max_retries: int = 4  # SDK retries 429/5xx with exponential backoff
 
 
 class PathsConfig(BaseModel):
