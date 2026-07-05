@@ -68,14 +68,24 @@ audit log at `logs/jarvis-YYYY-MM-DD.jsonl`, correlated by a per-turn `trace_id`
 
 - **Decisions are `allow` / `ask` / `deny`**, configured in
   [`config/permissions.yaml`](config/permissions.yaml). Safe defaults: reads are
-  allowed; writes, shell, and anything external ask first.
+  allowed; writes, shell, and network (`web_search` / `web_fetch`) ask first.
+- **Secrets are off-limits by a code floor.** Reads *and* writes of credential
+  paths (`.env`, SSH/GPG keys, `.aws/credentials`, `.npmrc`, `*.pem`, …) are
+  denied outright — a floor in `jarvis/paths.py` that policy can extend but not
+  disable. Committed templates like `.env.example` are the one exception.
 - **Filesystem writes** are checked against an allowlist — a write outside it is
-  escalated to `ask`, never allowed silently.
+  escalated to `ask`, never allowed silently. The gate and the tools resolve every
+  path the *same* way (against the workspace root, collapsing `..` and symlinks),
+  so an approval and the action it authorizes always refer to the same file.
 - **Shell commands** are refined by longest-prefix rules (e.g. `git status` allow,
-  `rm ` ask). A tool-level `deny` is absolute.
+  `rm ` ask), matched at a token boundary. An `allow` is downgraded to `ask` if the
+  command contains shell metacharacters (`; | & > <` …), so an allowlisted prefix
+  can't smuggle a chained command past the gate. A tool-level `deny` is absolute.
 - **"Always allow"** at the prompt persists the narrowest rule that covers it (a
-  shell prefix, a write directory, or a whole tool), so one approval never grants
-  more than you approved.
+  shell prefix, a resolved write directory, or a whole tool), and refuses to
+  persist an over-broad grant (a drive root or your home directory).
+- **File reads are bounded** to a byte ceiling read straight from disk, so a huge
+  file can't exhaust memory or evict the conversation.
 - **Tool failures, denials, and unknown tools become results the model reads** and
   recovers from — they never crash the session.
 

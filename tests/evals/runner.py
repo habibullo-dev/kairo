@@ -89,19 +89,26 @@ async def run_once(config, scenario: dict) -> tuple[list[str], float, str]:
     for name, content in scenario.get("setup", {}).get("files", {}).items():
         (workdir / name).write_text(content, encoding="utf-8")
 
+    # Isolate the run by making the workdir the workspace *root*: tools and gate
+    # both resolve relative paths against it (the unified resolution), so the
+    # agent's files land here, not in the repo. The real permissions.yaml is
+    # loaded from the project root before the override.
+    policy_path = config.root / "config" / "permissions.yaml"
+    run_config = config.model_copy(update={"root": workdir})
+
     registry = ToolRegistry()
-    registry.discover("jarvis.tools.builtin", ToolContext(config=config))
+    registry.discover("jarvis.tools.builtin", ToolContext(config=run_config))
     executor = ToolExecutor(
-        timeout=config.limits.tool_timeout_seconds,
-        max_result_chars=config.limits.max_tool_result_chars,
+        timeout=run_config.limits.tool_timeout_seconds,
+        max_result_chars=run_config.limits.max_tool_result_chars,
     )
-    gate = PermissionGate(load_policy(config.root / "config" / "permissions.yaml"), config.root)
+    gate = PermissionGate(load_policy(policy_path), workdir)
     loop = AgentLoop(
-        client=AnthropicClient.from_config(config),
+        client=AnthropicClient.from_config(run_config),
         registry=registry,
         executor=executor,
         gate=gate,
-        config=config,
+        config=run_config,
         approver=make_approver(scenario.get("deny_tools", [])),
     )
 

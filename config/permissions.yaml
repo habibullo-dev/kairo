@@ -13,10 +13,12 @@ tools:
   read_file: allow
   list_dir: allow
   glob_search: allow
-  web_search: allow
-  web_fetch: allow
   write_file: ask
   run_shell: ask
+  # Network egress asks by default (the query/URL leaves the machine). Choose
+  # "always" at the prompt to persist an allow for the session and beyond.
+  web_search: ask
+  web_fetch: ask
 
 filesystem:
   # Writes inside these dirs (relative to the project root, or absolute) may be
@@ -24,10 +26,19 @@ filesystem:
   # to `ask`, never silently proceed.
   write_allowlist:
     - .
+  # EXTRA fnmatch patterns that deny reads, on top of a built-in secret/key floor
+  # (in jarvis/paths.py: *.env, .ssh/*, *.pem/*.key, .aws/credentials, .npmrc,
+  # .git-credentials, etc.) that is ALWAYS on and cannot be disabled from here.
+  # Reads AND writes of those built-in patterns are denied outright. Add your own
+  # below, e.g. "*/private/*".
+  read_denylist: []
 
 shell:
-  # Longest matching prefix wins. Lets you allow safe read-only commands while
-  # still gating destructive ones. A tool-level `deny` on run_shell overrides all.
+  # Longest matching prefix wins, and must match at a token boundary. An `allow`
+  # rule is downgraded to `ask` if the command contains shell metacharacters
+  # (; | & ` $( ${ > < newline) — so an allowlisted prefix like `git status`
+  # can't smuggle a chained `; rm -rf` past the gate. A tool-level `deny` on
+  # run_shell overrides everything.
   rules:
     - prefix: "git status"
       decision: allow

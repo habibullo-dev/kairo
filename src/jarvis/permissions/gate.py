@@ -1,13 +1,26 @@
 """PermissionGate: decide allow / ask / deny for a tool call before it runs.
 
 Precedence for the base decision: an explicit per-tool entry in the policy, else
-the tool's own ``permission_default``, else the policy default. Two families then
-refine that base:
+the tool's own ``permission_default``, else the policy default. Several families
+then refine that base:
 
+* **Sensitive paths** — reads or writes of secrets/credentials (``.env``, SSH
+  keys, cloud creds, …) are denied outright, regardless of policy. This floor
+  lives in :func:`jarvis.paths.is_sensitive_path` and cannot be loosened by
+  editing ``permissions.yaml``.
 * **Filesystem writes** — a write whose target falls outside the allowlist is
   never silently allowed; an ``allow`` base is escalated to ``ask``.
+* **Filesystem reads** — additionally denied if they match the policy's
+  ``read_denylist`` (on top of the sensitive-path floor).
 * **Shell commands** — the longest matching prefix rule wins and overrides the
   base, *unless* the tool is denied outright (a tool-level ``deny`` is absolute).
+  An ``allow`` never survives shell metacharacters (``;``, ``|``, redirection,
+  command substitution): those escalate to ``ask`` so an allowlisted prefix like
+  ``git status`` can't smuggle a chained ``; rm -rf`` past the gate.
+
+All relative paths are resolved against the project root via
+:func:`jarvis.paths.resolve_path` — the *same* resolution the filesystem tools
+use — so the gate's decision and the tool's action always refer to one file.
 
 The gate only decides. Actually prompting the human, and running the tool, happen
 elsewhere — this stays a pure, table-testable function.
@@ -18,8 +31,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from jarvis.paths import is_sensitive_path, matches_any, resolve_path
 from jarvis.permissions.policy import Policy, ShellRule, save_policy
 from jarvis.tools.base import Permission
+
+# Metacharacters that let one command become several, redirect I/O, or substitute
+# command output. If any appear, an "allow" shell decision is downgraded to "ask".
+# ``&&`` / ``||`` are covered by ``&`` / ``|``; newlines cover multi-statement input.
+_SHELL_METACHARACTERS: tuple[str, ...] = (";", "|", "&", "`", "$(", "${", ">", "<", "\n", "\r")
+
+
+def _has_shell_metacharacters(command: str) -> bool:
+    return any(meta in command for meta in _SHELL_METACHARACTERS)
+
+
+def _prefix_matches(command: str, prefix: str) -> bool:
+    """True if ``command`` begins with ``prefix`` at a *token boundary*.
+
+    A rule for ``git status`` must match ``git status`` and ``git status --short``
+    but not ``git statusfoo`` — otherwise a look-alike command could inherit an
+    allow. A prefix that already ends in whitespace (e.g. ``"rm "``) is treated as
+    matching anything that follows.
+    """
+    if not command.startswith(prefix):
+        return False
+    rest = command[len(prefix) :]
+    return rest == "" or rest[0].isspace() or prefix.endswith(" ")
 
 
 @dataclass(frozen=True)
@@ -38,6 +75,7 @@ class PermissionGate:
         *,
         source_path: Path | None = None,
         path_tools: frozenset[str] = frozenset({"write_file"}),
+        read_tools: frozenset[str] = frozenset({"read_file"}),
         path_field: str = "path",
         shell_tools: frozenset[str] = frozenset({"run_shell"}),
         command_field: str = "command",
@@ -46,6 +84,7 @@ class PermissionGate:
         self.project_root = project_root.resolve()
         self.source_path = source_path
         self.path_tools = path_tools
+        self.read_tools = read_tools
         self.path_field = path_field
         self.shell_tools = shell_tools
         self.command_field = command_field
@@ -69,6 +108,8 @@ class PermissionGate:
             return self._check_shell(tool_name, tool_input, base)
         if tool_name in self.path_tools:
             return self._check_path(tool_name, tool_input, base)
+        if tool_name in self.read_tools:
+            return self._check_read_path(tool_name, tool_input, base)
         return Decision(base, f"policy for '{tool_name}': {base}")
 
     def _base(self, tool_name: str, tool_default: Permission | None) -> Permission:
@@ -79,38 +120,51 @@ class PermissionGate:
         return self.policy.default
 
     def _check_shell(self, tool_name: str, tool_input: dict, base: Permission) -> Decision:
-        command = str(tool_input.get(self.command_field, "") or "")
+        command = str(tool_input.get(self.command_field, "") or "").strip()
         match: ShellRule | None = None
         for rule in self.policy.shell.rules:
-            if command.startswith(rule.prefix) and (
+            if _prefix_matches(command, rule.prefix) and (
                 match is None or len(rule.prefix) > len(match.prefix)
             ):
                 match = rule
         if match is not None:
-            return Decision(match.decision, f"shell rule {match.prefix!r} -> {match.decision}")
-        return Decision(base, f"shell default for '{tool_name}': {base}")
+            decision, reason = match.decision, f"shell rule {match.prefix!r} -> {match.decision}"
+        else:
+            decision, reason = base, f"shell default for '{tool_name}': {base}"
+
+        # An allow never survives chaining/redirection/substitution — the allowlist
+        # covers simple commands only; anything fancier goes back to the human.
+        if decision is Permission.ALLOW and _has_shell_metacharacters(command):
+            return Decision(Permission.ASK, f"{reason}; escalated to ask (shell metacharacters)")
+        return Decision(decision, reason)
 
     def _check_path(self, tool_name: str, tool_input: dict, base: Permission) -> Decision:
         raw = tool_input.get(self.path_field)
         if not raw:
             return Decision(base, f"policy for '{tool_name}' (no path given): {base}")
-        target = Path(str(raw))
-        if not target.is_absolute():
-            target = self.project_root / target
-        target = target.resolve()
+        target = resolve_path(raw, self.project_root)
 
+        if is_sensitive_path(target):
+            return Decision(Permission.DENY, f"write to sensitive path denied: {target}")
         if self._within_allowlist(target):
             return Decision(base, f"write within allowlist: {target}")
         if base is Permission.ALLOW:
             return Decision(Permission.ASK, f"write outside allowlist, escalated to ask: {target}")
         return Decision(base, f"write outside allowlist: {target}")
 
+    def _check_read_path(self, tool_name: str, tool_input: dict, base: Permission) -> Decision:
+        raw = tool_input.get(self.path_field)
+        if not raw:
+            return Decision(base, f"policy for '{tool_name}' (no path given): {base}")
+        target = resolve_path(raw, self.project_root)
+
+        if is_sensitive_path(target) or matches_any(target, self.policy.filesystem.read_denylist):
+            return Decision(Permission.DENY, f"read of sensitive path denied: {target}")
+        return Decision(base, f"read of '{target}': {base}")
+
     def _within_allowlist(self, target: Path) -> bool:
         for entry in self.policy.filesystem.write_allowlist:
-            base_dir = Path(entry)
-            if not base_dir.is_absolute():
-                base_dir = self.project_root / base_dir
-            base_dir = base_dir.resolve()
+            base_dir = resolve_path(entry, self.project_root)
             if target == base_dir or target.is_relative_to(base_dir):
                 return True
         return False

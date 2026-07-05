@@ -204,3 +204,123 @@ def test_persist_write_dir(tmp_path: Path) -> None:
     g = gate(load_policy(src), tmp_path, source_path=src)
     g.persist_write_dir("exports")
     assert "exports" in load_policy(src).filesystem.write_allowlist
+
+
+# --- hardening: shell chaining / redirection cannot bypass an allow rule ----
+
+
+def _default_shell_policy() -> Policy:
+    """Mirrors the shipped config/permissions.yaml shell rules."""
+    return Policy(
+        tools={"run_shell": ASK},
+        shell=ShellPolicy(
+            rules=[
+                ShellRule(prefix="git status", decision=ALLOW),
+                ShellRule(prefix="git diff", decision=ALLOW),
+                ShellRule(prefix="git log", decision=ALLOW),
+                ShellRule(prefix="rm ", decision=ASK),
+            ]
+        ),
+    )
+
+
+def test_shell_clean_command_still_allowed(tmp_path: Path) -> None:
+    g = gate(_default_shell_policy(), tmp_path)
+    assert g.check("run_shell", {"command": "git status --short"}).permission is ALLOW
+
+
+def test_shell_chaining_downgrades_allow_to_ask(tmp_path: Path) -> None:
+    g = gate(_default_shell_policy(), tmp_path)
+    # matches the 'git status' allow prefix, but the ';' would chain a second command
+    assert g.check("run_shell", {"command": "git status; rm -rf x"}).permission is ASK
+
+
+def test_shell_pipe_downgrades_allow_to_ask(tmp_path: Path) -> None:
+    g = gate(_default_shell_policy(), tmp_path)
+    assert g.check("run_shell", {"command": "git log | Out-File x.txt"}).permission is ASK
+
+
+def test_shell_redirection_downgrades_allow_to_ask(tmp_path: Path) -> None:
+    g = gate(_default_shell_policy(), tmp_path)
+    assert g.check("run_shell", {"command": "git diff > over.txt"}).permission is ASK
+
+
+def test_shell_command_substitution_downgrades_allow_to_ask(tmp_path: Path) -> None:
+    g = gate(_default_shell_policy(), tmp_path)
+    assert g.check("run_shell", {"command": "git log $(whoami)"}).permission is ASK
+
+
+def test_shell_prefix_requires_token_boundary(tmp_path: Path) -> None:
+    g = gate(_default_shell_policy(), tmp_path)
+    # 'git statusfoo' must NOT inherit the 'git status' allow — falls back to base ask
+    assert g.check("run_shell", {"command": "git statusfoo"}).permission is ASK
+
+
+def test_shell_deny_rule_unaffected_by_metacharacter_guard(tmp_path: Path) -> None:
+    policy = _default_shell_policy()
+    policy.shell.rules.append(ShellRule(prefix="format ", decision=DENY))
+    g = gate(policy, tmp_path)
+    assert g.check("run_shell", {"command": "format C: ; echo done"}).permission is DENY
+
+
+# --- hardening: sensitive-path deny for reads and writes --------------------
+
+
+def test_read_env_file_denied(tmp_path: Path) -> None:
+    g = gate(Policy(tools={"read_file": ALLOW}), tmp_path)
+    assert g.check("read_file", {"path": ".env"}).permission is DENY
+
+
+def test_read_ssh_key_denied(tmp_path: Path) -> None:
+    g = gate(Policy(tools={"read_file": ALLOW}), tmp_path)
+    target = str(tmp_path / ".ssh" / "id_rsa")
+    assert g.check("read_file", {"path": target}).permission is DENY
+
+
+def test_read_env_template_allowed(tmp_path: Path) -> None:
+    g = gate(Policy(tools={"read_file": ALLOW}), tmp_path)
+    assert g.check("read_file", {"path": ".env.example"}).permission is ALLOW
+
+
+def test_read_ordinary_file_allowed(tmp_path: Path) -> None:
+    g = gate(Policy(tools={"read_file": ALLOW}), tmp_path)
+    assert g.check("read_file", {"path": "src/main.py"}).permission is ALLOW
+
+
+def test_read_denylist_extra_pattern_denies(tmp_path: Path) -> None:
+    policy = Policy(
+        tools={"read_file": ALLOW},
+        filesystem=FilesystemPolicy(read_denylist=["*/private/*"]),
+    )
+    g = gate(policy, tmp_path)
+    target = str(tmp_path / "private" / "diary.txt")
+    assert g.check("read_file", {"path": target}).permission is DENY
+
+
+def test_write_to_sensitive_path_denied_even_inside_allowlist(tmp_path: Path) -> None:
+    # An allow base + inside the allowlist would normally allow — sensitivity wins.
+    policy = Policy(tools={"write_file": ALLOW}, filesystem=FilesystemPolicy(write_allowlist=["."]))
+    g = gate(policy, tmp_path)
+    target = str(tmp_path / ".ssh" / "authorized_keys")
+    assert g.check("write_file", {"path": target}).permission is DENY
+
+
+# --- hardening: unified path resolution (root, not CWD) ---------------------
+
+
+def test_gate_resolves_relative_write_against_root(tmp_path: Path) -> None:
+    policy = Policy(tools={"write_file": ALLOW}, filesystem=FilesystemPolicy(write_allowlist=["."]))
+    g = gate(policy, tmp_path)
+    decision = g.check("write_file", {"path": "out.txt"})
+    assert decision.permission is ALLOW
+    # the reason names the fully-resolved target under the project root
+    assert str((tmp_path / "out.txt").resolve()) in decision.reason
+
+
+# --- hardening: network tools ask by default --------------------------------
+
+
+def test_network_tools_default_to_ask(tmp_path: Path) -> None:
+    g = gate(Policy(), tmp_path)  # empty policy -> falls through to tool_default
+    assert g.check("web_search", tool_default=ASK).permission is ASK
+    assert g.check("web_fetch", tool_default=ASK).permission is ASK

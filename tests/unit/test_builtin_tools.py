@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets
-from jarvis.tools import ToolContext, ToolResult
+from jarvis.config import Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets, load_config
+from jarvis.paths import resolve_path
+from jarvis.tools import Permission, ToolContext, ToolResult
 from jarvis.tools.builtin import web
 from jarvis.tools.builtin.filesystem import (
     GlobSearchTool,
@@ -89,6 +90,71 @@ async def test_glob_search(tmp_path: Path) -> None:
     )
     assert "2 match" in result
     assert "a.py" in result and "b.py" in result and "c.txt" not in result
+
+
+# --- hardening: bounded reads + unified resolution -------------------------
+
+
+def _ctx_with_root(root: Path) -> ToolContext:
+    return ToolContext(config=load_config(root=root, env_file=None))
+
+
+async def test_read_hard_ceiling_clamps_oversized_request(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    cfg.limits.max_read_bytes = 10  # tighten the ceiling for the test
+    f = tmp_path / "big.txt"
+    f.write_text("y" * 500, encoding="utf-8")
+    tool = ReadFileTool(ToolContext(config=cfg))
+    # model asks for a 10 MB read; the ceiling wins regardless
+    out = content_of(await tool.run(ReadFileTool.Params(path=str(f), max_bytes=10_000_000)))
+    assert out.startswith("y" * 10)
+    assert "truncated at 10 bytes" in out
+
+
+async def test_list_dir_caps_entries(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    cfg.limits.max_dir_entries = 3
+    for i in range(10):
+        (tmp_path / f"f{i}.txt").write_text("", encoding="utf-8")
+    out = content_of(await ListDirTool(ToolContext(config=cfg)).run(ListDirTool.Params(path=".")))
+    assert "more entries omitted" in out
+
+
+async def test_glob_clamps_to_ceiling(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    cfg.limits.max_dir_entries = 2
+    for i in range(5):
+        (tmp_path / f"a{i}.py").write_text("", encoding="utf-8")
+    tool = GlobSearchTool(ToolContext(config=cfg))
+    out = content_of(
+        await tool.run(GlobSearchTool.Params(pattern="*.py", root=".", max_results=100))
+    )
+    assert "showing first 2" in out
+
+
+async def test_write_resolves_relative_against_config_root(tmp_path: Path) -> None:
+    # The tool must resolve a relative path against config.root (like the gate),
+    # NOT the process CWD — otherwise the gate could approve a different file.
+    cfg = load_config(root=tmp_path, env_file=None)
+    await WriteFileTool(ToolContext(config=cfg)).run(
+        WriteFileTool.Params(path="notes/out.txt", content="hi")
+    )
+    written = tmp_path / "notes" / "out.txt"
+    assert written.read_text(encoding="utf-8") == "hi"
+    # identical resolution to what the gate would compute for the same input
+    assert resolve_path("notes/out.txt", cfg.root) == written.resolve()
+
+
+async def test_read_resolves_relative_against_config_root(tmp_path: Path) -> None:
+    (tmp_path / "hello.txt").write_text("world", encoding="utf-8")
+    tool = ReadFileTool(_ctx_with_root(tmp_path))
+    out = content_of(await tool.run(ReadFileTool.Params(path="hello.txt")))
+    assert out == "world"
+
+
+def test_network_tools_ask_by_default() -> None:
+    assert WebSearchTool.permission_default is Permission.ASK
+    assert WebFetchTool.permission_default is Permission.ASK
 
 
 # --- shell (real pwsh) -----------------------------------------------------

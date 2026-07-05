@@ -77,6 +77,8 @@ class LimitsConfig(BaseModel):
     max_iterations: int = 25
     tool_timeout_seconds: float = 60.0
     max_tool_result_chars: int = 24_000
+    max_read_bytes: int = 1_000_000  # hard ceiling on a single file read (memory safety)
+    max_dir_entries: int = 1_000  # cap on list_dir / glob_search output size
     context_token_budget: int = 180_000
     compaction_threshold: float = 0.7
     max_output_tokens: int = 32_000  # streaming, so well under the 128k cap; room for thinking

@@ -35,6 +35,7 @@ interfaces → core → services → foundation
 │ persistence/     SQLite sessions + messages + migrations  │
 │ observability/   structlog audit log + cost accounting    │
 │ config.py        settings (yaml) + secrets (.env)         │
+│ paths.py         unified path resolution + secret floor   │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -80,16 +81,22 @@ and an async `run`. The `ToolRegistry` auto-discovers concrete tools under
 `ToolExecutor` is the guarded boundary: validate input → run with a timeout →
 capture errors → truncate output. Built-ins: `read_file`, `write_file`,
 `list_dir`, `glob_search`, `run_shell` (pwsh), `web_search` (Tavily), `web_fetch`
-(httpx + trafilatura).
+(httpx + trafilatura). Filesystem reads are bounded to a byte ceiling read
+straight from disk (memory safety), and list/glob output is capped.
 
 ## Permissions (`permissions/`)
 
 `Policy` (from `config/permissions.yaml`) is data; `PermissionGate` interprets it.
 Base decision precedence: per-tool entry → the tool's own default → policy default.
-Refinements: filesystem writes are checked against an allowlist (can only tighten);
-shell commands match longest-prefix rules; a tool-level `deny` is absolute. The gate
-only decides — the interface prompts the human and the loop runs the tool. "Always
-allow" persists the narrowest rule.
+Refinements: a **sensitive-path floor** (`jarvis/paths.py`) denies reads and writes
+of secrets/keys regardless of policy; filesystem writes are checked against an
+allowlist (can only tighten); shell commands match longest-prefix rules at a token
+boundary, with an `allow` downgraded to `ask` when shell metacharacters could chain
+or redirect; a tool-level `deny` is absolute. The gate and the filesystem tools
+resolve paths through the *same* `resolve_path` (against the workspace root), so a
+decision and the action it authorizes always name the same file. The gate only
+decides — the interface prompts the human and the loop runs the tool. "Always allow"
+persists the narrowest rule, and refuses to persist an over-broad write directory.
 
 ## Persistence (`persistence/`)
 

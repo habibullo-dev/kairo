@@ -13,6 +13,7 @@ from jarvis.cli.repl import Repl
 from jarvis.config import load_config
 from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
 from jarvis.core.events import TextDelta, ToolFinished, ToolStarted, TurnCompleted
+from jarvis.paths import resolve_path
 from jarvis.permissions.gate import Decision
 from jarvis.tools import Permission
 
@@ -59,14 +60,30 @@ async def test_approve_always_shell_persists_prefix(
     assert any(r.prefix == "git status" for r in repl.gate.policy.shell.rules)
 
 
-async def test_approve_always_write_persists_dir(
+async def test_approve_always_write_persists_resolved_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _answer(monkeypatch, "always")
     repl = _repl(tmp_path)
     target = tmp_path / "exports" / "out.txt"
     await repl._approve(ToolCall("t", "write_file", {"path": str(target)}), ASK)
-    assert str(target.parent) in repl.gate.policy.filesystem.write_allowlist
+    # persisted as the fully-resolved parent dir (what the gate will check against),
+    # never a bare relative fragment
+    expected = str(resolve_path(str(target), repl.config.root).parent)
+    assert expected in repl.gate.policy.filesystem.write_allowlist
+
+
+async def test_approve_always_write_refuses_overbroad_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _answer(monkeypatch, "a")
+    repl = _repl(tmp_path)
+    before = list(repl.gate.policy.filesystem.write_allowlist)
+    # a file whose parent is the drive/filesystem root — must NOT be persisted
+    root_file = Path(tmp_path.anchor) / "at_root.txt"
+    perm = await repl._approve(ToolCall("t", "write_file", {"path": str(root_file)}), ASK)
+    assert perm is Permission.ALLOW  # the one write is still approved
+    assert repl.gate.policy.filesystem.write_allowlist == before  # but nothing broadened
 
 
 async def test_approve_always_other_tool_persists_tool(

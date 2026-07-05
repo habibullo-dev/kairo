@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
@@ -22,10 +21,26 @@ from jarvis.core import AgentLoop, AnthropicClient
 from jarvis.core.client import LLMClient, ToolCall
 from jarvis.observability import cost_of, get_logger
 from jarvis.observability.cost import Usage
+from jarvis.paths import is_safe_to_persist_dir, resolve_path
 from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.gate import Decision
 from jarvis.persistence import SessionStore
 from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
+
+
+def _call_summary(call: ToolCall) -> str:
+    """A one-line preview of what a tool call will do — shown before approval so
+    the human consents to the actual action, not just the tool name."""
+    inp = call.input or {}
+    if call.name == "run_shell":
+        return f"$ {str(inp.get('command', '')).strip()[:200]}"
+    if call.name == "write_file":
+        return f"write -> {inp.get('path', '?')} ({len(str(inp.get('content', '')))} chars)"
+    if call.name == "web_fetch":
+        return f"fetch -> {inp.get('url', '?')}"
+    if call.name == "web_search":
+        return f"search -> {str(inp.get('query', '')).strip()[:200]!r}"
+    return ""
 
 
 class Repl:
@@ -70,6 +85,9 @@ class Repl:
 
     async def _approve(self, call: ToolCall, decision: Decision) -> Permission:
         self.console.print(f"\n[yellow]Approve[/] [bold]{call.name}[/]?  [dim]{decision.reason}[/]")
+        summary = _call_summary(call)
+        if summary:
+            self.console.print(f"  [dim]{summary}[/]")
         answer = (await asyncio.to_thread(input, "  [y]es / [N]o / [a]lways: ")).strip().lower()
         if answer in ("a", "always"):
             self._persist_always(call)
@@ -79,15 +97,29 @@ class Repl:
         return Permission.DENY
 
     def _persist_always(self, call: ToolCall) -> None:
-        """Persist an 'always allow' choice as narrowly as the tool allows."""
+        """Persist an 'always allow' choice as narrowly as the tool allows.
+
+        For writes, the persisted grant is the *resolved* parent directory (so a
+        later write to the same folder isn't re-prompted), resolved against the
+        workspace root exactly as the gate resolves it — never a bare relative
+        fragment. Over-broad targets (a drive root, the home dir, a sensitive
+        location) are refused: the current write still went through on this one
+        approval, but we won't silently authorize a whole tree from it.
+        """
         if call.name == "run_shell":
             command = str(call.input.get("command", "")).strip()
             if command:
                 self.gate.persist_shell_rule(command, Permission.ALLOW)
         elif call.name == "write_file":
-            path = call.input.get("path")
-            if path:
-                self.gate.persist_write_dir(str(Path(path).parent))
+            raw = call.input.get("path")
+            if raw:
+                parent = resolve_path(raw, self.config.root).parent
+                if is_safe_to_persist_dir(parent):
+                    self.gate.persist_write_dir(str(parent))
+                else:
+                    self.log.warning(
+                        "always_allow_not_persisted", dir=str(parent), reason="too broad/sensitive"
+                    )
         else:
             self.gate.persist_allow(call.name)
 

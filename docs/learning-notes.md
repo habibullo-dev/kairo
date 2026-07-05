@@ -318,3 +318,62 @@ Each entry captures the *non-obvious* decisions and their rationale.
   that "from scratch" was made reversible by the `LLMClient` interface and the tool
   registry — MCP or a higher-level SDK can slot in behind them later without a
   rewrite. An ADR that only said "we built it ourselves" would miss the point.
+
+## Phase 1.1 — Safety hardening
+
+A pass over the MVP's safety model before adding memory. Each item closes a way
+the agent could exceed what a human actually approved.
+
+- **A shell allowlist must model *chaining*, not just prefixes.** The original
+  `git status → allow` rule matched `git status; rm -rf x` (longest-prefix match
+  wins, and the whole string still starts with `git status`), silently allowing
+  the tail. The fix mirrors the write allowlist's "can only tighten" rule: an
+  `allow` is downgraded to `ask` whenever the command contains a shell
+  metacharacter (`; | & ` `` ` `` `$( ${ > <` newline). Prefixes also now match
+  at a **token boundary**, so `git statusfoo` can't inherit `git status`'s allow.
+  A `deny` is unaffected — you can't metacharacter your way *out* of a denial.
+- **The gate and the tool must resolve a path the same way, or the check is a
+  lie.** The gate approved `root/notes/x` while the tool wrote `cwd/notes/x` — a
+  classic check-here-act-there gap (harmless only because they usually coincide).
+  Now a single `jarvis.paths.resolve_path(raw, root)` is the *one* resolver both
+  call, always against `config.root`. `.resolve()` also collapses `..` and
+  follows symlinks, so neither can be used to escape the write allowlist.
+- **The secret denylist is a code floor, not a config setting.** `.env`, SSH/GPG
+  keys, `.aws/credentials`, `.npmrc`, `*.pem` … are denied for read *and* write in
+  `jarvis.paths.is_sensitive_path`, which policy can extend (`read_denylist`) but
+  never disable. Reasons: (1) a foot-gun edit to `permissions.yaml` shouldn't be
+  able to expose credentials; (2) the write side blocks a real attack —
+  `write_file(~/.ssh/authorized_keys)` is persistence, not a file save. Committed
+  templates (`.env.example`) are the one explicit exception, since the floor
+  otherwise errs toward denying.
+- **Network tools ask by default because egress is the exfiltration channel.** A
+  `web_search`/`web_fetch` sends data *off* the machine; pairing "read anything"
+  with "send anywhere" is the leak. Both now default to `ask`; "always" persists a
+  tool-level allow. The approval prompt also prints a one-line summary of the
+  *actual* call (the URL, the command, the query) — you consent to the action, not
+  just the tool name.
+- **"Always allow" for a write persists the *resolved* parent, and refuses to
+  over-grant.** The old code stored `Path(raw).parent` — a bare relative fragment
+  that wouldn't match the gate's resolved allowlist reasoning. Now it stores the
+  absolute resolved parent, and `is_safe_to_persist_dir` refuses to persist a
+  drive root, the home directory, or a sensitive dir — so one approval can't
+  silently authorize writes across your whole home tree. The single approved write
+  still proceeds; only the *broadening* is withheld.
+- **"Bounded" reads means bounded *memory*, not just bounded output.** The
+  executor already truncated tool *results* (context protection), but `read_file`
+  did `path.read_bytes()` first — a 5 GB file was fully loaded before truncation.
+  The real fix reads at most `cap+1` bytes from disk (`min(max_bytes, limit)` as a
+  hard ceiling the model can't raise), so cost is one buffer, not the file size.
+- **An intermediate abstract `Tool` subclass can't carry the shared helpers.**
+  `Tool.__init_subclass__` enforces `name`/`description`/`Params`, and — because
+  `ABCMeta` sets `__abstractmethods__` *after* `__init_subclass__` runs — the
+  guard meant to skip abstract bases doesn't fire at class-creation time. A shared
+  `_FsTool(Tool)` base therefore raised `TypeError` on import. The fix was
+  module-level helpers (`_root`, `_limit`) instead of a base class — a reminder
+  that metaclass hooks and `__init_subclass__` interleave in a non-obvious order.
+- **Consequence: eval isolation moved from `chdir` to a root override.** Because
+  tools now resolve against `config.root` rather than the CWD, the eval runner's
+  `os.chdir(workdir)` no longer isolated file writes. It now runs each scenario
+  with `config.root` copied to the temp workdir — isolation via the real mechanism
+  instead of a process-global side effect (this also closes the "known edge" noted
+  under Task 11).

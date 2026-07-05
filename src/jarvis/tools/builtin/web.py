@@ -50,7 +50,9 @@ class WebSearchTool(Tool):
     name = "web_search"
     description = "Search the web and return an answer summary plus ranked source snippets."
     Params = WebSearchParams
-    permission_default = Permission.ALLOW
+    # Network egress asks by default: the query leaves the machine (and could carry
+    # sensitive context). "Always allow" at the prompt persists a tool-level allow.
+    permission_default = Permission.ASK
 
     async def run(self, params: WebSearchParams) -> ToolResult | str:
         cfg = self.context.config
@@ -82,7 +84,9 @@ class WebFetchTool(Tool):
     name = "web_fetch"
     description = "Fetch a web page and return its main text content (boilerplate stripped)."
     Params = WebFetchParams
-    permission_default = Permission.ALLOW
+    # Asks by default: fetching a URL is an outbound request to an arbitrary host
+    # (SSRF / exfiltration surface). The human sees the target URL before approving.
+    permission_default = Permission.ASK
 
     async def run(self, params: WebFetchParams) -> ToolResult | str:
         html = await _fetch_html(params.url, params.timeout_seconds)
