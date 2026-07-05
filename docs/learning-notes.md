@@ -304,3 +304,17 @@ Each entry captures the *non-obvious* decisions and their rationale.
 - **Not a pytest test.** It hits the live API and costs money, so it's a standalone
   script (`uv run python tests/evals/runner.py`) with pass/fail + per-scenario cost,
   exiting non-zero on failure so it can gate a release later.
+
+## Task 12 — Docs
+
+- **Three docs, three audiences.** `README.md` is for a user/operator (setup, usage,
+  the safety model); `docs/architecture.md` is the as-built map for a contributor
+  (layers, the loop, data flow, module locations); `docs/decisions/0001` is an ADR
+  capturing *why* the loop is hand-built, so the choice isn't silently re-litigated.
+- **`PLAN.md` stays forward-looking; `architecture.md` is as-built.** Keeping them
+  separate means the plan can describe phases 2–8 while the architecture doc only
+  claims what actually exists — a reader never has to guess which is real.
+- **The ADR records the seam, not just the decision.** The load-bearing detail is
+  that "from scratch" was made reversible by the `LLMClient` interface and the tool
+  registry — MCP or a higher-level SDK can slot in behind them later without a
+  rewrite. An ADR that only said "we built it ourselves" would miss the point.
