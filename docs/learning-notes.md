@@ -73,3 +73,35 @@ Each entry captures the *non-obvious* decisions and their rationale.
   at a temp dir per test and reconfigure freely; without closing the old handle
   we'd leak file descriptors and trip `ResourceWarning`. `cache_logger_on_first_use`
   is off so reconfiguration actually rebinds the output.
+
+## Task 4 — Tool framework
+
+- **Tools are data to the model, code behind the executor.** The model receives
+  only `{name, description, input_schema}`; the executor owns the side effect.
+  This is the single most important safety boundary in an agent — the model can
+  *request* anything but can only *do* what a tool's `run` implements, gated by
+  the executor and (task 5) the permission gate.
+- **`Params` is one pydantic model doing three jobs:** it generates the JSON
+  schema the API advertises, validates the model's tool input before `run` sees
+  it, and types `run`'s argument. One source of truth means the schema and the
+  runtime contract can't drift apart.
+- **`__init_subclass__` fails a misdeclared tool at import, not at call time.**
+  A concrete tool missing `name`/`description`/`Params` raises `TypeError` the
+  moment the class is defined — you find out on `discover()`, not three tool
+  calls into a live session. Abstract intermediate bases are exempted via the
+  `__abstractmethods__` check.
+- **The executor turns every failure into a `ToolResult(is_error=True)`.** Bad
+  input, timeout, and raised exceptions all become results the model reads and
+  recovers from — never exceptions that unwind the loop. This is *the* rule that
+  separates a resilient agent from one that dies on the first tool hiccup.
+- **Truncation guards the context window, not the disk.** A tool returning a
+  100k-char blob is capped with an explicit "[... truncated N chars ...]" note.
+  Without it, one `read_file` on a huge file silently evicts the rest of the
+  conversation. Char-based (not token-based) truncation keeps it offline/fast;
+  precise token limits aren't needed for a safety cap.
+- **Audit logging is deliberately NOT in the executor.** The agent loop owns the
+  `trace_id` and orchestration, so it emits `tool_call`/`tool_result` events. The
+  executor stays a pure unit — trivial to test without configuring logging.
+- **Discovery filters by `__module__`.** `register_from_module` only registers
+  tool classes *authored* in that module, so importing the base `Tool` (or
+  re-exporting a tool) never causes a double-registration collision.
