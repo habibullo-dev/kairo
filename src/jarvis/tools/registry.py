@@ -51,6 +51,7 @@ class ToolRegistry:
         for re-export) isn't double-registered — only classes authored in this
         module count. ``context`` is injected into each tool's constructor.
         """
+        ctx = context or ToolContext()
         count = 0
         for _, obj in inspect.getmembers(module, inspect.isclass):
             if (
@@ -58,8 +59,9 @@ class ToolRegistry:
                 and obj is not Tool
                 and not getattr(obj, "__abstractmethods__", None)
                 and obj.__module__ == module.__name__
+                and obj.is_available(ctx)
             ):
-                self.register(obj(context))
+                self.register(obj(ctx))
                 count += 1
         return count
 

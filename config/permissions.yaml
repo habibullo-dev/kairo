@@ -19,6 +19,12 @@ tools:
   # "always" at the prompt to persist an allow for the session and beyond.
   web_search: ask
   web_fetch: ask
+  # Long-term memory (Phase 2). recall is read-only (allow); remember ASKS on
+  # purpose — a model-visible memory write is a prompt-injection sink, so a human
+  # sees the full content before it's persisted. forget asks too.
+  recall: allow
+  remember: ask
+  forget: ask
 
 filesystem:
   # Writes inside these dirs (relative to the project root, or absolute) may be

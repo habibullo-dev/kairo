@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from jarvis.config import Config
+    from jarvis.memory.service import MemoryService
 
 
 @dataclass
@@ -28,11 +29,12 @@ class ToolContext:
     """Dependencies a tool may need but shouldn't construct itself.
 
     Passed to tools at discovery/registration so a tool can reach config/secrets
-    (e.g. the Tavily key for web search) without reading globals or the process
-    environment. Tools that need nothing simply ignore it.
+    (e.g. the Tavily key for web search) or the memory service without reading
+    globals or the process environment. Tools that need nothing simply ignore it.
     """
 
     config: Config | Any = None
+    memory: MemoryService | Any = None  # None when long-term memory is disabled/unavailable
 
 
 class Permission(StrEnum):
@@ -75,6 +77,17 @@ class Tool(ABC):
         for attr in ("name", "description", "Params"):
             if not getattr(cls, attr, None):
                 raise TypeError(f"{cls.__name__} must define class attribute '{attr}'")
+
+    @classmethod
+    def is_available(cls, context: ToolContext) -> bool:
+        """Whether this tool should be registered given ``context``.
+
+        Default: always. A tool that depends on an optional collaborator (e.g. the
+        memory service) overrides this to return False when it's absent — an
+        unusable tool in the schema only wastes the model's attention and invites
+        doomed calls. Checked by the registry at discovery time.
+        """
+        return True
 
     def input_schema(self) -> dict:
         """JSON schema for this tool's input, derived from ``Params``."""
