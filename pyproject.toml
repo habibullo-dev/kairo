@@ -9,6 +9,7 @@ authors = [{ name = "Habibulloh Utboev", email = "habibullochutboev@gmail.com" }
 dependencies = [
     "aiosqlite>=0.22.1",
     "anthropic>=0.116.0",
+    "numpy>=2.5.1",
     "prompt-toolkit>=3.0.52",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
@@ -16,6 +17,7 @@ dependencies = [
     "rich>=15.0.0",
     "structlog>=26.1.0",
     "trafilatura>=2.1.0",
+    "voyageai>=0.4.1",
 ]
 
 [project.scripts]

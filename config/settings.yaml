@@ -19,6 +19,15 @@ limits:
   effort: high                  # output_config effort: low|medium|high|xhigh|max
   max_retries: 4                # SDK retries 429/5xx with exponential backoff
 
+memory:
+  # Long-term memory (Phase 2). Thresholds are voyage-3-large-specific; tune from
+  # real recall logs. Set enabled: false (or omit VOYAGE_API_KEY) to run without it.
+  enabled: true
+  top_k: 6              # max memories auto-recall injects into the system prompt
+  min_similarity: 0.35  # cosine floor for a recall hit
+  dedup_trigger: 0.85   # cosine above which remember() asks sonnet-5 to adjudicate
+  reflection: true      # distill durable facts from the transcript at session end
+
 paths:
   data_dir: data   # SQLite db (relative to project root)
   logs_dir: logs   # JSON-lines audit/trace logs

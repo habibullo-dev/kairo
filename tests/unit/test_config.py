@@ -32,6 +32,22 @@ def test_defaults_when_no_settings_file(tmp_path: Path) -> None:
     assert cfg.paths.data_dir == Path("data")
 
 
+def test_memory_config_defaults(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.memory.enabled is True
+    assert cfg.memory.top_k == 6
+    assert cfg.memory.dedup_trigger == 0.85
+    assert cfg.memory.reflection is True
+
+
+def test_memory_config_yaml_override(tmp_path: Path) -> None:
+    _write_settings(tmp_path, "memory:\n  enabled: false\n  top_k: 3\n")
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.memory.enabled is False
+    assert cfg.memory.top_k == 3
+    assert cfg.memory.min_similarity == 0.35  # unspecified keeps default
+
+
 def test_yaml_overrides_defaults(tmp_path: Path) -> None:
     _write_settings(
         tmp_path,

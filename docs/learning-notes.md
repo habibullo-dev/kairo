@@ -377,3 +377,31 @@ the agent could exceed what a human actually approved.
   with `config.root` copied to the temp workdir — isolation via the real mechanism
   instead of a process-global side effect (this also closes the "known edge" noted
   under Task 11).
+
+# Phase 2 — Long-Term Memory
+
+The full Phase 2 design is `docs/PLAN-2-memory.md`. These notes capture the
+non-obvious *implementation* decisions per task.
+
+## P2 Task 1 — Scaffold
+
+- **`MemoryConfig` is the only Config sub-model with a default_factory.** Every
+  other sub-config (`models`, `limits`, `paths`) is a required field on `Config`,
+  but memory is a Phase-2 addition and several existing sites build `Config(...)`
+  directly (tests, the web-tool fixture). Defaulting it means those callers don't
+  have to learn about memory to keep compiling, while `load_config` still populates
+  it from YAML. A small, deliberate inconsistency that buys backward compatibility.
+- **Memory is a config *toggle*, not just a key check.** `memory.enabled` exists
+  independently of whether `VOYAGE_API_KEY` is set, because there are two distinct
+  reasons to run without memory — "I don't want it" (config) and "I can't (no key)"
+  (degradation, later tasks). Conflating them into one signal would make "disable
+  memory but keep the key around" impossible.
+- **`voyageai` drags in a heavy transitive tree** (langchain-core, tokenizers,
+  huggingface-hub, pillow). Accepted as-is: quality-first, cost/footprint is not a
+  constraint, and it's the official SDK. Noting it so a future slim-down (calling
+  the Voyage REST endpoint directly via httpx, which we already depend on) is a
+  known option if the dependency surface ever becomes a problem.
+- **Thresholds live in config from day one**, even before anything reads them.
+  Cosine cutoffs are embedding-model-specific and will be tuned from real recall
+  logs; hard-coding them would mean a code edit + redeploy to retune. They ship in
+  `settings.yaml` with comments so the knobs are discoverable.

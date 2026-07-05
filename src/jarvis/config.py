@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # service name -> (Secrets attribute, env var name) for require() error messages.
@@ -86,6 +86,17 @@ class LimitsConfig(BaseModel):
     max_retries: int = 4  # SDK retries 429/5xx with exponential backoff
 
 
+class MemoryConfig(BaseModel):
+    """Long-term memory (Phase 2) knobs. Thresholds are embedding-model-specific
+    (tuned for voyage-3-large) — expect to adjust from real recall logs."""
+
+    enabled: bool = True
+    top_k: int = 6  # how many memories auto-recall may inject
+    min_similarity: float = 0.35  # cosine floor for a recall hit
+    dedup_trigger: float = 0.85  # cosine above which remember() adjudicates dup/supersede
+    reflection: bool = True  # end-of-session distillation into long-term memory
+
+
 class PathsConfig(BaseModel):
     """Filesystem locations, relative to the project root unless absolute."""
 
@@ -99,6 +110,8 @@ class Config(BaseModel):
     root: Path
     models: ModelsConfig
     limits: LimitsConfig
+    # Phase 2; default_factory keeps direct Config(...) callers simple.
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     paths: PathsConfig
     secrets: Secrets
 
@@ -173,6 +186,7 @@ def load_config(
             root=root,
             models=ModelsConfig(**data.get("models", {})),
             limits=LimitsConfig(**data.get("limits", {})),
+            memory=MemoryConfig(**data.get("memory", {})),
             paths=PathsConfig(**data.get("paths", {})),
             secrets=secrets,
         )
