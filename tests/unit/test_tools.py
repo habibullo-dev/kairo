@@ -131,10 +131,20 @@ def test_register_from_module_finds_defined_tools_only() -> None:
     assert reg.names() == ["local_echo"]
 
 
-def test_discover_empty_builtin_package() -> None:
+def test_discover_builtin_package() -> None:
     reg = ToolRegistry()
-    # builtin is empty until task 9 — discovery must succeed and register nothing.
-    assert reg.discover("jarvis.tools.builtin") == 0
+    n = reg.discover("jarvis.tools.builtin")
+    assert n >= 7
+    for name in (
+        "read_file",
+        "write_file",
+        "list_dir",
+        "glob_search",
+        "run_shell",
+        "web_search",
+        "web_fetch",
+    ):
+        assert name in reg
 
 
 # --- Executor --------------------------------------------------------------

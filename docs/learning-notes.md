@@ -196,3 +196,31 @@ Each entry captures the *non-obvious* decisions and their rationale.
 - **Injectable client = testable streaming.** `AnthropicClient(client=...)` accepts
   a fake async-stream object, so the whole streaming + conversion path is unit-tested
   with no network; `from_config` is the real-key path and fails fast without a key.
+
+## Task 9 — Built-in tools
+
+- **Dependency injection via `ToolContext`, not globals.** Web search needs the
+  Tavily key; rather than have the tool read `os.environ` (which the `.env` doesn't
+  populate) or a module global, the registry injects a `ToolContext(config=...)` at
+  discovery. Tools that need nothing ignore it. Adding `Tool.__init__(context=None)`
+  was backward-compatible — every existing `EchoTool()` still constructs.
+- **Blocking I/O runs in a thread, always.** Filesystem ops (`exists`, `read_bytes`,
+  `glob`, `iterdir`) are synchronous and would stall the event loop while other
+  tools run in parallel. Each tool delegates to a module-level sync helper via
+  `asyncio.to_thread`. Ruff's `ASYNC240` caught the naive version — a good lint to
+  keep on for an async codebase. Bonus: the sync helpers are directly testable.
+- **Tools return clean error results for expected failures.** Missing file, not-a-
+  directory, unconfigured web search — each returns `ToolResult(is_error=True)` with
+  a message the model can act on, rather than raising and relying on the executor's
+  generic wrapper. Unexpected errors still fall through to the executor.
+- **The shell tool is deliberately un-sandboxed but gated.** It runs `pwsh
+  -NoProfile -NonInteractive`; the safety boundary is the PermissionGate (ask +
+  shell rules), not a restricted shell. It kills the process on timeout so a hung
+  command can't wedge the loop, and caps output before the executor caps it again.
+- **Network calls are isolated behind `_tavily_search` / `_fetch_html`.** Tests
+  monkeypatch those two seams, so the tool logic (formatting, key handling, error
+  paths) is fully covered with no network. `web_fetch` runs `trafilatura.extract`
+  for real on sample HTML — a genuine integration check that boilerplate is stripped.
+- **Real filesystem + shell tests, mocked web.** Filesystem/shell tests exercise the
+  actual OS (shell guarded by `skipif(pwsh is None)`); only the web layer is mocked,
+  because that's the only piece that needs the network or a paid key.

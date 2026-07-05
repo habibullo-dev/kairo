@@ -13,7 +13,7 @@ import inspect
 import pkgutil
 from types import ModuleType
 
-from jarvis.tools.base import Tool
+from jarvis.tools.base import Tool, ToolContext
 
 
 class ToolRegistry:
@@ -44,12 +44,12 @@ class ToolRegistry:
     def __len__(self) -> int:
         return len(self._tools)
 
-    def register_from_module(self, module: ModuleType) -> int:
+    def register_from_module(self, module: ModuleType, context: ToolContext | None = None) -> int:
         """Register every concrete Tool subclass *defined in* ``module``.
 
         The ``__module__`` check means an imported base class (or a tool imported
         for re-export) isn't double-registered — only classes authored in this
-        module count.
+        module count. ``context`` is injected into each tool's constructor.
         """
         count = 0
         for _, obj in inspect.getmembers(module, inspect.isclass):
@@ -59,15 +59,17 @@ class ToolRegistry:
                 and not getattr(obj, "__abstractmethods__", None)
                 and obj.__module__ == module.__name__
             ):
-                self.register(obj())
+                self.register(obj(context))
                 count += 1
         return count
 
-    def discover(self, package: str = "jarvis.tools.builtin") -> int:
-        """Import ``package`` and all its submodules, registering the tools found.
-        Returns the number registered."""
+    def discover(
+        self, package: str = "jarvis.tools.builtin", context: ToolContext | None = None
+    ) -> int:
+        """Import ``package`` and all its submodules, registering the tools found
+        (with ``context`` injected). Returns the number registered."""
         pkg = importlib.import_module(package)
-        count = self.register_from_module(pkg)
+        count = self.register_from_module(pkg, context)
         for info in pkgutil.iter_modules(getattr(pkg, "__path__", []), prefix=f"{pkg.__name__}."):
-            count += self.register_from_module(importlib.import_module(info.name))
+            count += self.register_from_module(importlib.import_module(info.name), context)
         return count

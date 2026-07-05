@@ -13,10 +13,26 @@ sent to the API *and* validates the model's tool input before ``run`` sees it.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from jarvis.config import Config
+
+
+@dataclass
+class ToolContext:
+    """Dependencies a tool may need but shouldn't construct itself.
+
+    Passed to tools at discovery/registration so a tool can reach config/secrets
+    (e.g. the Tavily key for web search) without reading globals or the process
+    environment. Tools that need nothing simply ignore it.
+    """
+
+    config: Config | Any = None
 
 
 class Permission(StrEnum):
@@ -48,6 +64,9 @@ class Tool(ABC):
     description: ClassVar[str]
     Params: ClassVar[type[BaseModel]]
     permission_default: ClassVar[Permission] = Permission.ASK
+
+    def __init__(self, context: ToolContext | None = None) -> None:
+        self.context = context or ToolContext()
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
