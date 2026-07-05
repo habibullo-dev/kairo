@@ -830,3 +830,27 @@ non-obvious *implementation* decisions per task.
 - **A non-`end_turn` stop is a reported failure, not silence.** A background run
   that exhausts its iteration budget produces a failure notice and an `error` run
   row — an unattended agent going quiet is worse than one that says it gave up.
+
+## Task 8 — Task tools + prompts + permissions
+
+- **`schedule_task` is the one tool that is never "always"-able.** Every other
+  tool can be granted a persistent allow at the prompt; schedule_task and
+  cancel_task are excluded in `_persist_always`, because a single stray "a"
+  keystroke persisting a deferred-execution sink is a worse failure than
+  re-prompting. The current call still proceeds on that one approval — we just
+  never write the standing grant.
+- **The approval prompt computes the fire time so a timezone bug is visible.**
+  `_call_summary` runs the pure `compute_next` at approval and shows "first fire
+  2026-07-07 09:00 KST" alongside the full untruncated payload. The model has no
+  reliable clock, so it routinely picks wrong-tz datetimes; showing the resolved
+  local time is what lets the human catch "that's 3am, not 3pm" before approving.
+- **"Exactly one schedule field" is a pydantic model_validator, so the error is
+  model-facing.** once_at / cron / every_seconds are mutually exclusive; the
+  validator raises a ValidationError the executor turns into an is_error result
+  the model reads and retries — better than silently picking one.
+- **Timezone-dependent tests must fix the zone or assert tz-independently.** A
+  tool test that hardcoded "08:00" failed on a machine in Asia/Seoul (the tool
+  uses the local zone). The exact-time assertion lives in the service test (which
+  fixes tz=UTC); the tool test asserts only the stable shape ("in the past",
+  the year, "future time"). Lesson: anything touching the local clock/zone is an
+  environment input — pin it or don't assert on it.

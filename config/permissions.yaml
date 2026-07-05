@@ -25,6 +25,14 @@ tools:
   recall: allow
   remember: ask
   forget: ask
+  # Tasks & scheduling (Phase 3). list_tasks is read-only (allow). schedule_task
+  # ASKS on purpose — it is a *deferred-execution* injection sink (worse than
+  # remember: the payload eventually runs with tools), so a human sees the full
+  # payload + computed fire time before it's stored, and it is never "always"-able.
+  # cancel_task asks so the model can't silently drop your reminders.
+  list_tasks: allow
+  schedule_task: ask
+  cancel_task: ask
 
 filesystem:
   # Writes inside these dirs (relative to the project root, or absolute) may be

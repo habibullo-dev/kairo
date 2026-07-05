@@ -49,7 +49,48 @@ def _call_summary(call: ToolCall) -> str:
         return f"remember [{inp.get('type', 'fact')}]: {inp.get('content', '')}"
     if call.name == "forget":
         return f"forget memory #{inp.get('memory_id', '?')}"
+    if call.name == "schedule_task":
+        # full payload, NOT truncated + computed fire time — the human consents to
+        # the actual future action, and can catch a wrong-timezone datetime.
+        return (
+            f'schedule {inp.get("kind", "?")} "{inp.get("title", "")}" '
+            f"[{_schedule_preview(inp)}]:\n    {inp.get('payload', '')}"
+        )
+    if call.name == "cancel_task":
+        return f"cancel task #{inp.get('task_id', '?')}"
     return ""
+
+
+def _schedule_preview(inp: dict) -> str:
+    """Human summary of a schedule_task's timing, with the computed first fire in
+    local time — so a wrong-timezone datetime is visible at the approval prompt.
+    Defensive: never raises (it's only a preview)."""
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from tzlocal import get_localzone_name
+
+    from jarvis.scheduler.triggers import compute_next, validate
+
+    if inp.get("once_at") is not None:
+        kind, spec = "once", str(inp["once_at"])
+    elif inp.get("cron") is not None:
+        kind, spec = "cron", str(inp["cron"])
+    elif inp.get("every_seconds") is not None:
+        kind, spec = "interval", str(inp["every_seconds"])
+    else:
+        return "no schedule given"
+    try:
+        tz = get_localzone_name()
+        if validate(kind, spec, tz) is not None:
+            return f"{kind} {spec} — invalid"
+        fire = compute_next(kind, spec, tz, after=datetime.now(UTC))
+        if fire is None:
+            return f"{kind} {spec} — in the past"
+        local = fire.astimezone(ZoneInfo(tz))
+        return f"{kind} {spec}; first fire {local:%Y-%m-%d %H:%M %Z}"
+    except Exception:
+        return f"{kind} {spec}"
 
 
 def _utility_client(config: Config) -> AnthropicClient:
@@ -195,6 +236,11 @@ class Repl:
             return Permission.ALLOW
         return Permission.DENY
 
+    # Never "always"-able: a single stray "a" keystroke must not permanently open
+    # a deferred-execution injection sink (schedule_task) or let the model silence
+    # the user's reminders (cancel_task). These are per-instance approval only.
+    _NEVER_PERSIST = frozenset({"schedule_task", "cancel_task"})
+
     def _persist_always(self, call: ToolCall) -> None:
         """Persist an 'always allow' choice as narrowly as the tool allows.
 
@@ -205,6 +251,9 @@ class Repl:
         location) are refused: the current write still went through on this one
         approval, but we won't silently authorize a whole tree from it.
         """
+        if call.name in self._NEVER_PERSIST:
+            self.log.info("always_allow_refused", tool=call.name, reason="deferred_execution_sink")
+            return
         if call.name == "run_shell":
             command = str(call.input.get("command", "")).strip()
             if command:
