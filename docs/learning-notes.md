@@ -48,3 +48,28 @@ Each entry captures the *non-obvious* decisions and their rationale.
 - **Every setting has a code default; YAML only overrides.** A missing or partial
   `settings.yaml` still yields a working `Config`. `pydantic-settings` precedence
   (init args > env vars > `.env` > defaults) is relied on and pinned by a test.
+
+## Task 3 — Observability
+
+- **The JSONL log is the audit trail, not the UI.** structlog renders one JSON
+  object per line to `logs/jarvis-YYYY-MM-DD.jsonl`. User-facing output is the
+  REPL's job (rich, task 8); conflating the two would make the machine-parseable
+  record depend on terminal formatting. So logging writes structured events only.
+- **`trace_id` is a contextvar + a processor, not a parameter threaded everywhere.**
+  Bind it once at the top of a turn; a structlog processor stamps every subsequent
+  event automatically. This is what lets you later `grep trace_id=...` a log and see
+  the whole turn — model calls, tool calls, permission decisions — without passing
+  an id through every function signature.
+- **Cost is observability, never a control input.** The project is quality-first;
+  the pricing table exists so the status bar/audit can report spend. `cost_of`
+  returns `0.0` for unknown models rather than raising — a bad price estimate must
+  never crash the agent.
+- **Price lookup tolerates dated snapshot IDs.** The API may return
+  `claude-haiku-4-5-20251001`; `price_for` matches the longest known prefix so the
+  table only needs the alias. Cache tokens are priced as multiples of the input
+  rate (write ~1.25x for the 5-min cache, read ~0.1x), matching the four-field
+  Anthropic `usage` object — so `Usage.from_response` reads it directly in task 7.
+- **`configure_logging` is idempotent and closes the prior file.** Tests point it
+  at a temp dir per test and reconfigure freely; without closing the old handle
+  we'd leak file descriptors and trip `ResourceWarning`. `cache_logger_on_first_use`
+  is off so reconfiguration actually rebinds the output.
