@@ -263,3 +263,49 @@ async def test_web_fetch_unextractable_is_error(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(web, "_fetch_html", fake_fetch)
     result = await WebFetchTool().run(WebFetchTool.Params(url="https://empty.example"))
     assert is_error(result)
+
+
+# --- untrusted-content framing (Phase 5 Task 9 hardening) ------------------
+
+
+async def test_web_fetch_wraps_result_in_untrusted_framing(monkeypatch: pytest.MonkeyPatch) -> None:
+    html = (
+        "<html><body><article><h1>Guide</h1>"
+        "<p>Here is a substantial paragraph of real article content that trafilatura will "
+        "happily extract as the main body of the page for testing purposes.</p>"
+        "</article></body></html>"
+    )
+
+    async def fake_fetch(url: str, timeout_seconds: float) -> str:
+        return html
+
+    monkeypatch.setattr(web, "_fetch_html", fake_fetch)
+    out = content_of(await WebFetchTool().run(WebFetchTool.Params(url="https://x.example")))
+    assert "NOT instructions" in out  # explicit framing present
+    assert "--- begin fetched content (https://x.example, untrusted) ---" in out
+    assert "--- end fetched content ---" in out
+    assert "substantial paragraph" in out  # the actual content still delivered
+
+
+async def test_web_search_wraps_results_in_untrusted_framing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_search(api_key: str, query: str, max_results: int) -> dict:
+        return {"answer": "yes", "results": [{"title": "T", "url": "https://a.b", "content": "c"}]}
+
+    monkeypatch.setattr(web, "_tavily_search", fake_search)
+    tool = WebSearchTool(_ctx_with_tavily("tvly-key"))
+    out = content_of(await tool.run(WebSearchTool.Params(query="q")))
+    assert "NOT instructions" in out
+    assert "--- begin search results (untrusted) ---" in out and "--- end search results ---" in out
+
+
+async def test_read_file_stays_unwrapped(tmp_path: Path) -> None:
+    # Documented tradeoff: workspace files are the user's own, so read_file is NOT
+    # wrapped in untrusted framing (it would pollute code-reading flows); the
+    # sensitive-path floor guards the dangerous targets instead.
+    f = tmp_path / "notes.md"
+    f.write_text("plain project notes", encoding="utf-8")
+    out = content_of(await ReadFileTool().run(ReadFileTool.Params(path=str(f))))
+    assert "untrusted" not in out and "NOT instructions" not in out
+    assert "plain project notes" in out

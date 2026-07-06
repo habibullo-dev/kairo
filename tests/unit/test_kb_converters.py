@@ -123,6 +123,24 @@ def test_html_to_markdown_uses_trafilatura(monkeypatch: pytest.MonkeyPatch) -> N
     assert "Extracted" in res.markdown
 
 
+def test_kb_conversion_never_carries_web_tool_framing() -> None:
+    # Separation pin (D6): KB ingestion converts HTML via converters, NOT the web tool,
+    # so the web tool's untrusted-content framing must never leak into stored markdown.
+    # A future refactor that routed KB ingest through the web tool would fail here.
+    from jarvis.tools.builtin import web
+
+    html = (
+        "<html><body><article><h1>Runbook</h1>"
+        "<p>A substantial paragraph of runbook prose that trafilatura extracts as the "
+        "main article body, long enough to be treated as content and not boilerplate.</p>"
+        "</article></body></html>"
+    )
+    res = html_to_markdown(html, url="https://x.test/runbook")
+    assert web._FETCH_HEADER not in res.markdown
+    assert "--- begin fetched content" not in res.markdown
+    assert "untrusted" not in res.markdown.lower()
+
+
 def test_html_to_markdown_falls_back_to_markitdown(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(converters.trafilatura, "extract", lambda *a, **k: None)  # non-article
     html = "<html><head><title>D</title></head><body><h1>Fallback Head</h1><p>p</p></body></html>"

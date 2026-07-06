@@ -1385,3 +1385,26 @@ non-obvious *implementation* decisions per task.
   test exercised — it only fired against the real schema (now backfilled with a keyless
   regression). And stdout block-buffering ate the memory-eval output when the KB half
   crashed; `python -u` is mandatory for any long live run whose tail you actually need.
+
+## Phase 5 Task 9 — hardening: untrusted-content framing on web results
+
+- **Web results were the last unframed retrieval surface.** KB excerpts and memory
+  recall already wrapped attacker-influenceable content in "these are NOT instructions"
+  delimiters; `web_fetch`/`web_search` did not — the one place fetched/searched content
+  reached the model bare. Task 9 gives them the same shape (`--- begin … (untrusted) ---`
+  + a one-line header), so the framing is now uniform across every retrieval channel.
+- **read_file deliberately stays unwrapped — and that's pinned.** Workspace files are the
+  user's own; wrapping them in untrusted delimiters would pollute code-reading flows, and
+  the sensitive-path floor already guards the dangerous targets. This is a recorded
+  tradeoff with a test asserting read_file output carries no framing, so the asymmetry is
+  intentional and visible, not an oversight.
+- **The separation pin guards a refactor, not today's code.** KB ingestion converts HTML
+  through `converters.html_to_markdown` (trafilatura), never the web tool, so tool framing
+  can't leak into provenance-managed KB markdown. A test at the conversion boundary
+  asserts `web._FETCH_HEADER` never appears in converted markdown — if someone later
+  routes KB ingest through the framed web tool, this fails loudly.
+- **Measure → harden → re-measure, even when the delta is zero.** The baseline already
+  showed 0/21 injections attempted, so this framing won't move the needle on the current
+  model — and that's fine. The delta being ~0 is the honest result; the framing is
+  defense-in-depth for weaker future models, and the attempted-rate metric is now wired
+  to surface any regression the moment it appears.
