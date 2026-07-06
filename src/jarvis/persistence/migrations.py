@@ -8,6 +8,8 @@ minimal so the data model stays visible (plain SQL, no ORM).
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 import aiosqlite
 
 _SCHEMA_V1 = """
@@ -182,12 +184,115 @@ CREATE INDEX idx_kb_links_from ON kb_wiki_links(from_path);
 CREATE INDEX idx_kb_links_to   ON kb_wiki_links(to_path);
 """
 
-# (target_version, sql). Append new tuples for future schema changes.
-MIGRATIONS: list[tuple[int, str]] = [
+# Phase 6: multi-agent delegation.
+#
+# Two changes, and the first is why this migration is imperative rather than a SQL
+# string: sessions.kind's CHECK must grow 'subagent', and SQLite cannot ALTER a CHECK
+# — the table must be rebuilt. The rebuild has to run with foreign_keys OFF, and that
+# PRAGMA is a silent no-op inside a transaction, so it must be toggled in autocommit
+# (see _migrate_v5). agent_runs is the delegation audit table (never DELETEd, like
+# task_runs): a 'running' row is opened before a child runs, so a crash leaves an
+# orphan the startup sweep marks 'aborted'.
+_SESSIONS_V5 = """
+CREATE TABLE sessions_new (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    title              TEXT,
+    reflected_at       TEXT,
+    compaction_summary TEXT,
+    compaction_cut     INTEGER,
+    kind               TEXT NOT NULL DEFAULT 'interactive'
+                       CHECK (kind IN ('interactive','task','subagent'))
+);
+"""
+
+# Run as individual statements inside the rebuild transaction (executescript would
+# COMMIT first, breaking the atomic rebuild).
+_AGENT_RUNS_V5: tuple[str, ...] = (
+    """
+    CREATE TABLE agent_runs (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+        parent_trace_id   TEXT,                 -- the parent turn's trace id
+        child_session_id  INTEGER REFERENCES sessions(id) ON DELETE SET NULL,  -- child transcript
+        child_trace_id    TEXT,                 -- the child turn's trace id (links the two)
+        title             TEXT NOT NULL,
+        prompt            TEXT NOT NULL,        -- verbatim delegated task prompt (audit)
+        tools_scope       TEXT NOT NULL,        -- JSON array of the child's allowlisted tools
+        status            TEXT NOT NULL DEFAULT 'running'
+            CHECK (status IN ('running','ok','error','timeout','cancelled','aborted')),
+        iterations        INTEGER NOT NULL DEFAULT 0,
+        denied_count      INTEGER NOT NULL DEFAULT 0,
+        input_tokens      INTEGER NOT NULL DEFAULT 0,
+        output_tokens     INTEGER NOT NULL DEFAULT 0,
+        cost_usd          REAL,                 -- NULL when the child model's price is unknown
+        result_text       TEXT,                 -- child final text (truncated) / failure note
+        error             TEXT,
+        started_at        TEXT NOT NULL,
+        finished_at       TEXT,
+        created_at        TEXT NOT NULL
+    );
+    """,
+    "CREATE INDEX idx_agent_runs_parent  ON agent_runs(parent_session_id, id)",
+    "CREATE INDEX idx_agent_runs_running ON agent_runs(status) WHERE status = 'running'",
+)
+
+
+async def _migrate_v5(db: aiosqlite.Connection) -> None:
+    """Widen sessions.kind's CHECK to allow 'subagent' (via a full table rebuild) and
+    add the agent_runs audit table.
+
+    The standard SQLite table-rebuild procedure: foreign_keys OFF (outside a
+    transaction — it's ignored inside one), rebuild inside one atomic transaction,
+    then foreign_key_check to prove nothing was orphaned before turning enforcement
+    back on. Referencing tables (messages, memories, tasks, task_runs, kb_sources)
+    name `sessions` textually, so drop+rename preserves their foreign keys.
+    """
+    # 1. Disable FK enforcement in autocommit (a no-op if issued inside a transaction).
+    await db.execute("PRAGMA foreign_keys = OFF")
+    await db.commit()
+
+    # 2. Rebuild sessions + create agent_runs, atomically.
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        await db.execute(_SESSIONS_V5)
+        await db.execute(
+            "INSERT INTO sessions_new "
+            "(id, created_at, updated_at, title, reflected_at, compaction_summary, "
+            "compaction_cut, kind) "
+            "SELECT id, created_at, updated_at, title, reflected_at, compaction_summary, "
+            "compaction_cut, kind FROM sessions"
+        )
+        await db.execute("DROP TABLE sessions")
+        await db.execute("ALTER TABLE sessions_new RENAME TO sessions")
+        for statement in _AGENT_RUNS_V5:
+            await db.execute(statement)
+    except BaseException:
+        await db.rollback()
+        await db.execute("PRAGMA foreign_keys = ON")  # best-effort restore before propagating
+        raise
+    await db.commit()
+
+    # 3. Verify the rebuild orphaned nothing, then re-enable enforcement.
+    cursor = await db.execute("PRAGMA foreign_key_check")
+    violations = await cursor.fetchall()
+    await db.execute("PRAGMA foreign_keys = ON")
+    if violations:
+        raise RuntimeError(f"schema v5 migration left foreign-key violations: {violations}")
+
+
+# A migration is either a SQL script (run via executescript) or an async callable that
+# needs imperative control (v5's FK toggling + verification).
+MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
+
+# (target_version, step). Append new tuples for future schema changes.
+MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (1, _SCHEMA_V1),
     (2, _SCHEMA_V2),
     (3, _SCHEMA_V3),
     (4, _SCHEMA_V4),
+    (5, _migrate_v5),
 ]
 
 
@@ -196,9 +301,12 @@ async def migrate(db: aiosqlite.Connection) -> int:
     cursor = await db.execute("PRAGMA user_version")
     row = await cursor.fetchone()
     version = row[0] if row else 0
-    for target, sql in MIGRATIONS:
+    for target, step in MIGRATIONS:
         if version < target:
-            await db.executescript(sql)
+            if isinstance(step, str):
+                await db.executescript(step)
+            else:
+                await step(db)
             await db.execute(f"PRAGMA user_version = {target}")  # target is a trusted int constant
             await db.commit()
             version = target

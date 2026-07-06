@@ -15,7 +15,14 @@ from jarvis.config import load_config
 from jarvis.core import FakeClient, text_message
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect, transaction
-from jarvis.persistence.migrations import _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, migrate
+from jarvis.persistence.migrations import (
+    _SCHEMA_V1,
+    _SCHEMA_V2,
+    _SCHEMA_V3,
+    _SCHEMA_V4,
+    migrate,
+)
+from jarvis.persistence.sessions import REFLECTABLE_KINDS, reflectable_kinds
 
 MIXED_MESSAGES = [
     {"role": "user", "content": "summarize the file"},
@@ -42,7 +49,7 @@ async def test_migrations_set_user_version(tmp_path: Path) -> None:
     cursor = await db.execute("PRAGMA user_version")
     (version,) = await cursor.fetchone()
     await db.close()
-    assert version == 4
+    assert version == 5
 
 
 async def test_v2_to_v3_migration_preserves_data(tmp_path: Path) -> None:
@@ -68,10 +75,10 @@ async def test_v2_to_v3_migration_preserves_data(tmp_path: Path) -> None:
         )
         await db.commit()
 
-        assert await migrate(db) == 4  # migrate() applies ALL pending (v3 + v4) onto a v2 db
+        assert await migrate(db) == 5  # migrate() applies ALL pending (v3 + v4 + v5) onto a v2 db
 
         cur = await db.execute("SELECT title, kind FROM sessions WHERE id=1")
-        assert await cur.fetchone() == ("kept", "interactive")  # kind backfilled
+        assert await cur.fetchone() == ("kept", "interactive")  # backfilled + survives v5 rebuild
         cur = await db.execute("SELECT content FROM messages WHERE session_id=1")
         assert (await cur.fetchone())[0] == '"hi"'
         cur = await db.execute("SELECT content FROM memories WHERE id=1")
@@ -114,10 +121,10 @@ async def test_v3_to_v4_migration_preserves_data(tmp_path: Path) -> None:
         )
         await db.commit()
 
-        assert await migrate(db) == 4  # applies v4 onto a populated v3 db
+        assert await migrate(db) == 5  # applies v4 + v5 onto a populated v3 db
 
         cur = await db.execute("SELECT title, kind FROM sessions WHERE id=1")
-        assert await cur.fetchone() == ("kept", "task")
+        assert await cur.fetchone() == ("kept", "task")  # task kind survives v5 rebuild
         cur = await db.execute("SELECT content FROM memories WHERE id=1")
         assert (await cur.fetchone())[0] == "kept-memory"
         cur = await db.execute("SELECT title FROM tasks WHERE id=1")
@@ -125,6 +132,110 @@ async def test_v3_to_v4_migration_preserves_data(tmp_path: Path) -> None:
         for table in ("kb_sources", "kb_chunks", "kb_wiki_links"):
             cur = await db.execute(f"SELECT count(*) FROM {table}")
             assert (await cur.fetchone())[0] == 0
+    finally:
+        await db.close()
+
+
+async def test_v4_to_v5_migration_preserves_data_and_widens_kind(tmp_path: Path) -> None:
+    # The highest-blast-radius migration: sessions is rebuilt (SQLite can't ALTER a
+    # CHECK) with FK children present. Everything must survive byte-identically, the
+    # widened CHECK must accept 'subagent', and FK enforcement must be back ON after.
+    db = await aiosqlite.connect(tmp_path / "m.db")
+    try:
+        await db.executescript(_SCHEMA_V1)
+        await db.executescript(_SCHEMA_V2)
+        await db.executescript(_SCHEMA_V3)
+        await db.executescript(_SCHEMA_V4)
+        await db.execute("PRAGMA user_version = 4")
+        now = "2026-01-01T00:00:00+00:00"
+        # An interactive and a task session, both with compaction state + reflected_at.
+        await db.execute(
+            "INSERT INTO sessions (id, created_at, updated_at, title, reflected_at, "
+            "compaction_summary, compaction_cut, kind) "
+            "VALUES (1, ?, ?, 'me', ?, 'sum', 7, 'interactive')",
+            (now, now, now),
+        )
+        await db.execute(
+            "INSERT INTO sessions (id, created_at, updated_at, title, kind) "
+            "VALUES (2, ?, ?, 'job #1', 'task')",
+            (now, now),
+        )
+        # FK children of sessions: messages, memories, tasks (exercise FK preservation).
+        await db.execute(
+            "INSERT INTO messages (session_id, seq, role, content, created_at) "
+            "VALUES (1, 0, 'user', ?, ?)",
+            ('"hi"', now),
+        )
+        await db.execute(
+            "INSERT INTO memories (type, content, embedding, embedding_model, source, "
+            "source_session_id, created_at, updated_at) "
+            "VALUES ('fact', 'kept', x'00', 'm', 'user', 1, ?, ?)",
+            (now, now),
+        )
+        await db.execute(
+            "INSERT INTO tasks (kind, title, payload, schedule_kind, schedule_spec, timezone, "
+            "next_run_at, created_by, source_session_id, created_at, updated_at) "
+            "VALUES ('reminder', 't', 'p', 'once', ?, 'UTC', ?, 'user', 1, ?, ?)",
+            (now, now, now, now),
+        )
+        await db.commit()
+
+        assert await migrate(db) == 5
+
+        # All rows survive, including the widened-column values on the rebuilt table.
+        cur = await db.execute(
+            "SELECT title, reflected_at, compaction_summary, compaction_cut, kind "
+            "FROM sessions WHERE id = 1"
+        )
+        assert await cur.fetchone() == ("me", now, "sum", 7, "interactive")
+        cur = await db.execute("SELECT kind FROM sessions WHERE id = 2")
+        assert (await cur.fetchone())[0] == "task"
+        cur = await db.execute("SELECT source_session_id FROM memories WHERE id = 1")
+        assert (await cur.fetchone())[0] == 1  # FK reference preserved across the rebuild
+        cur = await db.execute("SELECT source_session_id FROM tasks WHERE id = 1")
+        assert (await cur.fetchone())[0] == 1
+
+        # The widened CHECK now accepts 'subagent'...
+        await db.execute(
+            "INSERT INTO sessions (created_at, updated_at, kind) VALUES (?, ?, 'subagent')",
+            (now, now),
+        )
+        await db.commit()
+        # ...but still rejects an unknown kind.
+        with pytest.raises(aiosqlite.IntegrityError):
+            await db.execute(
+                "INSERT INTO sessions (created_at, updated_at, kind) VALUES (?, ?, 'bogus')",
+                (now, now),
+            )
+        await db.rollback()
+
+        # FK enforcement is back ON: a child pointing at a missing parent is rejected.
+        with pytest.raises(aiosqlite.IntegrityError):
+            await db.execute(
+                "INSERT INTO messages (session_id, seq, role, content, created_at) "
+                "VALUES (9999, 0, 'user', ?, ?)",
+                ('"orphan"', now),
+            )
+        await db.rollback()
+
+        # agent_runs exists and is empty.
+        cur = await db.execute("SELECT count(*) FROM agent_runs")
+        assert (await cur.fetchone())[0] == 0
+    finally:
+        await db.close()
+
+
+async def test_schema_v5_agent_runs_check_constraints(tmp_path: Path) -> None:
+    db = await connect(tmp_path / "c.db")
+    try:
+        now = "2026-01-01T00:00:00+00:00"
+        # agent_runs.status is constrained to the run-status machine.
+        with pytest.raises(aiosqlite.IntegrityError):
+            await db.execute(
+                "INSERT INTO agent_runs (title, prompt, tools_scope, status, started_at, "
+                "created_at) VALUES ('t', 'p', '[]', 'bogus', ?, ?)",
+                (now, now),
+            )
     finally:
         await db.close()
 
@@ -294,10 +405,42 @@ async def test_unreflected_skips_task_sessions_by_default(tmp_path: Path) -> Non
         assert task not in await store.unreflected_session_ids()
         assert interactive in await store.unreflected_session_ids()
         # explicit opt-in (scheduler.reflect_job_sessions) includes them
-        assert task in await store.unreflected_session_ids(include_task_sessions=True)
+        assert task in await store.unreflected_session_ids(kinds=REFLECTABLE_KINDS)
 
         assert await store.needs_reflection(task) is False
-        assert await store.needs_reflection(task, include_task_sessions=True) is True
+        assert await store.needs_reflection(task, kinds=REFLECTABLE_KINDS) is True
+    finally:
+        await store.close()
+
+
+async def test_reflectable_kinds_never_includes_subagent() -> None:
+    # The Phase 6 firewall as pure policy: the ONLY helper callers use to derive a
+    # reflection kinds set can never yield 'subagent', for either config value.
+    assert reflectable_kinds(reflect_job_sessions=False) == frozenset({"interactive"})
+    assert reflectable_kinds(reflect_job_sessions=True) == frozenset({"interactive", "task"})
+    assert "subagent" not in reflectable_kinds(reflect_job_sessions=True)
+    assert "subagent" not in REFLECTABLE_KINDS
+
+
+async def test_subagent_sessions_never_reflected_even_if_kinds_asks(tmp_path: Path) -> None:
+    # The firewall as structure: even a (buggy) caller that explicitly requests
+    # 'subagent' gets nothing — the query intersects with REFLECTABLE_KINDS, so a
+    # delegated child transcript can never launder into long-term memory.
+    store = await SessionStore.open(tmp_path / "s.db")
+    try:
+        sub = await store.create_session(title="child", kind="subagent")
+        await store.save_messages(sub, [{"role": "user", "content": "delegated task"}])
+
+        assert sub not in await store.unreflected_session_ids()
+        assert sub not in await store.unreflected_session_ids(
+            kinds=frozenset({"interactive", "task", "subagent"})
+        )
+        assert sub not in await store.unreflected_session_ids(kinds=frozenset({"subagent"}))
+        assert await store.needs_reflection(sub, kinds=frozenset({"subagent"})) is False
+        # and a subagent session never wins --resume either
+        interactive = await store.create_session()
+        await store.save_messages(interactive, [{"role": "user", "content": "hi"}])
+        assert await store.latest_session_id() == interactive
     finally:
         await store.close()
 

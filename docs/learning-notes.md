@@ -1475,3 +1475,36 @@ non-obvious *implementation* decisions per task.
   type lands in Task 4; forward-importing a module that doesn't exist yet would make this
   commit reference a phantom. Each commit staying internally consistent beats a slightly
   tighter annotation that dangles for two commits.
+
+## Phase 6 Task 2 — schema v5 + agent_runs + the reflection firewall
+
+- **You can't ALTER a CHECK in SQLite — you rebuild the table.** Adding 'subagent' to
+  `sessions.kind`'s CHECK meant the documented 12-step dance: `PRAGMA foreign_keys=OFF`
+  (which is a *silent no-op inside a transaction*, so it must run in autocommit), create
+  `sessions_new` with the widened CHECK, copy rows, DROP the old table, RENAME the new
+  one, `PRAGMA foreign_key_check` to prove nothing was orphaned, then `foreign_keys=ON`.
+  Child tables (messages/memories/tasks/task_runs/kb_sources) reference `sessions` *by
+  name*, so drop+rename leaves their FKs intact — verified against a populated v4 DB.
+- **This forced the migration runner to grow a callable step type.** v1–v4 are SQL strings
+  run via `executescript` (which COMMITs first — fatal to an atomic rebuild). v5 needs
+  imperative control (FK toggle outside a txn, `foreign_key_check` result inspected), so
+  `MigrationStep = str | Callable[[Connection], Awaitable[None]]` and the runner branches.
+  The lesson: a migration framework that only speaks SQL strings can't express the one
+  migration that matters most.
+- **The reflection firewall is structural, not conventional.** The old
+  `include_task_sessions: bool` had a booby trap — its `True` arm meant "remove the kind
+  filter entirely", which would have swept 'subagent' sessions into memory the day the
+  knob was wired. Replaced with `kinds: frozenset[str]`, and — crucially — the query
+  *intersects* the requested kinds with a module-level `REFLECTABLE_KINDS` ceiling that
+  omits 'subagent'. So even a buggy caller passing `{'subagent'}` reflects nothing. The
+  guarantee doesn't depend on callers being careful; it's enforced at the query.
+- **A latent config knob is a landmine, not a feature.** `reflect_job_sessions` has existed
+  since Phase 3 but was never wired to a caller — only a test passed `include_task_sessions`
+  directly. That meant the refactor was contained (no production caller changed), but it
+  also meant the knob's safety was never really exercised. Added `reflectable_kinds()` as
+  the single mapping point so if it's ever wired, it *cannot* produce 'subagent'.
+- **agent_runs mirrors task_runs on purpose.** Same crash-orphan discipline (row opened
+  'running' before the child runs; startup sweep marks stragglers 'aborted'), same
+  never-DELETE audit invariant, same FK-SET-NULL on the referenced session. Reusing a
+  proven shape beats inventing a new one — and it records *both* trace ids (parent + child)
+  so one log query reconstructs the delegation causality chain.

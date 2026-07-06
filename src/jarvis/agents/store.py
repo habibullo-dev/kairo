@@ -1,0 +1,204 @@
+"""``agent_runs`` persistence: the audit trail for delegated sub-agent runs (Phase 6).
+
+Mirrors the ``task_runs`` discipline. A row is opened ``'running'`` *before* the
+child executes (:meth:`begin_run`), so a crash between start and finish leaves a
+detectable orphan the startup sweep (:meth:`sweep_orphans`) marks ``'aborted'`` —
+a child's side effects may have partly completed, so it must never be silently
+forgotten or re-run. Nothing here is ever DELETEd: this is audit, and the
+never-DELETE invariant of ADR-0005 extends to it (ADR-0006).
+
+Each row records *both* trace ids — the parent turn's and the child turn's — so a
+single log query reconstructs the full parent↔child causality chain.
+
+All writes hold the shared write lock (see :mod:`jarvis.persistence.db`).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import datetime as _dt
+import json
+from dataclasses import dataclass
+
+import aiosqlite
+
+# Explicit column order (never SELECT *), matching the agent_runs schema (v5).
+_COLS = (
+    "id, parent_session_id, parent_trace_id, child_session_id, child_trace_id, "
+    "title, prompt, tools_scope, status, iterations, denied_count, input_tokens, "
+    "output_tokens, cost_usd, result_text, error, started_at, finished_at, created_at"
+)
+
+
+def _now() -> str:
+    return _dt.datetime.now(_dt.UTC).isoformat()
+
+
+@dataclass
+class AgentRun:
+    """One row of ``agent_runs`` — a single delegated sub-agent run."""
+
+    id: int
+    parent_session_id: int | None
+    parent_trace_id: str | None
+    child_session_id: int | None
+    child_trace_id: str | None
+    title: str
+    prompt: str
+    tools_scope: list[str]
+    status: str
+    iterations: int
+    denied_count: int
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float | None
+    result_text: str | None
+    error: str | None
+    started_at: str
+    finished_at: str | None
+    created_at: str
+
+
+def _row_to_run(row: tuple) -> AgentRun:
+    return AgentRun(
+        id=row[0],
+        parent_session_id=row[1],
+        parent_trace_id=row[2],
+        child_session_id=row[3],
+        child_trace_id=row[4],
+        title=row[5],
+        prompt=row[6],
+        tools_scope=json.loads(row[7]) if row[7] else [],
+        status=row[8],
+        iterations=row[9],
+        denied_count=row[10],
+        input_tokens=row[11],
+        output_tokens=row[12],
+        cost_usd=row[13],
+        result_text=row[14],
+        error=row[15],
+        started_at=row[16],
+        finished_at=row[17],
+        created_at=row[18],
+    )
+
+
+class AgentRunStore:
+    """CRUD + orphan sweep over the ``agent_runs`` audit table."""
+
+    def __init__(self, db: aiosqlite.Connection, lock: asyncio.Lock | None = None) -> None:
+        self.db = db
+        self.lock = lock or asyncio.Lock()
+
+    async def begin_run(
+        self,
+        *,
+        parent_session_id: int | None,
+        parent_trace_id: str | None,
+        title: str,
+        prompt: str,
+        tools_scope: list[str],
+    ) -> int:
+        """Open a ``'running'`` row before the child executes; returns its id."""
+        now = _now()
+        async with self.lock:
+            cursor = await self.db.execute(
+                "INSERT INTO agent_runs "
+                "(parent_session_id, parent_trace_id, title, prompt, tools_scope, "
+                "status, started_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'running', ?, ?)",
+                (
+                    parent_session_id,
+                    parent_trace_id,
+                    title,
+                    prompt,
+                    json.dumps(tools_scope),
+                    now,
+                    now,
+                ),
+            )
+            await self.db.commit()
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
+    async def complete_run(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        child_session_id: int | None = None,
+        child_trace_id: str | None = None,
+        iterations: int = 0,
+        denied_count: int = 0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost_usd: float | None = None,
+        result_text: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Record a run's terminal outcome (``ok`` / ``error`` / ``timeout`` /
+        ``cancelled`` / ``aborted``) and its measured totals."""
+        now = _now()
+        async with self.lock:
+            await self.db.execute(
+                "UPDATE agent_runs SET status = ?, child_session_id = ?, child_trace_id = ?, "
+                "iterations = ?, denied_count = ?, input_tokens = ?, output_tokens = ?, "
+                "cost_usd = ?, result_text = ?, error = ?, finished_at = ? WHERE id = ?",
+                (
+                    status,
+                    child_session_id,
+                    child_trace_id,
+                    iterations,
+                    denied_count,
+                    input_tokens,
+                    output_tokens,
+                    cost_usd,
+                    result_text,
+                    error,
+                    now,
+                    run_id,
+                ),
+            )
+            await self.db.commit()
+
+    async def get(self, run_id: int) -> AgentRun | None:
+        cursor = await self.db.execute(f"SELECT {_COLS} FROM agent_runs WHERE id = ?", (run_id,))
+        row = await cursor.fetchone()
+        return _row_to_run(row) if row else None
+
+    async def list(
+        self, *, limit: int = 50, parent_session_id: int | None = None
+    ) -> list[AgentRun]:
+        """Most-recent runs first. Optionally scoped to one parent session."""
+        if parent_session_id is not None:
+            cursor = await self.db.execute(
+                f"SELECT {_COLS} FROM agent_runs WHERE parent_session_id = ? "
+                "ORDER BY id DESC LIMIT ?",
+                (parent_session_id, limit),
+            )
+        else:
+            cursor = await self.db.execute(
+                f"SELECT {_COLS} FROM agent_runs ORDER BY id DESC LIMIT ?", (limit,)
+            )
+        return [_row_to_run(row) for row in await cursor.fetchall()]
+
+    async def sweep_orphans(self) -> list[str]:
+        """Mark any still-``'running'`` rows ``'aborted'`` (a crash left them open) and
+        return one human-readable note per orphan. Called at startup, mirroring the
+        scheduler's stale-run sweep."""
+        cursor = await self.db.execute(
+            "SELECT id, title FROM agent_runs WHERE status = 'running' ORDER BY id"
+        )
+        orphans = await cursor.fetchall()
+        if not orphans:
+            return []
+        note = "interrupted before completion (process exited mid-run) — marked aborted"
+        now = _now()
+        async with self.lock:
+            await self.db.execute(
+                "UPDATE agent_runs SET status = 'aborted', error = ?, finished_at = ? "
+                "WHERE status = 'running'",
+                (note, now),
+            )
+            await self.db.commit()
+        return [f'sub-agent run #{run_id} "{title}" {note}' for run_id, title in orphans]

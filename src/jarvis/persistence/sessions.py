@@ -6,12 +6,15 @@ simple and correct at conversation scale, and it preserves message content exact
 as JSON (including thinking blocks and their signatures) so a resumed session
 replays to the API unchanged.
 
-Sessions have a ``kind``: ``'interactive'`` (a human at the REPL) or ``'task'``
-(an unattended background job's transcript). Task sessions are deliberately
+Sessions have a ``kind``: ``'interactive'`` (a human at the REPL), ``'task'`` (an
+unattended background job's transcript), or ``'subagent'`` (a delegated child
+run's transcript — Phase 6). Non-interactive sessions are deliberately
 second-class: they never win :meth:`latest_session_id` (``--resume`` must not
-land the user inside a job transcript) and are skipped by the reflection queries
-unless explicitly opted in (unattended transcripts must not feed long-term
-memory by default — see docs/PLAN-3-tasks.md §2).
+land the user inside a job or sub-agent transcript). ``'task'`` sessions feed the
+reflection queries only when explicitly opted in
+(``scheduler.reflect_job_sessions``); ``'subagent'`` sessions feed them *never* —
+:data:`REFLECTABLE_KINDS` is the hard ceiling, so a child transcript (which may
+quote poisoned fetched content) can't launder into long-term memory.
 
 All writes hold the shared write lock (see :mod:`jarvis.persistence.db`).
 """
@@ -30,6 +33,27 @@ from jarvis.persistence.db import connect, transaction
 
 def _now() -> str:
     return _dt.datetime.now(_dt.UTC).isoformat()
+
+
+#: Session kinds that may EVER feed reflection into long-term memory. 'subagent' is
+#: deliberately absent: a delegated child's transcript can quote poisoned fetched
+#: content, so it must never launder into permanent memory (Phase 6 / ADR-0006). The
+#: reflection queries intersect their requested ``kinds`` with this ceiling, so *no*
+#: caller — however buggy — can reflect a subagent session. This is the structural
+#: firewall the plan's D4 requires, not a convention callers must remember.
+REFLECTABLE_KINDS: frozenset[str] = frozenset({"interactive", "task"})
+
+#: The default set reflection considers: interactive sessions only. Background job
+#: ('task') transcripts opt in via ``scheduler.reflect_job_sessions`` (see
+#: :func:`reflectable_kinds`).
+INTERACTIVE_ONLY: frozenset[str] = frozenset({"interactive"})
+
+
+def reflectable_kinds(*, reflect_job_sessions: bool) -> frozenset[str]:
+    """Map the ``scheduler.reflect_job_sessions`` config knob to a kinds set for the
+    reflection queries. Always a subset of :data:`REFLECTABLE_KINDS`, so the result
+    can never contain 'subagent' — the single place callers derive a kinds set."""
+    return REFLECTABLE_KINDS if reflect_job_sessions else INTERACTIVE_ONLY
 
 
 class SessionStore:
@@ -122,23 +146,27 @@ class SessionStore:
         return row[0], row[1] or 0
 
     async def unreflected_session_ids(
-        self, *, exclude: int | None = None, include_task_sessions: bool = False
+        self, *, exclude: int | None = None, kinds: frozenset[str] = INTERACTIVE_ONLY
     ) -> list[int]:
         """Past sessions that have messages but were never reflected on (e.g. the
         process was killed before exit). Used for startup catch-up.
 
-        Task sessions are skipped unless ``include_task_sessions`` — reflecting an
-        unattended transcript into long-term memory is an explicit config opt-in
-        (``scheduler.reflect_job_sessions``), never a default."""
-        kind_filter = "" if include_task_sessions else "AND s.kind = 'interactive' "
+        ``kinds`` selects which session kinds to consider (default: interactive only;
+        use :func:`reflectable_kinds` to derive it from config). It is intersected
+        with :data:`REFLECTABLE_KINDS`, so a subagent session is never returned no
+        matter what is passed."""
+        allowed = kinds & REFLECTABLE_KINDS
+        if not allowed:
+            return []
+        placeholders = ",".join("?" for _ in allowed)
         cursor = await self.db.execute(
             "SELECT s.id FROM sessions s "
             "WHERE s.reflected_at IS NULL "
             "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id) "
-            f"{kind_filter}"
+            f"AND s.kind IN ({placeholders}) "
             "AND s.id != ? "
             "ORDER BY s.id",
-            (exclude if exclude is not None else -1,),
+            (*sorted(allowed), exclude if exclude is not None else -1),
         )
         return [row[0] for row in await cursor.fetchall()]
 
@@ -150,18 +178,23 @@ class SessionStore:
             await self.db.commit()
 
     async def needs_reflection(
-        self, session_id: int, *, include_task_sessions: bool = False
+        self, session_id: int, *, kinds: frozenset[str] = INTERACTIVE_ONLY
     ) -> bool:
         """True if the session has content and hasn't been reflected since its last
         change (``reflected_at IS NULL``). Lets the on-exit path skip re-reflecting a
-        session that was only resumed and read, not modified. Task sessions report
-        False unless ``include_task_sessions`` (same opt-in as catch-up)."""
-        kind_filter = "" if include_task_sessions else "AND s.kind = 'interactive' "
+        session that was only resumed and read, not modified.
+
+        ``kinds`` is intersected with :data:`REFLECTABLE_KINDS` (default: interactive
+        only), so a subagent session always reports False."""
+        allowed = kinds & REFLECTABLE_KINDS
+        if not allowed:
+            return False
+        placeholders = ",".join("?" for _ in allowed)
         cursor = await self.db.execute(
             "SELECT 1 FROM sessions s "
             "WHERE s.id = ? AND s.reflected_at IS NULL "
-            f"{kind_filter}"
+            f"AND s.kind IN ({placeholders}) "
             "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)",
-            (session_id,),
+            (session_id, *sorted(allowed)),
         )
         return await cursor.fetchone() is not None
