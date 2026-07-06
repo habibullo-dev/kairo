@@ -1016,3 +1016,29 @@ non-obvious *implementation* decisions per task.
   surface, so the sandbox short-circuits to in-process conversion — proven by making
   any spawn assert-fail and converting a `.md` anyway. Pay for isolation only where
   there's a parser to isolate.
+
+## Phase 4 Task 6 — Wiki jail + front-matter + link index (safety prerequisite #2)
+
+- **The jail is pure and tested before any tool can call it.** `safe_wiki_path` is a
+  standalone function over (wiki_dir, page string) — so the whole escape catalog
+  (`..`, absolute/drive/UNC, ADS `page.md:stream`, `CON.md`, trailing dot/space,
+  symlink-out, non-`.md`) is a parametrized table test, committed green before the
+  `write_wiki_page` tool exists (the Phase-4 analog of Phase 3's gate-before-runner).
+- **Provenance is generated, never accepted from content.** `write_page` splits and
+  *discards* any front-matter in the model-supplied body, then rebuilds front-matter
+  from DB-validated `source_ids`. A test forges `id: forged / source_ids: [999]`
+  inside the content and asserts neither survives — closing the citation-forgery hole.
+- **Human-first vault: preserve unknown keys, never regenerate a stable id.**
+  `build_front_matter` regenerates only Jarvis's own keys and merges every other key
+  (`tags`, `aliases`, `cssclass`, plugin keys) through verbatim; `id`/`created` are
+  kept once set. The round-trip test edits a page "in Obsidian" then has Jarvis
+  rewrite it and asserts the human's keys and id survive — the vault isn't Jarvis's
+  private database, it's the user's.
+- **`yaml.safe_load` only, and a non-mapping block is treated as body.** Page content
+  is attacker-reachable; `yaml.load` would be RCE-adjacent. A malformed or list-typed
+  front-matter block degrades to "no front-matter" (content), never executes.
+- **Links resolve like Obsidian and broken links are recorded, not dropped.** The
+  extractor is fence-aware (code blocks/inline code ignored); resolution matches
+  wikilinks by stem/title/alias and markdown links relative to the page; an
+  unresolved target lands as `to_path=None` so the linter can surface it. Reindex
+  replaces per page (a removed link disappears; it doesn't accumulate).
