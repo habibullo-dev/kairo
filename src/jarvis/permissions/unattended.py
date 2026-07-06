@@ -42,8 +42,12 @@ if TYPE_CHECKING:
 
 #: State-mutating meta tools: never available unattended, no matter what policy says.
 #: A background run must not be able to schedule work, cancel your reminders, or
-#: write to long-term memory on its own authority.
-HARD_DENY: frozenset[str] = frozenset({"schedule_task", "cancel_task", "remember", "forget"})
+#: write to long-term memory on its own authority. ``spawn_agent`` is here too
+#: (Phase 6): an unattended job must not fan out into sub-agents — no unsupervised
+#: swarm (ADR-0006; delegation is interactive-only in this phase).
+HARD_DENY: frozenset[str] = frozenset(
+    {"schedule_task", "cancel_task", "remember", "forget", "spawn_agent"}
+)
 
 #: Side-effecting tools whose *ALLOW* is demoted to DENY unless explicitly opted in.
 #: (An ASK for these is left alone — the headless approver denies it either way.)

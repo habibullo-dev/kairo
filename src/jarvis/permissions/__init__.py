@@ -9,6 +9,12 @@ from jarvis.permissions.policy import (
     load_policy,
     save_policy,
 )
+from jarvis.permissions.subagent import (
+    NEVER_GRANTABLE,
+    SUBAGENT_HARD_DENY,
+    Grant,
+    SubAgentGate,
+)
 from jarvis.permissions.unattended import (
     DEMOTE_ALLOW,
     HARD_DENY,
@@ -19,14 +25,18 @@ from jarvis.permissions.unattended import (
 __all__ = [
     "DEMOTE_ALLOW",
     "HARD_DENY",
+    "NEVER_GRANTABLE",
+    "SUBAGENT_HARD_DENY",
     "Decision",
     "FilesystemPolicy",
+    "Grant",
     "HeadlessApprover",
     "PermissionGate",
     "Policy",
     "ShellPolicy",
     "ShellRule",
-    "UnattendedGate",
+    "SubAgentGate",
     "load_policy",
     "save_policy",
+    "UnattendedGate",
 ]

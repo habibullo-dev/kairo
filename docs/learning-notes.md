@@ -1508,3 +1508,37 @@ non-obvious *implementation* decisions per task.
   never-DELETE audit invariant, same FK-SET-NULL on the referenced session. Reusing a
   proven shape beats inventing a new one — and it records *both* trace ids (parent + child)
   so one log query reconstructs the delegation causality chain.
+
+## Phase 6 Task 3 — SubAgentGate: the second gate that can only narrow
+
+- **Gate composition is the whole design.** SubAgentGate wraps *whatever* gate the
+  parent used (PermissionGate or UnattendedGate) and its `check` has the same signature,
+  so it drops in transparently. The invariant it must preserve: it can only turn
+  ALLOW/ASK into DENY, or leave a decision alone — it can *never* widen. Order matters:
+  hard-deny → scope → inner delegation → grant-upgrade, and the grant only ever touches
+  an ASK, so every inner floor (sensitive-path DENY, metacharacter escalation, write
+  allowlist) survives untouched. Tested against both inner gate types even though
+  unattended spawning is hard-denied — the composition must be correct regardless.
+- **"a-for-this-run" is pattern-scoped, and the pattern is the safety boundary.** A
+  blanket tool-level grant for web_fetch would let a poisoned page redirect the child to
+  `attacker.example` with no prompt. So the grant narrows per tool: web_fetch → the URL's
+  *host*, read/list/glob → a resolved *directory prefix*, search/KB → tool-level (the
+  query varies but the backend is fixed), run_shell/write_file → *never* (each is
+  approved individually, always). The adversarial test is explicit: same host passes,
+  different host re-asks.
+- **read_file grants the file's parent dir; list_dir/glob grant the dir itself.** The
+  field semantics differ (read_file's `path` is a file; list_dir's `path` and
+  glob_search's `root` are directories), so the grant derivation and the match both
+  special-case which one to treat as the directory. Getting this wrong would either
+  over-grant (a file grant leaking to the whole parent tree for list_dir) or under-grant
+  (re-prompting for the same dir). Matching resolves paths through the *same*
+  `resolve_path(·, project_root)` the gate uses, so a grant and a later call agree on
+  what file they mean.
+- **spawn_agent is denied three ways, and this task adds two of them.** It joins
+  `unattended.HARD_DENY` (no background swarm) *and* `SUBAGENT_HARD_DENY` (no recursion) —
+  the third mechanism (absent from the child's registry) comes in Task 5. Independent
+  overlapping denials are cheap and mean no single missed check re-opens delegation.
+- **Grant state is per-instance, so it dies with the run for free.** No explicit teardown,
+  no persistence path, no way for a grant to outlive the child — the SubAgentGate object
+  is constructed per spawn and discarded when the child returns. The safest lifetime is
+  the one you can't forget to end.
