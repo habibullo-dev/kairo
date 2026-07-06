@@ -1113,3 +1113,24 @@ non-obvious *implementation* decisions per task.
   results arrive as tool_results, which reflection already strips; a dedicated test
   pins that a query_knowledge_base result never reaches the extractor, so ingested
   (possibly poisoned) content can't ride retrieval into permanent memory.
+
+## Phase 4 Task 10 — REPL wiring + kb commands
+
+- **The KB reuses the memory embedder when present — one embedding space, one client.**
+  `_build_knowledge` takes `memory.embedder` if memory is on, else builds a Voyage
+  embedder, else degrades to disabled with a note. Memory and knowledge chunks then
+  share the same model, and there's one Voyage client, not two.
+- **`bound_unattended` is set around the job turn, in a `try/finally`.** The JobRunner
+  flips the KB service into quarantine mode for the duration of an unattended run and
+  clears it after — so any ingest during a background job lands `unreviewed`, and an
+  exception can't leave the flag stuck on. Same serialized-by-the-turn-lock reasoning
+  as `TaskService.bound_session_id`.
+- **`kb rebuild` re-derives the index but never rewrites a page.** Rebuild reads the
+  markdown artifacts and wiki files and replaces the chunk/link rows; the page files
+  on disk are truth and stay byte-for-byte untouched (pinned by editing a page "in
+  Obsidian", rebuilding, and asserting the file is unchanged). A maintenance command
+  must never clobber the user's edits.
+- **rebuild/review are REPL commands, not model tools.** Rebuild is a minutes-long
+  re-embed and review is the human-in-the-loop promotion step — handing either to the
+  model would either waste schema attention or defeat the quarantine. The model gets
+  four focused tools; the human gets the big buttons.

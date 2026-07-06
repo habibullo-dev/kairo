@@ -415,6 +415,58 @@ class KnowledgeService:
         report.foreign_model_chunks = await self.store.foreign_model_chunks(self.embedder.model)
         return report
 
+    # --- maintenance (REPL commands, not model tools) ----------------------
+
+    async def stats(self) -> dict:
+        """Counts for the ``kb`` command."""
+        return {
+            "sources": len(await self.store.list_sources(status="live")),
+            "unreviewed": len(await self.store.list_sources(review_status="unreviewed")),
+            "chunks": await self.store.chunk_count(),
+        }
+
+    async def unreviewed_sources(self) -> list[Source]:
+        """Live sources awaiting human review (the ``kb review`` queue)."""
+        return await self.store.list_sources(review_status="unreviewed")
+
+    async def approve_source(self, source_id: int) -> None:
+        """Promote a quarantined source to reviewed (now visible to search/citation)."""
+        await self.store.set_review_status(source_id, "reviewed")
+        self.log.info("kb_source_reviewed", source_id=source_id, decision="approved")
+
+    async def reject_source(self, source_id: int) -> bool:
+        """Reject a quarantined source (kept for audit, invisible to search)."""
+        rejected = await self.store.reject_source(source_id)
+        self.log.info("kb_source_reviewed", source_id=source_id, decision="rejected")
+        return rejected
+
+    async def rebuild_index(self) -> dict:
+        """Re-chunk + re-embed all live sources and wiki pages with the *current*
+        embedder (also the embedding-model migration path). Non-destructive: reads
+        the markdown artifacts and wiki files on disk and rebuilds the derived
+        indexes — it never rewrites a page (a user's hand edits are truth)."""
+        sources = 0
+        for source in await self.store.list_sources(status="live"):
+            md_path = self.knowledge_dir / source.markdown_path
+            if not md_path.exists():
+                continue
+            md = md_path.read_text(encoding="utf-8", errors="replace")
+            chunks = await self._chunk_and_embed(md)
+            await self.store.replace_chunks(
+                source_id=source.id, chunks=chunks, embedding_model=self.embedder.model
+            )
+            sources += 1
+        pages = 0
+        if self.wiki_dir.exists():
+            wiki_root = self.wiki_dir.resolve()
+            for md_file in sorted(wiki_root.rglob("*.md")):
+                rel = md_file.relative_to(wiki_root).as_posix()
+                _, body = split_front_matter(md_file.read_text(encoding="utf-8", errors="replace"))
+                await self._reindex_page(rel, body)
+                pages += 1
+        self.log.info("kb_rebuilt", sources=sources, pages=pages)
+        return {"sources": sources, "pages": pages}
+
     async def _reindex_page(self, wiki_path: str, body: str) -> None:
         """Rebuild this page's chunk index and outbound link index from its body."""
         pages = self._page_index()

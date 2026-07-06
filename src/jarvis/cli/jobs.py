@@ -68,6 +68,7 @@ class JobRunner:
         gate: PermissionGate,
         config: Config,
         memory: object | None = None,
+        knowledge: object | None = None,
         make_context_manager: Callable[[], ContextManager] | None = None,
     ) -> None:
         self.session_store = session_store
@@ -77,6 +78,7 @@ class JobRunner:
         self.gate = gate
         self.config = config
         self.memory = memory
+        self.knowledge = knowledge
         self.make_context_manager = make_context_manager
         self.log = get_logger("jarvis.scheduler.job")
 
@@ -99,12 +101,23 @@ class JobRunner:
             gate=ugate,
             config=self.config,
             approver=approver,
-            system=build_system(memory_enabled=self.memory is not None, unattended=True),
+            system=build_system(
+                memory_enabled=self.memory is not None,
+                knowledge_enabled=self.knowledge is not None,
+                unattended=True,
+            ),
             context_manager=self.make_context_manager() if self.make_context_manager else None,
             memory=self.memory,
         )
         self.log.info("job_start", task_id=task.id, session_id=session_id)
-        result = await loop.run_turn([{"role": "user", "content": _envelope(task)}])
+        # Any KB ingest during an unattended run is quarantined 'unreviewed' (ADR-0004).
+        if self.knowledge is not None:
+            self.knowledge.bound_unattended = True
+        try:
+            result = await loop.run_turn([{"role": "user", "content": _envelope(task)}])
+        finally:
+            if self.knowledge is not None:
+                self.knowledge.bound_unattended = False
         await self.session_store.save_messages(session_id, result.messages)
 
         ok = result.stop_reason in _OK_STOP

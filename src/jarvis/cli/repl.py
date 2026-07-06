@@ -23,6 +23,8 @@ from jarvis.core import AgentLoop, AnthropicClient
 from jarvis.core.client import LLMClient, ToolCall
 from jarvis.core.context import ContextManager
 from jarvis.core.prompts import build_system
+from jarvis.knowledge.service import KnowledgeService
+from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder, reflect
 from jarvis.observability import cost_of, get_logger
 from jarvis.observability.cost import Usage
@@ -206,6 +208,7 @@ class Repl:
         memory: MemoryService | None = None,
         context_manager: ContextManager | None = None,
         tasks: TaskService | None = None,
+        knowledge: KnowledgeService | None = None,
         runner: BackgroundRunner | None = None,
         turn_lock: asyncio.Lock | None = None,
     ) -> None:
@@ -217,6 +220,7 @@ class Repl:
         self.memory = memory
         self.context_manager = context_manager
         self.tasks = tasks
+        self.knowledge = knowledge
         self.runner = runner
         # One lock serializes every model turn — interactive AND background — and
         # everything that writes to the terminal (see BackgroundRunner). Shared with
@@ -225,7 +229,8 @@ class Repl:
 
         self.registry = ToolRegistry()
         self.registry.discover(
-            "jarvis.tools.builtin", ToolContext(config=config, memory=memory, tasks=tasks)
+            "jarvis.tools.builtin",
+            ToolContext(config=config, memory=memory, tasks=tasks, knowledge=knowledge),
         )
         self.executor = ToolExecutor(
             timeout=config.limits.tool_timeout_seconds,
@@ -241,7 +246,11 @@ class Repl:
             gate=self.gate,
             config=config,
             approver=self._approve,
-            system=build_system(memory_enabled=memory is not None, tasks_enabled=tasks is not None),
+            system=build_system(
+                memory_enabled=memory is not None,
+                tasks_enabled=tasks is not None,
+                knowledge_enabled=knowledge is not None,
+            ),
             context_manager=context_manager,
             memory=memory,
             # With scheduling on, the model needs the current date to resolve
@@ -333,6 +342,9 @@ class Repl:
                 if user_input.lower() == "tasks" or user_input.lower().startswith("tasks "):
                     await self._show_tasks(user_input[len("tasks") :].strip())
                     continue
+                if user_input.lower() == "kb" or user_input.lower().startswith("kb "):
+                    await self._kb_command(user_input[len("kb") :].strip())
+                    continue
                 self.messages.append({"role": "user", "content": user_input})
                 await self.run_turn()
                 # A just-scheduled task should fire promptly, not wait out the cap.
@@ -381,6 +393,67 @@ class Repl:
                 self.console.print(f"      {preview}")
             if r.error:
                 self.console.print(f"      [red]{r.error}[/]")
+        self.console.print()
+
+    async def _kb_command(self, arg: str) -> None:
+        """`kb` (stats) / `kb lint` / `kb rebuild` / `kb review` — knowledge-base
+        maintenance. rebuild and review are humans-only (never model tools)."""
+        if self.knowledge is None:
+            self.console.print("[dim]Knowledge base is not enabled.[/]\n")
+            return
+        sub = arg.lower()
+        if sub == "":
+            s = await self.knowledge.stats()
+            unrev = f" ([yellow]{s['unreviewed']} unreviewed[/])" if s["unreviewed"] else ""
+            self.console.print(
+                f"[bold]Knowledge base[/] · {s['sources']} sources{unrev} · {s['chunks']} chunks"
+            )
+            self.console.print(f"[dim]{self.knowledge.knowledge_dir}[/]\n")
+        elif sub == "lint":
+            self.console.print((await self.knowledge.lint()).render() + "\n")
+        elif sub == "rebuild":
+            answer = (await asyncio.to_thread(input, "Rebuild the whole index? [y/N]: ")).strip()
+            if answer.lower() in ("y", "yes"):
+                counts = await self.knowledge.rebuild_index()
+                self.console.print(
+                    f"[dim]rebuilt: {counts['sources']} sources, {counts['pages']} pages.[/]\n"
+                )
+            else:
+                self.console.print("[dim]cancelled.[/]\n")
+        elif sub == "review":
+            await self._kb_review()
+        else:
+            self.console.print(
+                f"[dim]unknown kb command: {arg!r} (try: lint / rebuild / review)[/]\n"
+            )
+
+    async def _kb_review(self) -> None:
+        """Walk the quarantine queue: unattended-ingested sources a human must approve
+        before they're searchable (ADR-0004)."""
+        pending = await self.knowledge.unreviewed_sources()
+        if not pending:
+            self.console.print("[dim]No sources awaiting review.[/]\n")
+            return
+        for source in pending:
+            self.console.print(
+                f"[bold]#{source.id}[/] [cyan]{source.kind}[/] {source.origin} "
+                f"[dim]· by {source.created_by} · {source.created_at[:10]}[/]"
+            )
+            if source.title:
+                self.console.print(f"    {source.title}")
+            answer = (
+                (await asyncio.to_thread(input, "  [a]pprove / [r]eject / [s]kip: "))
+                .strip()
+                .lower()
+            )
+            if answer in ("a", "approve"):
+                await self.knowledge.approve_source(source.id)
+                self.console.print("  [green]approved[/]")
+            elif answer in ("r", "reject"):
+                await self.knowledge.reject_source(source.id)
+                self.console.print("  [red]rejected[/]")
+            else:
+                self.console.print("  [dim]skipped[/]")
         self.console.print()
 
     async def _show_memories(self) -> None:
@@ -457,6 +530,32 @@ def _build_scheduler(
     return service
 
 
+def _build_knowledge(
+    config: Config, db, lock, console: Console, memory: MemoryService | None
+) -> KnowledgeService | None:
+    """Construct the KnowledgeService on the shared connection + lock, or None if the
+    KB is disabled / has no embedder. Reuses the memory service's embedder when present
+    (one embedding space, one client), else builds a Voyage embedder, else degrades."""
+    if not config.knowledge.enabled:
+        return None
+    embedder = memory.embedder if memory is not None else None
+    if embedder is None:
+        if not config.secrets.voyage_api_key:
+            console.print("[dim]Knowledge base off: set VOYAGE_API_KEY in .env to enable it.[/]")
+            get_logger("jarvis.knowledge").warning("knowledge_disabled", reason="no_voyage_key")
+            return None
+        embedder = VoyageEmbedder.from_config(config)
+    service = KnowledgeService(
+        KnowledgeStore(db, lock),
+        embedder,
+        config.knowledge,
+        knowledge_dir=config.knowledge_dir,
+        root=config.root,
+    )
+    service.ensure_dirs()
+    return service
+
+
 async def run_repl(config: Config, *, resume: bool = False, console: Console | None = None) -> None:
     """Open the database, resume or start a session, wire memory + scheduling, run the REPL."""
     console = console or Console()
@@ -494,6 +593,7 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
                 )
 
         tasks = _build_scheduler(config, db, store, session_id)
+        knowledge = _build_knowledge(config, db, store.lock, console, memory)
         repl = Repl(
             config,
             console=console,
@@ -502,13 +602,14 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
             memory=memory,
             context_manager=context_manager,
             tasks=tasks,
+            knowledge=knowledge,
         )
         repl.messages = history
         if resume and history:
             console.print(f"[dim]Resumed session {session_id} ({len(history)} messages).[/]\n")
 
         if tasks is not None:
-            runner = _build_runner(config, repl, store, tasks, memory, utility, console)
+            runner = _build_runner(config, repl, store, tasks, memory, knowledge, utility, console)
             await _scheduler_startup(tasks, runner, console)
             runner.start()
 
@@ -541,6 +642,7 @@ def _build_runner(
     store: SessionStore,
     tasks: TaskService,
     memory: MemoryService | None,
+    knowledge: KnowledgeService | None,
     utility: AnthropicClient,
     console: Console,
 ) -> BackgroundRunner:
@@ -556,6 +658,7 @@ def _build_runner(
         gate=repl.gate,
         config=config,
         memory=memory,
+        knowledge=knowledge,
         make_context_manager=lambda: _build_context_manager(config, utility),
     )
 
