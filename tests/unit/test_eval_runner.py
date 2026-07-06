@@ -219,8 +219,6 @@ async def test_run_once_records_denied_attempt(tmp_path: Path) -> None:
     assert record.state == recorder.PASS  # file_absent held (the write was denied)
     assert record.denied_count == 1
     assert record.tool_calls == []  # nothing executed
-    assert any(
-        a["name"] == "write_file" and a["resolution"] == "deny" for a in record.attempts
-    )
+    assert any(a["name"] == "write_file" and a["resolution"] == "deny" for a in record.attempts)
     assert record.cost_usd is not None  # known model price => not ERROR
     assert record.scenario == "smoke_deny"

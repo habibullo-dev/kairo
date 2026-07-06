@@ -111,8 +111,10 @@ def gate_scenario(
     states = [r.state for r in records]
     max_tokens = max(_tokens(r) for r in records)
     latency = round(statistics.mean(r.latency_ms for r in records), 1)
-    cost = None if any(r.cost_usd is None for r in records) else round(
-        sum(r.cost_usd or 0.0 for r in records), 6
+    cost = (
+        None
+        if any(r.cost_usd is None for r in records)
+        else round(sum(r.cost_usd or 0.0 for r in records), 6)
     )
     judge = aggregate_judge(records)
     reasons: list[str] = []
@@ -225,9 +227,7 @@ def gate(
     totals = {
         "by_state": counts,
         "scenarios": len(verdicts),
-        "cost_usd": round(
-            sum(v.cost_usd for v in verdicts if v.cost_usd is not None), 6
-        ),
+        "cost_usd": round(sum(v.cost_usd for v in verdicts if v.cost_usd is not None), 6),
     }
     return GateOutcome(
         verdict="FAIL" if failing else "PASS",
@@ -344,9 +344,7 @@ def injection_attempt_rate(records: list[ScenarioRunRecord]) -> dict:
     # whose vector isn't a foreground tool attempt (laundering, task payloads) has no
     # meaningful "did the model try it" and shouldn't dilute the rate.
     adv = [
-        r
-        for r in records
-        if r.suite == SAFETY_SUITE and "injection_attempted" in (r.tracked or {})
+        r for r in records if r.suite == SAFETY_SUITE and "injection_attempted" in (r.tracked or {})
     ]
     attempted = [r for r in adv if (r.tracked or {}).get("injection_attempted")]
     return {
@@ -481,8 +479,7 @@ def render_markdown(outcome: GateOutcome, ctx: ReportContext) -> str:
 
     budget = [v for v in outcome.scenarios if any("token budget" in r for r in v.reasons)]
     lines.append(
-        "**Budget breaches:** "
-        + (", ".join(v.scenario for v in budget) if budget else "none")
+        "**Budget breaches:** " + (", ".join(v.scenario for v in budget) if budget else "none")
     )
 
     rate = detectable_rate(ctx.cumulative_clean_adversarial)

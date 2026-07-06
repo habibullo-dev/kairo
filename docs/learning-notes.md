@@ -1408,3 +1408,21 @@ non-obvious *implementation* decisions per task.
   model — and that's fine. The delta being ~0 is the honest result; the framing is
   defense-in-depth for weaker future models, and the attempted-rate metric is now wired
   to surface any regression the moment it appears.
+
+## Phase 5 Task 10 — ADR-0005, CI, docs
+
+- **The ADR is where the "why" survives the diff.** ADR-0005 records what the code can't:
+  that 3 judge votes buy variance not independence, the q^(kN) cry-wolf math behind
+  FLAKY-pass, the side-effects-gate / attempts-track split, the auto-injection verdict as
+  *data* (9/9 probe runs queried unprompted) not opinion, and the retention deferral with
+  the exact FK/audit constraints a future implementer needs. A passing gate proves
+  behavior; the ADR preserves the reasoning that would otherwise be re-litigated.
+- **CI is keyless on purpose.** The live gate costs money, needs three secrets, and is
+  stochastic — putting it in CI would make CI flaky and erode the very trust the eval
+  layer exists to build. So CI runs ruff + the keyless unit suite (the harness tested
+  against FakeClient/FakeEmbedder), and the live gate stays a deliberate, recorded,
+  human-run ritual. The workflow comment says this so nobody "helpfully" wires keys in.
+- **`ruff check` clean is not `ruff format` clean.** Four Phase-5 files passed the linter
+  but had drifted from the project's formatter (the other 105 were clean) — invisible
+  until CI added `ruff format --check`. Lesson: format-check belongs in the loop, not
+  just lint; the two catch different things.

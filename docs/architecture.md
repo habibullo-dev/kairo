@@ -1,4 +1,4 @@
-# Architecture (as built — Phase 4)
+# Architecture (as built — Phase 5)
 
 This describes what exists after Milestone 4 (research + knowledge base) on top of
 the Milestone 1 MVP, Milestone 2 (long-term memory), and Milestone 3 (tasks &
@@ -225,15 +225,50 @@ you → REPL → AgentLoop.run_turn(messages)
         (every step logged to logs/*.jsonl with the turn's trace_id)
 ```
 
+## Evaluation (`tests/evals/`) — Phase 5
+
+The instrument that says whether the agent works and whether a change regressed it.
+Repo-native, no framework, no new deps; the *harness* is unit-tested keyless while the
+*gate* is a deliberate, human-run, recorded live ritual.
+
+- **`runner.py`** — runs each scenario N times in an isolated workdir, produces a
+  `ScenarioRunRecord` (tokens, latency, tool calls, **attempts**, judge verdict), and
+  owns the check evaluator. Checks are input-level (`tool_not_attempted_with`,
+  `tool_result_matches`, `memory_absent`, …), not just name-level, so an injection the
+  gate *denied* is still visible via the `ToolDecision` event (emitted for every call
+  before execution, unlike `ToolStarted`).
+- **`judge.py`** — LLM-as-judge: rationale-first forced verdict (thinking-off), median
+  of 3 Opus votes + majority pass, one uncounted Sonnet cross-check, specimen
+  delimiters, and calibration fixtures that flip a run to JUDGE-INVALID if the judge
+  can be gamed. Honest that 3 votes buy variance reduction, not independence.
+- **`report.py`** — the two-tier gate engine (safety all-N; quality 3/3-PASS /
+  2/3-FLAKY-pass / ≤1/3-FAIL with two-consecutive promotion), token ceilings, judge
+  floors (shadow until ratcheted), `--compare <rev>` deltas with dirty/hash/judge-model
+  guards, and a report that states its own statistical power.
+- **`retrieval.py`** — drives `MemoryStore.search` / `KnowledgeStore.search` directly
+  for MRR / recall@k, a determinism self-check (⇒ N=1), and a min_similarity floor
+  sweep read as data with an explicit decision rule.
+- **`recorder.py`** — versioned JSONL records + git-rev/dirty provenance + fail-closed
+  pricing; **`baselines.yaml`** is the one committed contract (results/history are
+  gitignored under `data/evals/`).
+- Adversarial suite (`scenarios/adversarial/`) + under-querying probes; dual metric and
+  the KB-auto-injection verdict are recorded in
+  [ADR-0005](decisions/0005-how-we-know-it-works.md).
+
 ## Verification
 
-- `uv run pytest` — 490+ unit tests, no API key required (FakeClient + FakeEmbedder,
+- `uv run pytest` — 580+ unit tests, no API key required (FakeClient + FakeEmbedder,
   mocked web, fake clock). Includes the compacted-view validity property test, the
-  reflection firewall test, the UnattendedGate safety suite, and the Phase-4 safety
-  suite (converter subprocess kill, zip-bomb refusal, wiki jail, gate field-consistency,
-  SSRF guard).
-- `uv run python tests/evals/runner.py` — live smoke evals (file task, web research,
-  permission denial, memory + cross-session recall, scheduling, unattended jobs, KB
-  ingest/query/lint, and the unattended-KB posture).
+  reflection firewall test, the UnattendedGate safety suite, the Phase-4 safety suite
+  (converter subprocess kill, zip-bomb refusal, wiki jail, gate field-consistency, SSRF
+  guard), and the Phase-5 eval harness (gate rules, judge aggregation/calibration,
+  adversarial dual-metric pins, retrieval metrics). Mirrored keyless in CI
+  (`.github/workflows/tests.yml`).
+- `uv run python tests/evals/runner.py --suite all --report` — the live gate (all
+  scenarios × N=3 + judge); `--compare <rev>` renders cross-revision deltas;
+  `--propose-baselines` regenerates thresholds. Costs money and needs the three keys —
+  never in CI.
+- `uv run python tests/evals/retrieval.py` — live retrieval-quality evals (skips cleanly
+  without `VOYAGE_API_KEY`).
 - `uv run jarvis` — the assistant itself; `memories` lists what it knows, `tasks` its
   schedule, `kb` its knowledge base.

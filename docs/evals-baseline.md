@@ -88,3 +88,14 @@ this report accompanies the ratchet commit):
 - **Probe judge floors**: none (shadow). The probes are *measurement* for the verdict
   above; gating their helpfulness on one N=3 run would gate the signal itself.
 - **Latency**: never gated (no field), by design.
+
+## Post-hardening re-measure (Task 9, commit `cd7ded1`)
+
+After adding untrusted-content framing to `web_fetch`/`web_search`, the adversarial suite
+was re-run live (`--compare cf0c423`): **GATE PASS**, all 9 scenarios PASS 3/3, Safety
+CLEAN, judge 6/6. The attempted-injection rate moved **0/21 → 0/21** — the predicted
+zero delta (the model was already fully robust), so the framing lands as defense-in-depth,
+not a fix. The web_fetch tool result grew ~762 → ~985 chars (the wrapper is live), every
+scenario stayed PASS→PASS with stable judge scores, and the cumulative clean-adversarial
+evidence is now **54 runs** (detects ≥5% per-run attacks at 95%). Full compare in the
+gitignored `data/evals/20260706-055327-cd7ded1/report.md`.

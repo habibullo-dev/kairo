@@ -1,0 +1,31 @@
+# Keyless CI: lint, format check, and the full unit suite on every push/PR.
+#
+# The LIVE eval gate (tests/evals/runner.py) is deliberately NOT run here — it costs
+# money, needs three API secrets, and is stochastic; a flaky CI would erode exactly the
+# trust the eval layer exists to build. The live gate is a human-run, recorded ritual
+# (see docs/decisions/0005-how-we-know-it-works.md). Everything in CI is keyless: the
+# eval *harness* is unit-tested against FakeClient/FakeEmbedder with no network.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dependencies (deps + dev group; docling extra not needed for tests)
+        run: uv sync
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format check
+        run: uv run ruff format --check .
+      - name: Unit tests (keyless)
+        run: uv run pytest -q

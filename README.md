@@ -14,6 +14,21 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 5 (evaluation & hardening) — complete.** A repo-native eval harness that says
+whether the agent actually works and whether a change made it better or worse:
+scenario suites with deterministic checks, an honest LLM-as-judge (rationale-first
+forced verdict, 3 Opus votes + a Sonnet cross-check, calibration fixtures that can void
+a run), a two-tier regression gate (safety all-N; quality FLAKY-pass), an adversarial
+suite that measures *side effects* (gated) separately from *attempts* (tracked), and
+retrieval-quality evals (MRR / recall@k, similarity-floor sweep). Web results are now
+wrapped in untrusted-content framing to match the KB/memory layers. The live baseline
+was GATE PASS 24/24, Safety CLEAN, 0/21 injections attempted; the committed contract is
+[`tests/evals/baselines.yaml`](tests/evals/baselines.yaml). Design in
+[`docs/PLAN-5-evals.md`](docs/PLAN-5-evals.md); rationale (judge validity, gate
+statistics, the auto-injection verdict) in
+[ADR-0005](docs/decisions/0005-how-we-know-it-works.md); baseline report in
+[`docs/evals-baseline.md`](docs/evals-baseline.md).
+
 **Phase 4 (research + knowledge base) — complete.** Jarvis maintains a durable,
 Obsidian-compatible Markdown knowledge base: it ingests files, web pages, and notes
 (`ingest_source`) into immutable raw artifacts + deterministic Markdown, searches

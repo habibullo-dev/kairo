@@ -88,9 +88,7 @@ class WebSearchTool(Tool):
             body.append(f"Answer: {data['answer']}\n")
         for i, r in enumerate(results, 1):
             snippet = (r.get("content") or "").strip()[:500]
-            body.append(
-                f"{i}. {r.get('title', '(no title)')}\n   {r.get('url', '')}\n   {snippet}"
-            )
+            body.append(f"{i}. {r.get('title', '(no title)')}\n   {r.get('url', '')}\n   {snippet}")
         if not body:
             return "No results found."
         # Wrap in explicit untrusted-content delimiters (see _SEARCH_HEADER).
