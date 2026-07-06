@@ -1808,3 +1808,30 @@ non-obvious *implementation* decisions per task.
   untrusted-delimiter discipline applies, and the voice-mode prompt says hearing ≠
   authorization. The `voice` optional-dependency extra is deferred to task 6 (the live
   adapters) to avoid churning the lockfile for deps nothing uses until then.
+
+## Phase 7 Task 2 — VoiceApprover: the safety core, before any wiring
+
+- **The approver IS the safety property, so it ships before the mic.** Written and pinned
+  before any capture/STT exists (tasks 3–6), exactly as Phase 3's unattended gate preceded
+  the BackgroundRunner. `VoiceApprover` is the injected `Approver` — the one and only
+  approval path a voice turn has — so "risky actions escalate to the screen" is
+  structurally true, not a behavior that could be plumbed around later.
+- **Fail-closed means confirm() is never even reached without a positive screen.** The
+  order matters: `screen is None or not screen.available()` → DENY *before* any call to
+  `confirm()`. An unavailable/uncertain screen doesn't get to prompt-then-maybe-approve;
+  it's denied outright. The `ScriptedScreenApprover` double is itself fail-closed (DENY when
+  its answer list is exhausted), so a test can't accidentally pass by running out of script.
+- **"No voice-only approval" is enforced by the approver's *shape*, not a check.** There is
+  no audio/text argument into `VoiceApprover.__call__` beyond the `ToolCall`/`Decision` the
+  gate produced — a "yes" said aloud reaches nothing here. The structural test just
+  confirms every risky ASK denies with no screen; the point is there's no path for a spoken
+  yes to exist in the first place.
+- **The handoff carries the exact action; the screen shows detail the voice won't.** The
+  `ScreenApprover` receives the full, untruncated `ToolCall` — the screen is private, so
+  full detail (the command, the recipient, the token) belongs there. The voice channel only
+  gets the `on_escalate` signal ("confirm on screen"), and the renderer (task 4) is what
+  must keep the sensitive particulars *out* of the spoken text.
+- **The terminal screen approver deliberately drops "always".** `TerminalScreenApprover`
+  offers only y/N — a voice-escalated risky action is confirmed once and never persisted,
+  because a standing "always allow" granted off a voice turn would defeat prepare-never-
+  commit. `available()` is a *positive* TTY check that resolves any error to unavailable.

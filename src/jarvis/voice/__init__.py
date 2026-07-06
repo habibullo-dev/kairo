@@ -10,6 +10,12 @@ This package currently exports the provider boundaries + fakes and the transcrip
 the approver, session, renderer, and live engines land in later Phase-7 tasks.
 """
 
+from jarvis.voice.approver import (
+    ScreenApprover,
+    ScriptedScreenApprover,
+    TerminalScreenApprover,
+    VoiceApprover,
+)
 from jarvis.voice.framing import frame_transcript
 from jarvis.voice.protocols import (
     FakeSynthesizer,
@@ -23,7 +29,11 @@ __all__ = [
     "FakeSynthesizer",
     "FakeTranscriber",
     "STTProvider",
+    "ScreenApprover",
+    "ScriptedScreenApprover",
     "TTSProvider",
+    "TerminalScreenApprover",
     "Transcript",
+    "VoiceApprover",
     "frame_transcript",
 ]
