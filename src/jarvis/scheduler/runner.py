@@ -171,6 +171,12 @@ class BackgroundRunner:
             await self._task
             self._task = None
 
+    @property
+    def is_running(self) -> bool:
+        """True while the wake loop is active (started, not stopped). Read-only status for
+        the UI's runner pane / emergency-stop toggle (Phase 8) — no behavior change."""
+        return self._task is not None and not self._task.done()
+
     async def _loop(self) -> None:
         while not self._stop.is_set():
             try:

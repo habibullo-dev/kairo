@@ -65,14 +65,28 @@ def _deny(code: int, message: str) -> Response:
     return _secure(Response(content=message, status_code=code, media_type="text/plain"))
 
 
+def _runner_status(runner: object | None, session: object | None) -> dict:
+    """The status-bar view: is the background runner firing, what job is in flight, and is
+    an interactive turn running. Read-only; the emergency stop toggles the first two."""
+    return {
+        "runner_running": bool(runner is not None and runner.is_running),
+        "in_flight": getattr(runner, "in_flight", None) if runner is not None else None,
+        "turn_busy": bool(session is not None and session.busy),
+    }
+
+
 def create_app(
     config: Config,
     *,
     auth: AuthManager | None = None,
     connections: ConnectionManager | None = None,
+    session: object | None = None,
+    runner: object | None = None,
 ) -> FastAPI:
-    """Build the workstation app. ``auth``/``connections`` are injectable so tests can
-    supply a known token and a fake clock."""
+    """Build the workstation app. ``auth``/``connections`` are injectable so tests can supply
+    a known token and a fake clock; ``session`` (a ``UiSession``) and ``runner`` (a
+    ``BackgroundRunner``) are composed by the CLI host (Task 9) — when absent, the turn/runner
+    routes report 503 (the auth core still serves)."""
     auth = auth or AuthManager()
     connections = connections or ConnectionManager(heartbeat_seconds=config.ui.heartbeat_seconds)
     approvals = ApprovalManager(connections)
@@ -87,6 +101,8 @@ def create_app(
     app.state.approvals = approvals
     app.state.gate = gate
     app.state.ui_approver = UIApprover(approvals, gate, config)
+    app.state.session = session
+    app.state.runner = runner
     app.state.config = config
 
     @app.middleware("http")
@@ -149,6 +165,48 @@ def create_app(
     @app.get("/api/audit/today")
     async def audit_today() -> dict:
         return {"events": read_today_audit(config.logs_dir)}
+
+    # --- Command: submit / cancel a turn (events stream over the WS) --------------------
+
+    @app.post("/api/turn")
+    async def submit_turn(request: Request) -> JSONResponse:
+        if app.state.session is None:
+            return JSONResponse({"ok": False, "message": "no session"}, status_code=503)
+        body = await request.json()
+        text = str(body.get("text", "")).strip()
+        if not text:
+            return JSONResponse({"ok": False, "message": "empty"}, status_code=400)
+        started = app.state.session.submit(text)
+        # 409 if a turn is already in flight (one interactive turn at a time, like the REPL).
+        return JSONResponse({"ok": started}, status_code=200 if started else 409)
+
+    @app.post("/api/turn/cancel")
+    async def cancel_turn() -> dict:
+        if app.state.session is None:
+            return {"cancelled": False}
+        return {"cancelled": app.state.session.cancel()}
+
+    # --- emergency stop: existing brakes only (Ctrl-C parity + runner stop) -------------
+
+    @app.get("/api/runner")
+    async def runner_status() -> dict:
+        return _runner_status(app.state.runner, app.state.session)
+
+    @app.post("/api/runner/pause")
+    async def runner_pause() -> dict:
+        # Maps to BackgroundRunner.stop(): finish any in-flight job (never a torn write),
+        # then stop firing. Also cancels the in-flight interactive turn. No new authority.
+        if app.state.session is not None:
+            app.state.session.cancel()
+        if app.state.runner is not None and app.state.runner.is_running:
+            await app.state.runner.stop()
+        return _runner_status(app.state.runner, app.state.session)
+
+    @app.post("/api/runner/resume")
+    async def runner_resume() -> dict:
+        if app.state.runner is not None and not app.state.runner.is_running:
+            app.state.runner.start()
+        return _runner_status(app.state.runner, app.state.session)
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
