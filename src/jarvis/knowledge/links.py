@@ -79,24 +79,27 @@ def extract_links(markdown: str) -> list[RawLink]:
     return links
 
 
+def resolve_candidates(link: RawLink, from_path: str, pages: list[PageRef]) -> list[str]:
+    """All page paths a link could resolve to (0 = broken, >1 = ambiguous wikilink)."""
+    if link.link_kind == "markdown":
+        target = link.to_raw if link.to_raw.lower().endswith(".md") else f"{link.to_raw}.md"
+        candidate = posixpath.normpath((PurePosixPath(from_path).parent / target).as_posix())
+        return [candidate] if candidate in {p.path for p in pages} else []
+    needle = link.to_raw.strip().lower()
+    return [
+        p.path
+        for p in pages
+        if needle in {p.stem.lower(), (p.title or "").lower(), *(a.lower() for a in p.aliases)}
+    ]
+
+
 def resolve_target(link: RawLink, from_path: str, pages: list[PageRef]) -> str | None:
     """Resolve a link's target to a known page path, or ``None`` if unresolved.
 
     Markdown links resolve relative to ``from_path``'s directory; wikilinks match by
     stem / title / alias. Ambiguous wikilinks resolve to the shortest path (and the
-    linter flags the ambiguity)."""
-    if link.link_kind == "markdown":
-        target = link.to_raw if link.to_raw.lower().endswith(".md") else f"{link.to_raw}.md"
-        candidate = posixpath.normpath((PurePosixPath(from_path).parent / target).as_posix())
-        known = {p.path for p in pages}
-        return candidate if candidate in known else None
-
-    needle = link.to_raw.strip().lower()
-    matches = [
-        p
-        for p in pages
-        if needle in {p.stem.lower(), (p.title or "").lower(), *(a.lower() for a in p.aliases)}
-    ]
-    if not matches:
+    linter flags the ambiguity via :func:`resolve_candidates`)."""
+    candidates = resolve_candidates(link, from_path, pages)
+    if not candidates:
         return None
-    return min((p.path for p in matches), key=lambda path: (len(path), path))
+    return min(candidates, key=lambda path: (len(path), path))

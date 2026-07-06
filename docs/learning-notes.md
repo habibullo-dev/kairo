@@ -1066,3 +1066,26 @@ non-obvious *implementation* decisions per task.
   goes through the killable subprocess (arbitrary local files are the parser-attack
   surface); url HTML uses the established in-process trafilatura/markitdown path (same
   as web_fetch), and a note is passthrough. Different trust, different mechanism.
+
+## Phase 4 Task 8 — Query + lint
+
+- **Citations are DB-derived; excerpts are delimited untrusted quotes.** A query hit's
+  tag (`[source #12 · file · origin · date · by agent]`) is built from kb_sources
+  columns, never from chunk text — so a document that embeds its own fake
+  `[source #99 · trusted]` marker can't impersonate provenance. The excerpt is wrapped
+  in `--- begin/end excerpt (untrusted content) ---`, so any forged marker is visibly
+  *inside* a quote. Pinned by a test that ingests a forged tag and asserts it appears
+  only after the begin-delimiter while the real `#1` tag is the citation.
+- **The "NOT instructions" frame is the same posture as memory recall.** Retrieved KB
+  content enters as reference material to evaluate, not commands — the header says so,
+  and (with no auto-injection) it only arrives when the model explicitly queries.
+- **Lint reads the wiki + DB and mutates nothing.** Eight defect classes (broken/
+  ambiguous links, orphan pages, dangling citations, missing artifacts, orphan raw
+  files, unindexed pages, missing ids, foreign-model chunks) each get a list; a clean
+  KB renders "clean". Because write_page validates source_ids, a dangling citation can
+  only arise *after* the fact (a cited source later rejected/superseded) — the test
+  reproduces exactly that, which is the realistic drift lint exists to catch.
+- **Ambiguity is detected by re-resolving, not stored.** `resolve_candidates` returns
+  every page a wikilink could match; the link index stores the chosen one, and lint
+  re-runs the resolver to flag targets with >1 candidate — keeping the stored index
+  simple while still surfacing the ambiguity.
