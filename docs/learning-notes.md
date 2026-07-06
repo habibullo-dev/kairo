@@ -1042,3 +1042,27 @@ non-obvious *implementation* decisions per task.
   wikilinks by stem/title/alias and markdown links relative to the page; an
   unresolved target lands as `to_path=None` so the linter can surface it. Reindex
   replaces per page (a removed link disappears; it doesn't accumulate).
+
+## Phase 4 Task 7 — Ingest pipeline
+
+- **Raw artifact first, DB row second — crash consistency by ordering.** ingest
+  writes the immutable raw bytes to disk *before* inserting the kb_sources row, so a
+  crash in between leaves a harmless orphan file (swept by rebuild/lint), never a row
+  citing a file that isn't there. Pinned by monkeypatching add_source to blow up and
+  asserting the raw file exists while no row does.
+- **content_hash UNIQUE makes dedup free and mandatory.** A re-ingest of identical
+  bytes can't insert a second row (the index forbids it), so ingest checks
+  find_by_hash up front and no-ops with action='duplicate'. Same bytes twice = one
+  source, always.
+- **Supersede is gated on reviewed-ness — the anti-poisoning rule.** A changed
+  file/url replaces its prior live version only when the *new* source is reviewed
+  (interactive). An unattended re-ingest of changed content stages a new `unreviewed`
+  source and leaves the trusted version live — so a compromised origin can't silently
+  rewrite what Jarvis knows at 3am. Pinned by a reviewed-then-unattended re-ingest test.
+- **Notes don't supersede-by-origin; files/urls do.** A freeform note has no stable
+  re-ingestable origin, so each is distinct (dedup still catches identical text via
+  hash). Only file/url origins participate in supersede.
+- **The file parser is sandboxed; the url/note path is in-process.** File conversion
+  goes through the killable subprocess (arbitrary local files are the parser-attack
+  surface); url HTML uses the established in-process trafilatura/markitdown path (same
+  as web_fetch), and a note is passthrough. Different trust, different mechanism.

@@ -228,6 +228,34 @@ What to study or adapt:
 - **Privacy and consent posture**: meetings are sensitive. Recording/transcription needs explicit user start/stop control, clear local storage, provenance, retention controls, and no unattended recording by default.
 - **Future UX reference**: a meeting dashboard belongs with the Phase 8 web UI/API, not inside the core loop. Jarvis should own the data model, permissions, and evals; Meetily informs capture and product ergonomics.
 
+### Approved local/self-hosted services backlog
+These services are approved candidates for the local workstation stack around Jarvis. They are not core agent frameworks; they provide durable data sources, deterministic workflow surfaces, or private utilities that Jarvis can query/control through explicit tools, APIs, or MCP adapters.
+
+Initial priority:
+- **Paperless-ngx**: document/OCR archive. Bills, contracts, scans, receipts, and PDFs become searchable sources for the Phase 4 KB.
+- **Karakeep**: first-choice bookmark/capture inbox. It is the better Jarvis fit over Linkwarden because it saves links, notes, images, and PDFs; has AI tagging; and exposes API/webhook-style integration surfaces. **Linkwarden** remains the alternative if collaborative reading and high-fidelity webpage preservation become more important.
+- **Syncthing**: peer-to-peer sync for the Obsidian vault, exports, backups, and other local artifacts across machines without introducing a cloud dependency.
+- **n8n self-hosted AI starter kit**: deterministic workflow layer. Jarvis should call approved n8n workflows for repeatable integrations instead of rebuilding every SaaS connector inside the agent core.
+- **SearXNG**: optional private metasearch backend for research. Use as a configurable source behind the existing web-search/research boundary, not as a replacement for cited fetching.
+
+Second wave:
+- **Actual Budget**: local-first finance source. Start read-only (summaries, reminders, anomaly checks); require explicit approval before creating or changing transactions/budgets.
+- **Mealie**: recipe, meal-planning, and shopping-list backend. Useful for preference-aware meal planning and scheduled grocery/task flows.
+
+Integration rule: these systems should expose data to Jarvis through narrow, audited adapters. Jarvis remains the reasoning layer; external apps remain the domain-specific systems of record.
+
+### Approved MCP / connector shortlist
+MCP servers are powerful executable dependencies, so every server must be pinned, reviewed, least-privilege scoped, and wrapped by Jarvis's permission/audit model before it can perform writes or external side effects.
+
+Approved shortlist:
+- **Computer/browser/control tools**: local desktop/browser control for supervised workflows only; no unattended control until a dedicated safety design exists.
+- **Google Drive**: file search/read/import/export; writes or sharing links require approval.
+- **OneDrive**: file search/read/import/export through Microsoft Graph; writes/sharing require approval.
+- **Gmail**: search/read/summarize first; draft/send/archive/label require approval, with exact recipient/body preview.
+- **Google Calendar**: read availability/events first; create/update/cancel events require approval.
+- **Telegram notifications**: start with send-only notifications for task completion, errors, review-needed queues, and long-running agent updates. Full Telegram chat management is a later, separately gated capability.
+- **Spotify**: low-risk personal-control tool for playback/search/playlist actions; still audit calls because OAuth tokens are involved.
+
 ---
 
 ## 7. Repo Structure

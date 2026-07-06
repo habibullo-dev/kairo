@@ -18,20 +18,26 @@ Two invariants write_page upholds:
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
+from jarvis.knowledge import converters
 from jarvis.knowledge import links as _links
 from jarvis.knowledge.chunking import chunk_markdown, embed_text
-from jarvis.knowledge.store import KnowledgeStore, NewChunk, WikiLink
+from jarvis.knowledge.store import KnowledgeStore, NewChunk, Source, WikiLink
 from jarvis.knowledge.wiki import (
     build_front_matter,
     render_page,
     safe_wiki_path,
+    slugify,
     split_front_matter,
 )
 from jarvis.observability import get_logger
+from jarvis.paths import is_sensitive_path, resolve_path
 
 _H1 = re.compile(r"^\s*#\s+(.+?)\s*#*\s*$", re.MULTILINE)
 
@@ -42,6 +48,17 @@ def utc_now() -> _dt.datetime:
 
 class KnowledgeError(Exception):
     """A knowledge operation the service refuses; the message is written for the model."""
+
+
+@dataclass(frozen=True)
+class IngestResult:
+    """Outcome of an ingest, for the tool/REPL to report."""
+
+    action: str  # 'ingested' | 'duplicate' | 'superseded'
+    source_id: int
+    chunks: int
+    review_status: str  # 'reviewed' | 'unreviewed'
+    title: str | None = None
 
 
 class KnowledgeService:
@@ -132,6 +149,158 @@ class KnowledgeService:
                     f"source #{sid} is unreviewed (run `kb review` to approve it) — cannot cite it"
                 )
 
+    # --- ingest ------------------------------------------------------------
+
+    async def ingest(
+        self,
+        *,
+        path: str | None = None,
+        url: str | None = None,
+        text: str | None = None,
+        title: str | None = None,
+        created_by: str = "user",
+        source_session_id: int | None = None,
+    ) -> IngestResult:
+        """Ingest exactly one of a file ``path``, a ``url``, or freeform ``text`` into
+        an immutable raw artifact + deterministic markdown + a chunk index.
+
+        Order matters for crash-consistency: the raw artifact is written *before* the
+        DB row, so a crash leaves a harmless orphan file (swept by ``kb rebuild``),
+        never a row pointing at nothing. An unattended run (``bound_unattended``)
+        stages the source ``unreviewed`` — quarantined from search until a human runs
+        ``kb review`` (ADR-0004)."""
+        given = [("path", path), ("url", url), ("text", text)]
+        provided = [name for name, value in given if value is not None]
+        if len(provided) != 1:
+            raise KnowledgeError(
+                f"ingest needs exactly one of path / url / text (got {provided or 'none'})"
+            )
+        self.ensure_dirs()
+
+        if path is not None:
+            kind, origin, raw_bytes, ext, seed = await self._read_file_source(path)
+        elif url is not None:
+            kind, origin, raw_bytes, ext, seed = await self._read_url_source(url)
+        else:
+            kind, origin = "note", "note"
+            raw_bytes, ext, seed = text.encode("utf-8"), ".md", (title or "note")
+
+        content_hash = hashlib.sha256(raw_bytes).hexdigest()
+        existing = await self.store.find_by_hash(content_hash)
+        if existing is not None:  # content_hash is UNIQUE — identical bytes are a no-op
+            return IngestResult("duplicate", existing.id, 0, existing.review_status, existing.title)
+
+        # raw artifact FIRST (orphan-file-not-dangling-row on crash)
+        stem = f"{content_hash[:16]}-{slugify(seed or origin)[:60]}"
+        raw_rel = f"raw/{stem}{ext}"
+        (self.knowledge_dir / raw_rel).write_bytes(raw_bytes)
+
+        conversion = await self._convert(kind, path, raw_bytes)
+        markdown_rel = f"markdown/{content_hash[:16]}.md"
+        (self.knowledge_dir / markdown_rel).write_text(conversion.markdown, encoding="utf-8")
+
+        review_status = "unreviewed" if self.bound_unattended else "reviewed"
+        # A changed file/url supersedes its prior live version — but only when the new
+        # source is itself reviewed (an unattended re-ingest must not silently replace
+        # trusted content; it stages for review instead).
+        prior: Source | None = None
+        if kind in ("file", "url") and review_status == "reviewed":
+            prior = await self.store.find_live_by_origin(origin)
+
+        source_id = await self.store.add_source(
+            kind=kind,
+            origin=origin,
+            title=title or conversion.title,
+            content_hash=content_hash,
+            raw_path=raw_rel,
+            markdown_path=markdown_rel,
+            markdown_hash=hashlib.sha256(conversion.markdown.encode("utf-8")).hexdigest(),
+            converter=conversion.converter,
+            converter_version=conversion.converter_version,
+            byte_size=len(raw_bytes),
+            review_status=review_status,
+            created_by=created_by,
+            source_session_id=source_session_id,
+        )
+        if prior is not None:
+            await self.store.supersede_source(prior.id, source_id)
+
+        new_chunks = await self._chunk_and_embed(conversion.markdown)
+        await self.store.replace_chunks(
+            source_id=source_id, chunks=new_chunks, embedding_model=self.embedder.model
+        )
+        self.log.info(
+            "kb_ingested",
+            source_id=source_id,
+            kind=kind,
+            origin=origin,
+            content_hash=content_hash[:16],
+            converter=conversion.converter,
+            chunks=len(new_chunks),
+            review_status=review_status,
+            superseded=prior.id if prior else None,
+        )
+        action = "superseded" if prior is not None else "ingested"
+        return IngestResult(
+            action, source_id, len(new_chunks), review_status, title or conversion.title
+        )
+
+    async def _read_file_source(self, path: str) -> tuple[str, str, bytes, str, str]:
+        """Resolve + validate a file path (defense-in-depth floor), return its bytes."""
+        resolved = resolve_path(path, self.root)
+        if is_sensitive_path(resolved):
+            raise KnowledgeError(f"refusing to ingest a sensitive path: {resolved}")
+        if not resolved.is_file():
+            raise KnowledgeError(f"not a file: {resolved}")
+        size = resolved.stat().st_size
+        if size > self.config.max_ingest_bytes:
+            raise KnowledgeError(
+                f"file is {size:,} bytes, over the {self.config.max_ingest_bytes:,}-byte cap"
+            )
+        ext = resolved.suffix or ".bin"
+        return "file", str(resolved), resolved.read_bytes(), ext, resolved.stem
+
+    async def _read_url_source(self, url: str) -> tuple[str, str, bytes, str, str]:
+        """Fetch a URL (SSRF-guarded) and return its raw bytes."""
+        try:
+            raw_bytes, ctype = await converters.fetch_url(
+                url, timeout_seconds=self.config.convert_timeout_seconds
+            )
+        except converters.ConversionError as exc:
+            raise KnowledgeError(str(exc)) from exc
+        if len(raw_bytes) > self.config.max_ingest_bytes:
+            raise KnowledgeError(
+                f"page is {len(raw_bytes):,} bytes, over the "
+                f"{self.config.max_ingest_bytes:,}-byte cap"
+            )
+        ext = ".html" if ctype and "html" in ctype else ".txt"
+        return "url", url, raw_bytes, ext, urlparse(url).netloc or "web"
+
+    async def _convert(self, kind: str, path: str | None, raw_bytes: bytes):
+        """Convert a source's bytes to markdown: files through the killable subprocess
+        sandbox; urls through the (in-process) trafilatura/markitdown web path; notes
+        pass through."""
+        if kind == "file":
+            resolved = resolve_path(path, self.root)
+            try:
+                return await converters.convert_file_sandboxed(
+                    resolved,
+                    max_bytes=self.config.max_ingest_bytes,
+                    pdf_converter=self.config.pdf_converter,
+                    timeout_seconds=self.config.convert_timeout_seconds,
+                )
+            except converters.ConversionError as exc:
+                raise KnowledgeError(str(exc)) from exc
+        if kind == "url":
+            return converters.html_to_markdown(raw_bytes.decode("utf-8", errors="replace"))
+        # note: the text is already markdown/plaintext
+        return converters.ConversionResult(
+            converters.strip_front_matter(raw_bytes.decode("utf-8", errors="replace")),
+            None,
+            "passthrough",
+            "1",
+        )
+
     async def _reindex_page(self, wiki_path: str, body: str) -> None:
         """Rebuild this page's chunk index and outbound link index from its body."""
         pages = self._page_index()
@@ -148,20 +317,24 @@ class KnowledgeService:
         ]
         await self.store.replace_links(wiki_path, resolved)
 
-        chunks = chunk_markdown(
-            body, max_chars=self.config.chunk_chars, min_chars=self.config.min_chunk_chars
-        )
-        if chunks:
-            vectors = await self.embedder.embed_documents([embed_text(c) for c in chunks])
-            new_chunks = [
-                NewChunk(heading_path=c.heading_path, seq=c.seq, text=c.text, embedding=v)
-                for c, v in zip(chunks, vectors, strict=True)
-            ]
-        else:
-            new_chunks = []
+        new_chunks = await self._chunk_and_embed(body)
         await self.store.replace_chunks(
             wiki_path=wiki_path, chunks=new_chunks, embedding_model=self.embedder.model
         )
+
+    async def _chunk_and_embed(self, markdown: str) -> list[NewChunk]:
+        """Chunk markdown and embed each chunk (with its heading path prefixed).
+        Shared by wiki-page reindex and source ingest."""
+        chunks = chunk_markdown(
+            markdown, max_chars=self.config.chunk_chars, min_chars=self.config.min_chunk_chars
+        )
+        if not chunks:
+            return []
+        vectors = await self.embedder.embed_documents([embed_text(c) for c in chunks])
+        return [
+            NewChunk(heading_path=c.heading_path, seq=c.seq, text=c.text, embedding=v)
+            for c, v in zip(chunks, vectors, strict=True)
+        ]
 
     def _page_index(self) -> list[_links.PageRef]:
         """Scan the wiki dir into PageRefs (path/stem/title/aliases) for link resolution."""
