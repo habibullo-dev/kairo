@@ -21,6 +21,8 @@ from tests.evals.retrieval import (
 )
 
 from jarvis.config import load_config
+from jarvis.knowledge.service import KnowledgeService
+from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory import MemoryStore
 from jarvis.memory.embeddings import FakeEmbedder
 from jarvis.persistence.db import connect
@@ -149,3 +151,16 @@ async def test_run_retrieval_skips_without_voyage_key(tmp_path: Path, capsys) ->
     rc = await retrieval.run_retrieval(config)
     assert rc == 0
     assert "skipped" in capsys.readouterr().out.lower()
+
+
+async def test_seed_kb_uses_valid_created_by(tmp_path: Path) -> None:
+    # Regression: the kb_sources table CHECKs created_by IN ('user','agent'); seeding
+    # with anything else raises IntegrityError only at live-run time (caught in Task 8).
+    cfg = load_config(root=tmp_path, env_file=None)
+    store = KnowledgeStore(await connect(tmp_path / "jarvis.db"))
+    svc = KnowledgeService(
+        store, FakeEmbedder(), cfg.knowledge, knowledge_dir=cfg.knowledge_dir, root=tmp_path
+    )
+    svc.ensure_dirs()
+    await retrieval.seed_kb(svc, [{"id": "doc-a", "text": "deployment tooling knowledge content"}])
+    assert "doc-a" in {s.title for s in await store.list_sources()}

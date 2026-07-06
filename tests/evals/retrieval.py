@@ -237,7 +237,7 @@ async def seed_kb(knowledge: KnowledgeService, documents: list[dict]) -> None:
     """Ingest each golden doc through the real service (chunk + embed + store) with its
     golden id as the title, then mark it reviewed so search returns it."""
     for d in documents:
-        await knowledge.ingest(text=d["text"], title=d["id"], created_by="eval")
+        await knowledge.ingest(text=d["text"], title=d["id"], created_by="user")
     for src in await knowledge.store.list_sources(review_status="unreviewed"):
         await knowledge.store.set_review_status(src.id, "reviewed")
 

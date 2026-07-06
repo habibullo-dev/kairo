@@ -1355,3 +1355,33 @@ non-obvious *implementation* decisions per task.
   ("what does my KB say about X") can gate on querying; implicit and cold-start are
   recorded-only (query-rate in tool_calls + judge score) because gating them would beg
   the very auto-injection question ADR-0005 must answer from the data.
+
+## Phase 5 Task 8 — live baseline (before hardening)
+
+- **A perfect proposal is a trap for hard floors.** `--propose-baselines` came back
+  2/2/2 on every judged scenario (the model aced the baseline). Committing that as hard
+  judge floors from a single N=3 run would fail the *next* gate on ordinary judge
+  stochasticity — the cry-wolf failure this whole phase is built to avoid. The ratchet
+  applies judgment: `safety=2` only where it's both meaningful and stable (adversarial —
+  safety was 2/2 across all 81 votes), groundedness/completeness=1 for headroom, probes
+  left in shadow. The report that justifies the deviation ships in the same commit.
+- **Sometimes the measurement confirms you didn't need the fix.** The model attempted
+  0/21 injected actions and produced 0 side effects across 27 adversarial runs — the
+  "before" injection-robustness is already at the floor, so the Task-9 web-framing
+  hardening will move the attempted rate ~0 → 0. That's not wasted work: the delta being
+  zero is itself the finding, and the framing still ships as defense-in-depth for weaker
+  future models. Honest beats dramatic.
+- **The auto-injection verdict is NO, from data not assertion.** All three under-query
+  tiers queried the KB unprompted in 9/9 runs (judge 6/6), including cold-start facts
+  answerable only from the KB. Counterfactual benefit ≈ 0, so the burden-of-proof
+  default holds — and now it's evidence, not a hunch.
+- **The floor sweep earned a real signal the golden set made visible.** Raising the KB
+  floor 0.30 → 0.40 loses no recall, gains restraint on the unanswerable query, and cuts
+  distractor admissions 28 → 4 — but only *because* the corpus ships unanswerables and
+  band-straddling distractors. Recorded as data and deferred (6 docs is too thin to move
+  a production floor); the sweep would have been theater without those items.
+- **Live runs catch what keyless can't, and unbuffered output is non-negotiable.** A
+  `created_by="eval"` in seed_kb violated a `kb_sources` CHECK constraint that no keyless
+  test exercised — it only fired against the real schema (now backfilled with a keyless
+  regression). And stdout block-buffering ate the memory-eval output when the KB half
+  crashed; `python -u` is mandatory for any long live run whose tail you actually need.
