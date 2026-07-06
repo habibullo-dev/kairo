@@ -932,8 +932,6 @@ async def run_all(
     compare_rev: str | None = None,
     propose: bool = False,
 ) -> int:
-    from rich.console import Console
-
     scenarios = load_scenarios(suite)
     if only:
         scenarios = [s for s in scenarios if s.name == only]
@@ -941,19 +939,9 @@ async def run_all(
             print(f"No scenario named {only!r}.")
             return 2
 
-    # Calibrate the judge FIRST — a judge that misgrades a frozen fixture is untrusted,
-    # so we skip scoring entirely (saving cost) and mark the run JUDGE-INVALID; the
-    # deterministic checks still gate.
-    judge_valid: bool | None = None
-    calibration_failures: list[str] = []
-    will_judge = (
-        judge_client is not None and not no_judge and any(s.data.get("judge") for s in scenarios)
+    judge_valid, calibration_failures, effective_no_judge = await _calibrate(
+        config, scenarios, judge_client, no_judge
     )
-    if will_judge:
-        cal = await _run_calibration(judge_client, config.models.judge)
-        judge_valid = cal.ok
-        calibration_failures = cal.failures
-    effective_no_judge = no_judge or (judge_valid is False)
 
     ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     results = recorder.results_dir(DATA_EVALS, recorder.git_rev(), ts=ts)
@@ -969,11 +957,71 @@ async def run_all(
         )
         all_records.extend(recs)
 
+    hashes = {s.name: s.hash for s in scenarios}
+    return await finalize_gate(
+        config,
+        all_records,
+        hashes=hashes,
+        runs=runs,
+        suite=suite,
+        judge_valid=judge_valid,
+        calibration_failures=calibration_failures,
+        results=results,
+        ts=ts,
+        report_md=report_md,
+        compare_rev=compare_rev,
+        propose=propose,
+    )
+
+
+async def _calibrate(
+    config: Config,
+    scenarios: list[LoadedScenario],
+    judge_client: LLMClient | None,
+    no_judge: bool,
+) -> tuple[bool | None, list[str], bool]:
+    """Calibrate the judge FIRST — a judge that misgrades a frozen fixture is untrusted,
+    so scoring is skipped (saving cost) and the run marked JUDGE-INVALID; the deterministic
+    checks still gate. Returns ``(judge_valid, calibration_failures, effective_no_judge)``."""
+    judge_valid: bool | None = None
+    calibration_failures: list[str] = []
+    will_judge = (
+        judge_client is not None and not no_judge and any(s.data.get("judge") for s in scenarios)
+    )
+    if will_judge:
+        cal = await _run_calibration(judge_client, config.models.judge)
+        judge_valid = cal.ok
+        calibration_failures = cal.failures
+    effective_no_judge = no_judge or (judge_valid is False)
+    return judge_valid, calibration_failures, effective_no_judge
+
+
+async def finalize_gate(
+    config: Config,
+    all_records: list[ScenarioRunRecord],
+    *,
+    hashes: dict[str, str],
+    runs: int,
+    suite: str,
+    judge_valid: bool | None,
+    calibration_failures: list[str],
+    results: Path,
+    ts: str,
+    report_md: bool = False,
+    compare_rev: str | None = None,
+    propose: bool = False,
+) -> int:
+    """Gate a set of scenario records, persist ONE gate record + ONE history line, and
+    render the report. Shared by the single-process gate (:func:`run_all`) and the chunked
+    profile's aggregation (:func:`aggregate_staged`) — so a chunked run over several suite
+    sub-runs still produces exactly one history entry, keeping ``--compare``, FLAKY
+    promotion, and cumulative-clean accounting intact (they all read one line per gate)."""
+    from rich.console import Console
+
     # Gate against the committed baselines, using the PRIOR history for the two-
     # consecutive FLAKY promotion (read before this run is appended).
     history = recorder.read_history(HISTORY_PATH)
     baselines = report.load_baselines(BASELINES_PATH)
-    hashes = {s.name: s.hash for s in scenarios}
     outcome = report.gate(
         all_records,
         baselines=baselines,
@@ -1045,60 +1093,405 @@ async def run_all(
     return outcome.exit_code
 
 
-def main() -> None:
+# --- chunked live gate (Task 9) --------------------------------------------
+#
+# The full `--suite all` × N live run does not fit the runtime's ~14-min background
+# cap. The chunked profile runs each suite as a *sub-run* whose records are staged to
+# disk (no gate, no history), then aggregates ALL staged records into ONE gate record
+# + ONE history line. Each suite sub-run fits the cap on its own; staging is resumable,
+# so a killed chunk is simply re-run. The real work is the aggregation — that a gate
+# assembled from several sub-runs is indistinguishable from one produced in a single
+# process (same merged totals, same one history entry).
+
+CHUNK_SUITES: tuple[str, ...] = ("core", "adversarial")
+
+
+def staging_dir(rev: str) -> Path:
+    """Per-revision staging dir, so re-invoking at the same commit RESUMES (skips
+    already-staged chunks) and a new commit starts fresh."""
+    return DATA_EVALS / f"_chunked-{rev}"
+
+
+def _chunk_records_path(stage: Path, suite: str) -> Path:
+    return stage / f"chunk-{suite}.jsonl"
+
+
+def _chunk_meta_path(stage: Path, suite: str) -> Path:
+    return stage / f"chunk-{suite}.meta.json"
+
+
+def chunk_staged(stage: Path, suite: str) -> bool:
+    """A chunk is done once both its records and meta are on disk (meta written last,
+    so a half-written chunk never reads as complete)."""
+    return _chunk_records_path(stage, suite).exists() and _chunk_meta_path(stage, suite).exists()
+
+
+def _ensure_stage_dirs(stage: Path) -> None:
+    """Create the staging dir (+ transcripts subdir for non-PASS post-mortems). A sync
+    helper so the async runners never touch the filesystem directly (ASYNC240)."""
+    stage.mkdir(parents=True, exist_ok=True)
+    (stage / "transcripts").mkdir(parents=True, exist_ok=True)
+
+
+def write_chunk(
+    stage: Path,
+    suite: str,
+    records: list[ScenarioRunRecord],
+    *,
+    hashes: dict[str, str],
+    runs: int,
+    judge_valid: bool | None,
+    calibration_failures: list[str],
+) -> None:
+    """Stage one suite sub-run: records as JSONL, then a meta sidecar (rev/runs/hashes/
+    judge status). Meta is written LAST as the completion marker."""
+    stage.mkdir(parents=True, exist_ok=True)
+    with _chunk_records_path(stage, suite).open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(asdict(r)) + "\n")
+    meta = {
+        "suite": suite,
+        "rev": recorder.git_rev(),
+        "runs": runs,
+        "hashes": hashes,
+        "judge_valid": judge_valid,
+        "calibration_failures": calibration_failures,
+        "schema_version": recorder.SCHEMA_VERSION,
+    }
+    _chunk_meta_path(stage, suite).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
+def read_chunk(stage: Path, suite: str) -> tuple[list[ScenarioRunRecord], dict]:
+    """Load one staged chunk's records + meta."""
+    records = [
+        ScenarioRunRecord(**json.loads(line))
+        for line in _chunk_records_path(stage, suite).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    meta = json.loads(_chunk_meta_path(stage, suite).read_text(encoding="utf-8"))
+    return records, meta
+
+
+def merge_chunks(
+    stage: Path, chunks: tuple[str, ...]
+) -> tuple[list[ScenarioRunRecord], dict[str, str], dict]:
+    """Merge staged chunks into (all_records, merged hashes, merged meta). Guards that
+    every chunk was produced at the SAME git rev — mixing records from different code
+    would make the gate a lie. Raises ``ValueError`` on a rev mismatch or a missing chunk."""
+    missing = [s for s in chunks if not chunk_staged(stage, s)]
+    if missing:
+        raise ValueError(f"missing staged chunk(s): {', '.join(missing)}")
+    all_records: list[ScenarioRunRecord] = []
+    hashes: dict[str, str] = {}
+    revs: set[str] = set()
+    runs_seen: set[int] = set()
+    judge_valids: list[bool | None] = []
+    failures: set[str] = set()
+    for suite in chunks:
+        records, meta = read_chunk(stage, suite)
+        all_records.extend(records)
+        hashes.update(meta.get("hashes", {}))
+        revs.add(meta.get("rev", "unknown"))
+        runs_seen.add(int(meta.get("runs", 0)))
+        judge_valids.append(meta.get("judge_valid"))
+        failures.update(meta.get("calibration_failures", []))
+    if len(revs) > 1:
+        raise ValueError(f"refusing to aggregate chunks from different revs: {sorted(revs)}")
+    # judge_valid across chunks: False if any chunk's judge failed calibration; True only
+    # if all judged chunks were valid; None if judging was off everywhere.
+    if any(v is False for v in judge_valids):
+        merged_judge_valid: bool | None = False
+    elif any(v is True for v in judge_valids):
+        merged_judge_valid = True
+    else:
+        merged_judge_valid = None
+    merged_meta = {
+        "rev": next(iter(revs)),
+        "runs": max(runs_seen) if runs_seen else 0,
+        "judge_valid": merged_judge_valid,
+        "calibration_failures": sorted(failures),
+    }
+    return all_records, hashes, merged_meta
+
+
+async def run_chunk(
+    config: Config,
+    *,
+    suite: str,
+    runs: int,
+    no_judge: bool,
+    judge_client: LLMClient | None,
+    stage: Path,
+) -> int:
+    """Run ONE suite as a sub-run and stage its records (no gate, no history append).
+    Transcripts/workdirs for non-PASS runs land under the staging dir for post-mortem."""
+    scenarios = load_scenarios(suite)
+    if not scenarios:
+        print(f"no scenarios for suite {suite!r}")
+        return 2
+    judge_valid, calibration_failures, effective_no_judge = await _calibrate(
+        config, scenarios, judge_client, no_judge
+    )
+    _ensure_stage_dirs(stage)
+    all_records: list[ScenarioRunRecord] = []
+    for loaded in scenarios:
+        recs = await run_scenario(
+            config,
+            loaded,
+            runs,
+            results=stage,
+            judge_client=judge_client,
+            no_judge=effective_no_judge,
+        )
+        all_records.extend(recs)
+    hashes = {s.name: s.hash for s in scenarios}
+    write_chunk(
+        stage,
+        suite,
+        all_records,
+        hashes=hashes,
+        runs=runs,
+        judge_valid=judge_valid,
+        calibration_failures=calibration_failures,
+    )
+    print(f"[chunk] {suite}: staged {len(all_records)} record(s) -> {stage}")
+    return 0
+
+
+async def aggregate_staged(
+    config: Config,
+    *,
+    stage: Path,
+    chunks: tuple[str, ...] = CHUNK_SUITES,
+    report_md: bool = False,
+    compare_rev: str | None = None,
+    propose: bool = False,
+) -> int:
+    """Merge all staged chunks into ONE gate record + ONE history line via
+    :func:`finalize_gate`. This is the whole point of the chunked profile: several
+    capped sub-runs, one honest gate."""
+    try:
+        all_records, hashes, meta = merge_chunks(stage, chunks)
+    except ValueError as exc:
+        print(f"cannot aggregate: {exc}")
+        return 2
+    ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    results = recorder.results_dir(DATA_EVALS, recorder.git_rev(), ts=ts)
+    return await finalize_gate(
+        config,
+        all_records,
+        hashes=hashes,
+        runs=meta["runs"],
+        suite="live-chunked",
+        judge_valid=meta["judge_valid"],
+        calibration_failures=meta["calibration_failures"],
+        results=results,
+        ts=ts,
+        report_md=report_md,
+        compare_rev=compare_rev,
+        propose=propose,
+    )
+
+
+async def run_profile_chunked(
+    config: Config,
+    *,
+    runs: int,
+    no_judge: bool,
+    judge_client: LLMClient | None,
+    stage: Path,
+    chunks: tuple[str, ...] = CHUNK_SUITES,
+    report_md: bool = False,
+    compare_rev: str | None = None,
+    propose: bool = False,
+) -> int:
+    """Orchestrate the chunked live gate: run each not-yet-staged suite as a sub-run,
+    then aggregate once ALL chunks are present. Resumable — a re-invocation at the same
+    rev skips completed chunks, so the profile survives the ~14-min background cap (run
+    it repeatedly; each pass makes forward progress, the last pass aggregates)."""
+    _ensure_stage_dirs(stage)
+    print(f"[profile live-chunked] stage={stage}  chunks={list(chunks)}")
+    for suite in chunks:
+        if chunk_staged(stage, suite):
+            print(f"[chunk] {suite}: already staged, skipping")
+            continue
+        await run_chunk(
+            config,
+            suite=suite,
+            runs=runs,
+            no_judge=no_judge,
+            judge_client=judge_client,
+            stage=stage,
+        )
+    if not all(chunk_staged(stage, s) for s in chunks):
+        pending = [s for s in chunks if not chunk_staged(stage, s)]
+        print(f"[profile live-chunked] pending: {pending} — re-run to resume, then aggregate.")
+        return 0
+    return await aggregate_staged(
+        config,
+        stage=stage,
+        chunks=chunks,
+        report_md=report_md,
+        compare_rev=compare_rev,
+        propose=propose,
+    )
+
+
+def _required_keys(scenarios: list[LoadedScenario]) -> tuple[str, ...]:
+    """Voyage is only required if a scenario exercises memory or the knowledge base."""
+    required = ["anthropic", "tavily"]
+    if any(s.data.get("needs_memory") or s.data.get("needs_knowledge") for s in scenarios):
+        required.append("voyage")
+    return tuple(required)
+
+
+def _load_for_suites(scenarios: list[LoadedScenario]) -> Config:
+    try:
+        return load_config(require=_required_keys(scenarios))
+    except ConfigError as exc:
+        print(f"Configuration error: {exc}")
+        sys.exit(1)
+
+
+def _build_judge_client(
+    config: Config, *, no_judge: bool, scenarios: list[LoadedScenario]
+) -> LLMClient | None:
+    if no_judge or not any(s.data.get("judge") for s in scenarios):
+        return None
+    # A thinking-off client for the forced-tool judge (temperature set per call).
+    return AnthropicClient(
+        api_key=config.secrets.anthropic_api_key,
+        effort=config.limits.effort,
+        max_retries=config.limits.max_retries,
+        thinking=False,
+    )
+
+
+def cli(argv: list[str] | None = None) -> int:
+    """The ``jarvis eval`` command surface (also `python tests/evals/runner.py`).
+
+    Subcommands: ``gate`` (run + gate in one process; also ``--profile live-chunked``),
+    ``run`` (stage ONE suite as a chunk), ``aggregate`` (merge chunks → one history line).
+    Back-compat: a bare invocation, or a bare flag list with no subcommand, means ``gate``
+    (so `runner.py` and `runner.py --suite core` keep working); ``-h/--help`` alone still
+    shows the top-level chooser so ``run``/``aggregate`` stay discoverable."""
     _force_utf8()
-    parser = argparse.ArgumentParser(description="Run Jarvis smoke evals against the live API.")
-    parser.add_argument("--runs", type=int, default=3, help="Runs per scenario (default 3).")
-    parser.add_argument("--suite", default="all", choices=["core", "adversarial", "all"])
-    parser.add_argument("--scenario", help="Run only this scenario by name.")
-    parser.add_argument("--no-judge", action="store_true", help="Skip LLM-as-judge scoring.")
-    parser.add_argument("--report", action="store_true", help="Print the full markdown report.")
-    parser.add_argument("--compare", metavar="REV", help="Deltas vs a prior gate (git rev).")
-    parser.add_argument(
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        argv = ["gate"]  # bare invocation = full gate (documented default)
+    elif argv[0] not in {"gate", "run", "aggregate", "-h", "--help"}:
+        argv = ["gate", *argv]  # `runner.py --suite core` still means `gate --suite core`
+
+    parser = argparse.ArgumentParser(
+        prog="jarvis eval", description="Run Jarvis smoke evals against the live API."
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    g = sub.add_parser("gate", help="Run scenarios and gate against baselines (default).")
+    g.add_argument("--runs", type=int, default=3, help="Runs per scenario (default 3).")
+    g.add_argument("--suite", default="all", choices=["core", "adversarial", "all"])
+    g.add_argument("--scenario", help="Run only this scenario by name.")
+    g.add_argument("--no-judge", action="store_true", help="Skip LLM-as-judge scoring.")
+    g.add_argument("--report", action="store_true", help="Print the full markdown report.")
+    g.add_argument("--compare", metavar="REV", help="Deltas vs a prior gate (git rev).")
+    g.add_argument(
         "--propose-baselines",
         action="store_true",
         dest="propose",
         help="Print baselines proposed from this run (for a dedicated ratchet commit).",
     )
-    args = parser.parse_args()
+    g.add_argument(
+        "--profile",
+        choices=["live-chunked"],
+        help="Chunked live gate: run suites as sub-runs, aggregate into ONE history line "
+        "(fits the ~14-min background cap; resumable).",
+    )
+    g.add_argument("--stage", metavar="DIR", help="Staging dir for --profile (default per-rev).")
 
-    scenarios = load_scenarios(args.suite)
-    # Voyage is only required if a scenario exercises memory or the knowledge base.
-    required = ["anthropic", "tavily"]
-    if any(s.data.get("needs_memory") or s.data.get("needs_knowledge") for s in scenarios):
-        required.append("voyage")
+    r = sub.add_parser("run", help="Stage ONE suite as a chunk (no gate, no history).")
+    r.add_argument("--suite", required=True, choices=["core", "adversarial", "all"])
+    r.add_argument("--stage", required=True, metavar="DIR")
+    r.add_argument("--runs", type=int, default=3)
+    r.add_argument("--no-judge", action="store_true")
 
-    try:
-        config = load_config(require=tuple(required))
-    except ConfigError as exc:
-        print(f"Configuration error: {exc}")
-        sys.exit(1)
+    a = sub.add_parser("aggregate", help="Merge staged chunks into ONE gate + ONE history line.")
+    a.add_argument("--stage", required=True, metavar="DIR")
+    a.add_argument("--report", action="store_true")
+    a.add_argument("--compare", metavar="REV")
+    a.add_argument("--propose-baselines", action="store_true", dest="propose")
+    a.add_argument("--chunks", nargs="*", default=list(CHUNK_SUITES), help="Chunk suites to merge.")
 
-    judge_client: LLMClient | None = None
-    if not args.no_judge and any(s.data.get("judge") for s in scenarios):
-        # A thinking-off client for the forced-tool judge (temperature set per call).
-        judge_client = AnthropicClient(
-            api_key=config.secrets.anthropic_api_key,
-            effort=config.limits.effort,
-            max_retries=config.limits.max_retries,
-            thinking=False,
-        )
+    args = parser.parse_args(argv)
 
-    sys.exit(
-        asyncio.run(
-            run_all(
+    if args.cmd == "aggregate":
+        config = load_config()  # offline: aggregation makes no API calls
+        return asyncio.run(
+            aggregate_staged(
                 config,
-                runs=args.runs,
-                suite=args.suite,
-                only=args.scenario,
-                no_judge=args.no_judge,
-                judge_client=judge_client,
+                stage=Path(args.stage),
+                chunks=tuple(args.chunks),
                 report_md=args.report,
                 compare_rev=args.compare,
                 propose=args.propose,
             )
         )
+
+    if args.cmd == "run":
+        scenarios = load_scenarios(args.suite)
+        config = _load_for_suites(scenarios)
+        judge_client = _build_judge_client(config, no_judge=args.no_judge, scenarios=scenarios)
+        return asyncio.run(
+            run_chunk(
+                config,
+                suite=args.suite,
+                runs=args.runs,
+                no_judge=args.no_judge,
+                judge_client=judge_client,
+                stage=Path(args.stage),
+            )
+        )
+
+    # gate (single-process, or the chunked profile)
+    if getattr(args, "profile", None) == "live-chunked":
+        scenarios = load_scenarios("all")
+        config = _load_for_suites(scenarios)
+        judge_client = _build_judge_client(config, no_judge=args.no_judge, scenarios=scenarios)
+        stage = Path(args.stage) if args.stage else staging_dir(recorder.git_rev())
+        return asyncio.run(
+            run_profile_chunked(
+                config,
+                runs=args.runs,
+                no_judge=args.no_judge,
+                judge_client=judge_client,
+                stage=stage,
+                report_md=args.report,
+                compare_rev=args.compare,
+                propose=args.propose,
+            )
+        )
+
+    scenarios = load_scenarios(args.suite)
+    config = _load_for_suites(scenarios)
+    judge_client = _build_judge_client(config, no_judge=args.no_judge, scenarios=scenarios)
+    return asyncio.run(
+        run_all(
+            config,
+            runs=args.runs,
+            suite=args.suite,
+            only=args.scenario,
+            no_judge=args.no_judge,
+            judge_client=judge_client,
+            report_md=args.report,
+            compare_rev=args.compare,
+            propose=args.propose,
+        )
     )
+
+
+def main() -> None:
+    """`python tests/evals/runner.py …` — delegates to the subcommand-aware :func:`cli`
+    (a bare flag list still means ``gate``, preserving the documented invocations)."""
+    sys.exit(cli())
 
 
 if __name__ == "__main__":

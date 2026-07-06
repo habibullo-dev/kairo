@@ -21,6 +21,19 @@ def _force_utf8_stdio() -> None:
 
 def main() -> None:
     _force_utf8_stdio()
+
+    # `jarvis eval …` is the live eval gate (incl. the chunked profile). It lives under
+    # tests/evals and is a dev/CI ritual, so it's a thin delegate imported only on demand
+    # and only importable from the repo (never shipped in the wheel).
+    argv = sys.argv[1:]
+    if argv and argv[0] == "eval":
+        try:
+            from tests.evals.runner import cli as eval_cli
+        except ModuleNotFoundError:
+            print("`jarvis eval` runs from the repo checkout (the eval harness is under tests/).")
+            sys.exit(2)
+        sys.exit(eval_cli(argv[1:]))
+
     parser = argparse.ArgumentParser(prog="jarvis", description="A from-scratch agentic assistant.")
     parser.add_argument("--version", action="version", version=f"jarvis {__version__}")
     parser.add_argument(
