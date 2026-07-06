@@ -1943,3 +1943,26 @@ non-obvious *implementation* decisions per task.
   CI) still resolve without them because they're an optional group. faster-whisper stayed
   *out* of the extra (heavy, platform-specific torch) — lazy install-hint instead — so the
   lock stays fast and reliable.
+
+## Phase 7 Task 7 — meeting capture: a source, never a command stream
+
+- **The quarantine already existed; meetings reuse it.** A meeting transcript is untrusted
+  audio content, so it must land `unreviewed` — exactly what the KB's `bound_unattended`
+  flag does (ADR-0004). `MeetingCapture` sets it around the ingest and resets it in
+  `finally`. A meeting is *attended* but its *content* is untrusted, so reusing the
+  unattended-quarantine path (rather than inventing a new "review_status" param) is the
+  honest fit: same effect, proven mechanism.
+- **"No auto-actions" is enforced by what the class is NOT given.** `MeetingCapture` takes
+  a `KnowledgeService` and an `STTProvider` — no agent loop, no `TaskService`. It
+  structurally *cannot* schedule a task or run a tool off a meeting's "action items"; the
+  test asserts `not hasattr(mc, "loop")` and that exactly one ingest happened. Capability
+  is bounded by construction, not by a runtime check that could be bypassed.
+- **Testing the contract with a fake KnowledgeService keeps it keyless.** The real KB
+  ingest (embedding, chunking, provenance) is Phase-4-tested; the meeting-capture test
+  only needs to prove *unreviewed + verbatim transcript + created_by=user + observable +
+  attended*. A `_FakeKnowledge` that records the ingest and honors `bound_unattended` is
+  the right seam — it tests the new behavior, not the old.
+- **No unattended recording is the mic analogue of no unattended spawn.** `attended=False`
+  refuses to capture and nothing is ingested — the same posture as the push-to-talk
+  listener and `spawn_agent` in the unattended HARD_DENY set. Three surfaces, one rule: the
+  microphone never opens without a present human.

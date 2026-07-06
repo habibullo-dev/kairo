@@ -25,6 +25,7 @@ from jarvis.voice.listening import (
     PushToTalkListener,
     wake_active,
 )
+from jarvis.voice.meeting import MeetingCapture
 from jarvis.voice.protocols import (
     FakeSynthesizer,
     FakeTranscriber,
@@ -44,6 +45,7 @@ __all__ = [
     "FakeSynthesizer",
     "FakeTranscriber",
     "LocalTranscriber",
+    "MeetingCapture",
     "OpenAITranscriber",
     "PrintSynthesizer",
     "PushToTalkListener",
