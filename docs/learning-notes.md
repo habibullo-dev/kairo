@@ -1608,3 +1608,37 @@ non-obvious *implementation* decisions per task.
   The Params validator rejects `spawn_agent` in a child's scope; the SubAgentGate
   hard-denies it; the service's contextvar refuses re-entry. Three cheap overlapping
   checks mean no single missed guard re-opens recursion — and each fails closed.
+
+## Phase 6 Task 6 — REPL wiring: composing delegation into the live loop
+
+- **The circular dependency (tool needs service, registry-discovery needs tool) resolves
+  with build-before-discover + bind-after.** The service is constructed in Repl.__init__
+  *after* gate/client/executor exist but *before* `registry.discover`, so spawn_agent's
+  `is_available` sees `ToolContext.agents` and registers; then `service.bind(registry=…)`
+  hands the now-complete registry back for scoped child views. No lazy globals, no
+  re-registration hack.
+- **The child's event sink is the REPL's own, wrapped once.** `service.emit =
+  self._agent_event`, which renders the forwarded event AND accumulates child cost — so
+  the session status line reflects delegated spend without the loop or the service
+  knowing about the REPL's accounting. The parent's events reach the same renderer via
+  `run_turn(on_event=self.renderer)`; two paths, one renderer.
+- **Two approvers, deliberately different.** The parent's `_approve` gained a pager (long
+  spawn prompts show a truncated head + a `v` to page the full text before consent — `v`
+  never approves). The child's `_prompt_subagent` is separate: labeled "sub-agent … asks",
+  offers `a-for-this-run` only for grantable tools (never run_shell/write_file), and
+  records a *pattern* grant on the child's gate that is never persisted. Reusing one
+  approver would have conflated "human's own action" with "delegated action".
+- **The approval lock is what makes parallel delegation safe at the terminal.** Two
+  children prompting concurrently would interleave `input()` calls into garbage. A single
+  `asyncio.Lock` around each child prompt serializes them; the test drives two approvers
+  through `gather` with a sleeping fake `input` and asserts peak concurrency stayed at 1.
+- **A monkeypatched `input()` doesn't print the prompt string.** First cut of the pager
+  test asserted `"view full" in console_output` — but the prompt text goes to `input()`
+  (patched to return a scripted answer), never to the rich buffer. The real evidence the
+  pager engaged is the *inline truncation hint* ("… N more lines") plus the full text
+  appearing only after `v`. Test the behavior the user sees, not the prompt you passed to
+  a stubbed call.
+- **The `agents` command mirrors `tasks` for a reason.** Same shape (list + `<id>`
+  detail), and the detail shows the verbatim prompt, the tool scope, and *both* trace ids
+  — so "why did a sub-agent do that?" is answerable from one command, and the log's
+  parent↔child chain is reachable from the id shown.

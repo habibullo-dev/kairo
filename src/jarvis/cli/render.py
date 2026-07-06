@@ -10,7 +10,16 @@ from __future__ import annotations
 from rich.console import Console
 from rich.panel import Panel
 
-from jarvis.core.events import Event, TextDelta, ToolFinished, ToolStarted, TurnCompleted
+from jarvis.core.events import (
+    Event,
+    SubAgentCompleted,
+    SubAgentEvent,
+    TextDelta,
+    ToolDecision,
+    ToolFinished,
+    ToolStarted,
+    TurnCompleted,
+)
 
 
 def _format_args(data: dict) -> str:
@@ -69,3 +78,30 @@ class ConsoleRenderer:
                 self.console.print("[yellow]Stopped: conversation exceeds the context window.[/]")
             elif event.stop_reason == "refusal":
                 self.console.print("[yellow]The model declined to respond.[/]")
+        elif isinstance(event, SubAgentEvent):
+            self._render_child(event)
+        elif isinstance(event, SubAgentCompleted):
+            self._end_text()
+            cost = f" · ${event.cost_usd:.4f}" if event.cost_usd is not None else ""
+            self.console.print(f'[magenta]⤷ sub-agent "{event.title}" {event.status}{cost}[/]')
+
+    def _render_child(self, env: SubAgentEvent) -> None:
+        """Compact, tagged lines for a child's tool activity — never its text (two
+        parallel children streaming markdown would be noise; the report arrives as the
+        spawn result). Denied attempts are shown so a caught injection is visible."""
+        inner = env.inner
+        tag = f"[magenta]⤷ {env.title}[/]"
+        if isinstance(inner, ToolStarted):
+            self._end_text()
+            self.console.print(f"{tag} [cyan]{inner.name}[/]([dim]{_format_args(inner.input)}[/])")
+        elif isinstance(inner, ToolFinished):
+            style = "red" if inner.is_error else "green"
+            mark = "✗" if inner.is_error else "✓"
+            self.console.print(
+                f"{tag} [{style}]{mark} {inner.name}[/] [dim]{_oneline(inner.preview)}[/]"
+            )
+        elif isinstance(inner, ToolDecision) and inner.resolution == "deny":
+            self.console.print(
+                f"{tag} [red]✗ {inner.name} denied[/] [dim]({inner.gate_decision})[/]"
+            )
+        # child TextDelta / allowed ToolDecision / TurnCompleted: intentionally not rendered

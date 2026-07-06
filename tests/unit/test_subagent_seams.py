@@ -207,11 +207,13 @@ def test_subagent_events_are_part_of_the_event_union() -> None:
     assert done.usage.input_tokens == 3
 
 
-def test_renderer_no_ops_on_subagent_events_by_default() -> None:
-    # Task 1 only requires the renderer not to crash on the new events (Task 6 adds
-    # real child-activity rendering). The default event sink ignores them.
+def test_renderer_handles_subagent_events() -> None:
+    # Task 6 wired real child-activity rendering: a tagged tool line for child activity
+    # and a completion banner. (Before Task 6 these no-op'd; the point here is only that
+    # the renderer accepts them without crashing and tags them as the sub-agent's.)
     renderer = _renderer()
     console_out = renderer.console.file
     renderer(SubAgentEvent("a1", "research", ToolStarted("t1", "read_file", {})))
     renderer(SubAgentCompleted("a1", "research", "ok", Usage(), None))
-    assert console_out.getvalue() == ""  # nothing rendered, no exception
+    out = console_out.getvalue()
+    assert "research" in out and "read_file" in out  # child activity is tagged + shown

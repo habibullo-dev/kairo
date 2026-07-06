@@ -10,18 +10,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Callable
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 
+from jarvis.agents import AgentRunStore, SubAgentService
 from jarvis.cli.jobs import JobRunner
 from jarvis.cli.render import ConsoleRenderer
 from jarvis.config import Config
-from jarvis.core import AgentLoop, AnthropicClient
+from jarvis.core import AgentLoop, AnthropicClient, Approver
 from jarvis.core.client import LLMClient, ToolCall
 from jarvis.core.context import ContextManager
+from jarvis.core.events import SubAgentCompleted
 from jarvis.core.prompts import build_system
 from jarvis.knowledge.service import KnowledgeService
 from jarvis.knowledge.store import KnowledgeStore
@@ -29,7 +32,7 @@ from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder, reflect
 from jarvis.observability import cost_of, get_logger
 from jarvis.observability.cost import Usage
 from jarvis.paths import is_safe_to_persist_dir, resolve_path
-from jarvis.permissions import PermissionGate, load_policy
+from jarvis.permissions import NEVER_GRANTABLE, PermissionGate, SubAgentGate, load_policy
 from jarvis.permissions.gate import Decision
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
@@ -119,6 +122,20 @@ def _schedule_preview(inp: dict) -> str:
         return f"{kind} {spec}; first fire {local:%Y-%m-%d %H:%M %Z}"
     except Exception:
         return f"{kind} {spec}"
+
+
+def _summary_is_long(summary: str) -> bool:
+    """A call summary big enough to page rather than dump inline (e.g. a large
+    spawn_agent prompt): ~18+ lines or ~1500+ chars."""
+    return summary.count("\n") >= 18 or len(summary) >= 1500
+
+
+def _short_summary(summary: str, *, lines: int = 12) -> str:
+    """The first ``lines`` lines of a long summary plus a hint to view the full text."""
+    shown = summary.splitlines()[:lines]
+    remaining = summary.count("\n") + 1 - len(shown)
+    tail = f"\n    … {remaining} more line(s) — type 'v' to view the full text" if remaining else ""
+    return "\n".join(shown) + tail
 
 
 def _utility_client(config: Config) -> AnthropicClient:
@@ -217,6 +234,8 @@ class Repl:
         context_manager: ContextManager | None = None,
         tasks: TaskService | None = None,
         knowledge: KnowledgeService | None = None,
+        run_store: AgentRunStore | None = None,
+        make_context_manager: Callable[[], ContextManager] | None = None,
         runner: BackgroundRunner | None = None,
         turn_lock: asyncio.Lock | None = None,
     ) -> None:
@@ -235,11 +254,6 @@ class Repl:
         # the runner when there is one; a private lock keeps a bare Repl usable.
         self.turn_lock = turn_lock or asyncio.Lock()
 
-        self.registry = ToolRegistry()
-        self.registry.discover(
-            "jarvis.tools.builtin",
-            ToolContext(config=config, memory=memory, tasks=tasks, knowledge=knowledge),
-        )
         self.executor = ToolExecutor(
             timeout=config.limits.tool_timeout_seconds,
             max_result_chars=config.limits.max_tool_result_chars,
@@ -247,6 +261,33 @@ class Repl:
         policy_path = config.root / "config" / "permissions.yaml"
         self.gate = PermissionGate(load_policy(policy_path), config.root, source_path=policy_path)
         self.client = client or AnthropicClient.from_config(config)
+
+        # Sub-agent delegation (Phase 6). Built before tool discovery so spawn_agent
+        # registers, then bound to the discovered registry. Needs a session store (to
+        # persist child transcripts) and a run store (audit) — absent in bare test Repls.
+        self.agents: SubAgentService | None = None
+        if run_store is not None and store is not None and config.sub_agents.enabled:
+            self.agents = SubAgentService(
+                session_store=store,
+                run_store=run_store,
+                client=self.client,
+                executor=self.executor,
+                gate=self.gate,
+                config=config,
+                make_context_manager=make_context_manager,
+                make_approver=self._make_subagent_approver,
+            )
+
+        self.registry = ToolRegistry()
+        self.registry.discover(
+            "jarvis.tools.builtin",
+            ToolContext(
+                config=config, memory=memory, tasks=tasks, knowledge=knowledge, agents=self.agents
+            ),
+        )
+        if self.agents is not None:
+            self.agents.bind(registry=self.registry)
+
         self.loop = AgentLoop(
             client=self.client,
             registry=self.registry,
@@ -258,6 +299,7 @@ class Repl:
                 memory_enabled=memory is not None,
                 tasks_enabled=tasks is not None,
                 knowledge_enabled=knowledge is not None,
+                delegation_enabled=self.agents is not None,
             ),
             context_manager=context_manager,
             memory=memory,
@@ -268,16 +310,34 @@ class Repl:
 
         self.messages: list[dict] = []
         self.usage = Usage()
+        self.child_cost = 0.0  # cumulative sub-agent spend this session (via SubAgentCompleted)
+        self._approval_lock = asyncio.Lock()  # serializes parallel children's human prompts
         self.renderer = ConsoleRenderer(self.console)
+        if self.agents is not None:
+            # Child events flow through here: rendered, and child cost accumulated.
+            self.agents.emit = self._agent_event
+            self.agents.bound_session_id = session_id
 
     # --- approval ----------------------------------------------------------
 
     async def _approve(self, call: ToolCall, decision: Decision) -> Permission:
         self.console.print(f"\n[yellow]Approve[/] [bold]{call.name}[/]?  [dim]{decision.reason}[/]")
         summary = _call_summary(call)
+        long = bool(summary) and _summary_is_long(summary)
         if summary:
-            self.console.print(f"  [dim]{summary}[/]")
-        answer = (await asyncio.to_thread(input, "  [y]es / [N]o / [a]lways: ")).strip().lower()
+            # A long payload (e.g. a big spawn_agent prompt) is shown truncated with a
+            # 'v' option to page the full text; the full payload is always available
+            # before consent, never approved sight-unseen.
+            self.console.print(f"  [dim]{_short_summary(summary) if long else summary}[/]")
+        prompt = (
+            "  [y]es / [N]o / [a]lways / [v]iew full: " if long else "  [y]es / [N]o / [a]lways: "
+        )
+        while True:
+            answer = (await asyncio.to_thread(input, prompt)).strip().lower()
+            if long and answer in ("v", "view"):
+                self.console.print(summary, markup=False)  # full, untruncated payload
+                continue
+            break
         if answer in ("a", "always"):
             self._persist_always(call)
             return Permission.ALLOW
@@ -321,6 +381,53 @@ class Repl:
         else:
             self.gate.persist_allow(call.name)
 
+    # --- sub-agent approval (Phase 6) --------------------------------------
+
+    def _make_subagent_approver(self, gate: SubAgentGate, agent_id: str, title: str) -> Approver:
+        """Build the approver for one child run. A child's ASK is forwarded to the human
+        (labeled as the sub-agent's) — the interactive safety story holds for delegated
+        actions too. 'a-for-this-run' records a *pattern* grant on the child's gate (a
+        host / a directory, never a blanket tool-level allow for run_shell/write_file),
+        never persisted. Parallel children serialize on the approval lock, since two
+        concurrent input() prompts would interleave."""
+
+        async def approve(call: ToolCall, decision: Decision) -> Permission:
+            async with self._approval_lock:
+                return await self._prompt_subagent(call, decision, gate, title)
+
+        return approve
+
+    async def _prompt_subagent(
+        self, call: ToolCall, decision: Decision, gate: SubAgentGate, title: str
+    ) -> Permission:
+        self.console.print(
+            f'\n[magenta]sub-agent "{title}"[/] asks: [bold]{call.name}[/]?  '
+            f"[dim]{decision.reason}[/]"
+        )
+        summary = _call_summary(call)
+        if summary:
+            self.console.print(f"  [dim]{summary}[/]")
+        # run_shell / write_file are never grantable — each is approved individually.
+        grantable = call.name not in NEVER_GRANTABLE
+        prompt = "  [y]es / [N]o / [a]-for-this-run: " if grantable else "  [y]es / [N]o: "
+        answer = (await asyncio.to_thread(input, prompt)).strip().lower()
+        if grantable and answer in ("a", "always"):
+            grant = gate.grant(call.name, call.input)
+            if grant is not None:
+                self.console.print(f"  [dim]granted {grant.describe()}[/]")
+            return Permission.ALLOW
+        if answer in ("y", "yes"):
+            return Permission.ALLOW
+        return Permission.DENY
+
+    def _agent_event(self, event: object) -> None:
+        """Sink for a child's forwarded events: render them (child activity lines, no
+        child text streaming) and accumulate child cost so the session status line
+        reflects delegated spend."""
+        self.renderer(event)  # type: ignore[arg-type]
+        if isinstance(event, SubAgentCompleted) and event.cost_usd:
+            self.child_cost += event.cost_usd
+
     # --- loop --------------------------------------------------------------
 
     async def run(self) -> None:
@@ -353,6 +460,9 @@ class Repl:
                     continue
                 if user_input.lower() == "kb" or user_input.lower().startswith("kb "):
                     await self._kb_command(user_input[len("kb") :].strip())
+                    continue
+                if user_input.lower() == "agents" or user_input.lower().startswith("agents "):
+                    await self._show_agents(user_input[len("agents") :].strip())
                     continue
                 self.messages.append({"role": "user", "content": user_input})
                 await self.run_turn()
@@ -465,6 +575,52 @@ class Repl:
                 self.console.print("  [dim]skipped[/]")
         self.console.print()
 
+    async def _show_agents(self, arg: str) -> None:
+        """`agents` lists recent sub-agent runs; `agents <id>` shows one run's detail
+        (verbatim prompt, scope, both trace ids) — a surprising sub-agent is traceable."""
+        if self.agents is None:
+            self.console.print("[dim]Delegation is not enabled.[/]\n")
+            return
+        store = self.agents.run_store
+        if arg.isdigit():
+            await self._show_agent_detail(store, int(arg))
+            return
+        runs = await store.list(limit=20)
+        if not runs:
+            self.console.print("[dim]No sub-agent runs yet.[/]\n")
+            return
+        for r in runs:
+            cost = f" · ${r.cost_usd:.4f}" if r.cost_usd is not None else ""
+            denied = f" · {r.denied_count} denied" if r.denied_count else ""
+            self.console.print(
+                f"[bold]#{r.id}[/] {r.title} "
+                f"[dim]· {r.status}{cost}{denied} · {len(r.tools_scope)} tool(s)[/]"
+            )
+        self.console.print()
+
+    async def _show_agent_detail(self, store: AgentRunStore, run_id: int) -> None:
+        run = await store.get(run_id)
+        if run is None:
+            self.console.print(f"[dim]No sub-agent run #{run_id}.[/]\n")
+            return
+        cost = f" · ${run.cost_usd:.4f}" if run.cost_usd is not None else ""
+        self.console.print(f"[bold]#{run.id}[/] {run.title} [dim]· {run.status}{cost}[/]")
+        self.console.print(f"    [dim]scope:[/] {run.tools_scope}")
+        self.console.print(
+            f"    [dim]iterations {run.iterations} · {run.denied_count} denied · "
+            f"child session {run.child_session_id}[/]"
+        )
+        self.console.print(
+            f"    [dim]trace: parent {run.parent_trace_id} → child {run.child_trace_id}[/]"
+        )
+        self.console.print(f"    prompt: {run.prompt}", markup=False)
+        if run.result_text:
+            head = run.result_text.strip().splitlines()[0][:200]
+            self.console.print(f"    [dim]result:[/] {head}")
+        if run.error:
+            self.console.print(f"    [red]{run.error}[/]")
+        self.console.print()
+
     async def _show_memories(self) -> None:
         """`memories` command: list what Jarvis knows, with provenance (why it
         believes each) — so a surprising memory is always traceable."""
@@ -523,7 +679,8 @@ class Repl:
     def _print_status(self) -> None:
         cost = cost_of(self.config.models.main, self.usage)
         tokens = self.usage.input_tokens + self.usage.output_tokens
-        self.console.print(f"[dim]session: {tokens:,} tokens · ${cost:.4f}[/]\n")
+        child = f" · sub-agents ${self.child_cost:.4f}" if self.child_cost else ""
+        self.console.print(f"[dim]session: {tokens:,} tokens · ${cost:.4f}{child}[/]\n")
 
 
 def _build_scheduler(
@@ -603,6 +760,9 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
 
         tasks = _build_scheduler(config, db, store, session_id)
         knowledge = _build_knowledge(config, db, store.lock, console, memory)
+        # Sub-agent delegation (Phase 6): shares the connection + write lock. Children
+        # get a fresh context manager each (long research still compacts).
+        run_store = AgentRunStore(db, store.lock) if config.sub_agents.enabled else None
         repl = Repl(
             config,
             console=console,
@@ -612,10 +772,17 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
             context_manager=context_manager,
             tasks=tasks,
             knowledge=knowledge,
+            run_store=run_store,
+            make_context_manager=lambda: _build_context_manager(config, utility),
         )
         repl.messages = history
         if resume and history:
             console.print(f"[dim]Resumed session {session_id} ({len(history)} messages).[/]\n")
+
+        # Recover any sub-agent runs a crash left 'running' (mirrors the scheduler sweep).
+        if run_store is not None:
+            for note in await run_store.sweep_orphans():
+                console.print(f"[yellow]{note}[/]", markup=False)
 
         if tasks is not None:
             runner = _build_runner(config, repl, store, tasks, memory, knowledge, utility, console)
