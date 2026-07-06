@@ -40,6 +40,16 @@ from jarvis.scheduler.runner import BackgroundRunner
 from jarvis.scheduler.service import TaskService
 from jarvis.scheduler.store import TaskStore
 from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
+from jarvis.voice import (
+    PushToTalkListener,
+    TerminalScreenApprover,
+    VoiceApprover,
+    VoiceRenderer,
+    VoiceSession,
+    build_capture,
+    build_stt,
+    build_tts,
+)
 
 
 def _call_summary(call: ToolCall) -> str:
@@ -855,3 +865,92 @@ async def _scheduler_startup(
     handled = await runner.check_due()
     if handled:
         console.print(f"[dim]handled {handled} due task(s) on startup — see `tasks`.[/]")
+
+
+# --- voice interface (Phase 7) ---------------------------------------------
+
+
+def build_voice_session(
+    config: Config, *, repl: Repl, console: Console
+) -> tuple[VoiceSession, PushToTalkListener]:
+    """Compose the voice interface from the REPL's already-built collaborators (same
+    registry, gate, executor, client, memory, context manager, turn lock) plus a
+    voice-specific loop whose approver is the ``VoiceApprover`` → screen escalation.
+
+    The screen is the terminal: the ``TerminalScreenApprover`` reuses the REPL's own
+    ``_call_summary`` so a voice-escalated action shows the *exact* preview a typed turn
+    would. The renderer wraps the configured TTS (local ``PrintSynthesizer`` or, opted in,
+    ElevenLabs) and enforces the TTS-privacy rule; its ``announce_escalation`` is what the
+    approver speaks (never the input)."""
+    tts = build_tts(config.voice, elevenlabs_key=config.secrets.elevenlabs_api_key, console=console)
+    renderer = VoiceRenderer(tts)
+    stt = build_stt(config.voice, openai_key=config.secrets.openai_api_key)
+    screen = TerminalScreenApprover(console, _call_summary)
+    approver = VoiceApprover(screen, on_escalate=renderer.announce_escalation)
+    loop = AgentLoop(
+        client=repl.client,
+        registry=repl.registry,
+        executor=repl.executor,
+        gate=repl.gate,
+        config=config,
+        approver=approver,
+        system=build_system(
+            memory_enabled=repl.memory is not None,
+            tasks_enabled=repl.tasks is not None,
+            knowledge_enabled=repl.knowledge is not None,
+            delegation_enabled=repl.agents is not None,
+            voice=True,
+        ),
+        context_manager=repl.context_manager,
+        memory=repl.memory,
+        add_time_context=repl.tasks is not None,
+    )
+    session = VoiceSession(loop=loop, stt=stt, output=renderer, turn_lock=repl.turn_lock)
+    listener = PushToTalkListener(build_capture(config.voice), session)
+    return session, listener
+
+
+async def run_voice(config: Config, *, console: Console | None = None) -> None:
+    """Open the database, wire the same services the REPL uses, and run a push-to-talk
+    voice loop. Read-only by default; risky actions escalate to a typed on-screen
+    confirmation (never voice-only)."""
+    console = console or Console()
+    if not config.voice.enabled:
+        console.print(
+            "[dim]Voice is not enabled. Set voice.enabled: true in settings.yaml "
+            "(and install the voice extra: uv sync --extra voice).[/]"
+        )
+        return
+    db = await connect(config.data_dir / "jarvis.db")
+    store = SessionStore(db)
+    try:
+        utility = _utility_client(config)
+        memory = _build_memory(config, db, console, utility, store.lock)
+        context_manager = _build_context_manager(config, utility)
+        session_id = await store.create_session()
+        tasks = _build_scheduler(config, db, store, session_id)
+        knowledge = _build_knowledge(config, db, store.lock, console, memory)
+        run_store = AgentRunStore(db, store.lock) if config.sub_agents.enabled else None
+        repl = Repl(
+            config,
+            console=console,
+            store=store,
+            session_id=session_id,
+            memory=memory,
+            context_manager=context_manager,
+            tasks=tasks,
+            knowledge=knowledge,
+            run_store=run_store,
+            make_context_manager=lambda: _build_context_manager(config, utility),
+        )
+        _session, listener = build_voice_session(config, repl=repl, console=console)
+        console.print(
+            "[bold cyan]Jarvis voice[/] — press Enter to talk, Ctrl-C to quit. "
+            "Risky actions confirm on screen.\n"
+        )
+        while True:  # push-to-talk: Enter arms one utterance (live; needs a mic)
+            await asyncio.to_thread(input, "")
+            with contextlib.suppress(KeyboardInterrupt):
+                await listener.listen_once()
+    finally:
+        await db.close()
