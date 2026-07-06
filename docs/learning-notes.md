@@ -1262,3 +1262,35 @@ non-obvious *implementation* decisions per task.
   `approve: [{tool, input_pattern}]` allowlist encodes what a human plausibly approved
   (the page URL) while denying what the page then asks for (the exfil URL) — the threat
   model is "human approved fetching the page, not obeying it."
+
+## Phase 5 Task 5 — gate engine + report + baselines
+
+- **All-N gating across a growing suite is statistically guaranteed to cry wolf.** At
+  per-run pass rate q<1, P(a clean suite of k scenarios all pass N times) = q^(kN) — for
+  q=0.95, k=20, N=3 that's ~5%, i.e. ~95% false-red per gate. A gate that's always red
+  gets re-run until green, making the *effective* bar weaker than 1-of-3. So quality
+  scenarios use FLAKY-pass (3/3 PASS, 2/3 FLAKY-pass-recorded, ≤1/3 FAIL) with a
+  two-consecutive-FLAKY → FAIL promotion. Safety scenarios stay all-N because a single
+  observed side effect is an *event*, not noise — different tier, different rule.
+- **Infra states must dominate pass/fail.** ERROR (crash / unknown price) and INVALID
+  (attack never delivered) are decided *before* the pass-rate branch, so a measurement
+  failure can never be laundered into a clean PASS or an honest FAIL. This is the whole
+  reason the state set is a superset of {PASS, FAIL}.
+- **The judge can neither rescue nor sink a run alone.** Judge floors live in
+  baselines.yaml and start unset (shadow: scored + trended, never gating); they only
+  gate after a dedicated ratchet commit with the justifying report. A failed
+  calibration voids judge scores for the whole run (JUDGE-INVALID) but deterministic
+  checks still gate. Floors, when set, can only *lower* a verdict, never raise it above
+  what the checks allow.
+- **Latency has no baselines field on purpose.** It's recorded and shown in `--compare`
+  deltas but never gates — home-network numbers are too noisy to ratchet honestly, and
+  a gate that fails on a slow Wi-Fi night erodes the trust the whole phase is building.
+- **`--compare` refuses dishonest diffs instead of printing them.** A dirty endpoint, a
+  changed `scenario_hash` (different test), or a changed resolved judge-model string
+  each downgrade the comparison: judge deltas are suppressed across judge models, hash
+  changes are flagged "not like-for-like," and dirty trees get a loud warning — the
+  fingerprint carries the judge model *the API actually resolved*, not the config name.
+- **The report states its own statistical power.** "0 side effects in N clean runs" is
+  meaningless without N and a detectable rate, so the adversarial line reports the
+  cumulative clean-run count and the smallest per-run attack rate that N would catch at
+  95% — honest about what the evidence does and doesn't rule out.

@@ -34,6 +34,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -42,7 +43,7 @@ from unittest import mock
 
 import yaml
 from tests.evals import judge as judge_mod
-from tests.evals import recorder
+from tests.evals import recorder, report
 from tests.evals.recorder import ERROR, FAIL, INVALID, PASS, ScenarioRunRecord
 
 from jarvis.cli.jobs import JobRunner
@@ -68,6 +69,9 @@ from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENARIOS_DIR = Path(__file__).parent / "scenarios"
 DATA_EVALS = REPO_ROOT / "data" / "evals"
+HISTORY_PATH = DATA_EVALS / "history.jsonl"
+BASELINES_PATH = Path(__file__).parent / "baselines.yaml"
+FIXTURES_PATH = Path(__file__).parent / "judge_fixtures.yaml"
 CROSS_JUDGE_MODEL = "claude-sonnet-5"  # uncounted cross-family check (see judge.py)
 
 
@@ -695,7 +699,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
     return record, workdir
 
 
-# --- orchestration (a placeholder verdict; the real gate engine is task 5) --
+# --- orchestration (records -> gate engine -> report; see report.py) -------
 
 
 async def run_scenario(
@@ -734,6 +738,33 @@ async def run_scenario(
     return records
 
 
+def _judge_model_resolved(records: list[ScenarioRunRecord]) -> str | None:
+    """The judge model string the API actually resolved (from a recorded vote) — pinned
+    in the fingerprint so ``--compare`` can refuse to diff scores across judge models."""
+    for r in records:
+        votes = (r.judge or {}).get("votes") or []
+        if votes:
+            return votes[0].get("model")
+    return None
+
+
+def _find_gate(history: list[dict], rev: str) -> dict | None:
+    """The most recent gate record whose git_rev matches ``rev`` (prefix ok)."""
+    for entry in reversed(history):
+        if entry.get("git_rev", "").startswith(rev):
+            return entry
+    return None
+
+
+async def _run_calibration(
+    judge_client: LLMClient, judge_model: str
+) -> judge_mod.CalibrationResult:
+    fixtures = yaml.safe_load(FIXTURES_PATH.read_text(encoding="utf-8"))
+    return await judge_mod.check_calibration(
+        judge_client, judge_model=judge_model, fixtures=fixtures
+    )
+
+
 async def run_all(
     config: Config,
     *,
@@ -742,7 +773,12 @@ async def run_all(
     only: str | None,
     no_judge: bool,
     judge_client: LLMClient | None,
+    report_md: bool = False,
+    compare_rev: str | None = None,
+    propose: bool = False,
 ) -> int:
+    from rich.console import Console
+
     scenarios = load_scenarios(suite)
     if only:
         scenarios = [s for s in scenarios if s.name == only]
@@ -750,25 +786,107 @@ async def run_all(
             print(f"No scenario named {only!r}.")
             return 2
 
-    results = recorder.results_dir(DATA_EVALS, recorder.git_rev())
+    # Calibrate the judge FIRST — a judge that misgrades a frozen fixture is untrusted,
+    # so we skip scoring entirely (saving cost) and mark the run JUDGE-INVALID; the
+    # deterministic checks still gate.
+    judge_valid: bool | None = None
+    calibration_failures: list[str] = []
+    will_judge = (
+        judge_client is not None and not no_judge and any(s.data.get("judge") for s in scenarios)
+    )
+    if will_judge:
+        cal = await _run_calibration(judge_client, config.models.judge)
+        judge_valid = cal.ok
+        calibration_failures = cal.failures
+    effective_no_judge = no_judge or (judge_valid is False)
+
+    ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    results = recorder.results_dir(DATA_EVALS, recorder.git_rev(), ts=ts)
     all_records: list[ScenarioRunRecord] = []
     for loaded in scenarios:
         recs = await run_scenario(
-            config, loaded, runs, results=results, judge_client=judge_client, no_judge=no_judge
+            config,
+            loaded,
+            runs,
+            results=results,
+            judge_client=judge_client,
+            no_judge=effective_no_judge,
         )
         all_records.extend(recs)
-    recorder.write_records(results, all_records)
 
-    # Placeholder verdict: a scenario passes if every one of its runs is PASS. The
-    # two-tier policy (safety all-N, quality FLAKY-pass, token/judge floors) lands in
-    # report.py (task 5); this keeps the runner usable end-to-end in the meantime.
-    by_scenario: dict[str, list[ScenarioRunRecord]] = {}
-    for r in all_records:
-        by_scenario.setdefault(r.scenario, []).append(r)
-    passed = sum(1 for recs in by_scenario.values() if all(r.state == PASS for r in recs))
-    total = len(by_scenario)
-    print(f"\nSUMMARY: {passed}/{total} scenarios passed  ·  records -> {results}")
-    return 0 if passed == total else 1
+    # Gate against the committed baselines, using the PRIOR history for the two-
+    # consecutive FLAKY promotion (read before this run is appended).
+    history = recorder.read_history(HISTORY_PATH)
+    baselines = report.load_baselines(BASELINES_PATH)
+    hashes = {s.name: s.hash for s in scenarios}
+    outcome = report.gate(
+        all_records,
+        baselines=baselines,
+        prev_verdicts=report.prev_verdicts_from_history(history),
+        judge_valid=judge_valid is not False,
+    )
+
+    git_rev, git_dirty = recorder.git_rev(), recorder.git_dirty()
+    fingerprint = {
+        "models": {
+            "main": config.models.main,
+            "utility": config.models.utility,
+            "judge": config.models.judge,
+        },
+        "judge_model_resolved": _judge_model_resolved(all_records),
+        "baselines_sha": report.baselines_sha(BASELINES_PATH),
+    }
+    gate_rec = report.build_gate_record(
+        outcome,
+        git_rev=git_rev,
+        git_dirty=git_dirty,
+        timestamp=ts,
+        suite=suite,
+        runs_per_scenario=runs,
+        fingerprint=fingerprint,
+        hashes=hashes,
+    )
+    recorder.write_records(results, all_records)
+    recorder.write_gate(results, gate_rec)
+    recorder.append_history(HISTORY_PATH, gate_rec)
+
+    compare_lines: list[str] = []
+    if compare_rev:
+        prev = _find_gate(history, compare_rev)
+        if prev is None:
+            print(f"(no prior gate for rev {compare_rev!r} in history)")
+        else:
+            compare_lines = report.compare_gate(
+                outcome,
+                prev,
+                current_fingerprint=fingerprint,
+                current_dirty=git_dirty,
+                current_hashes=hashes,
+            )
+
+    cumulative_clean = report.cumulative_clean_adversarial(history, outcome.scenarios)
+
+    ctx = report.ReportContext(
+        git_rev=git_rev,
+        git_dirty=git_dirty,
+        runs_per_scenario=runs,
+        suite=suite,
+        judge_valid=judge_valid,
+        calibration_failures=calibration_failures,
+        cumulative_clean_adversarial=cumulative_clean,
+        compare_lines=compare_lines,
+    )
+    md = report.render_markdown(outcome, ctx)
+    (results / "report.md").write_text(md, encoding="utf-8")
+
+    report.print_console(Console(), outcome, ctx)
+    print(f"\nrecords -> {results}")
+    if report_md:
+        print("\n" + md)
+    if propose:
+        print("\n# --- proposed baselines (paste into baselines.yaml in a dedicated commit) ---")
+        print(yaml.safe_dump(report.propose_baselines(all_records), sort_keys=False))
+    return outcome.exit_code
 
 
 def main() -> None:
@@ -778,6 +896,14 @@ def main() -> None:
     parser.add_argument("--suite", default="all", choices=["core", "adversarial", "all"])
     parser.add_argument("--scenario", help="Run only this scenario by name.")
     parser.add_argument("--no-judge", action="store_true", help="Skip LLM-as-judge scoring.")
+    parser.add_argument("--report", action="store_true", help="Print the full markdown report.")
+    parser.add_argument("--compare", metavar="REV", help="Deltas vs a prior gate (git rev).")
+    parser.add_argument(
+        "--propose-baselines",
+        action="store_true",
+        dest="propose",
+        help="Print baselines proposed from this run (for a dedicated ratchet commit).",
+    )
     args = parser.parse_args()
 
     scenarios = load_scenarios(args.suite)
@@ -811,6 +937,9 @@ def main() -> None:
                 only=args.scenario,
                 no_judge=args.no_judge,
                 judge_client=judge_client,
+                report_md=args.report,
+                compare_rev=args.compare,
+                propose=args.propose,
             )
         )
     )

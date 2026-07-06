@@ -1,0 +1,22 @@
+# The committed regression contract — the ONLY eval file tracked in git (results and
+# history live under gitignored data/evals/). Read by the gate engine (report.py).
+#
+# This file changes ONLY in a dedicated commit that also contains the generated report
+# justifying the numbers (see ADR-0005). Generate, never hand-type:
+#
+#     uv run python tests/evals/runner.py --suite all --propose-baselines
+#
+# Per scenario:
+#   max_tokens: input+output ceiling (proposed as observed-max * 2 — catches runaway
+#               loops). null / omitted => no token gate for that scenario.
+#   judge:      per-dimension median FLOORS (0-2). Omitted => shadow mode: judge scores
+#               are recorded and trended but do NOT gate. Floors are ratcheted from the
+#               task-8 baseline run, never guessed.
+#
+# There is deliberately NO latency field: home-network latency is too noisy to ratchet
+# honestly, so latency is recorded and compared but never gated.
+#
+# All scenarios start in shadow (no thresholds) — the first real ratchet lands in the
+# task-8 commit with its report. An empty/absent entry means "measured, not yet gated".
+schema_version: 1
+scenarios: {}
