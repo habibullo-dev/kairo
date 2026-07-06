@@ -37,6 +37,9 @@ class ModelResponse:
     stop_reason: str
     usage: Usage
     model: str = "claude-opus-4-8"
+    # Wall-clock of the API call, populated by the live client; None = not measured
+    # (default keeps the ~450 FakeClient-built responses byte-identical).
+    latency_ms: float | None = None
 
     @property
     def text(self) -> str:
@@ -66,6 +69,7 @@ class LLMClient(Protocol):
         max_tokens: int,
         on_text_delta: Callable[[str], None] | None = None,
         tool_choice: dict | None = None,
+        temperature: float | None = None,
     ) -> ModelResponse: ...
 
 
@@ -127,6 +131,7 @@ class FakeClient:
         max_tokens: int,
         on_text_delta: Callable[[str], None] | None = None,
         tool_choice: dict | None = None,
+        temperature: float | None = None,
     ) -> ModelResponse:
         self.calls.append(
             {
@@ -136,11 +141,15 @@ class FakeClient:
                 "tools": tools,
                 "max_tokens": max_tokens,
                 "tool_choice": tool_choice,
+                "temperature": temperature,
             }
         )
         if not self.responses:
             raise AssertionError("FakeClient ran out of scripted responses")
         response = self.responses.pop(0)
+        # A small non-None fake latency lets keyless tests exercise latency aggregation.
+        if response.latency_ms is None:
+            response.latency_ms = 1.0
         if on_text_delta and response.text:
             on_text_delta(response.text)
         return response

@@ -1154,3 +1154,28 @@ non-obvious *implementation* decisions per task.
   architecture.md (how it fits the layered design), and ADR-0004 (why these specific
   controls, and what was rejected — Firecrawl, default Docling, auto-injection).
   Each phase has added exactly this trio, so the repo stays self-explaining.
+
+## Phase 5 Task 1 — src instrumentation (latency, temperature, ToolDecision)
+
+- **The attempts tap is the load-bearing seam of the whole phase.** `ToolStarted`
+  fires only after `Permission.ALLOW`, so a denied/ASK-denied call is invisible to
+  any event observer — a model that fully complies with an injection but is blocked
+  by the gate produces no signal. The new `ToolDecision` event (name, input,
+  gate_decision, resolution), emitted for *every* call before execution, is what lets
+  the adversarial eval measure what the model *attempted*, not just what ran. Pinned
+  by a test asserting an ASK→deny emits a ToolDecision but no ToolStarted.
+- **New optional fields default to None/0.0 so ~450 existing tests don't churn.**
+  `ModelResponse.latency_ms: float | None = None` and `TurnResult.latency_ms = 0.0`
+  are additive; every FakeClient-built response and every direct TurnResult
+  construction stays valid. FakeClient stamps a 1.0ms fake so keyless tests can still
+  exercise latency aggregation.
+- **`timeout`-style API params want None-means-untouched.** `temperature` on
+  `create()` defaults None and is only forwarded when set — the main loop's adaptive-
+  thinking calls never send it (avoiding any thinking/temperature conflict), and only
+  the forced-tool judge (thinking-off) sets 1.0. Same discipline as the earlier
+  `tool_choice` addition.
+- **Instrument at the one call site that already owns the data.** Latency is a
+  `perf_counter` around the existing stream in `AnthropicClient.create`; the loop sums
+  `response.latency_ms` into `TurnResult` and enriches the existing `model_call` log
+  (adding latency + the two cache-token fields that closed a PLAN.md §6 spec gap). No
+  new callback, no new abstraction — the smallest seam that gives the runner numbers.

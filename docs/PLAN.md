@@ -99,6 +99,17 @@ Simple pytest unit tests exist from Phase 1; Phase 5 is where *agent-level* eval
 
 Windows notes: shell tool executes **PowerShell 7** (`pwsh -NoProfile -Command ...`); force UTF-8 (`PYTHONUTF8=1`); use `pathlib` everywhere.
 
+### Model strategy checkpoints
+Current model defaults are intentionally conservative: keep `claude-opus-4-8` as the main daily agent, `claude-sonnet-5` for high-quality utility work, `claude-opus-4-8` as the judge, and `voyage-3-large` for embeddings until Phase 5 produces measurements. Do not switch the working baseline just because a newer model exists; switch only when evals show better task success, retrieval quality, safety, or latency without unacceptable regressions.
+
+Planned evaluation path:
+- **Phase 5 model telemetry**: record per-call latency, tokens, cost, model id returned by the provider, effort, retries, stop reason, tool attempts, and scenario outcome. This makes model comparisons auditable instead of vibe-based.
+- **Fable 5 experiment**: add `claude-fable-5` as an optional `deep_planner` / long-running-agent candidate, not the default. Compare it against Opus 4.8 on hard planning, research, coding, scheduling, KB, and adversarial scenarios. Promote it only if it improves success/reliability without increasing unsafe attempt rates or making latency painful.
+- **Effort sweep**: compare `high`, `xhigh`, and `max` on selected hard scenarios. Keep `high` as the default unless the eval report shows a clear win for higher effort on specific classes of work.
+- **Judge hardening**: keep Opus 4.8 as the counted judge initially; record a Sonnet 5 shadow vote to flag disagreements. A judge score never overrides deterministic safety checks.
+- **Embedding migration**: evaluate `voyage-4-large`, `voyage-4`, and contextualized Voyage embeddings against the existing `voyage-3-large` baseline on memory and KB golden sets. If a newer model wins, rebuild memory/KB indexes, retune similarity thresholds, and record the migration in an ADR. Do not compare vectors across incompatible embedding spaces.
+- **Router follow-up**: after Phase 5, consider expanding `ModelRouter` roles to `main`, `utility`, `judge`, `deep_planner`, `fast_ui`, `embedding_document`, and `embedding_query`. This is a routing optimization, not a reason to hide the loop behind a framework.
+
 ---
 
 ## 4. MVP Definition (end of Phase 1)

@@ -19,6 +19,7 @@ unchanged on the same model or the next turn is rejected.
 from __future__ import annotations
 
 from collections.abc import Callable
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 from jarvis.core.client import ModelResponse
@@ -105,6 +106,7 @@ class AnthropicClient:
         tools: list[dict],
         max_tokens: int,
         tool_choice: dict | None = None,
+        temperature: float | None = None,
     ) -> dict:
         kwargs: dict = {
             "model": model,
@@ -121,6 +123,11 @@ class AnthropicClient:
             kwargs["tool_choice"] = tool_choice
         if self.thinking and tool_choice is None:
             kwargs["thinking"] = {"type": "adaptive"}
+        if temperature is not None:
+            # Explicit temperature (the judge sets 1.0); default None leaves the
+            # API default untouched. Only used on thinking-off calls (a forced-tool
+            # judge), so it never conflicts with adaptive thinking.
+            kwargs["temperature"] = temperature
         return kwargs
 
     async def create(
@@ -133,11 +140,17 @@ class AnthropicClient:
         max_tokens: int,
         on_text_delta: Callable[[str], None] | None = None,
         tool_choice: dict | None = None,
+        temperature: float | None = None,
     ) -> ModelResponse:
-        kwargs = self._build_kwargs(model, system, messages, tools, max_tokens, tool_choice)
+        kwargs = self._build_kwargs(
+            model, system, messages, tools, max_tokens, tool_choice, temperature
+        )
+        start = perf_counter()
         async with self._client.messages.stream(**kwargs) as stream:  # type: ignore[attr-defined]
             async for text in stream.text_stream:
                 if on_text_delta:
                     on_text_delta(text)
             message = await stream.get_final_message()
-        return to_model_response(message, fallback_model=model)
+        response = to_model_response(message, fallback_model=model)
+        response.latency_ms = (perf_counter() - start) * 1000.0
+        return response

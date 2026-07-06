@@ -27,7 +27,14 @@ from typing import TYPE_CHECKING
 from jarvis.config import Config
 from jarvis.core.client import LLMClient, ToolCall
 from jarvis.core.context import ContextManager
-from jarvis.core.events import Event, TextDelta, ToolFinished, ToolStarted, TurnCompleted
+from jarvis.core.events import (
+    Event,
+    TextDelta,
+    ToolDecision,
+    ToolFinished,
+    ToolStarted,
+    TurnCompleted,
+)
 from jarvis.core.prompts import build_system
 from jarvis.observability import bind_trace, get_logger
 from jarvis.observability.cost import Usage, cost_of
@@ -68,6 +75,7 @@ class TurnResult:
     stop_reason: str
     usage: Usage
     iterations: int
+    latency_ms: float = 0.0  # summed wall-clock of the turn's model calls (0.0 if unmeasured)
 
 
 class AgentLoop:
@@ -132,6 +140,7 @@ class AgentLoop:
         trace_id = bind_trace()
         messages = list(messages)
         total = Usage()
+        total_latency_ms = 0.0
         limits = self.config.limits
 
         self.log.info("turn_start", trace_id=trace_id, model=self.config.models.main)
@@ -154,7 +163,7 @@ class AgentLoop:
             if view is not None and view.overflow:
                 emit(TurnCompleted(text="", stop_reason="max_context"))
                 self.log.warning("turn_end", stop_reason="max_context", iterations=iteration)
-                return TurnResult("", messages, "max_context", total, iteration)
+                return TurnResult("", messages, "max_context", total, iteration, total_latency_ms)
             api_messages = view.messages if view is not None else messages
             if view is not None and (view.cut or view.elided):
                 self.log.info(
@@ -174,6 +183,7 @@ class AgentLoop:
                 on_text_delta=lambda t: emit(TextDelta(t)),
             )
             total = total + response.usage
+            total_latency_ms += response.latency_ms or 0.0
             if self.context_manager is not None:
                 self.context_manager.observe(response.usage)
             self.log.info(
@@ -183,6 +193,11 @@ class AgentLoop:
                 stop_reason=response.stop_reason,
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
+                cache_creation_input_tokens=response.usage.cache_creation_input_tokens,
+                cache_read_input_tokens=response.usage.cache_read_input_tokens,
+                latency_ms=(
+                    round(response.latency_ms, 1) if response.latency_ms is not None else None
+                ),
                 cost_usd=round(cost_of(response.model, response.usage), 6),
             )
             messages.append({"role": "assistant", "content": response.content_blocks})
@@ -199,6 +214,7 @@ class AgentLoop:
                     stop_reason=response.stop_reason,
                     usage=total,
                     iterations=iteration + 1,
+                    latency_ms=total_latency_ms,
                 )
 
             results = await self._handle_tools(tool_calls, emit)
@@ -212,6 +228,7 @@ class AgentLoop:
             stop_reason="max_iterations",
             usage=total,
             iterations=limits.max_iterations,
+            latency_ms=total_latency_ms,
         )
 
     async def _handle_tools(self, tool_calls: list[ToolCall], emit: EventSink) -> list[dict]:
@@ -221,6 +238,9 @@ class AgentLoop:
             tool = self.registry.get(call.name)
             if tool is None:
                 self.log.warning("permission_decision", tool=call.name, reason="unknown_tool")
+                # An unknown tool is a call the model attempted — emit it so observers
+                # (the eval attempts log) see the attempt, then deny.
+                emit(ToolDecision(call.name, call.input, gate_decision="deny", resolution="deny"))
                 resolved.append((call, None, Permission.DENY))
                 continue
             decision = self.gate.check(call.name, call.input, tool_default=tool.permission_default)
@@ -234,6 +254,17 @@ class AgentLoop:
             if perm is Permission.ASK:
                 perm = await self.approver(call, decision) if self.approver else Permission.DENY
                 self.log.info("permission_resolved", tool=call.name, permission=str(perm))
+            # Emitted before execution for EVERY call — including denials, which
+            # ToolStarted (post-ALLOW only) never sees. This is what lets an eval
+            # record what the model attempted, not just what ran.
+            emit(
+                ToolDecision(
+                    call.name,
+                    call.input,
+                    gate_decision=str(decision.permission),
+                    resolution=str(perm),
+                )
+            )
             resolved.append((call, tool, perm))
 
         # Phase 2 — run approved tools in parallel; denied/unknown become error results.

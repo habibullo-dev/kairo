@@ -18,7 +18,7 @@ from jarvis.core import (
     text_message,
     tool_use_message,
 )
-from jarvis.core.events import Event
+from jarvis.core.events import Event, ToolDecision
 from jarvis.observability.cost import Usage
 from jarvis.permissions import PermissionGate, Policy
 from jarvis.tools import Permission, Tool, ToolExecutor, ToolRegistry
@@ -312,6 +312,76 @@ async def test_events_emitted() -> None:
     assert ToolStarted in kinds
     assert ToolFinished in kinds
     assert TurnCompleted in kinds
+
+
+# --- Phase 5: ToolDecision (the attempts tap) ------------------------------
+
+
+async def test_tool_decision_emitted_for_allowed_call() -> None:
+    events: list[Event] = []
+    loop = build_loop(
+        [tool_use_message([ToolCall("t1", "echo", {"text": "hi"})]), text_message("done")]
+    )
+    await loop.run_turn(user("go"), on_event=events.append)
+    decisions = [e for e in events if isinstance(e, ToolDecision)]
+    assert len(decisions) == 1
+    assert decisions[0].name == "echo"
+    assert decisions[0].gate_decision == "allow" and decisions[0].resolution == "allow"
+
+
+async def test_tool_decision_emitted_for_ask_denied_call() -> None:
+    # The load-bearing case: a denied ASK emits NO ToolStarted, but MUST emit a
+    # ToolDecision so an eval sees the model attempted it.
+    events: list[Event] = []
+    loop = build_loop(
+        [tool_use_message([ToolCall("t1", "danger", {})]), text_message("ok")], approver=deny
+    )
+    await loop.run_turn(user("go"), on_event=events.append)
+    assert not any(isinstance(e, ToolStarted) for e in events)  # never ran
+    (decision,) = [e for e in events if isinstance(e, ToolDecision)]
+    assert decision.name == "danger"
+    assert decision.gate_decision == "ask" and decision.resolution == "deny"
+
+
+async def test_tool_decision_emitted_for_unknown_tool() -> None:
+    events: list[Event] = []
+    loop = build_loop([tool_use_message([ToolCall("t1", "ghost", {"x": 1})]), text_message("ok")])
+    await loop.run_turn(user("go"), on_event=events.append)
+    (decision,) = [e for e in events if isinstance(e, ToolDecision)]
+    assert decision.name == "ghost"
+    assert decision.input == {"x": 1}
+    assert decision.resolution == "deny"
+
+
+async def test_tool_decision_carries_input_for_attempt_matching() -> None:
+    events: list[Event] = []
+    loop = build_loop(
+        [tool_use_message([ToolCall("t1", "echo", {"text": "SECRET-PATH"})]), text_message("ok")]
+    )
+    await loop.run_turn(user("go"), on_event=events.append)
+    (decision,) = [e for e in events if isinstance(e, ToolDecision)]
+    assert decision.input == {"text": "SECRET-PATH"}  # input preserved for input-level checks
+
+
+# --- Phase 5: latency aggregation ------------------------------------------
+
+
+async def test_turn_result_aggregates_latency() -> None:
+    # FakeClient stamps 1.0ms per call when unset; a two-call turn sums to 2.0.
+    loop = build_loop(
+        [tool_use_message([ToolCall("t1", "echo", {"text": "x"})]), text_message("done")]
+    )
+    result = await loop.run_turn(user("go"))
+    assert result.latency_ms == 2.0
+
+
+async def test_model_call_logs_latency_and_cache_fields() -> None:
+    loop = build_loop([text_message("hi")])
+    with structlog.testing.capture_logs() as logs:
+        await loop.run_turn(user("go"))
+    call = next(e for e in logs if e["event"] == "model_call")
+    assert "latency_ms" in call
+    assert "cache_creation_input_tokens" in call and "cache_read_input_tokens" in call
 
 
 async def test_audit_events_logged() -> None:

@@ -178,6 +178,43 @@ async def test_create_omits_tools_and_thinking_when_disabled() -> None:
     assert "thinking" not in kw
 
 
+# --- Phase 5: latency + temperature ----------------------------------------
+
+
+async def test_create_populates_latency() -> None:
+    fake = _FakeAnthropic(_FakeStream([], _message(stop_reason="end_turn")))
+    client = AnthropicClient(client=fake)
+    resp = await client.create(
+        model="claude-opus-4-8",
+        system="s",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        max_tokens=100,
+    )
+    assert resp.latency_ms is not None and resp.latency_ms >= 0.0
+
+
+async def test_create_passes_temperature_only_when_set() -> None:
+    fake = _FakeAnthropic(_FakeStream([], _message(stop_reason="end_turn")))
+    client = AnthropicClient(client=fake, thinking=False)
+    # default: no temperature sent
+    await client.create(
+        model="m", system="s", messages=[{"role": "user", "content": "hi"}], tools=[], max_tokens=10
+    )
+    assert "temperature" not in fake.messages.captured
+    # explicit: forwarded (the judge sets 1.0)
+    await client.create(
+        model="m",
+        system="s",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        max_tokens=10,
+        temperature=1.0,
+        tool_choice={"type": "tool", "name": "record_verdict"},
+    )
+    assert fake.messages.captured["temperature"] == 1.0
+
+
 # --- from_config -----------------------------------------------------------
 
 

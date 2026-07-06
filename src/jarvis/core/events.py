@@ -18,6 +18,19 @@ class TextDelta:
 
 
 @dataclass
+class ToolDecision:
+    """Every tool call's permission outcome, emitted *before* execution — including
+    denied and ASK-denied calls that :class:`ToolStarted` never sees (it fires only
+    after ALLOW). Lets an observer record what the model *attempted*, not just what
+    ran — the load-bearing signal for adversarial evals. Interfaces ignore it."""
+
+    name: str
+    input: dict
+    gate_decision: str  # the gate's raw verdict: 'allow' | 'ask' | 'deny'
+    resolution: str  # final permission after the approver: 'allow' | 'deny'
+
+
+@dataclass
 class ToolStarted:
     """A tool was approved and is about to run."""
 
@@ -44,4 +57,4 @@ class TurnCompleted:
     stop_reason: str
 
 
-Event = TextDelta | ToolStarted | ToolFinished | TurnCompleted
+Event = TextDelta | ToolDecision | ToolStarted | ToolFinished | TurnCompleted
