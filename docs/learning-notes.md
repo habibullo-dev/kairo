@@ -1916,3 +1916,30 @@ non-obvious *implementation* decisions per task.
   escalates, and with no screen it's denied. The listening layer doesn't need its own
   "was this really the user?" check — read-only-default + prepare-don't-commit already
   make a false trigger harmless.
+
+## Phase 7 Task 6 — live adapters: lazy imports keep the base install clean
+
+- **Lazy-import the SDK, inject the client, and the module loads keyless.** Each adapter
+  imports its engine (openai/elevenlabs/faster-whisper/sounddevice) *inside* a method, not
+  at module top — so a base install (no `voice` extra) still imports the module, and a
+  fresh install without the extra fails only at *call* time with a clear "uv sync --extra
+  voice" message. Tests inject a fake client (a `SimpleNamespace` mimicking the SDK shape),
+  so the whole adapter layer is verified with no network and no real SDK behavior.
+- **Egress is a counter, not just a log line — so it's testable.** `OpenAITranscriber`
+  bumps `egress_bytes` and `ElevenLabsSynthesizer` bumps `egress_chars` before the network
+  call; a test asserts the count after a transcribe/synthesize. "Audio/spoken text left the
+  machine" is now an observable, asserted fact, and the *local* adapters conspicuously have
+  no such counter (nothing leaves).
+- **The local TTS default is dependency-free on purpose.** `PrintSynthesizer` "speaks" by
+  printing the (already-safe) text — a subtitle mode. So `tts_provider: local` (the default)
+  works offline with zero extra deps; ElevenLabs is the opt-in audio upgrade. It also makes
+  a keyless/CI voice path trivially exercisable.
+- **The hardware lives behind pure helpers.** `SoundDeviceCapture._record` is `# pragma: no
+  cover` (needs a mic), but its two decisions are pure functions — `is_utterance_end`
+  (endpointing) and `pcm16_to_wav` (WAV wrapping via stdlib `wave`) — and those *are*
+  unit-tested. The untestable-by-nature part is a thin shell over tested logic.
+- **`uv add --optional voice` updates pyproject AND the lock atomically.** One command
+  added the three cloud/capture deps to the extra and re-locked; the base `uv sync` (and
+  CI) still resolve without them because they're an optional group. faster-whisper stayed
+  *out* of the extra (heavy, platform-specific torch) — lazy install-hint instead — so the
+  lock stays fast and reliable.

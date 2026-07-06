@@ -16,6 +16,8 @@ from jarvis.voice.approver import (
     TerminalScreenApprover,
     VoiceApprover,
 )
+from jarvis.voice.capture import SoundDeviceCapture, is_utterance_end, pcm16_to_wav
+from jarvis.voice.factory import build_capture, build_stt, build_tts
 from jarvis.voice.framing import frame_transcript
 from jarvis.voice.listening import (
     CaptureSource,
@@ -32,16 +34,23 @@ from jarvis.voice.protocols import (
 )
 from jarvis.voice.render import VoiceRenderer
 from jarvis.voice.session import VoiceOutput, VoiceSession
+from jarvis.voice.stt import LocalTranscriber, OpenAITranscriber
+from jarvis.voice.tts import ElevenLabsSynthesizer, PrintSynthesizer
 
 __all__ = [
     "CaptureSource",
+    "ElevenLabsSynthesizer",
     "FakeCapture",
     "FakeSynthesizer",
     "FakeTranscriber",
+    "LocalTranscriber",
+    "OpenAITranscriber",
+    "PrintSynthesizer",
     "PushToTalkListener",
     "STTProvider",
     "ScreenApprover",
     "ScriptedScreenApprover",
+    "SoundDeviceCapture",
     "TTSProvider",
     "TerminalScreenApprover",
     "Transcript",
@@ -49,6 +58,11 @@ __all__ = [
     "VoiceOutput",
     "VoiceRenderer",
     "VoiceSession",
+    "build_capture",
+    "build_stt",
+    "build_tts",
     "frame_transcript",
+    "is_utterance_end",
+    "pcm16_to_wav",
     "wake_active",
 ]

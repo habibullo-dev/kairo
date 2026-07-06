@@ -30,6 +30,11 @@ jarvis = "jarvis.__main__:main"
 docling = [
     "docling>=2.92",
 ]
+voice = [
+    "elevenlabs>=1.0",
+    "openai>=1.0",
+    "sounddevice>=0.4",
+]
 
 [build-system]
 requires = ["hatchling"]
