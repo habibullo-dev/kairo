@@ -1179,3 +1179,26 @@ non-obvious *implementation* decisions per task.
   `response.latency_ms` into `TurnResult` and enriches the existing `model_call` log
   (adding latency + the two cache-token fields that closed a PLAN.md §6 spec gap). No
   new callback, no new abstraction — the smallest seam that gives the runner numbers.
+
+## Phase 5 Task 2 — recorder.py (records, persistence, provenance)
+
+- **Eval infra lives in `tests/evals/` as an importable package, not `src/`.** A root
+  `conftest.py` puts the repo root on `sys.path` so unit tests can
+  `from tests.evals.recorder import ...` (namespace `tests` + regular `tests.evals`
+  package) alongside the pip-installed `jarvis`. The runner will be invoked as
+  `python -m tests.evals.runner`. This keeps test infrastructure out of the shipped
+  package while still unit-testable — the `src/` layering rule stays intact.
+- **Fail-closed pricing is a one-function fix for a silent-$0 trap.** `cost_of` returns
+  0.0 for an unknown model, so a model rename would pass every budget forever.
+  `record_cost` returns `None` when `price_for` is None; the caller turns None into an
+  ERROR state. Cost that can't be computed must read as "broken," never "free."
+- **Five run states, not two.** PASS/FLAKY/FAIL/ERROR/INVALID — the extra three keep
+  the signal honest: an infra failure (judge outage, uncomputable cost) is ERROR, and
+  an eval that didn't actually exercise the thing it claims (attack never delivered)
+  is INVALID. Neither may masquerade as an agent PASS or FAIL.
+- **Provenance on every record**: `schema_version` (append-only history survives
+  format changes), `git_dirty` (a dirty-tree record can't be honestly compared), and
+  `scenario_hash` (a changed yaml is a different test). These are cheap now and
+  impossible to backfill once history accumulates.
+- **A dependency-free lockfile** (`O_CREAT|O_EXCL` spin-wait) serializes history
+  appends; single-user scale means a short spin with a give-up beats adding `filelock`.
