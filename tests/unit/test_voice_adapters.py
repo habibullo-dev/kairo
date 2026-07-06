@@ -16,6 +16,7 @@ from jarvis.config import VoiceConfig
 from jarvis.voice import (
     ElevenLabsSynthesizer,
     LocalTranscriber,
+    OpenAISynthesizer,
     OpenAITranscriber,
     PrintSynthesizer,
     build_stt,
@@ -77,6 +78,25 @@ async def test_elevenlabs_needs_a_key_without_client() -> None:
         await ElevenLabsSynthesizer(api_key="").synthesize("hi")
 
 
+def _fake_openai_tts(audio: bytes) -> object:
+    async def _create(**_kw):
+        return SimpleNamespace(content=audio)
+
+    return SimpleNamespace(audio=SimpleNamespace(speech=SimpleNamespace(create=_create)))
+
+
+async def test_openai_synthesizer_returns_audio_and_counts_egress() -> None:
+    # The Phase-7 MVP cloud voice: one OpenAI key covers STT and TTS.
+    tts = OpenAISynthesizer(api_key="k", client=_fake_openai_tts(b"MP3"))
+    assert await tts.synthesize("the meeting is at noon") == b"MP3"
+    assert tts.egress_chars == len("the meeting is at noon")  # spoken text left the machine
+
+
+async def test_openai_tts_needs_a_key_without_client() -> None:
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        await OpenAISynthesizer(api_key="").synthesize("hi")
+
+
 # --- local TTS: dependency-free, no egress ----------------------------------
 
 
@@ -115,6 +135,22 @@ def test_factory_maps_providers() -> None:
     cloud = VoiceConfig(cloud_providers=True, stt_provider="openai", tts_provider="elevenlabs")
     assert isinstance(build_stt(cloud, openai_key="k"), OpenAITranscriber)
     assert isinstance(build_tts(cloud, elevenlabs_key="k"), ElevenLabsSynthesizer)
+
+
+def test_factory_builds_openai_tts_for_mvp() -> None:
+    # Provider direction: OpenAI is the MVP cloud voice for BOTH STT and TTS (one key).
+    cloud = VoiceConfig(cloud_providers=True, stt_provider="openai", tts_provider="openai")
+    assert isinstance(build_stt(cloud, openai_key="k"), OpenAITranscriber)
+    assert isinstance(build_tts(cloud, openai_key="k"), OpenAISynthesizer)
+
+
+def test_openai_tts_requires_cloud_optin() -> None:
+    # openai TTS sends spoken text off-device, so it is refused without the explicit opt-in.
+    with pytest.raises(ValueError, match="cloud_providers"):
+        VoiceConfig(tts_provider="openai")  # cloud_providers defaults False
+    # ...and no ElevenLabs key is required to use the MVP cloud voice.
+    ok = VoiceConfig(cloud_providers=True, tts_provider="openai")
+    assert ok.tts_provider == "openai"
 
 
 def test_factory_rejects_unknown_provider() -> None:

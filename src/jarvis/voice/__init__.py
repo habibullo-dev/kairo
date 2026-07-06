@@ -36,7 +36,7 @@ from jarvis.voice.protocols import (
 from jarvis.voice.render import VoiceRenderer
 from jarvis.voice.session import VoiceOutput, VoiceSession
 from jarvis.voice.stt import LocalTranscriber, OpenAITranscriber
-from jarvis.voice.tts import ElevenLabsSynthesizer, PrintSynthesizer
+from jarvis.voice.tts import ElevenLabsSynthesizer, OpenAISynthesizer, PrintSynthesizer
 
 __all__ = [
     "CaptureSource",
@@ -46,6 +46,7 @@ __all__ = [
     "FakeTranscriber",
     "LocalTranscriber",
     "MeetingCapture",
+    "OpenAISynthesizer",
     "OpenAITranscriber",
     "PrintSynthesizer",
     "PushToTalkListener",

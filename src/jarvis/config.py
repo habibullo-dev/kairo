@@ -161,7 +161,7 @@ class SubAgentsConfig(BaseModel):
 
 #: Providers that send data off-device — reachable only with voice.cloud_providers opt-in.
 _CLOUD_STT: frozenset[str] = frozenset({"openai"})
-_CLOUD_TTS: frozenset[str] = frozenset({"elevenlabs"})
+_CLOUD_TTS: frozenset[str] = frozenset({"openai", "elevenlabs"})
 
 
 class VoiceConfig(BaseModel):
@@ -175,7 +175,9 @@ class VoiceConfig(BaseModel):
     # ONLY behind this explicit opt-in (ADR-0007); with it off, voice uses local providers.
     cloud_providers: bool = False
     stt_provider: str = "local"  # 'local' (faster-whisper) | 'openai' (cloud; needs opt-in)
-    tts_provider: str = "local"  # 'local' (OS/offline) | 'elevenlabs' (cloud; needs opt-in)
+    # 'local' (dep-free) | 'openai' (MVP cloud voice) | 'elevenlabs' (deferred premium). The
+    # cloud choices need the opt-in; OpenAI covers both STT and TTS with one key.
+    tts_provider: str = "local"
     tts_voice: str | None = None  # provider-specific voice id (None/blank = provider default)
     # DEFERRED: the wake contract is designed + tested, but activation is unwired in the MVP
     # (push-to-talk only) unless explicitly enabled later. A non-empty value does NOT turn

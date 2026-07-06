@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from jarvis.voice.capture import SoundDeviceCapture
 from jarvis.voice.stt import LocalTranscriber, OpenAITranscriber
-from jarvis.voice.tts import ElevenLabsSynthesizer, PrintSynthesizer
+from jarvis.voice.tts import ElevenLabsSynthesizer, OpenAISynthesizer, PrintSynthesizer
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -32,9 +32,16 @@ def build_stt(config: VoiceConfig, *, openai_key: str = "", log=None) -> STTProv
 
 
 def build_tts(
-    config: VoiceConfig, *, elevenlabs_key: str = "", console: Console | None = None, log=None
+    config: VoiceConfig,
+    *,
+    openai_key: str = "",
+    elevenlabs_key: str = "",
+    console: Console | None = None,
+    log=None,
 ) -> TTSProvider:
-    if config.tts_provider == "elevenlabs":
+    if config.tts_provider == "openai":  # Phase 7 MVP cloud voice (one key, STT + TTS)
+        return OpenAISynthesizer(api_key=openai_key, voice=config.tts_voice, log=log)
+    if config.tts_provider == "elevenlabs":  # optional/deferred premium TTS
         return ElevenLabsSynthesizer(api_key=elevenlabs_key, voice=config.tts_voice, log=log)
     if config.tts_provider == "local":
         return PrintSynthesizer(console=console, log=log)

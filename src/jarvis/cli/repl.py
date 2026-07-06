@@ -880,9 +880,14 @@ def build_voice_session(
     The screen is the terminal: the ``TerminalScreenApprover`` reuses the REPL's own
     ``_call_summary`` so a voice-escalated action shows the *exact* preview a typed turn
     would. The renderer wraps the configured TTS (local ``PrintSynthesizer`` or, opted in,
-    ElevenLabs) and enforces the TTS-privacy rule; its ``announce_escalation`` is what the
-    approver speaks (never the input)."""
-    tts = build_tts(config.voice, elevenlabs_key=config.secrets.elevenlabs_api_key, console=console)
+    OpenAI / ElevenLabs) and enforces the TTS-privacy rule; its ``announce_escalation`` is
+    what the approver speaks (never the input). One OpenAI key covers both STT and TTS."""
+    tts = build_tts(
+        config.voice,
+        openai_key=config.secrets.openai_api_key,
+        elevenlabs_key=config.secrets.elevenlabs_api_key,
+        console=console,
+    )
     renderer = VoiceRenderer(tts)
     stt = build_stt(config.voice, openai_key=config.secrets.openai_api_key)
     screen = TerminalScreenApprover(console, _call_summary)
