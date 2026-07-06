@@ -46,12 +46,20 @@ from tests.evals import judge as judge_mod
 from tests.evals import recorder, report
 from tests.evals.recorder import ERROR, FAIL, INVALID, PASS, ScenarioRunRecord
 
+from jarvis.agents import AgentRunStore, SubAgentService
 from jarvis.cli.jobs import JobRunner
 from jarvis.config import Config, ConfigError, load_config
 from jarvis.core import AgentLoop, AnthropicClient, ToolCall
 from jarvis.core.client import LLMClient
 from jarvis.core.context import ContextManager
-from jarvis.core.events import Event, ToolDecision, ToolFinished, ToolStarted
+from jarvis.core.events import (
+    Event,
+    SubAgentCompleted,
+    SubAgentEvent,
+    ToolDecision,
+    ToolFinished,
+    ToolStarted,
+)
 from jarvis.core.prompts import build_system
 from jarvis.knowledge.service import KnowledgeService
 from jarvis.knowledge.store import KnowledgeStore
@@ -485,9 +493,16 @@ def _tracked_signals(scenario: dict, attempts: list[dict]) -> dict:
 
 
 def _executed(started: dict[str, dict], errored: dict[str, bool]) -> list[dict]:
-    """Join ToolStarted (post-ALLOW, so executed-only) with ToolFinished's error flag."""
+    """Join ToolStarted (post-ALLOW, so executed-only) with ToolFinished's error flag.
+    A child sub-agent's executions carry an ``agent`` tag — the merged parent+child
+    stream, so every existing check (tool_not_called_with, …) covers delegated calls."""
     return [
-        {"name": v["name"], "input": v["input"], "is_error": errored.get(k, False)}
+        {
+            "name": v["name"],
+            "input": v["input"],
+            "is_error": errored.get(k, False),
+            "agent": v.get("agent"),
+        }
         for k, v in started.items()
     ]
 
@@ -530,6 +545,9 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
     failures: list[str] = []
     delivery: list[str] = []
     session_store: SessionStore | None = None
+    # Delegation (Phase 6): child usage/cost folded in, and one summary per child.
+    child_acc = {"usage": Usage(), "cost": 0.0, "unknown": False}
+    sub_agent_summaries: list[dict] = []
     started_at = perf_counter()
 
     def on_event(event: Event) -> None:
@@ -546,6 +564,41 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
             started[event.id] = {"name": event.name, "input": event.input}
         elif isinstance(event, ToolFinished):
             errored[event.id] = event.is_error
+        elif isinstance(event, SubAgentEvent):
+            # Unwrap a child's forwarded event into the SAME merged streams (attempts /
+            # executed), attributed to the child, and namespaced so its tool ids can't
+            # collide with the parent's. This is what makes a child's ToolDecision
+            # attempts observable to the adversarial checks.
+            inner = event.inner
+            key = f"{event.agent_id}:{getattr(inner, 'id', '')}"
+            if isinstance(inner, ToolDecision):
+                attempts.append(
+                    {
+                        "name": inner.name,
+                        "input": inner.input,
+                        "gate_decision": inner.gate_decision,
+                        "resolution": inner.resolution,
+                        "agent": event.title,
+                    }
+                )
+            elif isinstance(inner, ToolStarted):
+                started[key] = {"name": inner.name, "input": inner.input, "agent": event.title}
+            elif isinstance(inner, ToolFinished):
+                errored[key] = inner.is_error
+        elif isinstance(event, SubAgentCompleted):
+            child_acc["usage"] = child_acc["usage"] + event.usage
+            if event.cost_usd is None:
+                child_acc["unknown"] = True  # fail-closed: unknown child model price => ERROR
+            else:
+                child_acc["cost"] += event.cost_usd
+            sub_agent_summaries.append(
+                {
+                    "agent_id": event.agent_id,
+                    "title": event.title,
+                    "status": event.status,
+                    "cost_usd": event.cost_usd,
+                }
+            )
 
     error_msg: str | None = None
     try:
@@ -568,7 +621,12 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
 
         tasks: TaskService | None = None
         knowledge: KnowledgeService | None = None
-        if scenario.get("needs_scheduler") or scenario.get("needs_knowledge"):
+        needs_db = (
+            scenario.get("needs_scheduler")
+            or scenario.get("needs_knowledge")
+            or scenario.get("needs_agents")
+        )
+        if needs_db:
             session_store = SessionStore(await connect(workdir / "jarvis.db"))
         if scenario.get("needs_scheduler"):
             tasks = TaskService(
@@ -588,23 +646,54 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
             await _seed_kb_sources(knowledge, scenario.get("setup", {}).get("kb_sources", []))
             await _seed_wiki_pages(knowledge, scenario.get("setup", {}).get("wiki_pages", {}))
 
-        registry = ToolRegistry()
-        registry.discover(
-            "jarvis.tools.builtin",
-            ToolContext(config=run_config, memory=memory, tasks=tasks, knowledge=knowledge),
-        )
+        # Built before discovery so spawn_agent registers when the scenario needs it.
         executor = ToolExecutor(
             timeout=run_config.limits.tool_timeout_seconds,
             max_result_chars=run_config.limits.max_tool_result_chars,
         )
         gate = PermissionGate(load_policy(policy_path), workdir)
+        main_client = factory(run_config)
+        scenario_approver = make_approver(scenario)
+
+        agents: SubAgentService | None = None
+        if scenario.get("needs_agents") and session_store is not None:
+            # The child's ASKs go to the SAME scenario approver (strict allowlist), and
+            # its events into the SAME on_event sink (merged streams + child cost).
+            agents = SubAgentService(
+                session_store=session_store,
+                run_store=AgentRunStore(session_store.db, session_store.lock),
+                client=main_client,
+                executor=executor,
+                gate=gate,
+                config=run_config,
+                make_context_manager=lambda: ContextManager(
+                    summarizer=utility, utility_model=run_config.models.utility
+                ),
+                make_approver=lambda _g, _aid, _t: scenario_approver,
+            )
+            agents.emit = on_event
+
+        registry = ToolRegistry()
+        registry.discover(
+            "jarvis.tools.builtin",
+            ToolContext(
+                config=run_config,
+                memory=memory,
+                tasks=tasks,
+                knowledge=knowledge,
+                agents=agents,
+            ),
+        )
+        if agents is not None:
+            agents.bind(registry=registry)
+
         loop = AgentLoop(
-            client=factory(run_config),
+            client=main_client,
             registry=registry,
             executor=executor,
             gate=gate,
             config=run_config,
-            approver=make_approver(scenario),
+            approver=scenario_approver,
             context_manager=ContextManager(
                 summarizer=utility, utility_model=run_config.models.utility
             ),
@@ -614,6 +703,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
                 memory_enabled=memory is not None,
                 tasks_enabled=tasks is not None,
                 knowledge_enabled=knowledge is not None,
+                delegation_enabled=agents is not None,
             ),
         )
 
@@ -683,7 +773,13 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
             session_store = None
 
         main_cost = recorder.record_cost(run_config.models.main, total_usage)
-        cost_usd = None if main_cost is None else round(main_cost + bg_cost, 6)
+        # Fail-closed on BOTH the parent and any child model: an unknown price => ERROR,
+        # never a silent $0. Child cost is summed from SubAgentCompleted (each already
+        # costed at its own model by the service).
+        if main_cost is None or child_acc["unknown"]:
+            cost_usd = None
+        else:
+            cost_usd = round(main_cost + bg_cost + child_acc["cost"], 6)
 
         executed = _executed(started, errored)
         obs = RunObservation(
@@ -733,7 +829,8 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
         run_idx=run_idx,
         state=state,
         failures=all_failures,
-        usage=recorder.usage_dict(total_usage),
+        # Combined parent + child tokens, so the token ceiling covers delegated spend.
+        usage=recorder.usage_dict(total_usage + child_acc["usage"]),
         cost_usd=cost_usd,
         latency_ms=round(total_latency, 1),
         iterations=total_iters,
@@ -744,6 +841,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
         answer=answer,
         judge=judge_dict,
         tracked=_tracked_signals(scenario, attempts),
+        sub_agents=sub_agent_summaries,
         duration_s=round(perf_counter() - started_at, 3),
         scenario_hash=scenario_hash,
     )

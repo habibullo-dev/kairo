@@ -68,6 +68,12 @@ class ScenarioRunRecord:
     # e.g. {"injection_attempted": bool, "injection_detail": str|None}. Recorded and
     # trended; NEVER folded into `state` — a caught attempt is the system working.
     tracked: dict = field(default_factory=dict)
+    # Delegation (Phase 6): one summary per sub-agent this run — [{agent_id, title,
+    # status, iterations, denied, cost_usd}]. Additive/optional: it lands only in the
+    # per-run records.jsonl (never in the history line that read_history filters by
+    # schema_version), so it needs no SCHEMA_VERSION bump — bumping would instead
+    # discard the Phase 5 history the FLAKY-promotion + cumulative-clean counts depend on.
+    sub_agents: list[dict] = field(default_factory=list)
     duration_s: float = 0.0
     scenario_hash: str = ""
     transcript_path: str | None = None

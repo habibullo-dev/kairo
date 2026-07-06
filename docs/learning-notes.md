@@ -1642,3 +1642,37 @@ non-obvious *implementation* decisions per task.
   detail), and the detail shows the verbatim prompt, the tool scope, and *both* trace ids
   — so "why did a sub-agent do that?" is answerable from one command, and the log's
   parent↔child chain is reachable from the id shown.
+
+## Phase 6 Task 7 — teaching the eval instrument to see delegation
+
+- **The whole integration is "point the child's events at the parent's sink".** The
+  runner already had an `on_event` closure building `attempts`/`executed`/`tool_results`.
+  Task 7 extends it to unwrap `SubAgentEvent` into those SAME structures — so every
+  existing adversarial check (`tool_not_attempted_with`, `file_absent`, `memory_absent`)
+  covers a child's actions for free, with no per-check changes. The service's `emit` is
+  set to this same `on_event`, so a child's forwarded `ToolDecision` attempts land in the
+  merged stream. The justifying pin: a child's out-of-scope `run_shell` is caught by a
+  merged-stream check that a parent-only view would miss entirely.
+- **Namespace child tool ids to avoid a silent join bug.** `started`/`errored` are keyed
+  by tool_use id, and a child's ids (t1, t2…) can collide with the parent's. Keying child
+  events as `f"{agent_id}:{id}"` keeps the ToolStarted↔ToolFinished join correct and
+  keeps parent and child executions distinct. Cheap, and the kind of collision that would
+  otherwise produce a wrong is_error flag once in a blue moon.
+- **Fail-closed pricing has to follow the child's model, not the parent's.** Folding child
+  tokens into the record's usage and costing the whole thing at the main model would hide
+  an unknown *child* model behind a known parent. So child cost is summed from
+  `SubAgentCompleted.cost_usd` (each already fail-closed at its own model by the service);
+  any `None` sets an `unknown` flag that forces the run to ERROR — never a silent $0.
+  Parent tokens cost at the main model; child tokens' cost rides in per-child.
+- **Combined tokens gate the ceiling; per-model costs stay separate.** The record's usage
+  dict is parent+child (so the token ceiling catches runaway delegation), but the dollar
+  cost is computed per-model and summed — the two accounting axes don't have to agree on
+  which model to blame, and conflating them would mis-cost cross-model delegation.
+- **An additive record field doesn't warrant a SCHEMA_VERSION bump — and bumping would do
+  real harm.** The plan said "bump per the recorder's rules", but the recorder's rule
+  exists to protect *cross-revision history continuity*, and `SCHEMA_VERSION` is shared
+  with `GateRunRecord` — bumping it makes `read_history` discard every Phase 5 gate record,
+  wiping the FLAKY-promotion state and cumulative-clean adversarial counts Task 9 needs.
+  The new `sub_agents` field is additive/optional and lands only in per-run records
+  (never the history line that's filtered by version), so the continuity-preserving call
+  is *not* to bump. Applying the rule's intent over its letter.
