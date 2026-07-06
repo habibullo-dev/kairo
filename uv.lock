@@ -1181,6 +1181,10 @@ voice = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "elevenlabs" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "openai" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -1213,6 +1217,10 @@ provides-extras = ["docling", "voice", "ui"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "elevenlabs", specifier = ">=1.0" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "openai", specifier = ">=1.0" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "ruff", specifier = ">=0.9" },

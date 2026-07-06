@@ -52,6 +52,16 @@ dev = [
     "ruff>=0.9",
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    # UI tests use FastAPI's TestClient (httpx ASGI). The runtime dep is the `ui` extra;
+    # this keeps `uv run pytest` self-contained without needing --extra ui.
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    # Voice cloud SDKs: the "needs a key" adapter tests exercise the lazy-import + key-check
+    # path, which requires the SDK present to reach the key branch. Runtime dep is the
+    # `voice` extra; here so `uv run pytest` is self-contained. (sounddevice omitted — no
+    # keyless test imports it; capture is a pure-helper + lazy-import boundary.)
+    "openai>=1.0",
+    "elevenlabs>=1.0",
 ]
 
 [tool.ruff]
@@ -68,3 +78,9 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-ra"
+filterwarnings = [
+    # Starlette's TestClient warns that httpx support is deprecated in favor of httpx2;
+    # it's a third-party notice we can't act on yet, so keep it out of the suite output.
+    # No category qualifier — StarletteDeprecationWarning isn't a DeprecationWarning subclass.
+    "ignore:Using `httpx` with `starlette.testclient`",
+]
