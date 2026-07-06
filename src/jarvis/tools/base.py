@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
+    from jarvis.agents.service import SubAgentService
     from jarvis.config import Config
     from jarvis.knowledge.service import KnowledgeService
     from jarvis.memory.service import MemoryService
@@ -39,10 +40,8 @@ class ToolContext:
     memory: MemoryService | Any = None  # None when long-term memory is disabled/unavailable
     tasks: TaskService | Any = None  # None when the scheduler is disabled
     knowledge: KnowledgeService | Any = None  # None when the knowledge base is disabled
-    # Multi-agent delegation (Phase 6). None when disabled. Typed loosely for now; the
-    # precise SubAgentService type lands with the service in Task 4 (avoids a forward
-    # import of a module that doesn't exist yet at this commit).
-    agents: Any = None
+    # Multi-agent delegation (Phase 6). None when disabled.
+    agents: SubAgentService | Any = None
 
 
 class Permission(StrEnum):

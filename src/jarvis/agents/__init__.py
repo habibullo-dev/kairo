@@ -7,6 +7,13 @@ ADR-0006. ``SubAgentService`` (the runner) lands in Task 4; this package current
 exports the ``agent_runs`` audit store.
 """
 
+from jarvis.agents.service import SPAWNABLE, ApproverFactory, SubAgentService
 from jarvis.agents.store import AgentRun, AgentRunStore
 
-__all__ = ["AgentRun", "AgentRunStore"]
+__all__ = [
+    "SPAWNABLE",
+    "AgentRun",
+    "AgentRunStore",
+    "ApproverFactory",
+    "SubAgentService",
+]

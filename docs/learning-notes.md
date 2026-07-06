@@ -1542,3 +1542,41 @@ non-obvious *implementation* decisions per task.
   no persistence path, no way for a grant to outlive the child — the SubAgentGate object
   is constructed per spawn and discarded when the child returns. The safest lifetime is
   the one you can't forget to end.
+
+## Phase 6 Task 4 — SubAgentService: the delegation runner
+
+- **A sub-agent is JobRunner's shape, not a new machine.** "Build a constrained
+  AgentLoop and run one turn" is exactly the unattended-job pattern; the child reuses the
+  parent's client/executor and a ScopedRegistry over the parent's registry (so
+  query_knowledge_base works via the same tool instance), with memory=None for isolation.
+  The novelty is all in the wrapping: event forwarding, dual trace capture, framed report.
+- **Override the child's model/limits via a config copy, not by touching AgentLoop.**
+  The loop reads `config.models.main` and `config.limits.max_iterations`, so a
+  `config.model_copy(update={models: …, limits: …})` gives the child a different model
+  (sub_agents.model or, by default, models.main) and a tighter iteration bound with zero
+  changes to core. Model routing lives in config, where a prompt injection can't reach it.
+- **contextvars make trace isolation and depth-1 both fall out for free — but only
+  because gather copies the context.** The parent loop runs each tool via
+  `asyncio.gather`, which wraps each coroutine in a Task that *copies* the current
+  context. So a child's `bind_trace()` (inside its run_turn) mutates the gather-task's
+  copy, never the parent turn's context — the parent's trace id survives the delegation.
+  The service reads `get_trace_id()` before the child (parent id) and after (child id) to
+  record both. The same copying is why a `_IN_SUBAGENT` contextvar cleanly distinguishes
+  "nested inside a child" from "parallel sibling spawns". **This bit me in tests:** calling
+  `spawn()` directly (not through gather) leaks the child's trace into the caller, so the
+  spawn-cap test had to wrap each call in `copy_context()` to mirror reality.
+- **Acquire the semaphore BEFORE arming the timeout.** `async with semaphore:` then
+  `async with asyncio.timeout(...)`: a child waiting for a concurrency slot must not burn
+  its own deadline while queued. Reverse the order and a busy fleet would time out
+  children that never got to run.
+- **Catch CancelledError, record, re-raise — and DON'T shield the cleanup write.** First
+  instinct was `await asyncio.shield(complete_run(...))`, but `await shield(x)` in a
+  cancelled task re-raises immediately without waiting for x, so the 'cancelled' status
+  wouldn't persist. A single cancel is "handled" the moment it's caught, so a plain
+  `await complete_run(...)` in the except block runs to completion; the startup orphan
+  sweep remains the backstop if a second cancel or crash interrupts even that.
+- **The report header is composed from the run record, never from child text.** A child
+  that read a poisoned page could otherwise forge its own "0 denied, status ok" banner.
+  The service builds the `[sub-agent … — status; N iterations, …]` line from what it
+  measured, and wraps the child's text in untrusted-content delimiters — the web-framing
+  lesson applied to the laundering channel that delegation opens back into the parent.
