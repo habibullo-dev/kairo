@@ -39,6 +39,10 @@ class ToolContext:
     memory: MemoryService | Any = None  # None when long-term memory is disabled/unavailable
     tasks: TaskService | Any = None  # None when the scheduler is disabled
     knowledge: KnowledgeService | Any = None  # None when the knowledge base is disabled
+    # Multi-agent delegation (Phase 6). None when disabled. Typed loosely for now; the
+    # precise SubAgentService type lands with the service in Task 4 (avoids a forward
+    # import of a module that doesn't exist yet at this commit).
+    agents: Any = None
 
 
 class Permission(StrEnum):
@@ -48,6 +52,25 @@ class Permission(StrEnum):
     ALLOW = "allow"  # run without asking
     ASK = "ask"  # prompt the human
     DENY = "deny"  # never run
+
+
+class _DefaultTimeout:
+    """Sentinel type for :data:`DEFAULT_TIMEOUT`. A distinct singleton lets a tool's
+    ``timeout_override`` express *three* states that a plain ``float | None`` cannot:
+    use the executor's configured timeout (this sentinel), use a specific number of
+    seconds (a float), or use *no* executor timeout at all (``None``)."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "DEFAULT_TIMEOUT"
+
+
+#: A tool's ``timeout_override`` defaults to this: "use the executor's timeout".
+#: Set ``timeout_override = None`` on a tool that enforces its own deadline (so the
+#: executor's global ``wait_for`` must not cut a legitimately long run short — this
+#: is exactly ``spawn_agent``, which owns ``sub_agents.timeout_seconds`` itself).
+DEFAULT_TIMEOUT = _DefaultTimeout()
 
 
 class ToolResult(BaseModel):
@@ -70,6 +93,10 @@ class Tool(ABC):
     description: ClassVar[str]
     Params: ClassVar[type[BaseModel]]
     permission_default: ClassVar[Permission] = Permission.ASK
+    #: Per-tool execution deadline. ``DEFAULT_TIMEOUT`` (the default) means "use the
+    #: executor's timeout"; a float overrides it; ``None`` disables the executor
+    #: timeout so the tool can own its own (see :data:`DEFAULT_TIMEOUT`).
+    timeout_override: ClassVar[float | None | _DefaultTimeout] = DEFAULT_TIMEOUT
 
     def __init__(self, context: ToolContext | None = None) -> None:
         self.context = context or ToolContext()

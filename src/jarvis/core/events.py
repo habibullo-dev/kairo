@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from jarvis.observability.cost import Usage
+
 
 @dataclass
 class TextDelta:
@@ -57,4 +59,42 @@ class TurnCompleted:
     stop_reason: str
 
 
-Event = TextDelta | ToolDecision | ToolStarted | ToolFinished | TurnCompleted
+@dataclass
+class SubAgentEvent:
+    """One event from a running sub-agent's inner loop, forwarded to the *parent's*
+    event sink (Phase 6). Nothing a child does is hidden: its tool panels, and
+    crucially its :class:`ToolDecision` attempts, reach the same observers the parent's
+    do — the load-bearing property for adversarial evals of delegated actions.
+
+    ``inner`` is the child's own :class:`Event`; an observer that doesn't care about
+    delegation ignores the whole envelope (the renderer no-ops on it by default)."""
+
+    agent_id: str
+    title: str
+    inner: Event
+
+
+@dataclass
+class SubAgentCompleted:
+    """A sub-agent run finished (Phase 6). Carries the child's token usage and cost so
+    observers (REPL session totals, eval token/cost accounting) can sum delegated
+    spend — child tokens must never be invisible spend. ``status`` is one of
+    ``ok`` / ``error`` / ``timeout`` / ``cancelled`` / ``aborted``; ``cost_usd`` is
+    ``None`` when the child model's price is unknown (fail-closed, like the recorder)."""
+
+    agent_id: str
+    title: str
+    status: str
+    usage: Usage
+    cost_usd: float | None
+
+
+Event = (
+    TextDelta
+    | ToolDecision
+    | ToolStarted
+    | ToolFinished
+    | TurnCompleted
+    | SubAgentEvent
+    | SubAgentCompleted
+)

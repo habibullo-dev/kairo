@@ -93,6 +93,37 @@ def test_knowledge_dir_resolves_under_root(tmp_path: Path) -> None:
     assert cfg.knowledge_dir == (tmp_path / "data" / "knowledge").resolve()
 
 
+def test_sub_agents_config_defaults(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.sub_agents.enabled is True
+    assert cfg.sub_agents.model is None  # None = inherit models.main (resolved by the service)
+    assert cfg.sub_agents.max_iterations == 15
+    assert cfg.sub_agents.timeout_seconds == 600.0
+    assert cfg.sub_agents.max_parallel == 4
+    assert cfg.sub_agents.max_spawn_calls_per_turn == 8
+
+
+def test_sub_agents_config_yaml_override(tmp_path: Path) -> None:
+    _write_settings(
+        tmp_path,
+        "sub_agents:\n  enabled: false\n  model: claude-fable-5\n  max_parallel: 2\n",
+    )
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.sub_agents.enabled is False
+    assert cfg.sub_agents.model == "claude-fable-5"
+    assert cfg.sub_agents.max_parallel == 2
+    assert cfg.sub_agents.max_iterations == 15  # unspecified keeps default
+    assert cfg.sub_agents.max_spawn_calls_per_turn == 8
+
+
+def test_sub_agents_blank_model_yaml_is_none(tmp_path: Path) -> None:
+    # `model:` with no value parses to None (the inherit-main sentinel), matching
+    # the committed settings.yaml which ships the key blank.
+    _write_settings(tmp_path, "sub_agents:\n  model:\n")
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.sub_agents.model is None
+
+
 def test_yaml_overrides_defaults(tmp_path: Path) -> None:
     _write_settings(
         tmp_path,

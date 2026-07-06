@@ -134,6 +134,27 @@ class KnowledgeConfig(BaseModel):
     convert_timeout_seconds: float = 120.0  # subprocess wall-clock kill (Docling is slow on CPU)
 
 
+class SubAgentsConfig(BaseModel):
+    """Multi-agent delegation (Phase 6) knobs — the parent can spawn scoped sub-agents.
+
+    A sub-agent is one scoped ``AgentLoop`` turn. Every spawn is human-approved (never
+    "always"-able), children can't spawn (depth 1), and children can't run unattended.
+    See docs/PLAN-6-multi-agent.md and ADR-0006."""
+
+    enabled: bool = True
+    # None => inherit models.main (the default; quality-first — a child runs on the same
+    # capable model as the parent, never a downgraded "cheap child" tier). Set a string
+    # to pin the child model explicitly; model routing is config, not model-controllable.
+    model: str | None = None
+    max_iterations: int = 15  # a child is bounded tighter than the interactive parent's 25
+    timeout_seconds: float = 600.0  # wall-clock per child run, enforced by the service itself
+    max_parallel: int = 4  # concurrency semaphore (a resource bound, NOT a safety bound)
+    # Runaway/UX guard: cap spawn calls within one parent turn so a model gone sideways
+    # can't bury the terminal under approval prompts. NOT a safety bound — the human
+    # approving each spawn is the safety rate limiter (ADR-0006).
+    max_spawn_calls_per_turn: int = 8
+
+
 class PathsConfig(BaseModel):
     """Filesystem locations, relative to the project root unless absolute."""
 
@@ -147,10 +168,11 @@ class Config(BaseModel):
     root: Path
     models: ModelsConfig
     limits: LimitsConfig
-    # Phase 2/3/4; default_factory keeps direct Config(...) callers simple.
+    # Phase 2/3/4/6; default_factory keeps direct Config(...) callers simple.
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    sub_agents: SubAgentsConfig = Field(default_factory=SubAgentsConfig)
     paths: PathsConfig
     secrets: Secrets
 
@@ -232,6 +254,7 @@ def load_config(
             memory=MemoryConfig(**data.get("memory", {})),
             scheduler=SchedulerConfig(**data.get("scheduler", {})),
             knowledge=KnowledgeConfig(**data.get("knowledge", {})),
+            sub_agents=SubAgentsConfig(**data.get("sub_agents", {})),
             paths=PathsConfig(**data.get("paths", {})),
             secrets=secrets,
         )

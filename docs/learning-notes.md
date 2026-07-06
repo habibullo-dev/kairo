@@ -1443,3 +1443,35 @@ non-obvious *implementation* decisions per task.
   code path the web hardening never touched, so a re-run would reconfirm identical Task-8
   numbers for real money. Quality-first doesn't mean spend-for-its-own-sake; it means
   spend where there's signal, and there was none to gain here.
+
+## Phase 6 Task 1 — plan doc + the small seams
+
+- **Three-state config needs a sentinel, not `None`.** A tool's execution deadline has
+  three meanings — "use the executor default", "use N seconds", "use no executor timeout
+  at all" — which `float | None` can only express two of. A dedicated `DEFAULT_TIMEOUT`
+  singleton (identity-checked with `is`) carries the third. Only `spawn_agent` will set
+  `timeout_override = None`, and it does so precisely because it enforces its *own*
+  deadline: a global `wait_for` in the executor would turn a clean, recordable child
+  timeout into an anonymous kill, and would also charge the child's budget for time it
+  spent queued behind a parallel-slot semaphore.
+- **A scoped view is composition, not a subclass.** `ScopedRegistry` wraps a
+  `ToolRegistry` + an allowlist rather than subclassing it, so it *structurally* cannot
+  leak `register()`, `all()`, or a tool the spawn didn't scope in — a subclass would
+  inherit all of those and rely on discipline to hide them. It intersects the allowlist
+  with what actually exists at construction, so a bogus scoped name simply isn't exposed
+  (and the gate denies it again at call time — scope is enforced twice, by design).
+- **`sub_agents.model` defaults to `None` = "inherit `models.main`", not a duplicated
+  string.** The plan said "default the main model"; hard-coding `"claude-opus-4-8"` in two
+  configs would silently drift the day someone changes `models.main`. `None` → resolve to
+  `models.main` in the service captures the intent (quality-first, no cheap-child tier)
+  without the drift, and still lets a user pin a child model explicitly. Recorded here as
+  a deliberate deviation from the plan's literal wording.
+- **New events are inert until someone renders them.** `SubAgentEvent`/`SubAgentCompleted`
+  join the `Event` union, but the `ConsoleRenderer`'s if/elif chain has no `else`, so
+  unknown events already no-op — the null path is byte-identical without touching the
+  renderer (that's Task 6). `SubAgentEvent.inner: Event` is a recursive union reference,
+  which only works because `from __future__ import annotations` makes it a string.
+- **`ToolContext.agents` is typed `Any` for one commit.** The precise `SubAgentService`
+  type lands in Task 4; forward-importing a module that doesn't exist yet would make this
+  commit reference a phantom. Each commit staying internally consistent beats a slightly
+  tighter annotation that dangles for two commits.

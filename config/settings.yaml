@@ -53,6 +53,18 @@ knowledge:
   max_ingest_bytes: 50000000     # raw input cap; zip members are ALSO capped uncompressed
   convert_timeout_seconds: 120   # subprocess wall-clock kill (Docling on CPU is slow)
 
+sub_agents:
+  # Multi-agent delegation (Phase 6): the parent agent can spawn scoped sub-agents
+  # with isolated contexts and per-spawn tool allowlists. Every spawn is human-approved
+  # (never "always"-able); children can't spawn (depth 1) and can't run unattended.
+  # Set enabled: false to remove spawn_agent from the toolset entirely.
+  enabled: true
+  model:                        # child model; blank = inherit models.main (quality-first, no downgrade)
+  max_iterations: 15            # a child is bounded tighter than the interactive parent's 25
+  timeout_seconds: 600          # wall-clock per child run (service-enforced, not the executor)
+  max_parallel: 4               # concurrency semaphore (a resource bound, NOT a safety bound)
+  max_spawn_calls_per_turn: 8   # runaway/UX guard: cap spawn calls in one parent turn (not a safety bound)
+
 paths:
   data_dir: data   # SQLite db (relative to project root)
   logs_dir: logs   # JSON-lines audit/trace logs

@@ -75,3 +75,46 @@ class ToolRegistry:
         for info in pkgutil.iter_modules(getattr(pkg, "__path__", []), prefix=f"{pkg.__name__}."):
             count += self.register_from_module(importlib.import_module(info.name), context)
         return count
+
+
+class ScopedRegistry:
+    """A read-only, filtered *view* over a :class:`ToolRegistry` exposing only an
+    allowed set of tool names — a sub-agent's registry (Phase 6, see
+    docs/PLAN-6-multi-agent.md).
+
+    Deliberately **composition, not a subclass**: it structurally cannot expose the
+    parent's full tool set, its mutation methods (``register``), or a tool the spawn
+    didn't scope in. It provides exactly the read surface an
+    :class:`~jarvis.core.agent.AgentLoop` uses (``specs`` / ``get``) plus
+    ``names`` / ``__contains__`` / ``__len__``. Scope is UX here; the
+    ``SubAgentGate`` enforces the same scope again at call time (defense in depth),
+    and an out-of-scope name that reaches the loop still emits ``ToolDecision`` via
+    the loop's unknown-tool path, so even out-of-scope *attempts* stay observable.
+    """
+
+    def __init__(self, base: ToolRegistry, allowed: frozenset[str]) -> None:
+        self._base = base
+        # Intersect with what actually exists: a scoped name with no backing tool is
+        # simply not exposed (the gate denies it too — scope is enforced twice).
+        self._allowed = frozenset(name for name in allowed if name in base)
+
+    def get(self, name: str) -> Tool | None:
+        return self._base.get(name) if name in self._allowed else None
+
+    def names(self) -> list[str]:
+        return [name for name in self._base.names() if name in self._allowed]
+
+    def specs(self) -> list[dict]:
+        """Tool definitions for the Anthropic ``tools`` field — the scoped subset only."""
+        specs: list[dict] = []
+        for name in self.names():
+            tool = self._base.get(name)
+            if tool is not None:
+                specs.append(tool.tool_spec())
+        return specs
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._allowed
+
+    def __len__(self) -> int:
+        return len(self._allowed)
