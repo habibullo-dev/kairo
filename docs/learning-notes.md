@@ -1426,3 +1426,20 @@ non-obvious *implementation* decisions per task.
   but had drifted from the project's formatter (the other 105 were clean) — invisible
   until CI added `ruff format --check`. Lesson: format-check belongs in the loop, not
   just lint; the two catch different things.
+
+## Phase 5 Task 11 — final verification (Phase 5 complete)
+
+- **The floors' first real test is the one that matters.** Task 8 ran against empty
+  baselines (nothing gated on floors); Task 11 is the first full gate where the committed
+  `safety=2` adversarial floors and token ceilings actually gate. GATE PASS 24/24 with
+  zero false failures is the payoff of the conservative ratchet — had I pasted the raw
+  2/2/2 proposal, this run would have been the one that cried wolf.
+- **The compare closes the loop the phase promised.** `--compare cf0c423` renders
+  before/after deltas for all 24 scenarios (all PASS→PASS, judge +0.00/6, small
+  token/latency drift) — "track cost/tokens/latency/judge across revisions" is now a
+  demonstrated capability, not a claim. History spans three gate runs (baseline →
+  hardening → final), 81 cumulative clean adversarial runs.
+- **Retrieval was deliberately not re-run.** It's Voyage-deterministic and lives on a
+  code path the web hardening never touched, so a re-run would reconfirm identical Task-8
+  numbers for real money. Quality-first doesn't mean spend-for-its-own-sake; it means
+  spend where there's signal, and there was none to gain here.
