@@ -1,0 +1,78 @@
+# Golden retrieval set for the KNOWLEDGE BASE. Each document is ingested through the
+# real service (chunk + embed + store) with its `id` as the title; a retrieved chunk
+# carries source_title, so chunk hits collapse back to the doc id for scoring.
+#
+# PROVENANCE / METHOD (PLAN-5 §D5): documents are realistic team runbooks/guides on
+# distinct-but-adjacent operational topics (deploy vs on-call vs incident-review are
+# natural hard negatives). Queries were written blind and relevance labeled
+# independently, then human-adjudicated. `unanswerable` => correct result is empty.
+#
+# Labels validated in the `embedding_model` space below; re-validate if it changes.
+embedding_model: voyage-3-large
+
+documents:
+  - id: kb_local_dev
+    text: >
+      Running the services locally. Clone the monorepo and copy .env.example to .env.
+      Bring the full stack up with `docker compose up`, which starts the API, the
+      Postgres database, and the Redis cache. The API is exposed on localhost:8080 and
+      hot-reloads on source changes. Use `docker compose down -v` to reset local state,
+      including the database volume. Seed sample data with `make seed` once the stack
+      is healthy.
+  - id: kb_deploy
+    text: >
+      How code reaches production. Every merge to main triggers CI, which runs the test
+      suite and builds a container image tagged with the commit SHA. A green build
+      auto-deploys to the staging environment. Promotion to production is manual: an
+      engineer approves the release in the pipeline UI, which performs a rolling deploy
+      with health checks and an automatic rollback if error rates spike.
+  - id: kb_oncall
+    text: >
+      On-call rotation and escalation. The primary on-call engineer rotates weekly and
+      is paged first for any Sev-1 or Sev-2 alert. If the primary does not acknowledge
+      within ten minutes, the alert escalates to the secondary, and after another ten
+      minutes to the engineering manager. Non-urgent issues should be filed as tickets
+      rather than paged.
+  - id: kb_postgres_backup
+    text: >
+      Postgres backup and restore runbook. Automated base backups run nightly and are
+      retained for thirty days in object storage, with continuous WAL archiving for
+      point-in-time recovery. To restore, provision a fresh instance, fetch the most
+      recent base backup, replay WAL segments up to the desired timestamp, and run the
+      smoke-test query set before repointing the application.
+  - id: kb_style_python
+    text: >
+      Python style guide highlights. We format with ruff and cap lines at 100
+      characters. Prefer explicit imports over wildcards, type-annotate all public
+      functions, and keep functions small. Tests live under tests/ and must pass before
+      review. Docstrings explain the non-obvious "why", not the obvious "what".
+  - id: kb_incident_review
+    text: >
+      Blameless incident review. After any Sev-1, the incident commander schedules a
+      review within three business days. The review reconstructs a timeline, identifies
+      contributing factors without assigning blame, and produces concrete action items
+      with owners. The written report is shared with the whole engineering org.
+
+queries:
+  - q: "How do I restore the database to a specific point in time?"
+    kind: paraphrase
+    relevant: [kb_postgres_backup]
+  - q: "What is the on-call escalation path if nobody responds?"
+    kind: normal
+    relevant: [kb_oncall]
+  - q: "How does a change get from a merge to production?"
+    kind: paraphrase
+    relevant: [kb_deploy]
+  - q: "How do I run the whole stack on my laptop?"
+    kind: normal
+    relevant: [kb_local_dev]
+  - q: "What is the process after a major outage?"
+    kind: hard_negative
+    relevant: [kb_incident_review]
+    notes: "adjacent to kb_oncall (both incident-related) but a different document"
+  - q: "What is the maximum line length for our Python code?"
+    kind: normal
+    relevant: [kb_style_python]
+  - q: "What is the company's stock ticker symbol?"
+    kind: unanswerable
+    relevant: []

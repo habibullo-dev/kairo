@@ -1294,3 +1294,31 @@ non-obvious *implementation* decisions per task.
   meaningless without N and a detectable rate, so the adversarial line reports the
   cumulative clean-run count and the smallest per-run attack rate that N would catch at
   95% — honest about what the evidence does and doesn't rule out.
+
+## Phase 5 Task 6 — retrieval harness + golden sets
+
+- **Determinism buys N=1.** Voyage embeddings are effectively deterministic, so the
+  harness proves it once (`check_determinism`: embed a query twice, assert cosine ≈ 1.0)
+  and then spends the whole budget on corpus *size* instead of repeat runs — the
+  opposite of the stochastic scenario suite, where N=3 is mandatory.
+- **Authoring must be separated from labeling.** The subtle trap in a golden set is an
+  author who unconsciously writes queries only the intended memory could match — the
+  eval then measures the author, not the retriever. Queries are written blind, relevance
+  is labeled independently and human-adjudicated, and the provenance rides in the yaml.
+- **The floor sweep is only real if distractors live *between* the floors.** Sweeping
+  min_similarity 0.20–0.45 is theater unless the corpus has items that actually land in
+  that band. Hard-negatives (same topic, different answer) double as those graduated
+  distractors, and the sweep ships an explicit decision rule (move a floor only if it
+  admits a labeled distractor or drops a labeled relevant) — data, never an auto-knob.
+- **Unanswerable queries are first-class.** A query whose correct answer is *nothing*
+  (relevant: []) is scored as `restraint` (returned nothing above the floor), separate
+  from MRR/recall. This is the auto-injection question in miniature: knowing when NOT
+  to surface something is a measurable skill, not an afterthought.
+- **Drive `store.search` directly, not `recall()`.** The stores return structured
+  `ScoredMemory`/`ScoredChunk` with `.score`, take per-call `top_k`/`min_similarity`,
+  and — unlike `recall()` — don't mutate access stats. The golden doc id is smuggled
+  through the memory `source` field / KB source title so a hit maps straight to its label.
+- **Bag-of-words can't test semantics, so the split is deliberate.** The FakeEmbedder
+  is word-overlap only; it unit-tests the *plumbing* (seed → search → score → sweep)
+  with a word-overlap corpus, while the shipped golden sets (paraphrase, hard-negative)
+  are live-Voyage-only and the runner skips cleanly with a message when the key is unset.

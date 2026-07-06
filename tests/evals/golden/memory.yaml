@@ -1,0 +1,153 @@
+# Golden retrieval set for long-term MEMORY (doc == memory; id lives in the memory's
+# `source` field so a search hit maps straight back to its label).
+#
+# PROVENANCE / METHOD (PLAN-5 §D5 — authoring separated from labeling):
+#   1. The 28 memories below describe one fictional user, clustered by topic so that
+#      HARD NEGATIVES are natural (same topic, different fact — e.g. favorite language
+#      vs work language vs language being learned). Topical neighbours double as the
+#      GRADUATED DISTRACTORS the min_similarity sweep needs: without near-but-wrong
+#      items the sweep is theater.
+#   2. Queries were written BLIND (without choosing which memory should win), then
+#      relevance was labeled independently by the judge model and human-adjudicated.
+#      A query's `relevant` list is the adjudicated answer key.
+#   3. `unanswerable` queries have relevant: [] on purpose — the correct behavior is to
+#      return NOTHING (scored as `restraint`), which is exactly what the auto-injection
+#      question in ADR-0005 turns on.
+#
+# Labels were validated in the `embedding_model` space below; re-validate if it changes.
+embedding_model: voyage-3-large
+
+documents:
+  # programming (favorite / work / learning are mutual hard negatives)
+  - id: m_lang_fav
+    text: "The user's favorite programming language is Rust; they find its ownership model elegant."
+  - id: m_lang_work
+    text: "At work the user writes Python, mostly for data pipelines and ETL jobs."
+  - id: m_lang_learning
+    text: "The user is learning Zig on weekends as a hobby project."
+  - id: m_editor
+    text: "The user's primary code editor is Neovim with a heavily customized config."
+  # food
+  - id: m_food_fav
+    text: "The user's favorite cuisine is Vietnamese, especially pho and banh mi."
+  - id: m_food_allergy
+    text: "The user is allergic to shellfish and carries an epinephrine auto-injector."
+  - id: m_food_coffee
+    text: "Every morning the user drinks an oat-milk flat white."
+  - id: m_food_dislike
+    text: "The user strongly dislikes cilantro and asks for it to be left out."
+  # travel / geography (next trip vs hometown vs dream are hard negatives)
+  - id: m_travel_next
+    text: "The user is planning a two-week trip to Japan next spring."
+  - id: m_travel_home
+    text: "The user grew up in Tashkent, Uzbekistan, and moved abroad for university."
+  - id: m_travel_dream
+    text: "The user's dream destination is Patagonia for hiking."
+  # work
+  - id: m_work_role
+    text: "The user works as a backend engineer at a fintech startup."
+  - id: m_work_hours
+    text: "The user prefers deep-work mornings and no meetings before 11am."
+  - id: m_work_manager
+    text: "The user reports to a manager named Dana."
+  # pets
+  - id: m_pet_dog
+    text: "The user has a border collie named Pixel."
+  - id: m_pet_vet
+    text: "Pixel, the user's dog, has a routine vet check-up every month."
+  # health
+  - id: m_health_run
+    text: "The user runs a 5k three times a week."
+  - id: m_health_sleep
+    text: "The user aims for eight hours of sleep each night."
+  # hobbies (instrument / chess / photography)
+  - id: m_hobby_music
+    text: "The user plays electric guitar and is into post-rock."
+  - id: m_hobby_chess
+    text: "The user is rated around 1600 on chess.com."
+  - id: m_hobby_photo
+    text: "The user shoots film photography on a vintage Pentax camera."
+  # tools / setup
+  - id: m_tool_os
+    text: "The user's daily-driver operating system is Arch Linux."
+  - id: m_tool_kb
+    text: "The user types on a split ergonomic keyboard with a columnar layout."
+  - id: m_tool_shell
+    text: "The user uses the fish shell in their terminal."
+  # family / languages
+  - id: m_family_sister
+    text: "The user has a younger sister who is studying medicine."
+  - id: m_family_lang
+    text: "At home the user speaks Uzbek and Russian."
+  # schedule
+  - id: m_sched_standup
+    text: "The team's daily standup is at 11:30am."
+  - id: m_sched_gym
+    text: "The user goes to the gym on Tuesday and Thursday evenings."
+
+queries:
+  - q: "Which programming language does the user enjoy the most?"
+    kind: paraphrase
+    relevant: [m_lang_fav]
+    notes: "hard negatives nearby: m_lang_work, m_lang_learning (same topic, wrong answer)"
+  - q: "What language does the user use for their day job?"
+    kind: hard_negative
+    relevant: [m_lang_work]
+    notes: "must beat m_lang_fav despite 'favorite' being more salient"
+  - q: "What is the user teaching themselves in their free time?"
+    kind: paraphrase
+    relevant: [m_lang_learning]
+  - q: "What kind of food does the user like best?"
+    kind: normal
+    relevant: [m_food_fav]
+  - q: "Which food must the user avoid for medical reasons?"
+    kind: hard_negative
+    relevant: [m_food_allergy]
+    notes: "topical neighbour m_food_dislike is a preference, not an allergy"
+  - q: "What does the user drink first thing in the morning?"
+    kind: paraphrase
+    relevant: [m_food_coffee]
+  - q: "Where is the user travelling to on their upcoming vacation?"
+    kind: normal
+    relevant: [m_travel_next]
+  - q: "Which city did the user spend their childhood in?"
+    kind: hard_negative
+    relevant: [m_travel_home]
+    notes: "must not return m_travel_next or m_travel_dream"
+  - q: "What breed is the user's dog?"
+    kind: paraphrase
+    relevant: [m_pet_dog]
+  - q: "What musical instrument does the user play?"
+    kind: normal
+    relevant: [m_hobby_music]
+  - q: "What operating system does the user run day to day?"
+    kind: paraphrase
+    relevant: [m_tool_os]
+  - q: "What time is the team's daily standup?"
+    kind: normal
+    relevant: [m_sched_standup]
+  - q: "Which evenings does the user work out?"
+    kind: hard_negative
+    relevant: [m_sched_gym]
+    notes: "m_health_run is exercise too but a different fact"
+  - q: "Who is the user's manager?"
+    kind: normal
+    relevant: [m_work_manager]
+  - q: "What is the user's chess rating?"
+    kind: paraphrase
+    relevant: [m_hobby_chess]
+  - q: "Which languages does the user speak at home?"
+    kind: normal
+    relevant: [m_family_lang]
+  - q: "How often does the user go running?"
+    kind: normal
+    relevant: [m_health_run]
+  - q: "What is the user's blood type?"
+    kind: unanswerable
+    relevant: []
+  - q: "What car does the user drive?"
+    kind: unanswerable
+    relevant: []
+  - q: "What is the user's mother's maiden name?"
+    kind: unanswerable
+    relevant: []
