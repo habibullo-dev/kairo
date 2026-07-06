@@ -5,6 +5,13 @@
 
 import { render as renderDaily, onEvent as dailyOnEvent } from "./screens/daily.js";
 import { render as renderGate } from "./screens/gate.js";
+import { render as renderVault } from "./screens/vault.js";
+import { render as renderTasks } from "./screens/tasks.js";
+import { render as renderMemory } from "./screens/memory.js";
+import { render as renderHub } from "./screens/hub.js";
+import { render as renderLab } from "./screens/lab.js";
+import { render as renderMeetings } from "./screens/meetings.js";
+import { render as renderTrace } from "./screens/trace.js";
 
 const state = {
   chat: [],            // Daily conversation items {role, text} | {tool, resolution}
@@ -139,7 +146,11 @@ function updateGateBadge() {
 }
 
 // --- router ---
-const screens = { daily: renderDaily, gate: renderGate };
+const screens = {
+  daily: renderDaily, gate: renderGate, vault: renderVault, tasks: renderTasks,
+  memory: renderMemory, hub: renderHub, lab: renderLab, meetings: renderMeetings,
+  trace: renderTrace,
+};
 
 function refreshIfActive(name) { if (state.route === name) renderRoute(); }
 
