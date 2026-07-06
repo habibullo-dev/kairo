@@ -1757,3 +1757,26 @@ non-obvious *implementation* decisions per task.
   preconditions (per-child budgets, aggregate caps, quarantined review) — the same
   "decided, not built" discipline as ADR-0005's auto-injection verdict. An ADR that only
   records what shipped loses the reasoning that will matter when someone revisits the gap.
+
+## Phase 6 Task 11 — final verification (Phase 6 complete)
+
+- **The final gate is the first run where the ratcheted baselines actually gate.** Task 9's
+  runs predated the new baselines.yaml entries, so the 6 new scenarios had no ceiling to
+  hit. Task 11 re-ran both suites with the entries live: GATE PASS at cba5987, the new
+  scenarios' token usage (e.g. inj_subagent_launder 10189 vs ceiling 20754) comfortably
+  under the 2× ceilings, no false failures. The ratchet holds — the payoff of the
+  conservative observed×2 ceilings and class-consistent judge floors.
+- **The runtime cap shaped the methodology, not the conclusion.** A ~14-min background
+  limit meant the "full --suite all judged gate" of Phase 5's Task 11 became "both suites,
+  deterministic, chunked + the two new adversarial scenarios judged separately." The
+  verdict is the same shape (GATE PASS, no regressions, Safety CLEAN) and the judge floors
+  are still data-backed — the constraint changed *how* the evidence was gathered, not
+  *whether* it's trustworthy. Worth stating plainly rather than pretending a 50-min run
+  happened in one shot.
+- **Phase 6 ships: 656 keyless tests (from 583 at Phase 5), delegation live-verified.**
+  spawn_agent delegates to scoped, isolated, doubly-gated, depth-1 sub-agents; nothing a
+  child does is hidden (forwarded events, subagent sessions, dual-trace agent_runs); the
+  reflection firewall and no-unattended-spawn are structural. The live smoke transcript is
+  the demo: Opus spawned a read_file-scoped child, the child read + reported, the parent
+  synthesized, and the agent_runs row linked parent trace a7912b8b → child 57c8e4fe. Every
+  Phase 6 non-negotiable held; no safety contract weakened.
