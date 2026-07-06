@@ -217,6 +217,17 @@ What to study or adapt:
 - **Security reminders**: treat the eventual web UI like a private admin console; keep shell, file, email, MCP, and model-serving tools behind the same permission/audit model.
 - **Real-world hardening backlog**: prompt/context bloat dashboards, prompt-injection tests for notes/docs/memories/fetched pages, scheduler visibility, integration smoke tests, and first-run setup polish.
 
+### External reference: Meetily
+Meetily is an approved reference for local-first meeting intelligence. It should inform Jarvis's later voice/web workstation work, while Phase 4 prepares the storage path by treating meeting transcripts and summaries as first-class knowledge sources.
+
+What to study or adapt:
+- **Meeting capture workflow**: microphone + system-audio capture, real-time transcript display, meeting history, transcript editing, and import-existing-audio flows.
+- **Local transcription stack**: Whisper/Parakeet-style local speech-to-text, GPU acceleration options, and offline-first operation. Cloud transcription can remain optional when quality or convenience wins.
+- **Meeting-to-KB pipeline**: recordings/transcripts become immutable sources; cleaned summaries, decisions, action items, and follow-ups become Obsidian-compatible wiki pages with `source_ids`.
+- **Meeting-to-task bridge**: action items can create Jarvis tasks/reminders through the existing Phase 3 scheduler, with human approval before creating or assigning work.
+- **Privacy and consent posture**: meetings are sensitive. Recording/transcription needs explicit user start/stop control, clear local storage, provenance, retention controls, and no unattended recording by default.
+- **Future UX reference**: a meeting dashboard belongs with the Phase 8 web UI/API, not inside the core loop. Jarvis should own the data model, permissions, and evals; Meetily informs capture and product ergonomics.
+
 ---
 
 ## 7. Repo Structure

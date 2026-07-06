@@ -992,3 +992,27 @@ non-obvious *implementation* decisions per task.
   front-matter block in converter output is stripped immediately: front-matter is a
   Jarvis-authored artifact, and letting ingested bytes carry a `source_ids:` block
   upward is exactly the provenance-forgery the design forbids.
+
+## Phase 4 Task 5 — Converter subprocess sandbox (safety prerequisite #1)
+
+- **A thread timeout is a lie against a runaway parser.** `asyncio.to_thread` +
+  `wait_for` cancels the *await*, not the OS thread — a pathological PDF or a
+  decompression bomb keeps burning CPU/RAM after "timed out". Real cancellation
+  needs a real process boundary: `convert_file_sandboxed` spawns
+  `python -m jarvis.knowledge.convert_worker` and `proc.kill()`s it at the deadline.
+  Pinned by an env-gated self-test hook that makes the worker sleep, then asserting
+  the parent reports "exceeded/terminated".
+- **Reserve stdout for the result; redirect library chatter to stderr.** Converter
+  deps can print; the worker points `sys.stdout` at stderr during conversion so the
+  single JSON result line the parent parses can't be corrupted. Every failure is a
+  structured `{"ok": false, "error": …}` at exit 0 — a nonzero exit means the process
+  itself died, which the parent reports distinctly.
+- **Check the *uncompressed* size, from metadata, without extracting.** Office/EPUB
+  files are zip containers; a 1 MB archive can declare gigabytes of members. The
+  pre-scan reads the central directory (`ZipInfo.file_size`) — no member is
+  extracted — and refuses on total-uncompressed, member-count, or nested-archive.
+  Testable with a 2 MB-of-zeros zip against a small cap: no gigabytes on disk.
+- **Passthrough skips the subprocess.** `.md`/`.txt` have no parser and no attack
+  surface, so the sandbox short-circuits to in-process conversion — proven by making
+  any spawn assert-fail and converting a `.md` anyway. Pay for isolation only where
+  there's a parser to isolate.

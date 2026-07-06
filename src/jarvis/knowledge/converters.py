@@ -11,8 +11,10 @@ This is the **only** module that imports the third-party document converters
   hard PDFs, behind ``knowledge.pdf_converter``; if not installed it degrades to a
   clear, actionable error rather than an ImportError.
 * **Caps before parsers.** Raw bytes over the ingest cap are refused *before* any
-  parser touches them — a parser is the attack surface. (Uncompressed-size caps for
-  zip containers land with the subprocess sandbox in Task 5.)
+  parser touches them — a parser is the attack surface. Zip-container sources also
+  have their *uncompressed* size and nesting pre-scanned (a tiny archive can bomb to
+  gigabytes), and conversion runs in a killable subprocess so a runaway parser is
+  actually cancellable (see :func:`convert_file_sandboxed`).
 * **Sanitize on the way in.** A leading YAML front-matter block in converted output
   is stripped: front-matter is a Jarvis-authored artifact, never carried up from
   converter/attacker content (provenance is DB-derived — see ADR-0004).
@@ -23,8 +25,13 @@ This is the **only** module that imports the third-party document converters
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import io
+import json
 import re
+import sys
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +41,12 @@ from jarvis import net
 from jarvis.paths import is_sensitive_path
 
 _PASSTHROUGH_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".text"})
+# Office/EPUB/ZIP formats are all zip containers — a tiny archive can decompress to
+# gigabytes of XML (a "zip bomb"), so their *uncompressed* size is pre-scanned.
+_ARCHIVE_SUFFIXES = frozenset({".docx", ".xlsx", ".pptx", ".zip", ".epub"})
+_ARCHIVE_EXPANSION_FACTOR = 4  # uncompressed may exceed the raw cap by this factor…
+_ARCHIVE_ABSOLUTE_FLOOR = 100_000_000  # …but at least 100 MB (legit big docs expand modestly)
+_MAX_ARCHIVE_MEMBERS = 10_000
 _FRONT_MATTER = re.compile(r"\A﻿?---\r?\n.*?\r?\n---\r?\n", re.DOTALL)
 
 
@@ -62,12 +75,39 @@ def strip_front_matter(md: str) -> str:
 # --- file conversion (sync; Task 5 moves the parser call into a subprocess) ---
 
 
-def convert_file(
-    path: Path, *, max_bytes: int, pdf_converter: str = "markitdown"
-) -> ConversionResult:
-    """Convert a local file to markdown. ``path`` must already be resolved by the
-    caller (and gate-checked); the sensitive-path floor is re-applied here as
-    defense in depth — the converter must not trust that the gate ran on it."""
+def check_archive_safety(path: Path, *, max_uncompressed_bytes: int) -> None:
+    """Refuse a zip-container source that decompresses to too much, has too many
+    members, or nests another archive (all zip-bomb / amplification signatures).
+
+    Reads only the central-directory metadata — no member is extracted — so the
+    check itself is cheap and safe. A non-zip file with an archive suffix (corrupt
+    or misnamed) is left for the converter to reject."""
+    if not zipfile.is_zipfile(path):
+        return
+    with zipfile.ZipFile(path) as zf:
+        infos = zf.infolist()
+        if len(infos) > _MAX_ARCHIVE_MEMBERS:
+            raise ConversionError(
+                f"archive has {len(infos):,} members (> {_MAX_ARCHIVE_MEMBERS:,}) — refused"
+            )
+        total = sum(zi.file_size for zi in infos)
+        if total > max_uncompressed_bytes:
+            raise ConversionError(
+                f"archive decompresses to {total:,} bytes (> {max_uncompressed_bytes:,}) — "
+                "refused as a possible decompression bomb"
+            )
+        nested = [
+            zi.filename for zi in infos if Path(zi.filename).suffix.lower() in _ARCHIVE_SUFFIXES
+        ]
+        if nested:
+            raise ConversionError(f"archive contains nested archives ({nested[:3]}) — refused")
+
+
+def _precheck(path: Path, max_bytes: int) -> None:
+    """Cheap, parser-free guards run before any converter touches the bytes: the
+    sensitive-path floor, existence, the raw-size cap, and the archive-bomb scan.
+    Shared by :func:`convert_file` (defense in depth inside the worker) and
+    :func:`convert_file_sandboxed` (fail fast before spawning a process)."""
     if is_sensitive_path(path):
         raise ConversionError(f"refusing to convert a sensitive path: {path}")
     if not path.is_file():
@@ -78,7 +118,18 @@ def convert_file(
             f"file is {size:,} bytes, over the {max_bytes:,}-byte ingest cap; "
             "raise knowledge.max_ingest_bytes to allow it"
         )
+    if path.suffix.lower() in _ARCHIVE_SUFFIXES:
+        cap = max(max_bytes * _ARCHIVE_EXPANSION_FACTOR, _ARCHIVE_ABSOLUTE_FLOOR)
+        check_archive_safety(path, max_uncompressed_bytes=cap)
 
+
+def convert_file(
+    path: Path, *, max_bytes: int, pdf_converter: str = "markitdown"
+) -> ConversionResult:
+    """Convert a local file to markdown. ``path`` must already be resolved by the
+    caller (and gate-checked); the safety guards are re-applied here as defense in
+    depth — the converter must not trust that the gate/pre-check ran on it."""
+    _precheck(path, max_bytes)
     suffix = path.suffix.lower()
     if suffix in _PASSTHROUGH_SUFFIXES:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -132,6 +183,60 @@ def _markitdown() -> tuple[object, str]:
     # image-description calls. enable_builtins defaults on (that's how it reads docx/pdf).
     version = getattr(markitdown, "__version__", "unknown")
     return markitdown.MarkItDown(enable_plugins=False), version
+
+
+# --- the killable sandbox (Task 5) -------------------------------------------
+
+
+async def convert_file_sandboxed(
+    path: Path, *, max_bytes: int, pdf_converter: str = "markitdown", timeout_seconds: float
+) -> ConversionResult:
+    """Convert a file in a **separate process** with a hard wall-clock kill.
+
+    ``asyncio.to_thread`` can't cancel a runaway parser — a pathological PDF or a
+    decompression bomb keeps burning CPU/RAM after the ``await`` is abandoned. A
+    child process makes the timeout real: on deadline the parent kills it. Cheap
+    guards run in-parent first (fail fast, and the path never reaches a child for a
+    sensitive/oversize/bomb input); the child re-checks as defense in depth."""
+    _precheck(path, max_bytes)  # fail fast without spawning
+    # Passthrough text has no parser and no attack surface — skip the subprocess.
+    if path.suffix.lower() in _PASSTHROUGH_SUFFIXES:
+        return convert_file(path, max_bytes=max_bytes, pdf_converter=pdf_converter)
+    request = json.dumps(
+        {"path": str(path), "max_bytes": max_bytes, "pdf_converter": pdf_converter}
+    ).encode()
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "jarvis.knowledge.convert_worker",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(request), timeout=timeout_seconds)
+    except TimeoutError as exc:
+        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            await proc.wait()
+        raise ConversionError(
+            f"conversion of {path.name} exceeded {timeout_seconds:g}s and was terminated"
+        ) from exc
+    if proc.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip()[-500:]
+        raise ConversionError(f"converter subprocess crashed: {detail or 'no output'}")
+    try:
+        payload = json.loads(stdout.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError as exc:
+        raise ConversionError(f"converter subprocess produced no valid result: {exc}") from exc
+    if not payload.get("ok"):
+        raise ConversionError(payload.get("error", "unknown conversion error"))
+    return ConversionResult(
+        markdown=payload["markdown"],
+        title=payload["title"],
+        converter=payload["converter"],
+        converter_version=payload["converter_version"],
+    )
 
 
 # --- web conversion (async; SSRF-guarded fetch, deterministic extraction) -----
