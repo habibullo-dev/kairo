@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kairo Workstation</title>
+  <link rel="stylesheet" href="/static/kairo.css">
+</head>
+<body>
+  <nav class="rail">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M11 4.5H21L27.5 16L21 27.5H11L4.5 16Z" stroke="#2E3B4E" stroke-width="1.4" fill="#0D1522"/>
+        <path d="M15.7 15.6V7" stroke="#FFB020" stroke-width="1.9" stroke-linecap="round"/>
+        <path d="M15.7 15.6L23 9" stroke="#17D2FF" stroke-width="1.9" stroke-linecap="round"/>
+        <path d="M15.7 15.6L22.4 22.6" stroke="#17D2FF" stroke-width="1.9" stroke-linecap="round"/>
+        <circle cx="15.7" cy="15.6" r="2.5" fill="#FFB020"/>
+        <circle cx="22.4" cy="22.6" r="2.1" fill="#0D1522" stroke="#FFB020" stroke-width="1.6"/>
+      </svg>
+      <span class="name">KAIRO</span>
+    </div>
+    <a href="#daily" data-screen="daily"><span class="dot"></span> Daily</a>
+    <a href="#gate" data-screen="gate"><span class="dot"></span> Gate <span class="badge" id="gate-badge">0</span></a>
+    <a href="#vault" data-screen="vault"><span class="dot"></span> Vault</a>
+    <a href="#tasks" data-screen="tasks"><span class="dot"></span> Tasks</a>
+    <a href="#memory" data-screen="memory"><span class="dot"></span> Memory</a>
+    <a href="#meetings" data-screen="meetings"><span class="dot"></span> Meetings</a>
+    <a href="#hub" data-screen="hub"><span class="dot"></span> Hub</a>
+    <div class="spacer"></div>
+    <a href="#trace" data-screen="trace"><span class="dot"></span> Trace</a>
+    <a href="#lab" data-screen="lab"><span class="dot"></span> Lab</a>
+    <div class="foot">LOCAL AI WORKSTATION</div>
+  </nav>
+
+  <header class="status">
+    <span class="item">voice <b id="st-voice">off</b></span>
+    <span class="item">runner <span class="pill running" id="st-runner">idle</span></span>
+    <span class="item debug-only">turn <b id="st-turn">—</b></span>
+    <span class="grow"></span>
+    <span class="item"><label><input type="checkbox" id="st-debug"> debug</label></span>
+    <button class="stop" id="st-stop">Stop</button>
+    <button id="st-resume" style="display:none">Resume</button>
+  </header>
+
+  <main>
+    <div id="screen" class="screen"></div>
+  </main>
+
+  <!-- The approval overlay: the single priority attention surface (amber). -->
+  <div class="overlay" id="overlay">
+    <div class="approve-card">
+      <div class="head">
+        <div class="k" id="ap-kind">Approval required</div>
+        <div class="tool" id="ap-tool"></div>
+      </div>
+      <div class="body">
+        <div class="label">Exact action · exact payload</div>
+        <pre id="ap-payload"></pre>
+        <div class="label">Why Kairo wants this</div>
+        <div class="reason" id="ap-reason"></div>
+      </div>
+      <div class="waiting" id="ap-waiting">Preparing secure confirmation…</div>
+      <div class="actions">
+        <button class="btn-approve" id="ap-approve" disabled>Approve once</button>
+        <button class="btn-always" id="ap-always" disabled>Always allow</button>
+        <button class="btn-deny" id="ap-deny">Deny</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

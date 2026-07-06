@@ -12,10 +12,11 @@ approvals, read models, and the frontend land in later tasks against this floor.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request, WebSocket, status
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
 from jarvis.observability import get_logger
@@ -43,8 +44,12 @@ if TYPE_CHECKING:
 _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 #: Paths reachable WITHOUT a session. The exchange mints the session; health is safe.
-#: Static app assets are added in Task 7. Everything else requires the session cookie.
+#: Everything else — including static app assets and data GETs — requires the session cookie
+#: (the authenticated browser has it after the exchange; an anonymous fetch gets 401).
 _OPEN_PATHS = frozenset({"/api/health"})
+
+#: Hand-written frontend assets (no build step, no CDN) served from here.
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _security_headers() -> dict[str, str]:
@@ -164,8 +169,23 @@ def create_app(
 
     @app.get("/")
     async def root() -> Response:
-        # Placeholder until the frontend lands (Task 7); the guard already enforced the session.
-        return Response("Kairo Workstation — UI assets land in Task 7.", media_type="text/plain")
+        # The workstation shell (guard already enforced the session). Falls back to a note if
+        # assets are somehow missing, rather than 500.
+        index = STATIC_DIR / "index.html"
+        if index.is_file():
+            return FileResponse(index)
+        return Response("Kairo Workstation — assets missing.", media_type="text/plain")
+
+    @app.get("/static/{path:path}")
+    async def static_asset(path: str) -> Response:
+        # Serve a hand-written asset, guarding against path traversal (must resolve inside
+        # STATIC_DIR). Session already enforced by the guard; CSP added on the way out.
+        target = (STATIC_DIR / path).resolve()
+        if target != STATIC_DIR and STATIC_DIR not in target.parents:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        if not target.is_file():
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        return FileResponse(target)
 
     # --- Gate: approvals (the crown jewels) + read-only policy/audit views -------------
 
