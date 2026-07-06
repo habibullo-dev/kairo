@@ -13,12 +13,14 @@ from jarvis.ui.approver import (
     ApprovalManager,
     PendingApproval,
     UIApprover,
+    UIScreenApprover,
     make_ui_subagent_approver,
 )
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager, host_allowed, origin_allowed
 from jarvis.ui.connections import Connection, ConnectionManager
 from jarvis.ui.readmodels import UiServices, hub_status, lab_overview
 from jarvis.ui.session import UiSession, serialize_event
+from jarvis.ui.voice import UiVoice
 
 __all__ = [
     "SESSION_COOKIE",
@@ -28,8 +30,10 @@ __all__ = [
     "ConnectionManager",
     "PendingApproval",
     "UIApprover",
+    "UIScreenApprover",
     "UiServices",
     "UiSession",
+    "UiVoice",
     "host_allowed",
     "hub_status",
     "lab_overview",

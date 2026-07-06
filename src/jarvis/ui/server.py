@@ -20,7 +20,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from jarvis.observability import get_logger
 from jarvis.permissions import PermissionGate, load_policy
-from jarvis.ui.approver import ApprovalManager, UIApprover
+from jarvis.ui.approver import ApprovalManager, UIApprover, UIScreenApprover
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager, host_allowed, origin_allowed
 from jarvis.ui.connections import Connection, ConnectionManager
 from jarvis.ui.gate_api import policy_snapshot, read_today_audit
@@ -100,6 +100,7 @@ def create_app(
     session: object | None = None,
     runner: object | None = None,
     services: UiServices | None = None,
+    voice: object | None = None,
 ) -> FastAPI:
     """Build the workstation app. ``auth``/``connections`` are injectable so tests can supply
     a known token and a fake clock; ``session`` (a ``UiSession``), ``runner`` (a
@@ -122,6 +123,11 @@ def create_app(
     app.state.session = session
     app.state.runner = runner
     app.state.services = services or UiServices()
+    app.state.voice = voice
+    # The UI is voice's fail-closed "screen": a VoiceApprover wired to this UIScreenApprover
+    # resolves risky voice actions on the authenticated, live, watching Gate surface — or
+    # denies. Composed here so the CLI host (Task 9) injects it into the voice VoiceApprover.
+    app.state.ui_screen = UIScreenApprover(approvals, connections)
     app.state.config = config
 
     @app.middleware("http")
@@ -316,6 +322,31 @@ def create_app(
             return _unavailable("memory")
         forgotten = await svc.store.forget(memory_id)  # status flip, never DELETE
         return JSONResponse({"ok": bool(forgotten)})
+
+    # --- voice: status + push-to-talk + meeting capture (unreviewed source) ------------
+
+    @app.get("/api/voice/status")
+    async def voice_status() -> dict:
+        return app.state.voice.status() if app.state.voice is not None else {"enabled": False}
+
+    @app.post("/api/voice/listen")
+    async def voice_listen() -> JSONResponse:
+        v = app.state.voice
+        if v is None or v.listener is None:
+            return _unavailable("voice")
+        heard = await v.listen_once()  # one push-to-talk utterance → one turn
+        return JSONResponse({"ok": True, "heard": heard})
+
+    @app.post("/api/voice/meeting")
+    async def voice_meeting(request: Request) -> JSONResponse:
+        v = app.state.voice
+        if v is None or v.meeting is None:
+            return _unavailable("voice")
+        body = await request.json()
+        result = await v.capture_meeting(title=body.get("title"))
+        # A meeting is untrusted content: it lands UNREVIEWED, never an auto-action.
+        status = getattr(result, "review_status", None) if result is not None else None
+        return JSONResponse({"ok": result is not None, "review_status": status})
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:

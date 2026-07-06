@@ -153,6 +153,8 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/vault/sources/{source_id}/reject"),
         ("POST", "/api/tasks/{task_id}/cancel"),
         ("POST", "/api/memory/{memory_id}/forget"),
+        ("POST", "/api/voice/listen"),
+        ("POST", "/api/voice/meeting"),
     }
 
 

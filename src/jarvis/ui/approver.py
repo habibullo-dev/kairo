@@ -38,9 +38,13 @@ if TYPE_CHECKING:
 
 TURN = "turn"
 SUBAGENT = "subagent"
+VOICE = "voice"
 
 #: Resolution actions a client may send.
 _ACTIONS = frozenset({"approve", "always", "deny"})
+
+#: How often the fail-closed watcher re-checks the screen while a voice approval is pending.
+_ABORT_POLL_SECONDS = 0.05
 
 
 @dataclass
@@ -93,9 +97,14 @@ class ApprovalManager:
         kind: str,
         title: str | None,
         on_always: Callable[[], str | None],
+        abort_when: Callable[[], bool] | None = None,
     ) -> Permission:
         """Enqueue an ASK, announce it to live clients, and await the human decision. The
-        awaiting coroutine is the AgentLoop turn — it stays paused, exactly like the REPL."""
+        awaiting coroutine is the AgentLoop turn — it stays paused, exactly like the REPL.
+
+        ``abort_when`` is the voice-screen fail-closed hook (Task 6): while awaiting, if the
+        predicate becomes True (the watching screen went away), the decision resolves DENY.
+        Absent, the request waits indefinitely (the REPL/turn behavior)."""
         did = secrets.token_urlsafe(12)
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         pending = PendingApproval(did, call, decision, kind, title, fut, on_always)
@@ -105,6 +114,16 @@ class ApprovalManager:
         )
         await self.connections.broadcast({"type": "approval", **pending.to_public()})
         try:
+            if abort_when is None:
+                return await fut
+            # Poll the abort predicate alongside the decision; the screen vanishing ⇒ DENY.
+            while not fut.done():
+                if abort_when():
+                    if not fut.done():
+                        fut.set_result(Permission.DENY)
+                        self.log.info("ui_approval_aborted", channel="ui", decision_id=did)
+                    break
+                await asyncio.wait({fut}, timeout=_ABORT_POLL_SECONDS)
             return await fut
         finally:
             self._pending.pop(did, None)
@@ -212,3 +231,37 @@ def make_ui_subagent_approver(
         )
 
     return approve
+
+
+class UIScreenApprover:
+    """The workstation's implementation of the voice ``ScreenApprover`` (ADR-0008 §5 /
+    checkpoint §1.3). It is passed to a ``VoiceApprover`` as the *screen*; voice prepares,
+    this screen commits.
+
+    ``available()`` is a **positive** check — a currently-live client with the Gate/approval
+    surface mounted (not a one-time hello claim). Anything less ⇒ unavailable ⇒ the
+    ``VoiceApprover`` denies (it never assumes a screen). ``confirm()`` enqueues the action as
+    a Gate item resolved by the same replay-proof nonce flow as a typed turn — so a spoken
+    "yes" has no path to approve — and is **fail-closed**: if the watching surface goes away
+    mid-confirmation, the decision resolves DENY. Voice approvals never persist "always"
+    (per-instance only)."""
+
+    def __init__(
+        self, approvals: ApprovalManager, connections: ConnectionManager, *, surface: str = "gate"
+    ) -> None:
+        self.approvals = approvals
+        self.connections = connections
+        self.surface = surface
+
+    def available(self) -> bool:
+        return self.connections.has_live_surface(self.surface)
+
+    async def confirm(self, call: ToolCall, decision: Decision) -> Permission:
+        return await self.approvals.request(
+            call,
+            decision,
+            kind=VOICE,
+            title=None,
+            on_always=lambda: None,  # voice never persists "always" — per-instance only
+            abort_when=lambda: not self.available(),  # screen vanished ⇒ fail-closed DENY
+        )
