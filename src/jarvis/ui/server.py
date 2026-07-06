@@ -24,6 +24,17 @@ from jarvis.ui.approver import ApprovalManager, UIApprover
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager, host_allowed, origin_allowed
 from jarvis.ui.connections import Connection, ConnectionManager
 from jarvis.ui.gate_api import policy_snapshot, read_today_audit
+from jarvis.ui.readmodels import (
+    UiServices,
+    hub_status,
+    lab_overview,
+    list_agent_runs,
+    list_memories,
+    list_tasks,
+    task_runs,
+    vault_lint,
+    vault_overview,
+)
 
 if TYPE_CHECKING:
     from jarvis.config import Config
@@ -65,6 +76,12 @@ def _deny(code: int, message: str) -> Response:
     return _secure(Response(content=message, status_code=code, media_type="text/plain"))
 
 
+def _unavailable(service: str) -> JSONResponse:
+    """503 for a screen whose backing service wasn't composed (e.g. memory off, or a bare
+    app in a test). The auth core still serves; the screen renders 'unavailable'."""
+    return JSONResponse({"ok": False, "message": f"{service} unavailable"}, status_code=503)
+
+
 def _runner_status(runner: object | None, session: object | None) -> dict:
     """The status-bar view: is the background runner firing, what job is in flight, and is
     an interactive turn running. Read-only; the emergency stop toggles the first two."""
@@ -82,11 +99,12 @@ def create_app(
     connections: ConnectionManager | None = None,
     session: object | None = None,
     runner: object | None = None,
+    services: UiServices | None = None,
 ) -> FastAPI:
     """Build the workstation app. ``auth``/``connections`` are injectable so tests can supply
-    a known token and a fake clock; ``session`` (a ``UiSession``) and ``runner`` (a
-    ``BackgroundRunner``) are composed by the CLI host (Task 9) — when absent, the turn/runner
-    routes report 503 (the auth core still serves)."""
+    a known token and a fake clock; ``session`` (a ``UiSession``), ``runner`` (a
+    ``BackgroundRunner``), and ``services`` (the read/mutate bundle) are composed by the CLI
+    host (Task 9) — when absent, the dependent routes report 503 (the auth core still serves)."""
     auth = auth or AuthManager()
     connections = connections or ConnectionManager(heartbeat_seconds=config.ui.heartbeat_seconds)
     approvals = ApprovalManager(connections)
@@ -103,6 +121,7 @@ def create_app(
     app.state.ui_approver = UIApprover(approvals, gate, config)
     app.state.session = session
     app.state.runner = runner
+    app.state.services = services or UiServices()
     app.state.config = config
 
     @app.middleware("http")
@@ -207,6 +226,96 @@ def create_app(
         if app.state.runner is not None and not app.state.runner.is_running:
             app.state.runner.start()
         return _runner_status(app.state.runner, app.state.session)
+
+    # --- read models: Hub / Lab (always available) ------------------------------------
+
+    @app.get("/api/hub")
+    async def hub() -> dict:
+        return hub_status(config)
+
+    @app.get("/api/lab")
+    async def lab() -> dict:
+        return lab_overview(config)
+
+    # --- read models: Memory / Tasks / Vault / Agents (need host services) ------------
+    # These return JSONResponse uniformly (data or a 503) so FastAPI treats them as a
+    # passthrough — no response-model inference over a Response|data union.
+
+    @app.get("/api/memory")
+    async def memory(type: str | None = None) -> JSONResponse:
+        svc = app.state.services.memory
+        if svc is None:
+            return _unavailable("memory")
+        return JSONResponse(await list_memories(svc, type_filter=type))
+
+    @app.get("/api/tasks")
+    async def tasks() -> JSONResponse:
+        svc = app.state.services.tasks
+        if svc is None:
+            return _unavailable("tasks")
+        return JSONResponse(await list_tasks(svc))
+
+    @app.get("/api/tasks/{task_id}/runs")
+    async def tasks_runs(task_id: int) -> JSONResponse:
+        svc = app.state.services.tasks
+        if svc is None:
+            return _unavailable("tasks")
+        return JSONResponse(await task_runs(svc, task_id))
+
+    @app.get("/api/vault")
+    async def vault() -> JSONResponse:
+        svc = app.state.services.knowledge
+        if svc is None:
+            return _unavailable("knowledge")
+        return JSONResponse(await vault_overview(svc))
+
+    @app.get("/api/vault/lint")
+    async def vault_lint_route() -> JSONResponse:
+        svc = app.state.services.knowledge
+        if svc is None:
+            return _unavailable("knowledge")
+        return JSONResponse(await vault_lint(svc))
+
+    @app.get("/api/agents")
+    async def agents() -> JSONResponse:
+        svc = app.state.services.run_store
+        if svc is None:
+            return _unavailable("agents")
+        return JSONResponse(await list_agent_runs(svc))
+
+    # --- mutations: the enumerated human-authority set (D5, route-closed-set pin) ------
+
+    @app.post("/api/vault/sources/{source_id}/approve")
+    async def vault_approve(source_id: int) -> JSONResponse:
+        svc = app.state.services.knowledge
+        if svc is None:
+            return _unavailable("knowledge")
+        await svc.approve_source(source_id)  # = `kb review` approve
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/vault/sources/{source_id}/reject")
+    async def vault_reject(source_id: int) -> JSONResponse:
+        svc = app.state.services.knowledge
+        if svc is None:
+            return _unavailable("knowledge")
+        rejected = await svc.reject_source(source_id)
+        return JSONResponse({"ok": bool(rejected)})
+
+    @app.post("/api/tasks/{task_id}/cancel")
+    async def tasks_cancel(task_id: int) -> JSONResponse:
+        svc = app.state.services.tasks
+        if svc is None:
+            return _unavailable("tasks")
+        cancelled = await svc.cancel(task_id)
+        return JSONResponse({"ok": cancelled is not None})
+
+    @app.post("/api/memory/{memory_id}/forget")
+    async def memory_forget(memory_id: int) -> JSONResponse:
+        svc = app.state.services.memory
+        if svc is None:
+            return _unavailable("memory")
+        forgotten = await svc.store.forget(memory_id)  # status flip, never DELETE
+        return JSONResponse({"ok": bool(forgotten)})
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
