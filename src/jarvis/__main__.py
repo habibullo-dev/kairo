@@ -23,10 +23,16 @@ def main() -> None:
     _force_utf8_stdio()
 
     # `jarvis eval …` is the live eval gate (incl. the chunked profile). It lives under
-    # tests/evals and is a dev/CI ritual, so it's a thin delegate imported only on demand
-    # and only importable from the repo (never shipped in the wheel).
+    # tests/evals and is a dev/CI ritual, so it's a thin delegate imported only on demand.
+    # The console script runs from an editable install, so add the repo root (which holds
+    # tests/) to sys.path before importing; a real wheel has no tests/ and prints the hint.
     argv = sys.argv[1:]
     if argv and argv[0] == "eval":
+        import pathlib
+
+        repo_root = str(pathlib.Path(__file__).resolve().parents[2])
+        if repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
         try:
             from tests.evals.runner import cli as eval_cli
         except ModuleNotFoundError:
