@@ -113,8 +113,82 @@ ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'interactive'
     CHECK (kind IN ('interactive','task'));
 """
 
+# Phase 4: research + knowledge base ("LLM Wiki").
+#
+# kb_sources is a PRIMARY/AUDIT record (like memories/tasks) — never DELETEd; a
+# re-ingest of changed content 'supersede's the prior row, keeping lineage.
+#
+# kb_chunks and kb_wiki_links are DERIVED INDEXES — rebuildable caches over the
+# markdown artifacts and wiki files — and are the one deliberate exception to the
+# "nothing is ever DELETEd" rule (see docs/decisions/0004-*). Re-ingest, page
+# rewrite, and `kb rebuild` delete-and-replace their rows inside one transaction();
+# auditing a cache audits nothing, and a chunk status machine would be dead weight.
+_SCHEMA_V4 = """
+CREATE TABLE kb_sources (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind              TEXT NOT NULL CHECK (kind IN ('file','url','note')),
+    origin            TEXT NOT NULL,        -- resolved absolute path | full URL | 'note'
+    title             TEXT,
+    content_hash      TEXT NOT NULL,        -- sha256 hex of the raw bytes
+    raw_path          TEXT NOT NULL,        -- immutable artifact, relative to knowledge dir
+    markdown_path     TEXT NOT NULL,        -- converted markdown artifact
+    markdown_hash     TEXT NOT NULL,        -- staleness / hand-edit detection
+    converter         TEXT NOT NULL,        -- markitdown|docling|trafilatura|passthrough
+    converter_version TEXT NOT NULL,
+    byte_size         INTEGER NOT NULL,
+    mime              TEXT,
+    status            TEXT NOT NULL DEFAULT 'live'
+                      CHECK (status IN ('live','superseded','rejected')),
+    superseded_by     INTEGER REFERENCES kb_sources(id),
+    review_status     TEXT NOT NULL DEFAULT 'reviewed'
+                      CHECK (review_status IN ('reviewed','unreviewed')),
+    created_by        TEXT NOT NULL CHECK (created_by IN ('user','agent')),
+    source_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_kb_sources_hash   ON kb_sources(content_hash);
+CREATE INDEX        idx_kb_sources_origin ON kb_sources(origin);
+CREATE INDEX        idx_kb_sources_live   ON kb_sources(status) WHERE status = 'live';
+
+CREATE TABLE kb_chunks (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id       INTEGER REFERENCES kb_sources(id),   -- set for source chunks
+    wiki_path       TEXT,                                -- set for wiki-page chunks (wiki-relative)
+    heading_path    TEXT NOT NULL DEFAULT '',            -- 'H1 > H2 > H3'
+    seq             INTEGER NOT NULL,                    -- order within the document
+    text            TEXT NOT NULL,
+    embedding       BLOB NOT NULL,                       -- float32 unit vector (memory pattern)
+    embedding_model TEXT NOT NULL,                       -- never silently mix vector spaces
+    created_at      TEXT NOT NULL,
+    CHECK ((source_id IS NOT NULL) <> (wiki_path IS NOT NULL))  -- exactly one owner
+);
+
+CREATE INDEX idx_kb_chunks_source ON kb_chunks(source_id);
+CREATE INDEX idx_kb_chunks_wiki   ON kb_chunks(wiki_path);
+
+CREATE TABLE kb_wiki_links (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_path  TEXT NOT NULL,         -- wiki-relative posix path of the linking page
+    to_path    TEXT,                  -- resolved target page, NULL if unresolved (broken)
+    to_raw     TEXT NOT NULL,         -- the target as written ('Rust Async' / 'tokio.md')
+    link_text  TEXT,                  -- display text / alias
+    link_kind  TEXT NOT NULL CHECK (link_kind IN ('wikilink','markdown')),
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_kb_links_from ON kb_wiki_links(from_path);
+CREATE INDEX idx_kb_links_to   ON kb_wiki_links(to_path);
+"""
+
 # (target_version, sql). Append new tuples for future schema changes.
-MIGRATIONS: list[tuple[int, str]] = [(1, _SCHEMA_V1), (2, _SCHEMA_V2), (3, _SCHEMA_V3)]
+MIGRATIONS: list[tuple[int, str]] = [
+    (1, _SCHEMA_V1),
+    (2, _SCHEMA_V2),
+    (3, _SCHEMA_V3),
+    (4, _SCHEMA_V4),
+]
 
 
 async def migrate(db: aiosqlite.Connection) -> int:

@@ -15,7 +15,7 @@ from jarvis.config import load_config
 from jarvis.core import FakeClient, text_message
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect, transaction
-from jarvis.persistence.migrations import _SCHEMA_V1, _SCHEMA_V2, migrate
+from jarvis.persistence.migrations import _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, migrate
 
 MIXED_MESSAGES = [
     {"role": "user", "content": "summarize the file"},
@@ -42,7 +42,7 @@ async def test_migrations_set_user_version(tmp_path: Path) -> None:
     cursor = await db.execute("PRAGMA user_version")
     (version,) = await cursor.fetchone()
     await db.close()
-    assert version == 3
+    assert version == 4
 
 
 async def test_v2_to_v3_migration_preserves_data(tmp_path: Path) -> None:
@@ -68,7 +68,7 @@ async def test_v2_to_v3_migration_preserves_data(tmp_path: Path) -> None:
         )
         await db.commit()
 
-        assert await migrate(db) == 3  # applies v3 onto a populated v2 db
+        assert await migrate(db) == 4  # migrate() applies ALL pending (v3 + v4) onto a v2 db
 
         cur = await db.execute("SELECT title, kind FROM sessions WHERE id=1")
         assert await cur.fetchone() == ("kept", "interactive")  # kind backfilled
@@ -80,6 +80,51 @@ async def test_v2_to_v3_migration_preserves_data(tmp_path: Path) -> None:
         assert (await cur.fetchone())[0] == 0
         cur = await db.execute("SELECT count(*) FROM task_runs")
         assert (await cur.fetchone())[0] == 0
+    finally:
+        await db.close()
+
+
+async def test_v3_to_v4_migration_preserves_data(tmp_path: Path) -> None:
+    db = await aiosqlite.connect(tmp_path / "m.db")
+    try:
+        await db.executescript(_SCHEMA_V1)
+        await db.executescript(_SCHEMA_V2)
+        await db.executescript(_SCHEMA_V3)
+        await db.execute("PRAGMA user_version = 3")
+        now = "2026-01-01T00:00:00+00:00"
+        await db.execute(
+            "INSERT INTO sessions (created_at, updated_at, title, kind) VALUES (?, ?, ?, 'task')",
+            (now, now, "kept"),
+        )
+        await db.execute(
+            "INSERT INTO messages (session_id, seq, role, content, created_at) "
+            "VALUES (1, 0, 'user', ?, ?)",
+            ('"hi"', now),
+        )
+        await db.execute(
+            "INSERT INTO memories (type, content, embedding, embedding_model, source, "
+            "created_at, updated_at) VALUES ('fact', 'kept-memory', x'00', 'm', 'user', ?, ?)",
+            (now, now),
+        )
+        await db.execute(
+            "INSERT INTO tasks (kind, title, payload, schedule_kind, schedule_spec, timezone, "
+            "next_run_at, created_by, created_at, updated_at) "
+            "VALUES ('reminder', 't', 'p', 'once', ?, 'UTC', ?, 'user', ?, ?)",
+            (now, now, now, now),
+        )
+        await db.commit()
+
+        assert await migrate(db) == 4  # applies v4 onto a populated v3 db
+
+        cur = await db.execute("SELECT title, kind FROM sessions WHERE id=1")
+        assert await cur.fetchone() == ("kept", "task")
+        cur = await db.execute("SELECT content FROM memories WHERE id=1")
+        assert (await cur.fetchone())[0] == "kept-memory"
+        cur = await db.execute("SELECT title FROM tasks WHERE id=1")
+        assert (await cur.fetchone())[0] == "t"
+        for table in ("kb_sources", "kb_chunks", "kb_wiki_links"):
+            cur = await db.execute(f"SELECT count(*) FROM {table}")
+            assert (await cur.fetchone())[0] == 0
     finally:
         await db.close()
 

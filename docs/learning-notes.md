@@ -922,3 +922,26 @@ non-obvious *implementation* decisions per task.
   optional service is None when disabled, and `Tool.is_available` gates registration
   on it — so a phase's tools simply don't exist when its config is off, keeping the
   null path byte-identical to the prior phase.
+
+## Phase 4 Task 2 — Schema v4 + KnowledgeStore
+
+- **`migrate()` always runs to the latest version — assert the head, not the step.**
+  Two older migration tests asserted `migrate(db) == 3` / `== 2` after seeding an
+  older db; adding v4 made `migrate` return 4 (it applies every pending step). The
+  tests still prove the intermediate schema's data survives — the return value is
+  just "what version are we at now," which is always the head. Pin the head.
+- **Chunks and links are the FIRST tables allowed to be DELETEd.** Every prior table
+  is append-/status-only. `kb_chunks`/`kb_wiki_links` are rebuildable caches over the
+  markdown artifacts and wiki files, so `replace_chunks`/`replace_links` delete +
+  re-insert per owner. The exactly-one-owner CHECK (`(source_id IS NOT NULL) <>
+  (wiki_path IS NOT NULL)`) keeps a chunk from claiming to be both a source chunk and
+  a page chunk.
+- **Search filters at the JOIN, and returns citation context from the same query.**
+  Excluding superseded/rejected/unreviewed sources requires joining chunks→sources
+  anyway; pulling the citation fields (kind/origin/title/created_by/date) from that
+  same row avoids an N+1 fetch and keeps provenance DB-derived (never from chunk
+  text). Wiki chunks (source_id NULL) are always eligible — a page on disk is curated.
+- **Atomicity is provable by monkeypatching `executemany` to raise.** `replace_chunks`
+  does DELETE + INSERT inside `transaction()`; patching the INSERT to blow up and then
+  asserting the *old* chunks survive proves the DELETE rolled back with it — the same
+  "prove the rollback, don't trust it" discipline as the Phase 3 persistence tests.
