@@ -75,7 +75,10 @@ class PermissionGate:
         *,
         source_path: Path | None = None,
         path_tools: frozenset[str] = frozenset({"write_file"}),
-        read_tools: frozenset[str] = frozenset({"read_file"}),
+        # ingest_source's file leg is a read of an arbitrary path — gate it like one so
+        # the sensitive-path floor applies before any converter opens the file. Its
+        # ``path`` field name must match ``path_field`` (pinned by a gate test).
+        read_tools: frozenset[str] = frozenset({"read_file", "ingest_source"}),
         path_field: str = "path",
         shell_tools: frozenset[str] = frozenset({"run_shell"}),
         command_field: str = "command",
@@ -146,6 +149,12 @@ class PermissionGate:
 
         if is_sensitive_path(target):
             return Decision(Permission.DENY, f"write to sensitive path denied: {target}")
+        if self._within_denylist(target):
+            return Decision(
+                Permission.DENY,
+                f"write to a provenance-managed dir denied: {target} — use write_wiki_page / "
+                "ingest_source so the write is tracked",
+            )
         if self._within_allowlist(target):
             return Decision(base, f"write within allowlist: {target}")
         if base is Permission.ALLOW:
@@ -164,6 +173,16 @@ class PermissionGate:
 
     def _within_allowlist(self, target: Path) -> bool:
         for entry in self.policy.filesystem.write_allowlist:
+            base_dir = resolve_path(entry, self.project_root)
+            if target == base_dir or target.is_relative_to(base_dir):
+                return True
+        return False
+
+    def _within_denylist(self, target: Path) -> bool:
+        """A write under a provenance-managed dir (the knowledge base) must go through
+        the tracking tools, not the generic write_file — even though it's inside the
+        allowlisted project root. Denylist wins over the allowlist."""
+        for entry in self.policy.filesystem.write_denylist:
             base_dir = resolve_path(entry, self.project_root)
             if target == base_dir or target.is_relative_to(base_dir):
                 return True

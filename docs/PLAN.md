@@ -247,13 +247,20 @@ Integration rule: these systems should expose data to Jarvis through narrow, aud
 ### Approved MCP / connector shortlist
 MCP servers are powerful executable dependencies, so every server must be pinned, reviewed, least-privilege scoped, and wrapped by Jarvis's permission/audit model before it can perform writes or external side effects.
 
-Approved shortlist:
-- **Computer/browser/control tools**: local desktop/browser control for supervised workflows only; no unattended control until a dedicated safety design exists.
-- **Google Drive**: file search/read/import/export; writes or sharing links require approval.
-- **OneDrive**: file search/read/import/export through Microsoft Graph; writes/sharing require approval.
-- **Gmail**: search/read/summarize first; draft/send/archive/label require approval, with exact recipient/body preview.
-- **Google Calendar**: read availability/events first; create/update/cancel events require approval.
+Selected daily stack:
+- **Google Workspace**: Gmail, Drive, Calendar, Docs, Sheets, Slides, Contacts, Tasks, and Google Meet link creation through Calendar. Default to read/search/summarize; draft/send/upload/share/create/update/delete require approval with exact previews.
+- **GitHub**: repo, issue, PR, code-search, and workflow context. Prefer read-only by default; issue/PR/comment/workflow writes require approval.
 - **Telegram notifications**: start with send-only notifications for task completion, errors, review-needed queues, and long-running agent updates. Full Telegram chat management is a later, separately gated capability.
+- **KakaoTalk**: useful for Korea-first daily communication, notifications, and information capture. Preferred path is official Kakao Developers / channel / message APIs for approved sends or self-notifications. Reading normal personal chats is not available as a clean official API, so any read/summarize workflow must be explicit local desktop/export automation, limited to selected chats, visible to the user, and never unattended by default. Replies/sends require exact preview approval.
+- **Obsidian**: bridge access for the human-facing vault. Jarvis's Phase 4 KB remains the source of truth for provenance and indexing; external Obsidian MCP writes must preserve front-matter and stay inside the vault jail.
+- **Browser / Playwright**: supervised website operation when no API exists. Keep it interactive/screenshot-visible; no unattended browser control until separately designed.
+- **Postgres / SQLite / Supabase**: database querying and admin work. Start read-only; writes, migrations, RLS/auth/storage changes, destructive SQL, and `service_role`/secret-key use require task-specific approval and verification.
+- **Docker**: inspect local services, logs, health, ports, and compose status for the self-hosted stack. Restart/stop/delete/prune/image-pull actions require approval.
+- **Filesystem**: optional MCP only if it is faster/easier than Jarvis's native tools. Must be root-scoped, deny sensitive paths, and never bypass the existing permission/audit model.
+- **Maps / Places**: routes, places, commute, local search, travel planning context. Usually read-only; booking or contacting places is out of scope.
+- **Weather**: daily planning, travel, reminders, and schedule context. Read-only by default.
+- **Discord**: read/search/summarize selected servers/channels and send approved notifications/messages. Posting, moderation, invites, and bulk actions require approval.
+- **OneDrive**: file search/read/import/export through Microsoft Graph; writes/sharing require approval.
 - **Spotify**: low-risk personal-control tool for playback/search/playlist actions; still audit calls because OAuth tokens are involved.
 
 ---

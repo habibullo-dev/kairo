@@ -30,6 +30,10 @@ class ShellPolicy(BaseModel):
 class FilesystemPolicy(BaseModel):
     # Dirs (relative to project root, or absolute) where writes may be auto-allowed.
     write_allowlist: list[str] = Field(default_factory=lambda: ["."])
+    # Dirs where the generic write_file is DENIED even though they sit inside the
+    # allowlist — provenance-managed trees (the knowledge base) must be written only
+    # via their tracking tools (write_wiki_page / ingest_source). Denylist wins.
+    write_denylist: list[str] = Field(default_factory=lambda: ["data/knowledge"])
     # Extra fnmatch patterns that deny reads, *on top of* the built-in secret/key
     # floor in jarvis.paths.is_sensitive_path (which cannot be disabled from YAML).
     read_denylist: list[str] = Field(default_factory=list)

@@ -1089,3 +1089,27 @@ non-obvious *implementation* decisions per task.
   every page a wikilink could match; the link index stores the chosen one, and lint
   re-runs the resolver to flag targets with >1 candidate — keeping the stored index
   simple while still surfacing the ambiguity.
+
+## Phase 4 Task 9 — Tools + gate + unattended + prompts + permissions
+
+- **The `path` param name is load-bearing, and a self-consistency test guards it.**
+  ingest_source's file leg is named `path` and added to the gate's DEFAULT read_tools,
+  so the sensitive-path floor fires on `ingest_source(path=".env")` → DENY. A new gate
+  test asserts every tool in read_tools ∪ path_tools actually has a `path` field —
+  because a rename to `source` would silently make the floor a no-op and pass every
+  functional test. That's the exact footgun the pre-mortem flagged; the test makes it
+  unmissable.
+- **write_denylist beats the allowlist.** `data/` is inside the `.` write-allowlist, so
+  a raw write_file could drop an untracked page into the wiki and bypass provenance.
+  A new `write_denylist` (default `data/knowledge`) is checked before the allowlist and
+  DENIES with an actionable reason ("use write_wiki_page / ingest_source"). Provenance
+  isn't optional just because the dir is technically writable.
+- **Unattended demotion extends cleanly to the new side-effecting tools.** Adding
+  ingest_source/write_wiki_page to DEMOTE_ALLOW was a one-line change to a constant —
+  an interactive "always allow ingest" no longer reaches a 3am job, while read-only
+  query/lint pass through so scheduled research still works. The existing UnattendedGate
+  machinery did the rest.
+- **KB retrieval can't launder into memory — same firewall, new channel.** query
+  results arrive as tool_results, which reflection already strips; a dedicated test
+  pins that a query_knowledge_base result never reaches the extractor, so ingested
+  (possibly poisoned) content can't ride retrieval into permanent memory.

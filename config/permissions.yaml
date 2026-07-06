@@ -33,6 +33,14 @@ tools:
   list_tasks: allow
   schedule_task: ask
   cancel_task: ask
+  # Knowledge base (Phase 4). query/lint are read-only (allow). ingest_source ASKS —
+  # it opens attacker-controlled bytes with our privileges AND persists content that
+  # is later retrieved into context, so a human approves the target (its `path` is
+  # gated by the sensitive-path floor like any read). write_wiki_page asks too.
+  query_knowledge_base: allow
+  lint_knowledge_base: allow
+  ingest_source: ask
+  write_wiki_page: ask
 
 filesystem:
   # Writes inside these dirs (relative to the project root, or absolute) may be
@@ -40,6 +48,12 @@ filesystem:
   # to `ask`, never silently proceed.
   write_allowlist:
     - .
+  # Dirs where the generic write_file is DENIED even though they're inside the
+  # allowlist: the knowledge base is provenance-managed, so pages/artifacts must be
+  # written via write_wiki_page / ingest_source (which track them), never a raw
+  # write_file that would bypass provenance. Denylist wins over the allowlist.
+  write_denylist:
+    - data/knowledge
   # EXTRA fnmatch patterns that deny reads, on top of a built-in secret/key floor
   # (in jarvis/paths.py: *.env, .ssh/*, *.pem/*.key, .aws/credentials, .npmrc,
   # .git-credentials, etc.) that is ALWAYS on and cannot be disabled from here.

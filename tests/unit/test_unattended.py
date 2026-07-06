@@ -109,6 +109,30 @@ def test_opt_in_restores_exactly_the_named_tool(tmp_path: Path) -> None:
     assert gate.demoted == 1  # only the write was demoted
 
 
+def test_knowledge_ingest_and_write_demoted_but_query_passes(tmp_path: Path) -> None:
+    # An interactive "always allow" for ingest/write_wiki must not extend to a 3am
+    # research job; read-only query/lint pass through so scheduled research still works.
+    policy = Policy(
+        tools={"ingest_source": ALLOW, "write_wiki_page": ALLOW, "query_knowledge_base": ALLOW}
+    )
+    gate = _unattended(policy, tmp_path)
+    assert gate.check("ingest_source", {"path": "a.txt"}, tool_default=ASK).permission is DENY
+    assert gate.check("write_wiki_page", {"page": "p.md"}, tool_default=ASK).permission is DENY
+    assert (
+        gate.check("query_knowledge_base", {"query": "x"}, tool_default=ALLOW).permission is ALLOW
+    )
+    assert gate.demoted == 2  # ingest + write demoted; query untouched
+
+
+def test_knowledge_ingest_opt_in_restores_it(tmp_path: Path) -> None:
+    gate = _unattended(
+        Policy(tools={"ingest_source": ALLOW}),
+        tmp_path,
+        allow_tools=frozenset({"ingest_source"}),
+    )
+    assert gate.check("ingest_source", {"path": "a.txt"}, tool_default=ASK).permission is ALLOW
+
+
 # --- passthrough -------------------------------------------------------------
 
 

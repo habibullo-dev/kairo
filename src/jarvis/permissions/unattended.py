@@ -47,7 +47,13 @@ HARD_DENY: frozenset[str] = frozenset({"schedule_task", "cancel_task", "remember
 
 #: Side-effecting tools whose *ALLOW* is demoted to DENY unless explicitly opted in.
 #: (An ASK for these is left alone — the headless approver denies it either way.)
-DEMOTE_ALLOW: frozenset[str] = frozenset({"run_shell", "write_file"})
+#: ingest_source/write_wiki_page persist retrievable content, so an interactive
+#: "always allow" must not silently let a 3am research job feed the knowledge base;
+#: opting a background pipeline in requires scheduler.unattended_allow_tools + the
+#: content lands quarantined 'unreviewed' anyway (ADR-0004).
+DEMOTE_ALLOW: frozenset[str] = frozenset(
+    {"run_shell", "write_file", "ingest_source", "write_wiki_page"}
+)
 
 
 class UnattendedGate:

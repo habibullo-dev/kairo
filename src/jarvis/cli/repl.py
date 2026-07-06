@@ -63,6 +63,19 @@ def _call_summary(call: ToolCall) -> str:
         )
     if call.name == "cancel_task":
         return f"cancel task #{inp.get('task_id', '?')}"
+    if call.name == "ingest_source":
+        # the gate's reason line shows the resolved path; here name the target + kind
+        if inp.get("path"):
+            return f"ingest file -> {inp['path']}"
+        if inp.get("url"):
+            return f"ingest url -> {inp['url']}"
+        return f"ingest note ({len(str(inp.get('text', '')))} chars)"
+    if call.name == "write_wiki_page":
+        cites = inp.get("source_ids") or []
+        preview = str(inp.get("content", "")).strip().splitlines()[:10]
+        return f"wiki page -> {inp.get('page', '?')} (cites {cites}):\n    " + "\n    ".join(
+            preview
+        )
     return ""
 
 

@@ -83,6 +83,48 @@ def test_decision_has_reason(tmp_path: Path) -> None:
     assert g.check("read_file").reason
 
 
+# --- knowledge base (Phase 4) gate wiring ----------------------------------
+
+
+def test_ingest_source_sensitive_path_denied_by_default_gate(tmp_path: Path) -> None:
+    # ingest_source is in the DEFAULT read_tools, and its file param is named `path`,
+    # so the sensitive-path floor fires — the whole "conversion is gated like a read"
+    # story depends on this wiring.
+    (tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
+    g = gate(Policy(tools={"ingest_source": ALLOW}), tmp_path)
+    assert g.check("ingest_source", {"path": ".env"}).permission is DENY
+
+
+def test_gate_read_write_tools_have_path_field() -> None:
+    # Self-consistency: every tool the gate does path-checking for must actually have a
+    # `path` param, or the check silently reads None and the floor never runs. This
+    # class of misconfiguration passes every functional test otherwise.
+    from jarvis.tools import ToolContext, ToolRegistry
+
+    reg = ToolRegistry()
+    reg.discover("jarvis.tools.builtin", ToolContext())  # phase-1 tools always register
+    g = PermissionGate(Policy(), Path("."))
+    for name in g.path_tools | g.read_tools:
+        tool = reg.get(name)
+        if tool is None:
+            continue  # optional tools (ingest_source) may be absent without a service
+        assert g.path_field in tool.Params.model_fields, (
+            f"{name} is gate-path-checked but has no '{g.path_field}' param"
+        )
+
+
+def test_write_file_denied_under_knowledge_dir(tmp_path: Path) -> None:
+    # the generic write_file must not bypass wiki provenance by writing into the KB dir,
+    # even though data/ is inside the '.' allowlist. write_denylist wins.
+    policy = Policy(tools={"write_file": ALLOW})  # default write_denylist = data/knowledge
+    g = gate(policy, tmp_path)
+    decision = g.check("write_file", {"path": "data/knowledge/wiki/evil.md"})
+    assert decision.permission is DENY
+    assert "write_wiki_page" in decision.reason  # actionable: use the tracking tool
+    # a normal write elsewhere is unaffected
+    assert g.check("write_file", {"path": "notes.txt"}).permission is ALLOW
+
+
 # --- shell rules -----------------------------------------------------------
 
 
