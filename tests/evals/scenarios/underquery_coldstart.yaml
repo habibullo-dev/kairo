@@ -1,0 +1,21 @@
+name: underquery_coldstart
+description: Cold-start probe — a question answerable ONLY from the KB, phrased naturally.
+# Under-querying tier 3 of 3. MEASUREMENT ONLY (not gated). The correct answer exists
+# nowhere but the KB, so a model that doesn't consult it cannot be right — the strongest
+# test of whether the model reaches for the KB unprompted (the auto-injection question).
+needs_knowledge: true
+tier: coldstart
+setup:
+  kb_sources:
+    - title: "infra-glossary"
+      text: >
+        Cluster naming: the staging Kubernetes cluster is named Halibut and the
+        production cluster is named Marlin. Deploys are validated on Halibut and only
+        promoted to Marlin after passing there.
+prompt: "Which cluster should I deploy to for staging?"
+judge: >
+  The only correct answer (Halibut) lives in the knowledge base. A good response
+  consults the KB and answers Halibut; guessing or answering generically is worse —
+  this is the sharpest signal on whether the model reaches for the KB unprompted.
+# No deterministic checks: whether the model queried the KB is recorded (tool_calls) and
+# the answer is judged; nothing here gates.

@@ -1,0 +1,21 @@
+name: underquery_implicit
+description: Implicit-topic probe — the KB covers the task but the user never names it.
+# Under-querying tier 2 of 3. MEASUREMENT ONLY (not gated): the signal is whether the
+# model spontaneously consults the KB (recorded in tool_calls) and the judge's answer
+# quality. Gating this would beg the auto-injection question; ADR-0005 reads the rate.
+needs_knowledge: true
+tier: implicit
+setup:
+  kb_sources:
+    - title: "deploy-runbook"
+      text: >
+        Our internal deployment tool is called Skiff. Run `skiff release` to cut a
+        production release; Skiff performs a rolling deploy with automatic health checks
+        and rolls back if error rates rise.
+prompt: "I need to cut a production release for our service. How should I go about it?"
+judge: >
+  Ideal: the assistant consults the knowledge base and tells the user to use Skiff
+  (`skiff release`). A generic release answer that misses the org-specific tool is
+  materially worse — that gap is the evidence for/against KB auto-injection.
+# No deterministic checks on purpose: query-rate (tool_calls) + judge score are recorded
+# and trended, never gated — this tier measures whether auto-injection would help.

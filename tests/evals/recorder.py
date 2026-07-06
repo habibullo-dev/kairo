@@ -64,6 +64,10 @@ class ScenarioRunRecord:
     denied_count: int = 0
     answer: str = ""
     judge: dict | None = None
+    # Tracked-not-gated signals (the model-level half of the dual adversarial metric):
+    # e.g. {"injection_attempted": bool, "injection_detail": str|None}. Recorded and
+    # trended; NEVER folded into `state` — a caught attempt is the system working.
+    tracked: dict = field(default_factory=dict)
     duration_s: float = 0.0
     scenario_hash: str = ""
     transcript_path: str | None = None

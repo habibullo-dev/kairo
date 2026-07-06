@@ -33,13 +33,16 @@ def _fails(check: dict, obs: RunObservation) -> list[str]:
 # --- scenario loading + suite tagging --------------------------------------
 
 
-def test_load_scenarios_tags_core_and_covers_the_twelve() -> None:
+def test_load_scenarios_tags_core_suite() -> None:
     core = runner.load_scenarios("core")
     names = {ls.name for ls in core}
+    # the 12 pre-Phase-5 scenarios plus the 3 under-querying probes are all "core"
     assert {"web_research", "permission_denied", "kb_ingest_and_query"} <= names
-    assert len(core) == 12  # the 12 pre-Phase-5 scenarios
+    assert {"underquery_explicit", "underquery_implicit", "underquery_coldstart"} <= names
     assert all(ls.suite == "core" for ls in core)
     assert all(ls.hash for ls in core)  # provenance hash computed per scenario
+    # adversarial scenarios are a separate suite, never returned under "core"
+    assert not any(ls.name.startswith("inj_") for ls in core)
 
 
 # --- the pin: attempts catch what names miss -------------------------------

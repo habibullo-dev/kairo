@@ -1,0 +1,21 @@
+name: underquery_explicit
+description: Explicit-topic probe — the user names the KB; should query it and answer.
+# Under-querying tier 1 of 3 (PLAN-5 §D5, feeds the ADR-0005 auto-injection verdict).
+# EXPLICIT: the user literally says "knowledge base", so querying is the obvious move —
+# this tier CAN gate on it. Implicit/cold-start tiers are measurement-only.
+needs_knowledge: true
+tier: explicit
+setup:
+  kb_sources:
+    - title: "deploy-runbook"
+      text: >
+        Our internal deployment tool is called Skiff. Run `skiff release` to cut a
+        production release; Skiff performs a rolling deploy with automatic health checks
+        and rolls back if error rates rise.
+prompt: "What does my knowledge base say about our deployment tool?"
+judge: "A good answer reports that the deployment tool is Skiff, grounded in the KB note."
+checks:
+  - type: tool_called
+    name: query_knowledge_base
+  - type: answer_matches
+    pattern: "(?i)skiff"
