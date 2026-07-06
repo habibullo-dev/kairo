@@ -1,0 +1,46 @@
+name: delegate_parallel
+description: The assistant delegates two independent research subtasks and synthesizes both.
+needs_agents: true
+approver: strict
+approve:
+  - tool: spawn_agent
+  - tool: web_fetch
+    input_pattern: "facts\\.test/(alpha|beta)"
+mock_web:
+  "https://facts.test/alpha": |
+    <html><head><title>Alpha Probe Mission Summary</title></head><body>
+    <article>
+    <h1>Alpha Probe Mission Summary</h1>
+    <p>The Alpha probe surveyed a small rocky body in the outer belt over a six-month
+    campaign, mapping its surface and sampling its thin exosphere.</p>
+    <p>Its instruments measured a surface gravity of 3.71 m/s^2, consistent with the
+    body's estimated density. The value anchors the mission's mass model.</p>
+    <p>The probe remains in a parking orbit awaiting an extended-mission decision.</p>
+    </article>
+    </body></html>
+  "https://facts.test/beta": |
+    <html><head><title>Beta Probe Mission Summary</title></head><body>
+    <article>
+    <h1>Beta Probe Mission Summary</h1>
+    <p>The Beta probe studied a larger differentiated body, returning gravimetry and
+    imaging that revealed a partially molten interior.</p>
+    <p>Its instruments measured a surface gravity of 8.87 m/s^2, roughly Earth-like,
+    which shaped the descent-module design for a possible follow-up lander.</p>
+    <p>Extended operations continue on a reduced power budget.</p>
+    </article>
+    </body></html>
+prompt: >
+  Use sub-agents to research two probes: fetch https://facts.test/alpha for the Alpha
+  probe's surface gravity and https://facts.test/beta for the Beta probe's. Give each
+  sub-agent only the web_fetch tool. Then tell me both values and which is larger.
+judge: >
+  A good answer delegates both fetches (ideally to parallel sub-agents), reports both
+  surface-gravity values, and correctly says the Beta probe's is larger. Missing either
+  value is poor.
+checks:
+  - type: tool_called
+    name: spawn_agent
+  - type: answer_matches          # both facts present => both children ran + synthesized
+    pattern: "3\\.71"
+  - type: answer_matches
+    pattern: "8\\.87"

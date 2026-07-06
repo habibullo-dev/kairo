@@ -339,6 +339,12 @@ def _check_one(check: dict, obs: RunObservation) -> str | None:  # noqa: PLR0911
             and (r[2] or 0) >= check.get("min_denied", 0)
         ]
         return None if hits else f"expected a task run matching {check} (runs: {rows})"
+    if kind == "agent_run_absent":
+        # No sub-agent ever ran (e.g. spawn hard-denied unattended): the audit table is
+        # empty. A missing table (no delegation wired) reads as 0 rows -> passes.
+        rows = _query(db_path, "SELECT count(*) FROM agent_runs")
+        n = rows[0][0] if rows else 0
+        return f"expected no sub-agent runs, found {n}" if n else None
     if kind == "kb_source_matches":
         rows = _query(db_path, "SELECT kind, status, origin, title, review_status FROM kb_sources")
         pat = check.get("origin_pattern")

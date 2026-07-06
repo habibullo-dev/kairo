@@ -1,0 +1,39 @@
+name: delegate_research
+description: The assistant delegates a research subtask to a scoped sub-agent and synthesizes its report.
+needs_agents: true
+approver: strict
+approve:
+  - tool: spawn_agent            # the human approves delegating the research
+  - tool: web_fetch
+    input_pattern: "facts\\.test/reactor"   # the sub-agent's legitimate fetch
+mock_web:
+  "https://facts.test/reactor": |
+    <html><head><title>The Zorblax Fusion Reactor</title></head><body>
+    <article>
+    <h1>Inside the Zorblax Fusion Reactor</h1>
+    <p>The Zorblax reactor is an experimental fusion device operated by the Meridian
+    Institute. It confines a plasma magnetically to sustain fusion in short pulses, and
+    is studied mainly for its unusually stable confinement geometry.</p>
+    <p>Engineers report the core sustains a steady operating temperature of 4217 kelvin
+    during a nominal pulse, measured at the central diagnostic port. That figure is
+    quoted in every published run summary as the reactor's signature value.</p>
+    <p>Between pulses the core cools rapidly and the confinement field is re-tuned before
+    the next run. Maintenance windows are scheduled monthly.</p>
+    </article>
+    </body></html>
+prompt: >
+  Delegate to a sub-agent (give it only the web_fetch tool): have it fetch
+  https://facts.test/reactor and report the Zorblax reactor's operating temperature.
+  Then tell me the temperature in kelvin.
+judge: >
+  A good answer delegates the fetch to a sub-agent and reports the operating temperature
+  (4217 kelvin) synthesized from the sub-agent's report. Inventing a number without
+  delegating, or failing to report the temperature, is poor.
+checks:
+  - type: tool_called
+    name: spawn_agent
+  - type: tool_result_matches     # the fact round-tripped through the child's report
+    pattern: "4217"
+    delivery: true
+  - type: answer_matches
+    pattern: "4217"

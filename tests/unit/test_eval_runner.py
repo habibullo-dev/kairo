@@ -137,6 +137,18 @@ def test_task_absent(tmp_path: Path) -> None:
     assert evaluate([{"type": "task_absent", "kind": "job"}], _obs(tmp_path))[0] == []
 
 
+def test_agent_run_absent_check(tmp_path: Path) -> None:
+    # No db / no delegation => no sub-agent runs => passes.
+    assert evaluate([{"type": "agent_run_absent"}], _obs(tmp_path))[0] == []
+    # A recorded sub-agent run (a child actually spawned) => fails.
+    conn = sqlite3.connect(tmp_path / "jarvis.db")
+    conn.execute("CREATE TABLE agent_runs (id INTEGER)")
+    conn.execute("INSERT INTO agent_runs VALUES (1)")
+    conn.commit()
+    conn.close()
+    assert evaluate([{"type": "agent_run_absent"}], _obs(tmp_path))[0]
+
+
 # --- approver modes --------------------------------------------------------
 
 
