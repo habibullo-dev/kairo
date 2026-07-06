@@ -1,5 +1,6 @@
 """Permissions: the gate every side effect passes through before it runs."""
 
+from jarvis.permissions.approvals import NEVER_PERSIST, persist_always
 from jarvis.permissions.gate import Decision, PermissionGate
 from jarvis.permissions.policy import (
     FilesystemPolicy,
@@ -26,6 +27,7 @@ __all__ = [
     "DEMOTE_ALLOW",
     "HARD_DENY",
     "NEVER_GRANTABLE",
+    "NEVER_PERSIST",
     "SUBAGENT_HARD_DENY",
     "Decision",
     "FilesystemPolicy",
@@ -37,6 +39,7 @@ __all__ = [
     "ShellRule",
     "SubAgentGate",
     "load_policy",
+    "persist_always",
     "save_policy",
     "UnattendedGate",
 ]

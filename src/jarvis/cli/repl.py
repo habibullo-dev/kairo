@@ -31,8 +31,14 @@ from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder, reflect
 from jarvis.observability import cost_of, get_logger
 from jarvis.observability.cost import Usage
-from jarvis.paths import is_safe_to_persist_dir, resolve_path
-from jarvis.permissions import NEVER_GRANTABLE, PermissionGate, SubAgentGate, load_policy
+from jarvis.permissions import (
+    NEVER_GRANTABLE,
+    NEVER_PERSIST,
+    PermissionGate,
+    SubAgentGate,
+    load_policy,
+    persist_always,
+)
 from jarvis.permissions.gate import Decision
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
@@ -355,41 +361,15 @@ class Repl:
             return Permission.ALLOW
         return Permission.DENY
 
-    # Never "always"-able: a single stray "a" keystroke must not permanently open
-    # a deferred-execution injection sink (schedule_task), let the model silence the
-    # user's reminders (cancel_task), or open a scoped-execution channel (spawn_agent).
-    # These are per-instance approval only.
-    _NEVER_PERSIST = frozenset({"schedule_task", "cancel_task", "spawn_agent"})
+    # The narrow-persist rule now lives in permissions/approvals.py so the REPL and the
+    # workstation UI share one implementation (ADR-0008 §3). Kept as an alias + a thin
+    # delegate for back-compat with existing tests and readers.
+    _NEVER_PERSIST = NEVER_PERSIST
 
     def _persist_always(self, call: ToolCall) -> None:
-        """Persist an 'always allow' choice as narrowly as the tool allows.
-
-        For writes, the persisted grant is the *resolved* parent directory (so a
-        later write to the same folder isn't re-prompted), resolved against the
-        workspace root exactly as the gate resolves it — never a bare relative
-        fragment. Over-broad targets (a drive root, the home dir, a sensitive
-        location) are refused: the current write still went through on this one
-        approval, but we won't silently authorize a whole tree from it.
-        """
-        if call.name in self._NEVER_PERSIST:
-            self.log.info("always_allow_refused", tool=call.name, reason="deferred_execution_sink")
-            return
-        if call.name == "run_shell":
-            command = str(call.input.get("command", "")).strip()
-            if command:
-                self.gate.persist_shell_rule(command, Permission.ALLOW)
-        elif call.name == "write_file":
-            raw = call.input.get("path")
-            if raw:
-                parent = resolve_path(raw, self.config.root).parent
-                if is_safe_to_persist_dir(parent):
-                    self.gate.persist_write_dir(str(parent))
-                else:
-                    self.log.warning(
-                        "always_allow_not_persisted", dir=str(parent), reason="too broad/sensitive"
-                    )
-        else:
-            self.gate.persist_allow(call.name)
+        """Persist an 'always allow' choice as narrowly as the tool allows (delegates to
+        the shared :func:`persist_always`)."""
+        persist_always(self.gate, self.config, call, log=self.log)
 
     # --- sub-agent approval (Phase 6) --------------------------------------
 

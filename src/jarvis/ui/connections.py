@@ -13,6 +13,7 @@ watch liveness flip without sleeping.
 
 from __future__ import annotations
 
+import contextlib
 import secrets
 import time
 from collections.abc import Callable
@@ -47,6 +48,9 @@ class ConnectionManager:
     def drop(self, conn: Connection) -> None:
         self._conns.pop(conn.id, None)
 
+    def get(self, conn_id: str) -> Connection | None:
+        return self._conns.get(conn_id)
+
     def touch(self, conn: Connection) -> None:
         """Record a heartbeat (resets the liveness window)."""
         conn.last_beat = self._clock()
@@ -70,3 +74,14 @@ class ConnectionManager:
         """True iff some *currently live* connection has ``surface`` mounted — the positive
         check behind screen availability (ADR-0008 §5)."""
         return any(surface in c.surfaces for c in self.live())
+
+    async def send(self, conn: Connection, message: dict) -> None:
+        """Best-effort push to one connection (a dead socket is swallowed, not fatal)."""
+        with contextlib.suppress(Exception):
+            await conn.ws.send_json(message)
+
+    async def broadcast(self, message: dict) -> None:
+        """Push to every live connection (best-effort). Used to announce a new pending
+        approval; a client that connects later re-fetches via the REST read model."""
+        for conn in self.live():
+            await self.send(conn, message)

@@ -9,14 +9,24 @@ FastAPI/uvicorn live behind the optional ``ui`` extra, so this package imports t
 (``server`` pulls FastAPI); ``auth``/``connections`` are dependency-free and always import.
 """
 
+from jarvis.ui.approver import (
+    ApprovalManager,
+    PendingApproval,
+    UIApprover,
+    make_ui_subagent_approver,
+)
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager, host_allowed, origin_allowed
 from jarvis.ui.connections import Connection, ConnectionManager
 
 __all__ = [
     "SESSION_COOKIE",
+    "ApprovalManager",
     "AuthManager",
     "Connection",
     "ConnectionManager",
+    "PendingApproval",
+    "UIApprover",
     "host_allowed",
+    "make_ui_subagent_approver",
     "origin_allowed",
 ]

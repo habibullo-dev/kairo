@@ -15,12 +15,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request, WebSocket, status
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
 from jarvis.observability import get_logger
+from jarvis.permissions import PermissionGate, load_policy
+from jarvis.ui.approver import ApprovalManager, UIApprover
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager, host_allowed, origin_allowed
 from jarvis.ui.connections import Connection, ConnectionManager
+from jarvis.ui.gate_api import policy_snapshot, read_today_audit
 
 if TYPE_CHECKING:
     from jarvis.config import Config
@@ -72,10 +75,18 @@ def create_app(
     supply a known token and a fake clock."""
     auth = auth or AuthManager()
     connections = connections or ConnectionManager(heartbeat_seconds=config.ui.heartbeat_seconds)
+    approvals = ApprovalManager(connections)
+    # One gate on app.state — shared by the policy read model, the UIApprover's narrow-persist,
+    # and (Task 4) the AgentLoop — so a UI "always" and a later turn see the same rules.
+    policy_path = config.root / "config" / "permissions.yaml"
+    gate = PermissionGate(load_policy(policy_path), config.root, source_path=policy_path)
     log = get_logger("jarvis.ui")
     app = FastAPI(title="Kairo Workstation", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.auth = auth
     app.state.connections = connections
+    app.state.approvals = approvals
+    app.state.gate = gate
+    app.state.ui_approver = UIApprover(approvals, gate, config)
     app.state.config = config
 
     @app.middleware("http")
@@ -115,6 +126,30 @@ def create_app(
         # Placeholder until the frontend lands (Task 7); the guard already enforced the session.
         return Response("Kairo Workstation — UI assets land in Task 7.", media_type="text/plain")
 
+    # --- Gate: approvals (the crown jewels) + read-only policy/audit views -------------
+
+    @app.get("/api/approvals")
+    async def list_approvals() -> dict:
+        return {"pending": [p.to_public() for p in approvals.pending()]}
+
+    @app.post("/api/approvals/{decision_id}/resolve")
+    async def resolve_approval(decision_id: str, request: Request) -> JSONResponse:
+        # Session + loopback-Origin already enforced by the guard (POST is mutating). The
+        # nonce (single-use, bound to a live watching client) is the replay-proof credential.
+        body = await request.json()
+        ok, message = approvals.resolve(
+            decision_id, str(body.get("nonce", "")), str(body.get("action", ""))
+        )
+        return JSONResponse({"ok": ok, "message": message}, status_code=200 if ok else 409)
+
+    @app.get("/api/gate/policy")
+    async def gate_policy() -> dict:
+        return policy_snapshot(gate)
+
+    @app.get("/api/audit/today")
+    async def audit_today() -> dict:
+        return {"events": read_today_audit(config.logs_dir)}
+
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
         # HTTP middleware does not run for WS, so authenticate the handshake here: Host
@@ -137,11 +172,24 @@ def create_app(
                     msg = await websocket.receive_json()
                 except ValueError:
                     continue  # skip a malformed frame; don't tear down the socket
+                # approval_shown: the client proves the modal is on screen ⇒ mint a
+                # single-use nonce bound to THIS live connection (amendment 3/4).
+                if msg.get("type") == "approval_shown":
+                    did = msg.get("decision_id")
+                    nonce = await approvals.mint_nonce(did, conn) if did else None
+                    if nonce is not None:
+                        await websocket.send_json(
+                            {"type": "approval_nonce", "decision_id": did, "nonce": nonce}
+                        )
+                    continue
                 _handle_ws_message(connections, conn, msg)
         except WebSocketDisconnect:
             pass
         finally:
+            # Drop the connection AND invalidate its nonces — a click from a since-dead or
+            # reconnected client can never resolve an approval (replay-proof).
             connections.drop(conn)
+            approvals.invalidate_connection(conn)
 
     return app
 
