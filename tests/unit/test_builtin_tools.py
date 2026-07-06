@@ -36,6 +36,7 @@ def test_tool_context_optional_services_default_to_none() -> None:
     assert ctx.config is None
     assert ctx.memory is None
     assert ctx.tasks is None  # scheduler disabled ⇒ task tools won't register
+    assert ctx.knowledge is None  # knowledge base disabled ⇒ kb tools won't register
 
 
 # --- filesystem ------------------------------------------------------------

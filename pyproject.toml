@@ -10,6 +10,7 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "anthropic>=0.116.0",
     "apscheduler>=3.11,<4",
+    "markitdown[docx,pdf,pptx,xlsx]>=0.1.6,<0.2",
     "numpy>=2.5.1",
     "prompt-toolkit>=3.0.52",
     "pydantic>=2.13.4",
@@ -24,6 +25,11 @@ dependencies = [
 
 [project.scripts]
 jarvis = "jarvis.__main__:main"
+
+[project.optional-dependencies]
+docling = [
+    "docling>=2.92",
+]
 
 [build-system]
 requires = ["hatchling"]

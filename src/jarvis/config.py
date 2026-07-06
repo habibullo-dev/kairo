@@ -111,6 +111,29 @@ class SchedulerConfig(BaseModel):
     unattended_allow_tools: list[str] = Field(default_factory=list)
 
 
+class KnowledgeConfig(BaseModel):
+    """Research + knowledge base (Phase 4) knobs. Embeddings reuse ``models.embedding``
+    and the shared Embedder — no new model or secret. Thresholds are
+    embedding-model-specific (voyage-3-large); tune from real retrieval logs."""
+
+    enabled: bool = True
+    # raw/ markdown/ wiki/ live under here (relative to root unless absolute). Point at
+    # a git-versioned dir — or an existing Obsidian vault — to version your wiki; note
+    # the default is under the gitignored data/.
+    dir: Path = Path("data/knowledge")
+    pdf_converter: str = "markitdown"  # 'docling' needs `uv sync --extra docling`
+    chunk_chars: int = 2000  # max chunk size; heading-aware splitter
+    min_chunk_chars: int = 200  # tiny sections merge forward
+    top_k: int = 8  # query_knowledge_base default
+    min_similarity: float = 0.30  # cosine floor for a chunk hit
+    # Raw-artifact cap. Larger than limits.max_read_bytes because binary docs (PDFs,
+    # decks) routinely exceed the text-read ceiling; the converted OUTPUT still flows
+    # through the normal markdown/chunk/result caps, and zip members are ALSO capped
+    # uncompressed in the converter (a small archive can decompress to gigabytes).
+    max_ingest_bytes: int = 50_000_000
+    convert_timeout_seconds: float = 120.0  # subprocess wall-clock kill (Docling is slow on CPU)
+
+
 class PathsConfig(BaseModel):
     """Filesystem locations, relative to the project root unless absolute."""
 
@@ -124,9 +147,10 @@ class Config(BaseModel):
     root: Path
     models: ModelsConfig
     limits: LimitsConfig
-    # Phase 2/3; default_factory keeps direct Config(...) callers simple.
+    # Phase 2/3/4; default_factory keeps direct Config(...) callers simple.
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     paths: PathsConfig
     secrets: Secrets
 
@@ -140,6 +164,10 @@ class Config(BaseModel):
     @property
     def logs_dir(self) -> Path:
         return self._abs(self.paths.logs_dir)
+
+    @property
+    def knowledge_dir(self) -> Path:
+        return self._abs(self.knowledge.dir)
 
     def ensure_dirs(self) -> None:
         """Create runtime directories. A side effect, so the app calls it
@@ -203,6 +231,7 @@ def load_config(
             limits=LimitsConfig(**data.get("limits", {})),
             memory=MemoryConfig(**data.get("memory", {})),
             scheduler=SchedulerConfig(**data.get("scheduler", {})),
+            knowledge=KnowledgeConfig(**data.get("knowledge", {})),
             paths=PathsConfig(**data.get("paths", {})),
             secrets=secrets,
         )

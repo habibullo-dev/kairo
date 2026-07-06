@@ -71,6 +71,28 @@ def test_scheduler_config_yaml_override(tmp_path: Path) -> None:
     assert cfg.scheduler.wake_cap_seconds == 30  # unspecified keeps default
 
 
+def test_knowledge_config_defaults(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.knowledge.enabled is True
+    assert cfg.knowledge.pdf_converter == "markitdown"
+    assert cfg.knowledge.top_k == 8
+    assert cfg.knowledge.chunk_chars == 2000
+    assert cfg.knowledge.max_ingest_bytes == 50_000_000
+
+
+def test_knowledge_config_yaml_override(tmp_path: Path) -> None:
+    _write_settings(tmp_path, "knowledge:\n  enabled: false\n  pdf_converter: docling\n")
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.knowledge.enabled is False
+    assert cfg.knowledge.pdf_converter == "docling"
+    assert cfg.knowledge.top_k == 8  # unspecified keeps default
+
+
+def test_knowledge_dir_resolves_under_root(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.knowledge_dir == (tmp_path / "data" / "knowledge").resolve()
+
+
 def test_yaml_overrides_defaults(tmp_path: Path) -> None:
     _write_settings(
         tmp_path,

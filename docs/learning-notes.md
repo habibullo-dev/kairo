@@ -903,3 +903,22 @@ non-obvious *implementation* decisions per task.
   reports its own usage, but a job's cost lives in its `task_runs` row. The eval sums
   `task_runs.cost_usd` into the scenario total so unattended spend isn't hidden — the
   same reason the `tasks` command shows per-run cost.
+
+## Phase 4 Task 1 — Plan doc + scaffold
+
+- **`uv add --optional docling` installs it locally too; `uv sync` removes it.** The
+  goal was to *declare* docling as an extra in pyproject without carrying torch +
+  transformers in the default environment. `uv add --optional` writes the extra AND
+  installs it; a plain `uv sync` (no `--extra docling`) then prunes it back out. The
+  default install is deliberately docling-free — that's also the environment the
+  converter test needs to exercise the "docling absent ⇒ actionable error" path.
+- **`max_ingest_bytes` (50MB) is intentionally larger than `max_read_bytes` (1MB).**
+  The text-read ceiling protects the context window from a huge file dumped into a
+  tool result; a raw PDF/deck is binary input to a converter, and its *output*
+  markdown still flows through the normal 24k tool-result cap. Different risk, so a
+  different limit — and zip members get a separate uncompressed cap in the converter
+  (a 1MB archive can decompress to gigabytes).
+- **`ToolContext` grows one field per phase (memory → tasks → knowledge).** Each
+  optional service is None when disabled, and `Tool.is_available` gates registration
+  on it — so a phase's tools simply don't exist when its config is off, keeping the
+  null path byte-identical to the prior phase.

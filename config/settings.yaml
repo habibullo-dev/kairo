@@ -38,6 +38,21 @@ scheduler:
   reflect_job_sessions: false    # unattended transcripts do NOT feed long-term memory by default
   unattended_allow_tools: []     # explicit opt-in: tools whose policy-ALLOW survives unattended demotion
 
+knowledge:
+  # Research + knowledge base (Phase 4): ingest files/webpages/notes into an
+  # Obsidian-compatible Markdown wiki with provenance + citations. Embeddings reuse
+  # models.embedding (needs VOYAGE_API_KEY, like memory). enabled: false to turn off.
+  enabled: true
+  dir: data/knowledge            # raw/ markdown/ wiki/ live here; point at a git-versioned
+                                 # dir (or an Obsidian vault) to version your wiki (data/ is gitignored)
+  pdf_converter: markitdown      # 'docling' (better tables/layout) needs `uv sync --extra docling`
+  chunk_chars: 2000              # max chunk size; heading-aware splitter
+  min_chunk_chars: 200           # tiny sections merge forward
+  top_k: 8                       # query_knowledge_base default
+  min_similarity: 0.30           # cosine floor for a chunk hit (voyage-3-large; tune from logs)
+  max_ingest_bytes: 50000000     # raw input cap; zip members are ALSO capped uncompressed
+  convert_timeout_seconds: 120   # subprocess wall-clock kill (Docling on CPU is slow)
+
 paths:
   data_dir: data   # SQLite db (relative to project root)
   logs_dir: logs   # JSON-lines audit/trace logs

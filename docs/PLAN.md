@@ -207,6 +207,16 @@ Planned shape:
 - **Conversion is gated like file reads**: MarkItDown performs I/O with the process's privileges, so any `convert_to_markdown` tool must reuse Jarvis's path resolver, sensitive-path floor, bounded output caps, and permission/audit model. Plugins/OCR/cloud analyzers are opt-in, not silently enabled.
 - **Core operations**: `ingest_source`, `query_knowledge_base`, and `lint_knowledge_base` (orphans, stale claims, contradictions, missing citations). This becomes the bridge between memory (what Jarvis knows about the user) and knowledge (what Jarvis knows about the world/projects).
 
+### External reference: Odysseus
+Odysseus is an approved reference implementation/product source for Jarvis. Borrow its strengths deliberately, with attribution and license hygiene, while keeping Jarvis's core loop, permissions, persistence, and eval discipline as the source of truth.
+
+What to study or adapt:
+- **AI workstation shape**: chat, agents, research, documents, notes, tasks, calendar, email, providers, and settings in one local dashboard. This informs Phase 8's web UI/API, not Phase 4's core storage.
+- **Local-first operations**: Docker/native setup guidance, LAN/Tailscale cautions, backup/restore for `data/`, provider health checks, degraded-state reporting, and clear troubleshooting logs.
+- **Model/provider cookbook**: hardware-aware local model recommendations and serving workflows as an optional privacy/offline layer. API quality remains the default for Jarvis while cost is not a constraint.
+- **Security reminders**: treat the eventual web UI like a private admin console; keep shell, file, email, MCP, and model-serving tools behind the same permission/audit model.
+- **Real-world hardening backlog**: prompt/context bloat dashboards, prompt-injection tests for notes/docs/memories/fetched pages, scheduler visibility, integration smoke tests, and first-run setup polish.
+
 ---
 
 ## 7. Repo Structure

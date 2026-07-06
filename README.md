@@ -33,6 +33,8 @@ tools (asking approval for risky ones), remembers a conversation across restarts
 and reports what it did with sources. Verified end-to-end by a live smoke-eval
 suite. Later phases (research + a Markdown knowledge base, evaluation harness,
 multi-agent, voice, web UI) are laid out in [`docs/PLAN.md`](docs/PLAN.md) §2.
+Odysseus is tracked there as an approved external product/reference source for
+the eventual local AI workstation experience.
 
 ## Requirements
 
