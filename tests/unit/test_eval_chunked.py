@@ -90,6 +90,66 @@ def test_chunk_not_staged_until_meta_written(tmp_path: Path) -> None:
     assert runner.chunk_staged(stage, "core") is False
 
 
+# --- per-scenario resume (survives the ~14-min cap) ------------------------
+
+
+def test_partial_roundtrip(tmp_path: Path) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    runner._save_partial(stage, "core", {"a", "b"}, {"a": "h1", "b": "h2"})
+    done, hashes = runner._load_partial(stage, "core")
+    assert done == {"a", "b"}
+    assert hashes == {"a": "h1", "b": "h2"}
+
+
+def test_partial_from_stale_rev_is_discarded_with_its_records(tmp_path: Path) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    runner._append_chunk_records(stage, "core", [_rec("a", "core")])
+    runner._chunk_partial_path(stage, "core").write_text(
+        json.dumps({"rev": "deadbeef", "done": ["a"], "hashes": {"a": "h"}}), encoding="utf-8"
+    )
+    done, hashes = runner._load_partial(stage, "core")
+    assert done == set() and hashes == {}  # stale rev ⇒ reset (never mix two commits)
+    assert not runner._chunk_records_path(stage, "core").exists()  # its records cleared too
+
+
+def test_incremental_append_then_meta_completes_chunk(tmp_path: Path) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    runner._append_chunk_records(stage, "core", [_rec("a", "core")])
+    runner._append_chunk_records(stage, "core", [_rec("b", "core")])
+    assert runner.chunk_staged(stage, "core") is False  # incremental records, no meta yet
+    runner._write_chunk_meta(
+        stage,
+        "core",
+        hashes={"a": "h", "b": "h"},
+        runs=1,
+        judge_valid=None,
+        calibration_failures=[],
+    )
+    assert runner.chunk_staged(stage, "core") is True  # meta = completion marker
+    records, _meta = runner.read_chunk(stage, "core")
+    assert sorted(r.scenario for r in records) == ["a", "b"]
+
+
+async def test_run_chunk_is_a_noop_when_already_complete(tmp_path: Path) -> None:
+    # An already-complete chunk returns immediately — before load_scenarios/calibration or
+    # any network — so re-invoking the profile never re-runs a finished suite.
+    from jarvis.config import load_config
+
+    stage = tmp_path / "stage"
+    runner.write_chunk(
+        stage, "core", [_rec("a", "core")], hashes={"a": "h"}, runs=1,
+        judge_valid=None, calibration_failures=[],
+    )
+    config = load_config(root=tmp_path, env_file=None)
+    code = await runner.run_chunk(
+        config, suite="core", runs=1, no_judge=True, judge_client=None, stage=stage
+    )
+    assert code == 0
+
+
 # --- merge (the guards) -----------------------------------------------------
 
 

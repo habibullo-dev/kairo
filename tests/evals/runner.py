@@ -971,12 +971,18 @@ async def run_all(
     report_md: bool = False,
     compare_rev: str | None = None,
     propose: bool = False,
+    only_prefix: str | None = None,
 ) -> int:
     scenarios = load_scenarios(suite)
     if only:
         scenarios = [s for s in scenarios if s.name == only]
         if not scenarios:
             print(f"No scenario named {only!r}.")
+            return 2
+    if only_prefix:  # a name-prefix filter (e.g. --only voice_ for a small, cap-safe run)
+        scenarios = [s for s in scenarios if s.name.startswith(only_prefix)]
+        if not scenarios:
+            print(f"No scenarios with name prefix {only_prefix!r}.")
             return 2
 
     judge_valid, calibration_failures, effective_no_judge = await _calibrate(
@@ -1173,22 +1179,17 @@ def _ensure_stage_dirs(stage: Path) -> None:
     (stage / "transcripts").mkdir(parents=True, exist_ok=True)
 
 
-def write_chunk(
+def _write_chunk_meta(
     stage: Path,
     suite: str,
-    records: list[ScenarioRunRecord],
     *,
     hashes: dict[str, str],
     runs: int,
     judge_valid: bool | None,
     calibration_failures: list[str],
 ) -> None:
-    """Stage one suite sub-run: records as JSONL, then a meta sidecar (rev/runs/hashes/
-    judge status). Meta is written LAST as the completion marker."""
-    stage.mkdir(parents=True, exist_ok=True)
-    with _chunk_records_path(stage, suite).open("w", encoding="utf-8") as f:
-        for r in records:
-            f.write(json.dumps(asdict(r)) + "\n")
+    """Write the chunk's meta sidecar — the completion marker (``chunk_staged`` keys on it,
+    so it is always written LAST, after every record is on disk)."""
     meta = {
         "suite": suite,
         "rev": recorder.git_rev(),
@@ -1199,6 +1200,68 @@ def write_chunk(
         "schema_version": recorder.SCHEMA_VERSION,
     }
     _chunk_meta_path(stage, suite).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
+def write_chunk(
+    stage: Path,
+    suite: str,
+    records: list[ScenarioRunRecord],
+    *,
+    hashes: dict[str, str],
+    runs: int,
+    judge_valid: bool | None,
+    calibration_failures: list[str],
+) -> None:
+    """Stage one suite sub-run in one shot: records as JSONL, then the completion meta."""
+    stage.mkdir(parents=True, exist_ok=True)
+    with _chunk_records_path(stage, suite).open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(asdict(r)) + "\n")
+    _write_chunk_meta(
+        stage,
+        suite,
+        hashes=hashes,
+        runs=runs,
+        judge_valid=judge_valid,
+        calibration_failures=calibration_failures,
+    )
+
+
+# --- per-scenario resume (so a chunk killed by the ~14-min cap doesn't redo the suite) ---
+
+
+def _chunk_partial_path(stage: Path, suite: str) -> Path:
+    return stage / f"chunk-{suite}.partial.json"
+
+
+def _load_partial(stage: Path, suite: str) -> tuple[set[str], dict[str, str]]:
+    """Resume state for an in-progress chunk: the scenarios already staged (this rev) and
+    their hashes. A partial from a DIFFERENT rev is stale — discard it AND the records it
+    accumulated, so a chunk can never mix runs from two commits."""
+    path = _chunk_partial_path(stage, suite)
+    if not path.exists():
+        return set(), {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("rev") != recorder.git_rev():
+        path.unlink(missing_ok=True)
+        _chunk_records_path(stage, suite).unlink(missing_ok=True)
+        return set(), {}
+    return set(data.get("done", [])), data.get("hashes", {})
+
+
+def _save_partial(stage: Path, suite: str, done: set[str], hashes: dict[str, str]) -> None:
+    _chunk_partial_path(stage, suite).write_text(
+        json.dumps(
+            {"rev": recorder.git_rev(), "done": sorted(done), "hashes": hashes}, indent=2
+        ),
+        encoding="utf-8",
+    )
+
+
+def _append_chunk_records(stage: Path, suite: str, records: list[ScenarioRunRecord]) -> None:
+    with _chunk_records_path(stage, suite).open("a", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(asdict(r)) + "\n")
 
 
 def read_chunk(stage: Path, suite: str) -> tuple[list[ScenarioRunRecord], dict]:
@@ -1263,8 +1326,15 @@ async def run_chunk(
     judge_client: LLMClient | None,
     stage: Path,
 ) -> int:
-    """Run ONE suite as a sub-run and stage its records (no gate, no history append).
-    Transcripts/workdirs for non-PASS runs land under the staging dir for post-mortem."""
+    """Run ONE suite as a sub-run and stage its records (no gate, no history append),
+    RESUMABLE per scenario. Each scenario's N runs are appended as it finishes and its name
+    recorded, so a re-invocation (e.g. after the ~14-min background cap killed the previous
+    one) skips already-staged scenarios instead of redoing the suite. The completion meta is
+    written only once every scenario is staged. Transcripts/workdirs for non-PASS runs land
+    under the staging dir for post-mortem."""
+    if chunk_staged(stage, suite):
+        print(f"[chunk] {suite}: already complete, nothing to do")
+        return 0
     scenarios = load_scenarios(suite)
     if not scenarios:
         print(f"no scenarios for suite {suite!r}")
@@ -1273,8 +1343,11 @@ async def run_chunk(
         config, scenarios, judge_client, no_judge
     )
     _ensure_stage_dirs(stage)
-    all_records: list[ScenarioRunRecord] = []
+    done, hashes = _load_partial(stage, suite)
     for loaded in scenarios:
+        if loaded.name in done:
+            print(f"[chunk] {suite}: {loaded.name} already staged, skipping")
+            continue
         recs = await run_scenario(
             config,
             loaded,
@@ -1283,18 +1356,19 @@ async def run_chunk(
             judge_client=judge_client,
             no_judge=effective_no_judge,
         )
-        all_records.extend(recs)
-    hashes = {s.name: s.hash for s in scenarios}
-    write_chunk(
+        _append_chunk_records(stage, suite, recs)
+        done.add(loaded.name)
+        hashes[loaded.name] = loaded.hash
+        _save_partial(stage, suite, done, hashes)  # checkpoint after each scenario
+    _write_chunk_meta(
         stage,
         suite,
-        all_records,
         hashes=hashes,
         runs=runs,
         judge_valid=judge_valid,
         calibration_failures=calibration_failures,
     )
-    print(f"[chunk] {suite}: staged {len(all_records)} record(s) -> {stage}")
+    print(f"[chunk] {suite}: complete ({len(done)} scenarios) -> {stage}")
     return 0
 
 
@@ -1430,7 +1504,11 @@ def cli(argv: list[str] | None = None) -> int:
     g = sub.add_parser("gate", help="Run scenarios and gate against baselines (default).")
     g.add_argument("--runs", type=int, default=3, help="Runs per scenario (default 3).")
     g.add_argument("--suite", default="all", choices=["core", "adversarial", "all"])
-    g.add_argument("--scenario", help="Run only this scenario by name.")
+    g.add_argument("--scenario", help="Run only this scenario by name (exact).")
+    g.add_argument(
+        "--only", metavar="PREFIX", help="Run only scenarios whose name starts with PREFIX "
+        "(e.g. --only voice_ for a small, cap-safe single-process run)."
+    )
     g.add_argument("--no-judge", action="store_true", help="Skip LLM-as-judge scoring.")
     g.add_argument("--report", action="store_true", help="Print the full markdown report.")
     g.add_argument("--compare", metavar="REV", help="Deltas vs a prior gate (git rev).")
@@ -1511,6 +1589,8 @@ def cli(argv: list[str] | None = None) -> int:
         )
 
     scenarios = load_scenarios(args.suite)
+    if args.only:  # narrow the key requirements + judge client to the filtered set
+        scenarios = [s for s in scenarios if s.name.startswith(args.only)]
     config = _load_for_suites(scenarios)
     judge_client = _build_judge_client(config, no_judge=args.no_judge, scenarios=scenarios)
     return asyncio.run(
@@ -1524,6 +1604,7 @@ def cli(argv: list[str] | None = None) -> int:
             report_md=args.report,
             compare_rev=args.compare,
             propose=args.propose,
+            only_prefix=args.only,
         )
     )
 
