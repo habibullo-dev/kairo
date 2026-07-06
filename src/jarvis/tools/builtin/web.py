@@ -13,6 +13,7 @@ import httpx
 import trafilatura
 from pydantic import BaseModel, Field
 
+from jarvis import net
 from jarvis.tools.base import Permission, Tool, ToolResult
 
 _TAVILY_URL = "https://api.tavily.com/search"
@@ -34,11 +35,14 @@ async def _tavily_search(api_key: str, query: str, max_results: int) -> dict:
 
 
 async def _fetch_html(url: str, timeout_seconds: float) -> str:
-    """GET a URL and return the raw body. Isolated for mocking in tests."""
-    async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
-        resp = await client.get(url, headers={"User-Agent": "Jarvis/0.1 (+assistant)"})
-        resp.raise_for_status()
-        return resp.text
+    """GET a URL and return the raw body. Isolated for mocking in tests.
+
+    Routes through the shared SSRF guard (:func:`jarvis.net.safe_get`), which
+    validates the scheme and blocks loopback/private/link-local hosts on the initial
+    URL *and* every redirect hop — so an approved public URL can't bounce to an
+    internal address."""
+    resp = await net.safe_get(url, timeout_seconds=timeout_seconds)
+    return resp.text
 
 
 class WebSearchParams(BaseModel):

@@ -967,3 +967,28 @@ non-obvious *implementation* decisions per task.
   time.** `embed_text(chunk)` prepends "H1 > H2" so the vector carries context, while
   the stored `text` is just the section body — so a retrieved excerpt reads cleanly
   and its heading path is rendered separately as a citation breadcrumb.
+
+## Phase 4 Task 4 — Converter boundary + SSRF guard
+
+- **One module owns every third-party converter import.** `converters.py` is the
+  only file that imports markitdown/docling; the rest of the KB deals only in
+  `ConversionResult`. When a converter needs swapping (docling, later Firecrawl),
+  there's exactly one place to change — and exactly one place a parser can run.
+- **Introspect an installed library; never guess its API.** markitdown's result
+  attribute (`.markdown` vs `.text_content`), the `enable_plugins` kwarg, and the
+  `convert_stream`/`StreamInfo` path were all confirmed by importing the real
+  package and printing signatures before writing a line against them. Guessing SDK
+  shapes is how you ship code that imports clean and fails at runtime.
+- **`timeout` is a reserved-ish param name for async defs (ruff ASYNC109).** ruff
+  flags an `async def` with a `timeout` parameter (nudging you toward
+  `asyncio.timeout`). The codebase already dodged this with `timeout_seconds`;
+  matching that convention kept the lint clean and the naming consistent.
+- **The SSRF guard validates every redirect hop, not just the entered URL.** An
+  approved `https://good.com` that 302s to `http://169.254.169.254` (cloud metadata)
+  is the real attack. `safe_get` follows redirects manually with
+  `follow_redirects=False`, re-running `check_public_http_url` before each hop —
+  tested with an httpx `MockTransport` that redirects a public IP to loopback.
+- **Sanitize provenance out of converted content at the boundary.** A leading YAML
+  front-matter block in converter output is stripped immediately: front-matter is a
+  Jarvis-authored artifact, and letting ingested bytes carry a `source_ids:` block
+  upward is exactly the provenance-forgery the design forbids.
