@@ -1,11 +1,20 @@
-# Architecture (as built — Phase 5)
+# Architecture (as built — Phase 6)
 
-This describes what exists after Milestone 4 (research + knowledge base) on top of
-the Milestone 1 MVP, Milestone 2 (long-term memory), and Milestone 3 (tasks &
-scheduling). For the forward-looking plans see [`PLAN.md`](PLAN.md),
-[`PLAN-2-memory.md`](PLAN-2-memory.md), [`PLAN-3-tasks.md`](PLAN-3-tasks.md), and
-[`PLAN-4-knowledge.md`](PLAN-4-knowledge.md); for the reasoning behind each decision
-see [`learning-notes.md`](learning-notes.md).
+This describes what exists after Milestone 6 (multi-agent orchestration) on top of
+the Milestone 1 MVP, Milestone 2 (long-term memory), Milestone 3 (tasks &
+scheduling), Milestone 4 (research + knowledge base), and Milestone 5 (evaluation &
+hardening). For the forward-looking plans see [`PLAN.md`](PLAN.md),
+[`PLAN-2-memory.md`](PLAN-2-memory.md), [`PLAN-3-tasks.md`](PLAN-3-tasks.md),
+[`PLAN-4-knowledge.md`](PLAN-4-knowledge.md), [`PLAN-5-evals.md`](PLAN-5-evals.md),
+and [`PLAN-6-multi-agent.md`](PLAN-6-multi-agent.md); for the reasoning behind each
+decision see [`learning-notes.md`](learning-notes.md).
+
+The subsystems also carry **Kairo** names (a documentation-level rebrand; the code
+still says `jarvis`, see [ADR-0006](decisions/0006-sub-agents-are-scoped-visible-and-doubly-gated.md)):
+Kairo **Core** (`core/`), **Command** (`cli/`), **Gate** (`permissions/`), **Vault**
+(`memory/` + `knowledge/`), **Trace** (`observability/` + audit tables), **Lab**
+(`tests/evals/`), and **Orchestrator** (`agents/` — this phase). "Hub" is reserved
+for the future connectors/MCP layer.
 
 ## The one idea
 
@@ -34,12 +43,15 @@ interfaces → core → services → foundation
 │ core/prompts.py  system-prompt assembly                   │
 │ core/events.py   typed events the loop emits              │
 ├─ services ───────────────────────────────────────────────┤
-│ tools/           Tool base, registry, executor, builtin/  │
+│ tools/           Tool base, registry (+ScopedRegistry),   │
+│                  executor, builtin/                        │
 │ permissions/     policy + PermissionGate + UnattendedGate │
+│                  + SubAgentGate (the double gate)          │
 │ memory/          store · embeddings · service · reflection│
 │ scheduler/       store · triggers · service · runner      │
 │ knowledge/       store · chunking · converters · links ·  │
 │                  service (+ convert_worker subprocess)     │
+│ agents/          SubAgentService + agent_runs store (P6)  │
 ├─ foundation ─────────────────────────────────────────────┤
 │ persistence/     SQLite sessions/messages/memories/tasks/ │
 │                  kb + migrations + shared write lock       │
@@ -128,6 +140,13 @@ hard-denied regardless of policy. The key insight ([ADR-0003](decisions/0003-una
 the real escalation channel is a policy `allow` resolved *before* any approver runs,
 not an `ask` — so deny-the-ask alone is insufficient; the demotion is what closes it.
 
+For delegated sub-agents (Phase 6), `SubAgentGate` (`permissions/subagent.py`) is the
+*second* gate — it wraps whichever gate the parent used and can only narrow: hard-deny
+`spawn_agent`+meta tools (depth 1), enforce the run's tool scope, delegate to the inner
+gate so every floor survives composition, then upgrade an ASK only for a run-scoped
+**pattern** grant (a `web_fetch` host, a read directory-prefix; `run_shell`/`write_file`
+never grantable; nothing persisted). See [ADR-0006](decisions/0006-sub-agents-are-scoped-visible-and-doubly-gated.md).
+
 ## Memory (`memory/`) — Phase 2
 
 Three tiers around the loop. **Working memory** is the message list, compacted by
@@ -187,17 +206,42 @@ DB-derived (never from content), `write_file` is denied under the KB dir, and
 unattended ingests are quarantined `unreviewed` until `kb review`. Optional:
 `knowledge.enabled: false` (or no `VOYAGE_API_KEY`) ⇒ no KB tools.
 
+## Agents (`agents/`) — Phase 6 (Kairo Orchestrator)
+
+Delegation: the primary agent spawns scoped sub-agents. `SubAgentService.spawn` is the
+`JobRunner` pattern specialized for interactive, depth-1 delegation — it builds one child
+`AgentLoop` turn from the parent's client/executor and a `ScopedRegistry` (the child's
+tool allowlist), with `memory=None` (context isolation: no parent history, no auto-recall)
+and a fresh context manager. The child runs under a semaphore-then-timeout (queue-wait
+doesn't burn the deadline) and returns a report wrapped in untrusted-content delimiters,
+its header composed from the run record (a child can't forge its own status). Safety is a
+**double gate**: the human approves the spawn (ASK, never "always"-able, full prompt +
+scope shown), and every child tool call still passes `SubAgentGate`
+(`permissions/subagent.py`) — hard-denies `spawn_agent`+meta tools (depth 1, three ways),
+enforces scope, delegates to the parent gate so every floor survives, and upgrades an ASK
+only for a run-scoped **pattern** grant (host / dir-prefix; never `run_shell`/`write_file`;
+never persisted). Nothing a child does is hidden: events forward to the parent sink as
+`SubAgentEvent` (attempts included), the transcript persists as a `kind='subagent'` session
+(never `--resume`d, never reflected), and an `agent_runs` audit row records both parent and
+child trace ids. `spawn_agent` is in the unattended `HARD_DENY` set — no background swarm.
+See [ADR-0006](decisions/0006-sub-agents-are-scoped-visible-and-doubly-gated.md). Optional:
+`sub_agents.enabled: false` ⇒ no `spawn_agent` tool, loop byte-identical to Phase 5.
+
 ## Persistence (`persistence/`)
 
 SQLite via aiosqlite. `sessions` + `messages` + `memories` + `tasks`/`task_runs` +
-`kb_sources`/`kb_chunks`/`kb_wiki_links` tables; schema version tracked by `PRAGMA
-user_version` with an ordered migration list (v2 memory; v3 tasks + `sessions.kind`;
-v4 knowledge base). The model is stateless — the whole conversation lives here and is
-reconstructed each call. Message content is stored as JSON verbatim (thinking-block
-signatures survive, so a resumed session replays to the API unchanged). Saved per
-turn; `--resume` loads the most recent **interactive** session (a background job's
-`kind='task'` session never wins, and is excluded from reflection by default — one
-column that stops a job transcript hijacking the session or poisoning memory).
+`kb_sources`/`kb_chunks`/`kb_wiki_links` + `agent_runs` tables; schema version tracked
+by `PRAGMA user_version` with an ordered migration list (v2 memory; v3 tasks +
+`sessions.kind`; v4 knowledge base; v5 sub-agents). v5 is the highest-blast-radius
+migration: `sessions.kind`'s CHECK can't be ALTERed to add `'subagent'`, so the table is
+rebuilt via the standard procedure (foreign_keys OFF *outside* a transaction, atomic
+rebuild, `foreign_key_check`, foreign_keys ON) — child FKs survive the drop+rename. The
+model is stateless — the whole conversation lives here and is reconstructed each call.
+Message content is stored as JSON verbatim (thinking-block signatures survive, so a
+resumed session replays to the API unchanged). Saved per turn; `--resume` loads the most
+recent **interactive** session (a `kind='task'` or `kind='subagent'` session never wins,
+and neither feeds reflection — `REFLECTABLE_KINDS` is a hard ceiling that omits
+`subagent`, so a job or child transcript can't hijack the session or poison memory).
 Primary records (memories, tasks, `kb_sources`) are never deleted — status flips keep
 lineage auditable; `kb_chunks`/`kb_wiki_links` are the one exception, rebuildable
 caches that delete-and-replace. All stores share **one connection and one write
@@ -254,6 +298,12 @@ Repo-native, no framework, no new deps; the *harness* is unit-tested keyless whi
 - Adversarial suite (`scenarios/adversarial/`) + under-querying probes; dual metric and
   the KB-auto-injection verdict are recorded in
   [ADR-0005](decisions/0005-how-we-know-it-works.md).
+- **Delegation coverage (Phase 6):** `runner.py` unwraps `SubAgentEvent` into the *same*
+  merged attempts/executed streams (child tool ids namespaced), so every existing check
+  covers a child's actions and a child's `ToolDecision` attempts are observable; child
+  usage/cost fold into the record (fail-closed on the child model too). Scenarios:
+  `delegate_research`/`delegate_parallel`/`delegate_bounded` (core) and
+  `inj_subagent_launder`/`inj_subagent_scope` (adversarial) + `unattended_spawn_denied`.
 
 ## Verification
 

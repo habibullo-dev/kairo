@@ -5,14 +5,32 @@ Messages API — **no agent framework**. The agent loop, tool system, permission
 model, memory, and observability are all hand-built, so every moving part is
 visible and understood. The goal is twofold: learn agent engineering deeply, and
 end up with a genuinely useful assistant that can use tools, remember things,
-manage tasks, read files, research the web, and eventually speak, listen, and
-coordinate multiple agents.
+manage tasks, read files, research the web, coordinate scoped sub-agents, and
+eventually speak and listen.
 
 The full architecture and design rationale live in
 [`docs/PLAN.md`](docs/PLAN.md) and [`docs/architecture.md`](docs/architecture.md);
 per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
+
+**Phase 6 (multi-agent orchestration) — complete.** Jarvis can delegate: `spawn_agent`
+runs a scoped sub-agent with an isolated context and a per-spawn tool allowlist, then
+synthesizes its report (try "research X and Y in parallel using sub-agents"; watch it
+with the `agents` command). Delegation is **doubly gated** (you approve each spawn, and
+every child tool call still passes a `SubAgentGate` that can only *tighten* the parent's
+gate), **depth-1** (a child can't spawn — enforced three ways), and **never unattended**.
+Nothing is hidden: child activity renders inline, each transcript is a `kind='subagent'`
+session (never resumed, never reflected), and an `agent_runs` row links parent and child
+by trace id. The live baseline was **GATE PASS** across both suites — all 24 existing
+scenarios PASS→PASS (zero regressions), the 6 new delegation scenarios PASS 3/3, Safety
+CLEAN, **0/27 injection attempts** (the model refused even the report-laundering and
+scope-escape vectors). Design in [`docs/PLAN-6-multi-agent.md`](docs/PLAN-6-multi-agent.md);
+rationale (the double gate, depth-1, no-unattended-spawn) in
+[ADR-0006](docs/decisions/0006-sub-agents-are-scoped-visible-and-doubly-gated.md); baseline
+in [`docs/evals-baseline-phase6.md`](docs/evals-baseline-phase6.md). (Subsystems now also
+carry **Kairo** names in the docs — a rebrand at the documentation level; the code still
+says `jarvis`.)
 
 **Phase 5 (evaluation & hardening) — complete.** A repo-native eval harness that says
 whether the agent actually works and whether a change made it better or worse:
@@ -99,9 +117,18 @@ uv run python tests/evals/runner.py --runs 1 # quick single pass
 In the REPL: type a request; watch Jarvis stream its reasoning and tool calls.
 Risky tools prompt for approval (`y` / `N` / `a`lways). `Ctrl+C` cancels the
 current turn without quitting; `exit` or `Ctrl+D` quits. Type `memories` to list
-what Jarvis has remembered (with provenance — where each memory came from), and
+what Jarvis has remembered (with provenance — where each memory came from),
 `tasks` (or `tasks all` / `tasks <id>`) to see scheduled tasks and their run
-history.
+history, and `agents` (or `agents <id>`) to see recent sub-agent runs (with the
+verbatim delegated prompt, tool scope, and the parent↔child trace link).
+
+**Delegation** (`sub_agents.enabled: true`): ask Jarvis to "research X and Y in
+parallel using sub-agents and compare them" — it spawns scoped sub-agents (you
+approve each spawn, seeing the full prompt and the tools it may use), their activity
+renders inline as it happens, and it synthesizes one answer. A sub-agent runs with an
+isolated context and only the tools you granted; if it hits a risky action it prompts
+you (labeled as the sub-agent's), and it can't spawn further, schedule tasks, or write
+memory. Set `sub_agents.enabled: false` to remove delegation entirely.
 
 **Tasks & scheduling:** ask Jarvis to "remind me to stretch in 20 minutes" or
 "every weekday at 9am, summarize my notes.txt" — it schedules a reminder or an
@@ -179,6 +206,18 @@ audit log at `logs/jarvis-YYYY-MM-DD.jsonl`, correlated by a per-turn `trace_id`
   delimited as untrusted; `write_file` can't write into the KB dir (use the tracked
   `write_wiki_page`); and unattended ingests are quarantined `unreviewed` until you
   run `kb review`.
+- **Delegating to a sub-agent is doubly gated** ([ADR-0006](docs/decisions/0006-sub-agents-are-scoped-visible-and-doubly-gated.md)):
+  `spawn_agent` asks (and is never "always"-able — the approval shows the full task
+  prompt and the child's tool scope), and then *every* tool call the child makes still
+  passes a `SubAgentGate` that can only tighten the parent's gate — it hard-denies
+  recursion and the meta tools, enforces the child's tool scope, and preserves every
+  floor (sensitive paths, write allowlist, shell metacharacters). A child's risky call
+  forwards to you like any other, with a run-scoped "a" that grants a narrow *pattern*
+  (a host, a directory — never `run_shell`/`write_file`) and is never persisted. Children
+  can't spawn (depth 1, enforced three ways) and can't run unattended (`spawn_agent` is
+  hard-denied for background jobs). Nothing is hidden: child activity renders inline,
+  the transcript is a `kind='subagent'` session (never resumed, never reflected), and an
+  `agent_runs` row links parent and child by trace id — see `agents`.
 - **Tool failures, denials, and unknown tools become results the model reads** and
   recovers from — they never crash the session.
 
@@ -196,13 +235,14 @@ thinking, and high effort — API cost is treated as observability, not a constr
 src/jarvis/
   cli/          REPL + rich rendering + background job execution (jobs.py)
   core/         agent loop, context/compaction, model clients, prompts, events
-  tools/        Tool base, registry, executor, builtin/ (filesystem, shell, web, memory, tasks, knowledge)
-  permissions/  policy + gate + unattended gate (headless deny/demote)
+  tools/        Tool base, registry (+ScopedRegistry), executor, builtin/ (filesystem, shell, web, memory, tasks, knowledge, agents)
+  permissions/  policy + gate + unattended gate + sub-agent gate (the double gate)
   memory/       long-term memory: store, embeddings, service, reflection
   scheduler/    tasks & scheduling: store, triggers, service, background runner
   knowledge/    research + wiki: store, chunking, converters (+ sandbox worker), links, service
+  agents/       multi-agent delegation: SubAgentService + agent_runs audit store
   net.py        SSRF guard (shared by web fetch + knowledge ingest)
-  persistence/  SQLite sessions/messages/memories/tasks/kb + migrations
+  persistence/  SQLite sessions/messages/memories/tasks/kb/agent_runs + migrations
   observability/ structured logging + cost accounting
   config.py     settings + secrets   ·   paths.py  path resolution + secret floor
 tests/          unit tests + evals/ (live smoke scenarios)

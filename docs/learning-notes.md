@@ -1736,3 +1736,24 @@ non-obvious *implementation* decisions per task.
   confirmed the *real* model actually spawns a scoped child and the dual trace ids land —
   cheap insurance before committing to a multi-scenario live run, especially one I already
   knew might get killed and need re-running.
+
+## Phase 6 Task 10 — ADR-0006 + docs (and the Kairo naming call)
+
+- **The Kairo rebrand is adopted in docs but the code rename is deferred — on purpose.**
+  A `jarvis`→`kairo` rename would touch the system-prompt identity ("You are Jarvis"),
+  which changes *agent behavior* and would invalidate the live-eval baseline's
+  comparability exactly when `--compare` is the tool proving delegation regressed nothing.
+  So subsystem names (Core/Command/Gate/Vault/Trace/Lab/Orchestrator) land in
+  architecture.md + README now; the mechanical package/entry-point/identity rename is a
+  standalone future milestone with its own re-baseline. Recorded in ADR-0006 so it isn't
+  relitigated ad hoc.
+- **"Hub" was a naming collision, caught during planning.** It was floated for the
+  multi-agent subsystem, but Hub is where external spokes attach — it belongs to the
+  future connectors/MCP layer. The multi-agent subsystem is the **Orchestrator**; the ADR
+  reserves Hub explicitly so the collision doesn't recur.
+- **ADR-0006 records the decisions AND the deferrals.** Not just what was built (double
+  gate, depth-1 three ways, pattern grants, forwarded events, dual-trace audit, structural
+  reflection firewall) but what was decided-not-built: unattended delegation, with its
+  preconditions (per-child budgets, aggregate caps, quarantined review) — the same
+  "decided, not built" discipline as ADR-0005's auto-injection verdict. An ADR that only
+  records what shipped loses the reasoning that will matter when someone revisits the gap.
