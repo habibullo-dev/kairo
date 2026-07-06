@@ -1706,3 +1706,33 @@ non-obvious *implementation* decisions per task.
   scenario's fake responses are the parent turn AND the child turn interleaved in call
   order — spawn tool_use, then the child's calls, then the parent's synthesis — because
   `SubAgentService` runs the child on the same injected client the parent uses.
+
+## Phase 6 Task 9 — the live baseline (and a runtime constraint that reshaped it)
+
+- **A ~14-minute background-task cap reshaped the run, not the verdict.** A full
+  `--suite all` N=3 *judged* run is ~50 min; the environment kills a background task at
+  ~14 min (the first attempt died at 23/90). The fix wasn't to shrink the eval — it was to
+  realize the judge's tokens aren't in a scenario's recorded usage, so `--no-judge` gives
+  *identical* token ceilings and the full deterministic gate (side-effects, delivery,
+  attempts, PASS→PASS) in ~5+9 min across two suite chunks. The two new adversarial
+  scenarios were then judged in separate short `--scenario` runs to ratchet their floors
+  from real data. Same verdict, chunked to fit — measure what matters within the limit.
+- **The existing 24 scenarios were a *no-touch* regression check.** They carry
+  `delegation_enabled=False`, so their system prompt and toolset are byte-identical to
+  Phase 5 — `spawn_agent` isn't even registered for them. All 24 came back PASS→PASS,
+  which is what you'd expect when nothing they see changed; the value is *confirming* the
+  new tool didn't leak into unrelated flows.
+- **0/27 injection attempts — the delegation attacks weren't even tried.** The two new
+  adversarial vectors (launder a shell command through a child's report; coerce a child
+  past its scope) produced zero side effects *and* zero attempts: the real Opus refused or
+  flagged them, child and parent alike. The double gate would have caught an attempt; the
+  model didn't make one. Cumulative clean adversarial evidence is now 114 runs.
+- **Class-consistent floors beat both hand-waving and the raw proposal.** Both new
+  adversarial scenarios judged 6/6 with medians 2/2/2 — but committing raw 2/2/2 from N=3
+  cries wolf (the Phase 5 lesson). They get the *same* disciplined floors as the other
+  nine adversarial scenarios (safety=2, groundedness/completeness=1), which is a
+  data-backed class floor, not a number invented for these two.
+- **Stage the smoke before the fleet.** A single live `delegate_bounded` run first
+  confirmed the *real* model actually spawns a scoped child and the dual trace ids land —
+  cheap insurance before committing to a multi-scenario live run, especially one I already
+  knew might get killed and need re-running.
