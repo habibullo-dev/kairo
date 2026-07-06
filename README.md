@@ -14,6 +14,27 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 8 (workstation UI) — complete.** Jarvis has a local web workstation (`jarvis --ui`):
+a calm daily command center over the same core — memory, tasks, KB/wiki, evals, sub-agents,
+voice — with **zero new autonomy**. It is a third peer interface (REPL, voice, workstation)
+driving the same `AgentLoop` through the same seams, so nothing bypasses the safety model.
+It is an **authenticated local peer**, not a public surface
+([ADR-0008](docs/decisions/0008-the-workstation-ui-is-an-authenticated-local-peer.md)): it
+binds loopback only, mints a per-launch token exchanged for a session (clean-URL, no token in
+history), and guards Host (anti-rebinding) + Origin (anti-CSRF) with a strict CSP and no CORS.
+**Approvals are the priority surface and are replay-proof**: an ASK becomes a Gate item
+showing the exact payload + reason, resolved only by an authenticated click carrying a
+single-use nonce minted over the live socket after the modal is shown — a spoken "yes" or a
+replayed page can't approve, and the UI is voice's **fail-closed screen** (voice prepares,
+screen commits). Nothing is hidden: every side-effecting action (incl. denied calls and
+sub-agent activity) streams to Daily Mode and Trace; **Debug Mode reveals telemetry but adds
+zero capability** (route/capability parity pinned). Screens: Command (Daily), Gate, Vault,
+Tasks, Memory, Meetings, Hub (connectors/MCP status), Trace, Lab — the only mutations are the
+existing human-authority ops (approve/deny, `kb review`, cancel a task, forget a memory,
+meeting capture), a closed set pinned by test. The frontend is hand-written and
+self-contained (no build step, no CDN, no external fonts). Design in
+[`docs/PLAN-8-ui.md`](docs/PLAN-8-ui.md).
+
 **Phase 7 (voice) — complete.** Jarvis has a push-to-talk voice interface (`jarvis --voice`):
 press Enter, speak one utterance, hear a short spoken summary back. Voice is a *peer of the
 REPL* driving the same `AgentLoop`, never a new authority — so every gate and floor still
@@ -110,6 +131,7 @@ the eventual local AI workstation experience.
 - Voice (`jarvis --voice`) needs the optional extra: `uv sync --extra voice` (mic + engines).
   The default local TTS is dependency-free (prints the safe summary); local STT uses
   faster-whisper (`uv pip install faster-whisper`)
+- Workstation UI (`jarvis --ui`) needs the optional extra: `uv sync --extra ui` (FastAPI + uvicorn)
 
 ## Setup
 
@@ -134,6 +156,7 @@ ELEVENLABS_API_KEY=...    # optional: cloud TTS (voice.cloud_providers only)
 uv run jarvis            # start the assistant (needs a real terminal)
 uv run jarvis --resume   # continue the most recent conversation
 uv run jarvis --voice    # push-to-talk voice (needs voice.enabled + the voice extra)
+uv run jarvis --ui       # local workstation UI (needs ui.enabled + the ui extra)
 uv run jarvis --version
 
 uv run pytest            # unit tests (no API key needed)
@@ -160,6 +183,15 @@ the action is denied. STT/TTS default to local/on-device; set `voice.cloud_provi
 (and `voice.stt_provider` / `voice.tts_provider`) to use OpenAI/ElevenLabs, which logs the
 audio/text that leaves the machine. Leave `voice.enabled: false` and the voice surface simply
 isn't built (the REPL is unchanged).
+
+**Workstation UI** (`ui.enabled: true` + `uv sync --extra ui`): `jarvis --ui` prints a
+tokened `http://127.0.0.1:8787/?token=…` URL once — open it, and the token is exchanged for a
+session and dropped from the address bar. Daily Mode is the calm default (one chat stream, a
+quiet status bar with an emergency Stop); the Gate is the priority surface where risky actions
+wait for your explicit, audited approval (the same permission model as the REPL — the UI can't
+bypass it). Vault (review the KB queue), Tasks, Memory, Meetings, Hub (connector status), Lab
+(eval history), and Trace (live tool/sub-agent activity) are a click away; Debug Mode reveals
+telemetry without adding any capability. Leave `ui.enabled: false` and no server is built.
 
 **Delegation** (`sub_agents.enabled: true`): ask Jarvis to "research X and Y in
 parallel using sub-agents and compare them" — it spawns scoped sub-agents (you
@@ -267,6 +299,19 @@ audit log at `logs/jarvis-YYYY-MM-DD.jsonl`, correlated by a per-turn `trace_id`
   deferred), and the spoken channel obeys a **TTS-privacy rule** (never voices secrets,
   tokens, commands, file contents, message bodies, or the details of a risky action). Cloud
   STT/TTS is off unless `voice.cloud_providers` is set, and any audio/text egress is logged.
+- **The workstation UI is an authenticated local peer, not a public surface**
+  ([ADR-0008](docs/decisions/0008-the-workstation-ui-is-an-authenticated-local-peer.md)): it
+  binds loopback only (a non-loopback host is refused at config load), earns TTY-equivalent
+  authority via a per-launch token exchanged for an `HttpOnly; SameSite=Strict` session (clean
+  URL, no token in history/logs), and enforces a Host allowlist (anti DNS-rebinding), an Origin
+  check (anti-CSRF), a strict `Content-Security-Policy`, `Referrer-Policy: no-referrer`, and
+  **no CORS at all**. It reaches tools only through `AgentLoop` under the same gate; its
+  mutations are a **closed, route-pinned set** of existing human-authority ops. Approvals are
+  **replay-proof** — resolvable only by an authenticated click carrying a single-use nonce
+  minted over a live socket after the modal is shown, so neither a spoken "yes" nor a stale
+  page can approve — and the UI is voice's **fail-closed screen** (no live watching surface ⇒
+  the action is denied). Debug Mode reveals telemetry but adds no capability; a secret value
+  never crosses the wire (Hub shows presence booleans only). Both pinned by tests.
 - **Tool failures, denials, and unknown tools become results the model reads** and
   recovers from — they never crash the session.
 
@@ -291,6 +336,7 @@ src/jarvis/
   knowledge/    research + wiki: store, chunking, converters (+ sandbox worker), links, service
   agents/       multi-agent delegation: SubAgentService + agent_runs audit store
   voice/        push-to-talk voice: approver (screen escalation), session, calm renderer, STT/TTS adapters, meeting capture
+  ui/           workstation UI: auth + server (FastAPI), approvals (nonce), turn session + event stream, read models, voice screen, static/ (hand-written frontend)
   net.py        SSRF guard (shared by web fetch + knowledge ingest)
   persistence/  SQLite sessions/messages/memories/tasks/kb/agent_runs + migrations
   observability/ structured logging + cost accounting

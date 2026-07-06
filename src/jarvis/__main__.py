@@ -51,12 +51,18 @@ def main() -> None:
         help="Push-to-talk voice interface (read-only by default; risky actions confirm "
         "on screen). Requires voice.enabled: true and the voice extra.",
     )
+    parser.add_argument(
+        "--ui",
+        action="store_true",
+        help="Workstation UI — an authenticated local web surface on loopback (approvals "
+        "explicit + audited; no new authority). Requires ui.enabled: true and the ui extra.",
+    )
     args = parser.parse_args()
 
     # Imports deferred so `--version`/`--help` stay instant and never need a key.
     from rich.console import Console
 
-    from jarvis.cli.repl import run_repl, run_voice
+    from jarvis.cli.repl import run_repl, run_ui, run_voice
     from jarvis.config import ConfigError, load_config
     from jarvis.observability import configure_logging
 
@@ -71,7 +77,9 @@ def main() -> None:
     configure_logging(config.logs_dir)
 
     try:
-        if args.voice:
+        if args.ui:
+            asyncio.run(run_ui(config, console=console))
+        elif args.voice:
             asyncio.run(run_voice(config, console=console))
         else:
             asyncio.run(run_repl(config, resume=args.resume, console=console))

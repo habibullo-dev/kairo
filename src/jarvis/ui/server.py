@@ -102,22 +102,24 @@ def create_app(
     *,
     auth: AuthManager | None = None,
     connections: ConnectionManager | None = None,
+    gate: PermissionGate | None = None,
     session: object | None = None,
     runner: object | None = None,
     services: UiServices | None = None,
     voice: object | None = None,
 ) -> FastAPI:
-    """Build the workstation app. ``auth``/``connections`` are injectable so tests can supply
-    a known token and a fake clock; ``session`` (a ``UiSession``), ``runner`` (a
-    ``BackgroundRunner``), and ``services`` (the read/mutate bundle) are composed by the CLI
-    host (Task 9) — when absent, the dependent routes report 503 (the auth core still serves)."""
+    """Build the workstation app. ``auth``/``connections``/``gate`` are injectable so tests can
+    supply a known token / fake clock and the CLI host (Task 9) can share the REPL's gate;
+    ``session`` (a ``UiSession``), ``runner`` (a ``BackgroundRunner``), and ``services`` (the
+    read/mutate bundle) are composed by the host — when absent, the dependent routes report
+    503 (the auth core still serves)."""
     auth = auth or AuthManager()
     connections = connections or ConnectionManager(heartbeat_seconds=config.ui.heartbeat_seconds)
     approvals = ApprovalManager(connections)
-    # One gate on app.state — shared by the policy read model, the UIApprover's narrow-persist,
-    # and (Task 4) the AgentLoop — so a UI "always" and a later turn see the same rules.
+    # One gate — shared by the policy read model, the UIApprover's narrow-persist, and the
+    # AgentLoop — so a UI "always" and a later turn (and a child) see the same rules.
     policy_path = config.root / "config" / "permissions.yaml"
-    gate = PermissionGate(load_policy(policy_path), config.root, source_path=policy_path)
+    gate = gate or PermissionGate(load_policy(policy_path), config.root, source_path=policy_path)
     log = get_logger("jarvis.ui")
     app = FastAPI(title="Kairo Workstation", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.auth = auth

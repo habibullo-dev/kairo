@@ -939,3 +939,185 @@ async def run_voice(config: Config, *, console: Console | None = None) -> None:
                 await listener.listen_once()
     finally:
         await db.close()
+
+
+# --- workstation UI (Phase 8) ----------------------------------------------
+
+
+def build_ui_app(config: Config, *, repl: Repl, auth=None):
+    """Compose the workstation app from the REPL's already-built collaborators, with the UI
+    approver seams swapped in (ADR-0008): the turn loop's approver is the ``UIApprover`` (Gate
+    queue), sub-agent ASKs escalate to the UI screen, and the shared turn lock serializes UI
+    turns against background jobs. One gate (the REPL's) is shared by the loop, the approver's
+    narrow-persist, and the policy read model. Mirrors ``build_voice_session`` — one
+    composition, injected approvers. Returns the FastAPI app (with an ``AuthManager`` on
+    ``app.state.auth`` whose ``launch_token`` the host prints once)."""
+    from jarvis.ui import AuthManager, UiServices, UiSession, make_ui_subagent_approver
+    from jarvis.ui.server import create_app
+
+    app = create_app(config, auth=auth or AuthManager(), gate=repl.gate)
+    if repl.agents is not None:
+        # A child's ASK escalates to the UI screen (the Gate), not the terminal prompt.
+        app_approvals = app.state.approvals
+        repl.agents.make_approver = lambda gate, aid, title: make_ui_subagent_approver(
+            app_approvals, gate, aid, title
+        )
+    loop = AgentLoop(
+        client=repl.client,
+        registry=repl.registry,
+        executor=repl.executor,
+        gate=repl.gate,
+        config=config,
+        approver=app.state.ui_approver,
+        context_manager=repl.context_manager,
+        memory=repl.memory,
+        add_time_context=repl.tasks is not None,
+        system=build_system(
+            memory_enabled=repl.memory is not None,
+            tasks_enabled=repl.tasks is not None,
+            knowledge_enabled=repl.knowledge is not None,
+            delegation_enabled=repl.agents is not None,
+        ),
+    )
+    app.state.session = UiSession(
+        loop=loop,
+        connections=app.state.connections,
+        turn_lock=repl.turn_lock,
+        ring_buffer_events=config.ui.ring_buffer_events,
+    )
+    run_store = repl.agents.run_store if repl.agents is not None else None
+    app.state.services = UiServices(
+        memory=repl.memory, tasks=repl.tasks, knowledge=repl.knowledge, run_store=run_store
+    )
+    if config.voice.enabled:
+        app.state.voice = _build_ui_voice(config, repl=repl, app=app)
+    return app
+
+
+def _build_ui_voice(config: Config, *, repl: Repl, app):
+    """Wire the UI's voice surface: a push-to-talk listener whose risky actions escalate to
+    the UI screen (``app.state.ui_screen``, fail-closed), and meeting capture → an unreviewed
+    KB source. Reuses the Phase-7 pieces with the workstation as the screen."""
+    from jarvis.ui import UiVoice
+    from jarvis.voice import (
+        MeetingCapture,
+        PushToTalkListener,
+        VoiceApprover,
+        VoiceRenderer,
+        VoiceSession,
+        build_capture,
+        build_stt,
+        build_tts,
+    )
+
+    tts = build_tts(
+        config.voice,
+        openai_key=config.secrets.openai_api_key,
+        elevenlabs_key=config.secrets.elevenlabs_api_key,
+    )
+    renderer = VoiceRenderer(tts)
+    stt = build_stt(config.voice, openai_key=config.secrets.openai_api_key)
+    # The screen is the workstation (not the terminal): fail-closed, modal-bound.
+    approver = VoiceApprover(app.state.ui_screen, on_escalate=renderer.announce_escalation)
+    loop = AgentLoop(
+        client=repl.client,
+        registry=repl.registry,
+        executor=repl.executor,
+        gate=repl.gate,
+        config=config,
+        approver=approver,
+        context_manager=repl.context_manager,
+        memory=repl.memory,
+        add_time_context=repl.tasks is not None,
+        system=build_system(
+            memory_enabled=repl.memory is not None,
+            tasks_enabled=repl.tasks is not None,
+            knowledge_enabled=repl.knowledge is not None,
+            delegation_enabled=repl.agents is not None,
+            voice=True,
+        ),
+    )
+    voice_session = VoiceSession(loop=loop, stt=stt, output=renderer, turn_lock=repl.turn_lock)
+    listener = PushToTalkListener(build_capture(config.voice), voice_session)
+    meeting = MeetingCapture(repl.knowledge, stt) if repl.knowledge is not None else None
+    return UiVoice(listener=listener, meeting=meeting, capture=build_capture(config.voice))
+
+
+async def run_ui(config: Config, *, console: Console | None = None) -> None:
+    """Open the database, compose the same services the REPL uses, and serve the workstation
+    UI on loopback. Prints the tokened URL once (the token drops from the URL after login).
+    Shuts down with REPL parity: the background runner finishes any in-flight job (never a
+    torn write) then stops, and the session is reflected on exit."""
+    console = console or Console()
+    if not config.ui.enabled:
+        console.print(
+            "[dim]The workstation UI is not enabled. Set ui.enabled: true in settings.yaml "
+            "(and install the ui extra: uv sync --extra ui).[/]"
+        )
+        return
+    try:
+        import uvicorn
+    except ModuleNotFoundError:
+        console.print("[red]The workstation UI needs the ui extra:[/] uv sync --extra ui")
+        return
+
+    db = await connect(config.data_dir / "jarvis.db")
+    store = SessionStore(db)
+    runner: BackgroundRunner | None = None
+    session_id: int | None = None
+    utility = memory = None
+    try:
+        utility = _utility_client(config)
+        memory = _build_memory(config, db, console, utility, store.lock)
+        context_manager = _build_context_manager(config, utility)
+        session_id = await store.create_session()
+        tasks = _build_scheduler(config, db, store, session_id)
+        knowledge = _build_knowledge(config, db, store.lock, console, memory)
+        run_store = AgentRunStore(db, store.lock) if config.sub_agents.enabled else None
+        repl = Repl(
+            config,
+            console=console,
+            store=store,
+            session_id=session_id,
+            memory=memory,
+            context_manager=context_manager,
+            tasks=tasks,
+            knowledge=knowledge,
+            run_store=run_store,
+            make_context_manager=lambda: _build_context_manager(config, utility),
+        )
+        from jarvis.ui import AuthManager
+
+        auth = AuthManager()
+        app = build_ui_app(config, repl=repl, auth=auth)
+
+        if tasks is not None:  # background runner shares the turn lock (no interleaving)
+            runner = _build_runner(config, repl, store, tasks, memory, knowledge, utility, console)
+            app.state.runner = runner
+            await _scheduler_startup(tasks, runner, console)
+            runner.start()
+
+        url = f"http://{config.ui.host}:{config.ui.port}/?token={auth.launch_token}"
+        console.print(
+            f"\n[bold cyan]Kairo Workstation[/] — open this once "
+            f"(the token drops from the URL after login):\n  [underline]{url}[/]\n"
+        )
+        server = uvicorn.Server(
+            uvicorn.Config(app, host=config.ui.host, port=config.ui.port, log_level="warning")
+        )
+        await server.serve()  # blocks until Ctrl-C / shutdown signal
+    finally:
+        if runner is not None:
+            if runner.in_flight:
+                console.print(f'finishing task "{runner.in_flight}" before exit…', markup=False)
+            await runner.stop()
+        if (
+            memory is not None
+            and utility is not None
+            and session_id is not None
+            and await store.needs_reflection(session_id)
+        ):
+            await _reflect_session(
+                store, memory, utility, config.models.utility, session_id, console, announce=True
+            )
+        await db.close()

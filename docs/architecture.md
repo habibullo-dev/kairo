@@ -1,4 +1,4 @@
-# Architecture (as built — Phase 7)
+# Architecture (as built — Phase 8)
 
 This describes what exists after Milestone 6 (multi-agent orchestration) on top of
 the Milestone 1 MVP, Milestone 2 (long-term memory), Milestone 3 (tasks &
@@ -271,6 +271,56 @@ collaborators (client, registry, gate, executor, context manager, memory) plus a
 whose system prompt carries `VOICE_GUIDANCE`. Optional: `voice.enabled: false` ⇒ no voice
 surface, REPL unchanged.
 
+## Workstation UI (`ui/`) — Phase 8
+
+A local web workstation, the third **interface** after the REPL and voice — a peer that
+drives the same `AgentLoop` through the same two seams (events out, an injected `Approver`
+in) and adds **no new authority**. The entire layer honors one contract
+([ADR-0008](decisions/0008-the-workstation-ui-is-an-authenticated-local-peer.md)): a
+localhost port is not private, so the UI authenticates or refuses to serve, and every screen
+is a *view* over an existing service — the only mutations are a closed, route-pinned set of
+pre-existing human-authority ops.
+
+- **`auth.py` + `server.py`** — the private-admin-console floor: loopback-only bind (a
+  non-loopback `ui.host` is a config error), a per-launch token exchanged for an
+  `HttpOnly; SameSite=Strict` session via a **clean-URL 303** (no token in history/logs), a
+  Host allowlist (anti DNS-rebinding), an Origin check on mutations + the WS (anti-CSRF),
+  strict CSP, `Referrer-Policy: no-referrer`, and **no CORS middleware at all**. FastAPI +
+  uvicorn behind the optional `ui` extra; the frontend is hand-written static assets (no
+  build step, no CDN).
+- **`connections.py`** — live-WS registry with heartbeat liveness + per-connection mounted
+  surfaces. Liveness is load-bearing safety, not telemetry: an approval (and the voice
+  screen) is resolvable only from a *currently live, watching* client.
+- **`approver.py`** — the Gate. `ApprovalManager` queues an ASK and awaits a human decision
+  (like the REPL prompt, over the network), replay-proof: a resolution needs a **single-use
+  nonce** minted only over the live socket *after* the client acks the modal is shown, bound
+  to that connection, invalidated on use and on disconnect. `UIApprover` (the injected
+  turn approver) runs the *shared* `persist_always` on "always" — identical to the REPL
+  (`permissions/approvals.py`, the parity pin). `UIScreenApprover` is voice's screen:
+  `available()` is a positive live-mounted-surface check, `confirm()` is fail-closed (the
+  surface vanishing mid-confirmation ⇒ DENY). No spoken "yes" can approve.
+- **`session.py`** — `UiSession`, the turn engine: drives the loop, serializes every event
+  (incl. `ToolDecision` denials and unwrapped `SubAgentEvent`s) to versioned JSON for a ring
+  buffer + live push, shares the REPL/runner turn lock, and cancels on request (Ctrl-C
+  parity). The status-bar emergency stop maps only to existing brakes (cancel + `BackgroundRunner.stop()`).
+- **`readmodels.py` + `gate_api.py`** — Vault/Tasks/Memory/Hub/Lab/Meetings views + the
+  policy snapshot and today's audit. Hub reports provider **presence booleans only** (a
+  secret value never crosses the wire — swept by test); Lab is view-only (evals stay a
+  terminal ritual).
+- **`voice.py`** — the `UiVoice` controller (status, push-to-talk, meeting capture → an
+  unreviewed KB source) over the Phase-7 pieces, with the workstation as the fail-closed
+  screen.
+- **`static/`** — the frontend: obsidian theme (amber = attention only), Daily Mode default
+  (one attention surface at a time: approval › runner › telemetry), per-screen ES modules,
+  and Debug Mode as a presentation-only toggle (reveals telemetry, adds no capability —
+  pinned). Carries no safety logic; all enforcement is testable Python.
+
+`cli/repl.py::build_ui_app` composes it from the REPL's own collaborators with the UI
+approver seams swapped in (one shared gate; child ASKs escalate to the UI screen);
+`run_ui` opens the DB, prints the tokened URL once, serves on loopback, and shuts down with
+REPL parity (runner finishes in-flight then stops; reflect on exit). Optional:
+`ui.enabled: false` ⇒ no server, REPL unchanged.
+
 ## Persistence (`persistence/`)
 
 SQLite via aiosqlite. `sessions` + `messages` + `memories` + `tasks`/`task_runs` +
@@ -362,7 +412,7 @@ Repo-native, no framework, no new deps; the *harness* is unit-tested keyless whi
 
 ## Verification
 
-- `uv run pytest` — 730+ unit tests, no API key required (FakeClient + FakeEmbedder,
+- `uv run pytest` — 820+ unit tests, no API key required (FakeClient + FakeEmbedder,
   mocked web, fake clock). Includes the compacted-view validity property test, the
   reflection firewall test, the UnattendedGate safety suite, the Phase-4 safety suite
   (converter subprocess kill, zip-bomb refusal, wiki jail, gate field-consistency, SSRF
