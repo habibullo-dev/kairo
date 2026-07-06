@@ -1835,3 +1835,31 @@ non-obvious *implementation* decisions per task.
   offers only y/N — a voice-escalated risky action is confirmed once and never persisted,
   because a standing "always allow" granted off a voice turn would defeat prepare-never-
   commit. `available()` is a *positive* TTY check that resolves any error to unavailable.
+
+## Phase 7 Task 3 — VoiceSession: the loop, everything injected
+
+- **The session owns *when*, not *what*.** It runs the state machine (transcribe → think →
+  speak → idle), the turn lock, and cancel; it delegates the model to an injected
+  `AgentLoop`, transcription to an injected `STTProvider`, and all output to an injected
+  `VoiceOutput`. So the whole realtime loop is exercised with a `FakeTranscriber` +
+  `FakeClient` + a recording output — no audio, no network — and the live engines slot in
+  at task 6 without touching this file.
+- **Finalized-only is one guard, and it's the first thing the session does.** A non-final
+  or empty transcript returns `None` before any framing, any message append, any tool —
+  proven by the partial/empty tests leaving the `FakeClient`'s scripted response untouched.
+  A partial utterance can never reach a tool, by construction.
+- **"Read-only holds" is not the session's code — it's the gate's, and the test proves the
+  session doesn't undermine it.** A read-only tool is `ALLOW`, so `run_turn` never calls the
+  approver: `approver.escalations == 0`. A risky tool is `ASK`, so it escalates and (no
+  screen) is denied, and the denied call's tool_result is `is_error` — it never executed.
+  The session adds no approval path; it just carries the `VoiceApprover` into the loop.
+- **`TurnResult` has no `tool_calls` — assert on the transcript instead.** First cut checked
+  `result.tool_calls`; the result carries text/messages/usage/iterations, not a tool list.
+  The honest "it never ran" assertion reads the `tool_result` blocks in `result.messages`
+  and checks they're all `is_error` (denied). Test against the data the type actually
+  exposes, not the one you wished it had.
+- **Cancel resets state in `finally` and re-raises in `except`.** Barge-in cancels the
+  in-flight turn; the session catches `CancelledError`, logs, re-raises (never swallows a
+  cancel), and the `finally` returns state to idle regardless. Because nothing risky commits
+  without the screen, an interrupted turn leaves no half-committed action — the Phase-1
+  turn-cancel invariant, restated for voice.
