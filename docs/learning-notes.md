@@ -945,3 +945,25 @@ non-obvious *implementation* decisions per task.
   does DELETE + INSERT inside `transaction()`; patching the INSERT to blow up and then
   asserting the *old* chunks survive proves the DELETE rolled back with it — the same
   "prove the rollback, don't trust it" discipline as the Phase 3 persistence tests.
+
+## Phase 4 Task 3 — Chunking
+
+- **Chunking is pure, so it's the easiest thing in the phase to trust.** No I/O, no
+  model, no clock — `chunk_markdown(text) -> [Chunk]` is a table test's dream, and
+  determinism (identical input ⇒ byte-identical chunks) is asserted directly by
+  comparing two calls with frozen dataclasses. A stable retrieval index needs a
+  stable chunker; purity is how you get it for free.
+- **Fence-awareness is the one correctness trap.** A `#` at the start of a line
+  inside a ``` code fence is a comment, not a heading; without tracking fence state
+  the chunker would shatter a code block into bogus sections. One boolean toggled on
+  fence lines fixes it — but it has to be there.
+- **Merge is sibling-scoped on purpose (and a test caught my own confusion).** The
+  plan says tiny sections merge into the *next sibling* (same parent). I first wrote
+  a test expecting a tiny `## Tail` under `# H` to merge "backward into H" — but Tail
+  is H's *child*, not a sibling, so it correctly stays separate. The rule prevents
+  merging unrelated topics; the fix was the test, not the code. Cross-parent content
+  must never silently fuse.
+- **Heading path is metadata; the body stays clean; the prefix happens at embed
+  time.** `embed_text(chunk)` prepends "H1 > H2" so the vector carries context, while
+  the stored `text` is just the section body — so a retrieved excerpt reads cleanly
+  and its heading path is rendered separately as a citation breadcrumb.
