@@ -1580,3 +1580,31 @@ non-obvious *implementation* decisions per task.
   The service builds the `[sub-agent … — status; N iterations, …]` line from what it
   measured, and wraps the child's text in untrusted-content delimiters — the web-framing
   lesson applied to the laundering channel that delegation opens back into the parent.
+
+## Phase 6 Task 5 — the spawn_agent tool + delegation prompts
+
+- **The tool is deliberately thin; the service is the machine.** spawn_agent's `run` does
+  two things — validate the scope is a non-empty subset of SPAWNABLE (a pydantic
+  field_validator, so the model gets a clean schema error), then hand off to
+  `context.agents.spawn`. All the weight (double gate, isolation, framed report, audit)
+  lives in the service, so the tool stays a trivial adapter and the same service can be
+  driven by evals without the tool.
+- **`timeout_override = None` is the whole reason Task 1 built the sentinel.** spawn_agent
+  is the one tool that opts out of the executor's 60s deadline, because the service
+  enforces `sub_agents.timeout_seconds` itself — a global wait_for would guillotine a
+  legitimate 5-minute research child and turn a clean, recordable timeout into an
+  anonymous kill.
+- **spawn_agent joins schedule_task in `_NEVER_PERSIST` for the same reason.** Both are
+  expanded-authority sinks: approving one authorizes *future* tool execution, so a stray
+  "a" keystroke must never make it silent. The approval summary shows the full,
+  untruncated prompt plus the tool scope — the human consents to the exact task and the
+  exact authority, not just "spawn something."
+- **Registration is capability-gated by the same mixin pattern as tasks/knowledge.**
+  `_NeedsAgents.is_available` returns True only when `ToolContext.agents` is set, so with
+  delegation disabled the tool never enters the schema — the model isn't tempted by a
+  capability that isn't wired. (Confirmed: this task adds the tool but the REPL doesn't
+  pass `agents=` yet, so REPL behavior is unchanged until Task 6.)
+- **Depth-1 is now enforced in three independent places, and this task added the first.**
+  The Params validator rejects `spawn_agent` in a child's scope; the SubAgentGate
+  hard-denies it; the service's contextvar refuses re-entry. Three cheap overlapping
+  checks mean no single missed guard re-opens recursion — and each fails closed.

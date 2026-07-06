@@ -65,6 +65,14 @@ def _call_summary(call: ToolCall) -> str:
         )
     if call.name == "cancel_task":
         return f"cancel task #{inp.get('task_id', '?')}"
+    if call.name == "spawn_agent":
+        # full payload, NOT truncated + the tool scope — the human consents to the
+        # actual delegated task and the authority the child will run with.
+        tools = inp.get("tools") or []
+        return (
+            f'spawn sub-agent "{inp.get("title", "")}" [tools: {tools}]:\n    '
+            f"{inp.get('prompt', '')}"
+        )
     if call.name == "ingest_source":
         # the gate's reason line shows the resolved path; here name the target + kind
         if inp.get("path"):
@@ -278,9 +286,10 @@ class Repl:
         return Permission.DENY
 
     # Never "always"-able: a single stray "a" keystroke must not permanently open
-    # a deferred-execution injection sink (schedule_task) or let the model silence
-    # the user's reminders (cancel_task). These are per-instance approval only.
-    _NEVER_PERSIST = frozenset({"schedule_task", "cancel_task"})
+    # a deferred-execution injection sink (schedule_task), let the model silence the
+    # user's reminders (cancel_task), or open a scoped-execution channel (spawn_agent).
+    # These are per-instance approval only.
+    _NEVER_PERSIST = frozenset({"schedule_task", "cancel_task", "spawn_agent"})
 
     def _persist_always(self, call: ToolCall) -> None:
         """Persist an 'always allow' choice as narrowly as the tool allows.

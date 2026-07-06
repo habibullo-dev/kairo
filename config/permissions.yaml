@@ -41,6 +41,11 @@ tools:
   lint_knowledge_base: allow
   ingest_source: ask
   write_wiki_page: ask
+  # Multi-agent delegation (Phase 6). spawn_agent ASKS and is never "always"-able:
+  # approving it opens a scoped execution channel (a child runs with tools), so the
+  # human sees the full prompt + tool scope each time. The child is doubly gated
+  # (SubAgentGate) and can't recurse or run unattended.
+  spawn_agent: ask
 
 filesystem:
   # Writes inside these dirs (relative to the project root, or absolute) may be
