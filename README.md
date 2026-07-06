@@ -14,6 +14,27 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 7 (voice) — complete.** Jarvis has a push-to-talk voice interface (`jarvis --voice`):
+press Enter, speak one utterance, hear a short spoken summary back. Voice is a *peer of the
+REPL* driving the same `AgentLoop`, never a new authority — so every gate and floor still
+applies beneath it. Its safety floor is non-negotiable
+([the permissions checkpoint](docs/PLAN-7-voice-permissions-checkpoint.md), realized in
+[ADR-0007](docs/decisions/0007-voice-is-an-untrusted-read-only-surface.md)): **transcribed
+audio is untrusted** (framed like a fetched web page — hearing an instruction is not
+authorization to act on it), voice is **read-only by default**, and **risky actions are never
+approved by voice** — the `VoiceApprover` escalates every `ask` to an on-screen confirmation
+and is **fail-closed** (no positively-available screen ⇒ deny; a spoken "yes" has no path to
+approve). No unattended mic (push-to-talk only; wake-word deferred), and the spoken channel
+follows a **TTS-privacy rule** — it never voices secrets, commands, file contents, message
+bodies, or the details of a risky action (those stay on screen). STT/TTS are **local /
+on-device by default** (no egress); cloud providers (OpenAI STT, ElevenLabs TTS) sit behind
+an explicit `voice.cloud_providers` opt-in and log audio/text egress as a visible network
+event. A meeting can be captured as an **unreviewed** knowledge source (never an action). The
+eval harness gains six voice acceptance scenarios and a **chunked live-gate profile**
+(`jarvis eval gate --profile live-chunked`) that fits the runner's background-time cap. Design
+in [`docs/PLAN-7-voice.md`](docs/PLAN-7-voice.md); baseline in
+[`docs/evals-baseline-phase7.md`](docs/evals-baseline-phase7.md).
+
 **Phase 6 (multi-agent orchestration) — complete.** Jarvis can delegate: `spawn_agent`
 runs a scoped sub-agent with an isolated context and a per-spawn tool allowlist, then
 synthesizes its report (try "research X and Y in parallel using sub-agents"; watch it
@@ -84,7 +105,11 @@ the eventual local AI workstation experience.
 - [uv](https://docs.astral.sh/uv/) — package + Python manager
 - Python 3.12+ (the project pins 3.13 via `.python-version`; uv fetches it)
 - PowerShell 7 (`pwsh`) — the shell tool runs commands through it
-- API keys: **Anthropic** (required), **Tavily** (web search), **Voyage** (phase 2)
+- API keys: **Anthropic** (required), **Tavily** (web search), **Voyage** (phase 2).
+  Optional, voice cloud providers only: **OpenAI** (cloud STT), **ElevenLabs** (cloud TTS)
+- Voice (`jarvis --voice`) needs the optional extra: `uv sync --extra voice` (mic + engines).
+  The default local TTS is dependency-free (prints the safe summary); local STT uses
+  faster-whisper (`uv pip install faster-whisper`)
 
 ## Setup
 
@@ -99,6 +124,8 @@ cp .env.example .env     # then fill in your API keys
 ANTHROPIC_API_KEY=...    # required
 TAVILY_API_KEY=...       # for web_search
 VOYAGE_API_KEY=...        # for long-term memory (embeddings)
+OPENAI_API_KEY=...        # optional: cloud STT (voice.cloud_providers only)
+ELEVENLABS_API_KEY=...    # optional: cloud TTS (voice.cloud_providers only)
 ```
 
 ## Usage
@@ -106,12 +133,14 @@ VOYAGE_API_KEY=...        # for long-term memory (embeddings)
 ```pwsh
 uv run jarvis            # start the assistant (needs a real terminal)
 uv run jarvis --resume   # continue the most recent conversation
+uv run jarvis --voice    # push-to-talk voice (needs voice.enabled + the voice extra)
 uv run jarvis --version
 
 uv run pytest            # unit tests (no API key needed)
 uv run ruff check        # lint
-uv run python tests/evals/runner.py          # live smoke evals (uses the API — costs money)
-uv run python tests/evals/runner.py --runs 1 # quick single pass
+uv run jarvis eval gate                       # live smoke evals (uses the API — costs money)
+uv run jarvis eval gate --profile live-chunked  # chunked live gate (fits the ~14-min cap)
+uv run jarvis eval gate --runs 1              # quick single pass
 ```
 
 In the REPL: type a request; watch Jarvis stream its reasoning and tool calls.
@@ -121,6 +150,16 @@ what Jarvis has remembered (with provenance — where each memory came from),
 `tasks` (or `tasks all` / `tasks <id>`) to see scheduled tasks and their run
 history, and `agents` (or `agents <id>`) to see recent sub-agent runs (with the
 verbatim delegated prompt, tool scope, and the parent↔child trace link).
+
+**Voice** (`voice.enabled: true` + `uv sync --extra voice`): `jarvis --voice` opens a
+push-to-talk loop — press Enter, speak one utterance, and hear a short, safe spoken summary.
+Voice input is read-only by default and the transcript is treated as untrusted; if a request
+needs a write, send, delete, shell command, schedule, or spend, Jarvis *prepares* it and asks
+you to confirm **on screen** — a spoken "yes" never commits it, and if no screen is available
+the action is denied. STT/TTS default to local/on-device; set `voice.cloud_providers: true`
+(and `voice.stt_provider` / `voice.tts_provider`) to use OpenAI/ElevenLabs, which logs the
+audio/text that leaves the machine. Leave `voice.enabled: false` and the voice surface simply
+isn't built (the REPL is unchanged).
 
 **Delegation** (`sub_agents.enabled: true`): ask Jarvis to "research X and Y in
 parallel using sub-agents and compare them" — it spawns scoped sub-agents (you
@@ -218,6 +257,16 @@ audit log at `logs/jarvis-YYYY-MM-DD.jsonl`, correlated by a per-turn `trace_id`
   hard-denied for background jobs). Nothing is hidden: child activity renders inline,
   the transcript is a `kind='subagent'` session (never resumed, never reflected), and an
   `agent_runs` row links parent and child by trace id — see `agents`.
+- **Voice is an untrusted, read-only surface** ([ADR-0007](docs/decisions/0007-voice-is-an-untrusted-read-only-surface.md)):
+  a microphone is an open channel to anyone in the room, so a finalized transcript enters the
+  model wrapped in the same untrusted-content framing as a fetched page (instructions inside
+  it are content to weigh, not commands). Risky actions are **never approved by voice** — the
+  injected `VoiceApprover` escalates every `ask` to an on-screen confirmation and is
+  fail-closed (no positively-available screen ⇒ deny; there is no path by which a spoken
+  "yes" can approve). There is **no unattended mic** (push-to-talk only; wake-word is
+  deferred), and the spoken channel obeys a **TTS-privacy rule** (never voices secrets,
+  tokens, commands, file contents, message bodies, or the details of a risky action). Cloud
+  STT/TTS is off unless `voice.cloud_providers` is set, and any audio/text egress is logged.
 - **Tool failures, denials, and unknown tools become results the model reads** and
   recovers from — they never crash the session.
 
@@ -241,6 +290,7 @@ src/jarvis/
   scheduler/    tasks & scheduling: store, triggers, service, background runner
   knowledge/    research + wiki: store, chunking, converters (+ sandbox worker), links, service
   agents/       multi-agent delegation: SubAgentService + agent_runs audit store
+  voice/        push-to-talk voice: approver (screen escalation), session, calm renderer, STT/TTS adapters, meeting capture
   net.py        SSRF guard (shared by web fetch + knowledge ingest)
   persistence/  SQLite sessions/messages/memories/tasks/kb/agent_runs + migrations
   observability/ structured logging + cost accounting

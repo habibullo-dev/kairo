@@ -1,4 +1,4 @@
-# Architecture (as built — Phase 6)
+# Architecture (as built — Phase 7)
 
 This describes what exists after Milestone 6 (multi-agent orchestration) on top of
 the Milestone 1 MVP, Milestone 2 (long-term memory), Milestone 3 (tasks &
@@ -227,6 +227,50 @@ child trace ids. `spawn_agent` is in the unattended `HARD_DENY` set — no backg
 See [ADR-0006](decisions/0006-sub-agents-are-scoped-visible-and-doubly-gated.md). Optional:
 `sub_agents.enabled: false` ⇒ no `spawn_agent` tool, loop byte-identical to Phase 5.
 
+## Voice (`voice/`) — Phase 7 (Kairo Command-adjacent)
+
+Voice is an **interface**, a peer of the REPL that drives the same `AgentLoop` through the
+same two seams (events out, an injected `Approver` in) — never a new authority, so every gate
+and floor from earlier phases applies unchanged beneath it. The whole layer exists to honor
+one contract ([the permissions checkpoint](PLAN-7-voice-permissions-checkpoint.md) /
+[ADR-0007](decisions/0007-voice-is-an-untrusted-read-only-surface.md)): a microphone is a
+hostile fetch, so a *finalized* transcript enters the model via `frame_transcript` in the same
+untrusted-content shape as `web.py`'s `_FETCH_HEADER`, and risky actions are never approved by
+voice.
+
+The safety pieces:
+
+- **`VoiceApprover`** (`voice/approver.py`) is the injected `Approver`. It escalates *every*
+  ASK to a `ScreenApprover` and is **fail-closed** — `screen is None or not screen.available()`
+  ⇒ `DENY`. It has no audio path, so a spoken "yes" cannot approve anything; the screen (the
+  terminal, via `TerminalScreenApprover`, reusing the REPL's own `_call_summary`) commits by an
+  authenticated keystroke. This is the one-approval-path guarantee: the single seam means voice
+  can't bypass the escalation.
+- **`VoiceSession`** (`voice/session.py`) runs one turn per finalized utterance (finalized-only:
+  a partial/empty transcript never drives a turn or a tool), sharing the REPL's turn lock so a
+  voice turn can't interleave a background job.
+- **Calm renderer** (`voice/render.py`) is the `VoiceOutput`: it speaks only a safe summary,
+  masks secrets, length-caps, and — the TTS-privacy rule — never voices `call.input`, tool
+  firehose, secrets, commands, or message bodies. Its `announce_escalation` (structural, never
+  the preview) is the only thing said on an ASK.
+- **Listening** (`voice/listening.py`) is push-to-talk only; `wake_active()` returns `False`
+  (wake-word deferred), and both the listener and meeting capture refuse an unattended context
+  (no silent mic).
+- **Adapters** (`voice/stt.py`, `voice/tts.py`, `voice/capture.py`) sit behind `STTProvider` /
+  `TTSProvider` protocols and lazy-import their engines, so the base install loads without the
+  `voice` extra. Local is the default (on-device faster-whisper STT; dependency-free
+  `PrintSynthesizer` TTS) with no egress; cloud (OpenAI STT, ElevenLabs TTS) is gated at config
+  load by `voice.cloud_providers` and counts/logs egress. `voice/factory.py` maps config →
+  adapter; the caller passes keys (the factory never reads the environment).
+- **Meeting capture** (`voice/meeting.py`) files a consented recording as an **unreviewed** KB
+  source (reusing the ADR-0004 quarantine) and holds no loop or scheduler, so a meeting's
+  "action items" can never self-execute.
+
+`cli/repl.py::build_voice_session` composes all of this from the REPL's already-built
+collaborators (client, registry, gate, executor, context manager, memory) plus a voice loop
+whose system prompt carries `VOICE_GUIDANCE`. Optional: `voice.enabled: false` ⇒ no voice
+surface, REPL unchanged.
+
 ## Persistence (`persistence/`)
 
 SQLite via aiosqlite. `sessions` + `messages` + `memories` + `tasks`/`task_runs` +
@@ -304,10 +348,21 @@ Repo-native, no framework, no new deps; the *harness* is unit-tested keyless whi
   usage/cost fold into the record (fail-closed on the child model too). Scenarios:
   `delegate_research`/`delegate_parallel`/`delegate_bounded` (core) and
   `inj_subagent_launder`/`inj_subagent_scope` (adversarial) + `unattended_spawn_denied`.
+- **Voice coverage + chunked gate (Phase 7):** a `voice: true` scenario feeds each turn as
+  a *framed* transcript and wires `make_voice_approver` (a `VoiceApprover` → scripted screen,
+  set by `screen: absent|declines|approves`), so a spoken "yes" can't commit; the new
+  `input_matches` delivery check asserts the framed payload actually reached the model (the
+  voice analogue of `tool_result_matches`, ⇒ INVALID if it didn't). Six scenarios
+  (`voice_accidental_command`, `voice_background_speech`, `voice_spoofed_instruction`,
+  `voice_meeting_transcript`, `voice_only_approval_refused`, `voice_wake_word_confusion`)
+  carry the dual metric (side effects gated all-N; attempts tracked). The full live gate runs
+  via **`jarvis eval gate --profile live-chunked`**, which runs each suite as a staged
+  sub-run and merges them into ONE `GateRunRecord` + ONE history line (resumable per chunk),
+  so the phase's own live gate fits the runner's ~14-min background cap.
 
 ## Verification
 
-- `uv run pytest` — 580+ unit tests, no API key required (FakeClient + FakeEmbedder,
+- `uv run pytest` — 730+ unit tests, no API key required (FakeClient + FakeEmbedder,
   mocked web, fake clock). Includes the compacted-view validity property test, the
   reflection firewall test, the UnattendedGate safety suite, the Phase-4 safety suite
   (converter subprocess kill, zip-bomb refusal, wiki jail, gate field-consistency, SSRF
