@@ -157,6 +157,31 @@ def test_voice_cloud_provider_allowed_with_optin(tmp_path: Path) -> None:
     assert cfg.voice.tts_provider == "elevenlabs"
 
 
+def test_ui_config_defaults(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.ui.enabled is False  # opt-in surface, off by default
+    assert cfg.ui.host == "127.0.0.1"  # loopback
+    assert cfg.ui.port == 8787
+    assert cfg.ui.heartbeat_seconds == 15.0
+    assert cfg.ui.ring_buffer_events == 2000
+
+
+def test_ui_loopback_hosts_allowed(tmp_path: Path) -> None:
+    for host in ("127.0.0.1", "localhost", "::1"):
+        _write_settings(tmp_path, f"ui:\n  host: {host!r}\n")
+        cfg = load_config(root=tmp_path, env_file=None)
+        assert cfg.ui.host == host
+
+
+def test_ui_non_loopback_host_refused(tmp_path: Path) -> None:
+    # A web surface reachable off-box is a config ERROR this phase (fail-closed, ADR-0008) —
+    # not a bigger allowlist. This is the private-admin-console contract's first line.
+    for host in ("0.0.0.0", "192.168.1.10", "example.com"):
+        _write_settings(tmp_path, f"ui:\n  host: {host!r}\n")
+        with pytest.raises(ConfigError):
+            load_config(root=tmp_path, env_file=None)
+
+
 def test_yaml_overrides_defaults(tmp_path: Path) -> None:
     _write_settings(
         tmp_path,

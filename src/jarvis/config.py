@@ -205,6 +205,42 @@ class VoiceConfig(BaseModel):
         return self
 
 
+#: Loopback hosts the workstation UI may bind to. Anything else is refused at load —
+#: a web surface reachable off-box needs TLS + real identity (a future phase), never a
+#: YAML edit (ADR-0008). Fail-closed: the private-admin-console contract starts here.
+_LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+class UIConfig(BaseModel):
+    """Workstation UI (Phase 8). An authenticated *local* peer of the REPL/voice — it drives
+    the same AgentLoop through the same seams (events out, injected Approver in) and adds no
+    new authority. Safety floor: docs/PLAN-8-ui.md + ADR-0008. Off by default; on, it binds
+    loopback only, mints a per-launch token, and treats approvals as the crown jewels."""
+
+    enabled: bool = False  # opt-in surface; off => byte-identical to Phase 7
+    # Loopback ONLY this phase. A non-loopback host is a config error, not a bigger
+    # allowlist — remote access needs a real auth story (ADR-0008), deferred.
+    host: str = "127.0.0.1"
+    port: int = 8787
+    # Liveness window: an approval (and the voice screen) is resolvable only from a client
+    # whose WebSocket has sent a heartbeat within this many seconds — a cookie replay from a
+    # dead client cannot approve (D2/D7). Kept short; the client pings well inside it.
+    heartbeat_seconds: float = 15.0
+    ring_buffer_events: int = 2000  # Trace screen scrollback (bounded; oldest dropped)
+
+    @model_validator(mode="after")
+    def _host_must_be_loopback(self) -> UIConfig:
+        """Refuse a non-loopback bind. The UI's authority is TTY-equivalent and local; a
+        port reachable off-box would be a remote-approval channel wearing a product skin."""
+        if self.host not in _LOOPBACK_HOSTS:
+            raise ValueError(
+                f"ui.host '{self.host}' is not loopback; the workstation UI binds "
+                f"{sorted(_LOOPBACK_HOSTS)} only this phase (remote access is a future phase "
+                "with TLS + real identity, not a config edit)"
+            )
+        return self
+
+
 class PathsConfig(BaseModel):
     """Filesystem locations, relative to the project root unless absolute."""
 
@@ -224,6 +260,7 @@ class Config(BaseModel):
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     sub_agents: SubAgentsConfig = Field(default_factory=SubAgentsConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    ui: UIConfig = Field(default_factory=UIConfig)
     paths: PathsConfig
     secrets: Secrets
 
@@ -307,6 +344,7 @@ def load_config(
             knowledge=KnowledgeConfig(**data.get("knowledge", {})),
             sub_agents=SubAgentsConfig(**data.get("sub_agents", {})),
             voice=VoiceConfig(**data.get("voice", {})),
+            ui=UIConfig(**data.get("ui", {})),
             paths=PathsConfig(**data.get("paths", {})),
             secrets=secrets,
         )

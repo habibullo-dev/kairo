@@ -79,6 +79,16 @@ voice:
   endpoint_silence_seconds: 0.8  # push-to-talk: silence that ends an utterance
   long_turn_ack_seconds: 1.5     # speak a brief "working on it" ack if a turn runs longer
 
+ui:
+  # Workstation UI (Phase 8). An authenticated LOCAL peer of the REPL — same AgentLoop,
+  # same PermissionGate/VoiceApprover, no new authority. Off = byte-identical to Phase 7.
+  # Safety floor: docs/PLAN-8-ui.md + ADR-0008. Approvals are explicit, audited, replay-proof.
+  enabled: false                 # opt-in; start with `jarvis --ui`
+  host: 127.0.0.1                # LOOPBACK ONLY — a non-loopback host is refused at load
+  port: 8787
+  heartbeat_seconds: 15.0        # approval/voice-screen liveness window (dead client can't approve)
+  ring_buffer_events: 2000       # Trace screen scrollback
+
 paths:
   data_dir: data   # SQLite db (relative to project root)
   logs_dir: logs   # JSON-lines audit/trace logs
