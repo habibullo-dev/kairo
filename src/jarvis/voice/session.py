@@ -23,6 +23,7 @@ half-committed action (the Phase-1 turn-cancel invariant).
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from jarvis.observability import get_logger
@@ -88,7 +89,11 @@ class VoiceSession:
             if not transcript.is_final or not transcript.text.strip():
                 self.log.info("voice_utterance_skipped", reason="partial_or_empty")
                 return None
-            self.output.on_heard(transcript.text)  # echo what was heard, before acting
+            # Echo what was heard, before acting (a mishear is caught early). The renderer's
+            # echo may be async (it speaks); a plain sink is sync — tolerate both.
+            maybe = self.output.on_heard(transcript.text)
+            if inspect.isawaitable(maybe):
+                await maybe
             self.messages.append({"role": "user", "content": frame_transcript(transcript.text)})
             self.state = THINKING
             async with self.turn_lock:

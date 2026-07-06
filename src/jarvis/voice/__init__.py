@@ -24,6 +24,7 @@ from jarvis.voice.protocols import (
     Transcript,
     TTSProvider,
 )
+from jarvis.voice.render import VoiceRenderer
 from jarvis.voice.session import VoiceOutput, VoiceSession
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "Transcript",
     "VoiceApprover",
     "VoiceOutput",
+    "VoiceRenderer",
     "VoiceSession",
     "frame_transcript",
 ]

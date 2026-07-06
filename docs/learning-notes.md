@@ -1863,3 +1863,31 @@ non-obvious *implementation* decisions per task.
   cancel), and the `finally` returns state to idle regardless. Because nothing risky commits
   without the screen, an interrupted turn leaves no half-committed action — the Phase-1
   turn-cancel invariant, restated for voice.
+
+## Phase 7 Task 4 — the calm renderer: TTS privacy by structure, not discretion
+
+- **The strongest privacy guarantee is structural: the escalation never references
+  `call.input`.** `announce_escalation` maps the tool name to a category phrase ("run a
+  command") and says "review it on screen" — it never reads the command, recipient, or
+  token in the tool input, so a secret in the preview *cannot* reach the synthesizer. The
+  end-to-end pin wires this through the real `VoiceApprover` and asserts a token in
+  `call.input` is absent from everything spoken. That's a guarantee about the code path,
+  not a hope about the model.
+- **Masking the final answer is a backstop, and I labeled it as one.** `on_result` runs
+  a secret-pattern mask + a length cap over the model's answer — but the model is already
+  told (voice-mode prompt) not to speak secrets, and the *hard* guarantees are (a) previews
+  never go through `on_result` (only `result.text` does) and (b) the firehose isn't voiced.
+  Calling the regex a backstop keeps its imperfection honest instead of overclaiming.
+- **The tool firehose isn't voiced because `__call__` is a deliberate no-op for speech.**
+  The renderer receives every event (it's the `EventSink`) but speaks none of the
+  ToolStarted/Finished/Decision/SubAgentEvent stream — that detail belongs on the screen
+  (the reused `ConsoleRenderer`). Voice summarizes; the screen details.
+- **Await-tolerant callbacks let sync doubles and the async renderer coexist.** `on_heard`
+  and `on_escalate` may be sync (a plain test sink) or async (the renderer, which speaks).
+  The session/approver call them and `await` only if the result is awaitable
+  (`inspect.isawaitable`) — so I didn't have to churn the Task 2/3 sync fakes to introduce
+  an async speaking renderer. A small flexibility that avoids a cascade of signature edits.
+- **`FakeSynthesizer.spoken` is "what reached the synthesizer" — the literal thing the
+  privacy rule is about.** Testing against it (not the renderer's own record) makes the
+  pins read exactly as the guarantee: assert the secret is not among the strings the TTS
+  engine was asked to speak.

@@ -16,6 +16,7 @@ cannot approve anything: this approver has no audio input; it consults only the 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -65,7 +66,11 @@ class VoiceApprover:
     async def __call__(self, call: ToolCall, decision: Decision) -> Permission:
         self.escalations += 1
         if self.on_escalate is not None:
-            self.on_escalate(call, decision)
+            # Tolerate a sync or async callback (the renderer's announcement is async;
+            # a test double may be sync). It must speak a SAFE line — never the preview.
+            maybe = self.on_escalate(call, decision)
+            if inspect.isawaitable(maybe):
+                await maybe
         # Fail-closed: never assume a screen. Absent OR not positively available ⇒ deny.
         if self.screen is None or not self.screen.available():
             self.denied += 1
