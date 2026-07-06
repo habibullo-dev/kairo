@@ -1,10 +1,11 @@
-# Architecture (as built — Phase 3)
+# Architecture (as built — Phase 4)
 
-This describes what exists after Milestone 3 (tasks & scheduling) on top of the
-Milestone 1 MVP and Milestone 2 (long-term memory). For the forward-looking plans
-see [`PLAN.md`](PLAN.md), [`PLAN-2-memory.md`](PLAN-2-memory.md), and
-[`PLAN-3-tasks.md`](PLAN-3-tasks.md); for the reasoning behind each decision see
-[`learning-notes.md`](learning-notes.md).
+This describes what exists after Milestone 4 (research + knowledge base) on top of
+the Milestone 1 MVP, Milestone 2 (long-term memory), and Milestone 3 (tasks &
+scheduling). For the forward-looking plans see [`PLAN.md`](PLAN.md),
+[`PLAN-2-memory.md`](PLAN-2-memory.md), [`PLAN-3-tasks.md`](PLAN-3-tasks.md), and
+[`PLAN-4-knowledge.md`](PLAN-4-knowledge.md); for the reasoning behind each decision
+see [`learning-notes.md`](learning-notes.md).
 
 ## The one idea
 
@@ -37,12 +38,14 @@ interfaces → core → services → foundation
 │ permissions/     policy + PermissionGate + UnattendedGate │
 │ memory/          store · embeddings · service · reflection│
 │ scheduler/       store · triggers · service · runner      │
+│ knowledge/       store · chunking · converters · links ·  │
+│                  service (+ convert_worker subprocess)     │
 ├─ foundation ─────────────────────────────────────────────┤
-│ persistence/     SQLite sessions/messages/memories/tasks  │
-│                  + migrations + shared write lock         │
+│ persistence/     SQLite sessions/messages/memories/tasks/ │
+│                  kb + migrations + shared write lock       │
 │ observability/   structlog audit log + cost accounting    │
 │ config.py        settings (yaml) + secrets (.env)         │
-│ paths.py         unified path resolution + secret floor   │
+│ paths.py         path resolution + secret floor  ·  net.py SSRF guard │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -163,21 +166,44 @@ detectable). A **job** runs as one unattended `AgentLoop` turn in a fresh
 gate. Optional: `scheduler.enabled: false` ⇒ no task tools, and the loop is
 byte-identical to Phase 2.
 
+## Knowledge (`knowledge/`) — Phase 4
+
+An external, Obsidian-compatible Markdown knowledge base that compounds over time.
+`converters.py` is the **only** third-party-converter import site: deterministic
+first (`.md`/`.txt` passthrough; MarkItDown with plugins/LLM off; Docling optional;
+web via trafilatura), and it runs the parser in a **killable subprocess**
+(`convert_worker.py`) with input + decompression-bomb caps — `asyncio.to_thread`
+can't cancel a runaway parser. `chunking.py` is a pure, fence-aware heading chunker;
+`links.py` extracts/resolves Markdown + `[[wikilinks]]`. `KnowledgeService` runs the
+pipeline — ingest (raw artifact first, then convert, then DB row, so a crash orphans
+a file, never dangles a row), query (cited excerpts framed as untrusted, NOT
+instructions), `write_page` (jailed to the wiki dir, front-matter generated from DB
+state), lint, and rebuild. `KnowledgeStore` reuses the memory vector pattern
+(unit-float32 BLOBs, matmul) filtered by `embedding_model`. Two safety properties are
+structural (see [ADR-0004](decisions/0004-converters-are-gated-io-and-the-kb-is-a-contained-injection-sink.md)):
+conversion is gated like a read (the `ingest_source` `path` hits the sensitive-path
+floor) and sandboxed; and the KB is a contained injection sink — provenance is
+DB-derived (never from content), `write_file` is denied under the KB dir, and
+unattended ingests are quarantined `unreviewed` until `kb review`. Optional:
+`knowledge.enabled: false` (or no `VOYAGE_API_KEY`) ⇒ no KB tools.
+
 ## Persistence (`persistence/`)
 
-SQLite via aiosqlite. `sessions` + `messages` + `memories` + `tasks`/`task_runs`
-tables; schema version tracked by `PRAGMA user_version` with an ordered migration
-list (v2 adds memory + compaction/reflection bookkeeping; v3 adds tasks + a
-`sessions.kind` marker). The model is stateless — the whole conversation lives here
-and is reconstructed each call. Message content is stored as JSON verbatim (thinking-
-block signatures survive, so a resumed session replays to the API unchanged). Saved
-per turn; `--resume` loads the most recent **interactive** session (a background
-job's `kind='task'` session never wins, and is excluded from reflection by default —
-one column that stops a job transcript hijacking the session or poisoning memory).
-Memories/tasks are never deleted — status flips keep lineage auditable. All stores
-share **one connection and one write lock**: a second connection would deadlock, and
-multi-statement writes go through a `transaction()` helper (`BEGIN IMMEDIATE` under
-the lock) so Phase 3's first real write concurrency can't tear a session's history.
+SQLite via aiosqlite. `sessions` + `messages` + `memories` + `tasks`/`task_runs` +
+`kb_sources`/`kb_chunks`/`kb_wiki_links` tables; schema version tracked by `PRAGMA
+user_version` with an ordered migration list (v2 memory; v3 tasks + `sessions.kind`;
+v4 knowledge base). The model is stateless — the whole conversation lives here and is
+reconstructed each call. Message content is stored as JSON verbatim (thinking-block
+signatures survive, so a resumed session replays to the API unchanged). Saved per
+turn; `--resume` loads the most recent **interactive** session (a background job's
+`kind='task'` session never wins, and is excluded from reflection by default — one
+column that stops a job transcript hijacking the session or poisoning memory).
+Primary records (memories, tasks, `kb_sources`) are never deleted — status flips keep
+lineage auditable; `kb_chunks`/`kb_wiki_links` are the one exception, rebuildable
+caches that delete-and-replace. All stores share **one connection and one write
+lock**: a second connection would deadlock, and multi-statement writes go through a
+`transaction()` helper (`BEGIN IMMEDIATE` under the lock) so concurrent writes can't
+tear a session's history.
 
 ## Observability (`observability/`)
 
@@ -201,9 +227,13 @@ you → REPL → AgentLoop.run_turn(messages)
 
 ## Verification
 
-- `uv run pytest` — 240+ unit tests, no API key required (FakeClient + FakeEmbedder,
-  mocked web). Includes the compacted-view validity property test and the reflection
-  firewall test.
+- `uv run pytest` — 490+ unit tests, no API key required (FakeClient + FakeEmbedder,
+  mocked web, fake clock). Includes the compacted-view validity property test, the
+  reflection firewall test, the UnattendedGate safety suite, and the Phase-4 safety
+  suite (converter subprocess kill, zip-bomb refusal, wiki jail, gate field-consistency,
+  SSRF guard).
 - `uv run python tests/evals/runner.py` — live smoke evals (file task, web research,
-  permission denial, memory tool roundtrip, cross-session recall).
-- `uv run jarvis` — the assistant itself; `memories` lists what it knows.
+  permission denial, memory + cross-session recall, scheduling, unattended jobs, KB
+  ingest/query/lint, and the unattended-KB posture).
+- `uv run jarvis` — the assistant itself; `memories` lists what it knows, `tasks` its
+  schedule, `kb` its knowledge base.

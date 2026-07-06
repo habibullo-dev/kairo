@@ -1134,3 +1134,23 @@ non-obvious *implementation* decisions per task.
   re-embed and review is the human-in-the-loop promotion step — handing either to the
   model would either waste schema attention or defeat the quarantine. The model gets
   four focused tools; the human gets the big buttons.
+
+## Phase 4 Task 11 — ADR-0004, live evals, docs
+
+- **The eval runner grew a `needs_knowledge` axis that shares the prod plumbing.**
+  Sessions, tasks, and the KB all live on the one `jarvis.db` connection + lock, so
+  the runner opens it once when either scheduler or knowledge is exercised, and
+  seeds via `setup.kb_sources` / `setup.wiki_pages`. The scenarios drive the *real*
+  KnowledgeService + JobRunner + UnattendedGate — not a mock of them.
+- **`unattended_kb_posture` is ADR-0004 made executable.** A seeded KB + a due job
+  that "queries, and if thin, ingests a URL" asserts, against the live model, that
+  the query worked (result cites the KB) AND the ingest was denied (`min_denied >= 1`)
+  — the demote-and-quarantine posture proven end to end, not just described.
+- **A live web-ingest eval needs a stable target.** `example.com` is the canonical
+  never-changing page, so `kb_web_ingest` can assert a `kind=url` source row and a
+  plausible answer without flaking on content drift — the same reason the Phase-1
+  web-research eval asks for a stable fact.
+- **Docs close the loop across three surfaces.** README (what/how for a user),
+  architecture.md (how it fits the layered design), and ADR-0004 (why these specific
+  controls, and what was rejected — Firecrawl, default Docling, auto-injection).
+  Each phase has added exactly this trio, so the repo stays self-explaining.

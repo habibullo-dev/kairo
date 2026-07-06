@@ -14,6 +14,16 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 4 (research + knowledge base) — complete.** Jarvis maintains a durable,
+Obsidian-compatible Markdown knowledge base: it ingests files, web pages, and notes
+(`ingest_source`) into immutable raw artifacts + deterministic Markdown, searches
+them with citations (`query_knowledge_base`), curates wiki pages (`write_wiki_page`),
+and self-checks with `lint_knowledge_base` — plus `kb` / `kb lint` / `kb rebuild` /
+`kb review` REPL commands. Conversion is deterministic-first (MarkItDown; Docling
+optional) and runs in a killable sandbox; the whole layer is a deliberately-contained
+injection sink — see the safety model and [ADR-0004](docs/decisions/0004-converters-are-gated-io-and-the-kb-is-a-contained-injection-sink.md).
+Design in [`docs/PLAN-4-knowledge.md`](docs/PLAN-4-knowledge.md).
+
 **Phase 3 (tasks & scheduling) — complete.** Jarvis can now act without being
 prompted: schedule **reminders** (delivered to you at a time) and **jobs** (a
 stored prompt it runs itself, unattended, on a once / cron / interval schedule)
@@ -31,8 +41,8 @@ recall, conversation compaction, and end-of-session reflection. Design in
 **Phase 1 (MVP) — complete.** A streaming terminal assistant that plans, calls
 tools (asking approval for risky ones), remembers a conversation across restarts,
 and reports what it did with sources. Verified end-to-end by a live smoke-eval
-suite. Later phases (research + a Markdown knowledge base, evaluation harness,
-multi-agent, voice, web UI) are laid out in [`docs/PLAN.md`](docs/PLAN.md) §2.
+suite. Later phases (evaluation harness, multi-agent, voice, web UI) are laid out in
+[`docs/PLAN.md`](docs/PLAN.md) §2.
 Odysseus is tracked there as an approved external product/reference source for
 the eventual local AI workstation experience.
 
@@ -85,6 +95,15 @@ plus the computed local fire time). Reminders are delivered as a line at the
 prompt; jobs run themselves in the background and report a result. Set
 `scheduler.enabled: false` in `settings.yaml` to turn it off.
 
+**Research & knowledge base** (needs `VOYAGE_API_KEY`): ask Jarvis to "ingest this
+PDF" or "ingest https://… and summarize it into a wiki page" — sources are converted
+to Markdown, stored with provenance, and indexed; later, "what do we know about X?"
+searches them and answers with citations. The vault at `data/knowledge/wiki/` is
+plain Obsidian-compatible Markdown (point `knowledge.dir` at a git-versioned dir or
+an existing Obsidian vault to keep it under version control). `kb` shows stats,
+`kb lint` reports issues, `kb rebuild` re-indexes, and `kb review` approves anything
+a background job staged. Set `knowledge.enabled: false` to turn it off.
+
 **Long-term memory** (needs `VOYAGE_API_KEY`): tell Jarvis something worth keeping
 and it asks before saving it; on exit it reflects over the session and stores
 durable facts. Next session, relevant memories are recalled automatically. Try:
@@ -135,6 +154,16 @@ audit log at `logs/jarvis-YYYY-MM-DD.jsonl`, correlated by a per-turn `trace_id`
   `scheduler.unattended_allow_tools`). Memory/scheduling meta-tools are hard-denied,
   so a job can't schedule more jobs or write memory on its own. Background sessions
   are marked `kind='task'`, so they never hijack `--resume` or feed reflection.
+- **Ingesting into the knowledge base is gated, sandboxed, and provenance-tracked**
+  ([ADR-0004](docs/decisions/0004-converters-are-gated-io-and-the-kb-is-a-contained-injection-sink.md)):
+  a converter opening an attacker-supplied file is gated like a read (sensitive-path
+  floor on `ingest_source`'s `path`) and runs in a killable subprocess with
+  decompression-bomb caps; web URLs are SSRF-guarded (no loopback/private hosts, on
+  every redirect hop). The KB is a contained injection sink — citations and
+  front-matter are derived from the database, never from content; excerpts are
+  delimited as untrusted; `write_file` can't write into the KB dir (use the tracked
+  `write_wiki_page`); and unattended ingests are quarantined `unreviewed` until you
+  run `kb review`.
 - **Tool failures, denials, and unknown tools become results the model reads** and
   recovers from — they never crash the session.
 
@@ -152,15 +181,17 @@ thinking, and high effort — API cost is treated as observability, not a constr
 src/jarvis/
   cli/          REPL + rich rendering + background job execution (jobs.py)
   core/         agent loop, context/compaction, model clients, prompts, events
-  tools/        Tool base, registry, executor, builtin/ (filesystem, shell, web, memory, tasks)
+  tools/        Tool base, registry, executor, builtin/ (filesystem, shell, web, memory, tasks, knowledge)
   permissions/  policy + gate + unattended gate (headless deny/demote)
   memory/       long-term memory: store, embeddings, service, reflection
   scheduler/    tasks & scheduling: store, triggers, service, background runner
-  persistence/  SQLite sessions/messages/memories/tasks + migrations
+  knowledge/    research + wiki: store, chunking, converters (+ sandbox worker), links, service
+  net.py        SSRF guard (shared by web fetch + knowledge ingest)
+  persistence/  SQLite sessions/messages/memories/tasks/kb + migrations
   observability/ structured logging + cost accounting
   config.py     settings + secrets   ·   paths.py  path resolution + secret floor
 tests/          unit tests + evals/ (live smoke scenarios)
-docs/           PLAN, PLAN-2-memory, PLAN-3-tasks, architecture, learning notes, decisions/ (ADRs)
+docs/           PLAN, PLAN-2-memory, PLAN-3-tasks, PLAN-4-knowledge, architecture, learning notes, decisions/ (ADRs)
 ```
 
 ## License

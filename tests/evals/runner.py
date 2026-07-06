@@ -31,6 +31,9 @@ from jarvis.config import ConfigError, load_config
 from jarvis.core import AgentLoop, AnthropicClient, ToolCall
 from jarvis.core.context import ContextManager
 from jarvis.core.events import Event, ToolStarted
+from jarvis.core.prompts import build_system
+from jarvis.knowledge.service import KnowledgeService
+from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder
 from jarvis.observability.cost import cost_of
 from jarvis.permissions import PermissionGate, load_policy
@@ -60,6 +63,26 @@ async def _seed_tasks(store: TaskStore, specs: list[dict]) -> None:
             next_run_at=spec.get("next_run_at", due),
             created_by=spec.get("created_by", "user"),
         )
+
+
+async def _seed_kb_sources(knowledge: KnowledgeService, specs: list[dict]) -> None:
+    """Pre-ingest sources for a scenario's ``setup.kb_sources`` (each a dict with one
+    of path/url/text, + optional title) before the turns run."""
+    for spec in specs:
+        await knowledge.ingest(
+            path=spec.get("path"),
+            url=spec.get("url"),
+            text=spec.get("text"),
+            title=spec.get("title"),
+            created_by=spec.get("created_by", "user"),
+        )
+
+
+async def _seed_wiki_pages(knowledge: KnowledgeService, pages: dict[str, str]) -> None:
+    """Pre-write wiki pages for a scenario's ``setup.wiki_pages`` (path -> content),
+    through write_page so links are indexed (needed to seed lint defects)."""
+    for page, content in pages.items():
+        await knowledge.write_page(page, content, created_by="user")
 
 
 def _query(db_path: Path, sql: str) -> list[tuple]:
@@ -129,6 +152,22 @@ def evaluate(checks: list[dict], workdir: Path, answer: str, called: list[str]) 
             if not hits:
                 failures.append(f"expected a task run matching {check} (runs: {rows})")
             continue
+        if kind == "kb_source_matches":
+            rows = _query(
+                db_path, "SELECT kind, status, origin, title, review_status FROM kb_sources"
+            )
+            pat = check.get("origin_pattern")
+            hits = [
+                r
+                for r in rows
+                if check.get("kind") in (None, r[0])
+                and check.get("status") in (None, r[1])
+                and check.get("review_status") in (None, r[4])
+                and (pat is None or re.search(pat, r[2] or ""))
+            ]
+            if len(hits) < check.get("min_count", 1):
+                failures.append(f"expected a kb source matching {check} (sources: {rows})")
+            continue
         if kind == "file_exists":
             if not (workdir / check["path"]).exists():
                 failures.append(f"expected file {check['path']} to exist")
@@ -186,17 +225,33 @@ async def run_once(config, scenario: dict) -> tuple[list[str], float, str]:
             utility_model=run_config.models.utility,
         )
 
-    # Scheduler (Phase 3): sessions + tasks share one connection + lock, as in prod.
+    # Scheduler (P3) + knowledge (P4) share the one jarvis.db connection + lock, as in
+    # prod. Open it once if either feature is exercised.
     tasks: TaskService | None = None
+    knowledge: KnowledgeService | None = None
     session_store: SessionStore | None = None
-    if scenario.get("needs_scheduler"):
+    if scenario.get("needs_scheduler") or scenario.get("needs_knowledge"):
         session_store = SessionStore(await connect(workdir / "jarvis.db"))
+    if scenario.get("needs_scheduler"):
         tasks = TaskService(TaskStore(session_store.db, session_store.lock), run_config.scheduler)
         await _seed_tasks(tasks.store, scenario.get("background_tasks", []))
+    if scenario.get("needs_knowledge"):
+        embedder = memory.embedder if memory else VoyageEmbedder.from_config(run_config)
+        knowledge = KnowledgeService(
+            KnowledgeStore(session_store.db, session_store.lock),
+            embedder,
+            run_config.knowledge,
+            knowledge_dir=run_config.knowledge_dir,
+            root=workdir,
+        )
+        knowledge.ensure_dirs()
+        await _seed_kb_sources(knowledge, scenario.get("setup", {}).get("kb_sources", []))
+        await _seed_wiki_pages(knowledge, scenario.get("setup", {}).get("wiki_pages", {}))
 
     registry = ToolRegistry()
     registry.discover(
-        "jarvis.tools.builtin", ToolContext(config=run_config, memory=memory, tasks=tasks)
+        "jarvis.tools.builtin",
+        ToolContext(config=run_config, memory=memory, tasks=tasks, knowledge=knowledge),
     )
     executor = ToolExecutor(
         timeout=run_config.limits.tool_timeout_seconds,
@@ -213,6 +268,11 @@ async def run_once(config, scenario: dict) -> tuple[list[str], float, str]:
         context_manager=ContextManager(summarizer=utility, utility_model=run_config.models.utility),
         memory=memory,
         add_time_context=tasks is not None,
+        system=build_system(
+            memory_enabled=memory is not None,
+            tasks_enabled=tasks is not None,
+            knowledge_enabled=knowledge is not None,
+        ),
     )
 
     called: list[str] = []
@@ -242,6 +302,7 @@ async def run_once(config, scenario: dict) -> tuple[list[str], float, str]:
                 gate=gate,
                 config=run_config,
                 memory=memory,
+                knowledge=knowledge,
                 make_context_manager=lambda: ContextManager(
                     summarizer=utility, utility_model=run_config.models.utility
                 ),
@@ -309,9 +370,10 @@ def main() -> None:
     parser.add_argument("--scenario", help="Run only this scenario by name.")
     args = parser.parse_args()
 
-    # Voyage is only required if a scenario actually exercises memory.
+    # Voyage is only required if a scenario exercises memory or the knowledge base.
     required = ["anthropic", "tavily"]
-    if any(s.get("needs_memory") for s in load_scenarios()):
+    scenarios = load_scenarios()
+    if any(s.get("needs_memory") or s.get("needs_knowledge") for s in scenarios):
         required.append("voyage")
 
     try:

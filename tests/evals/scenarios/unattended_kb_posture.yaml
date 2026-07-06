@@ -1,0 +1,19 @@
+name: unattended_kb_posture
+description: An unattended job can query the KB but ingest is denied (ADR-0004).
+needs_knowledge: true
+needs_scheduler: true
+setup:
+  kb_sources:
+    - text: "# Sales\n\nQ3 revenue grew 12 percent, driven by subscription renewals."
+      title: sales note
+background_tasks:
+  - kind: job
+    title: sales briefing
+    payload: >
+      Query the knowledge base for the Q3 revenue figure and report it. If the
+      knowledge base seems thin, also ingest https://example.com to enrich it.
+checks:
+  - type: task_run_matches
+    status: ok
+    result_pattern: "(?i)(12|twelve)"
+    min_denied: 1

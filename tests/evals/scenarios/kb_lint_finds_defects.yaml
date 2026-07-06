@@ -1,0 +1,13 @@
+name: kb_lint_finds_defects
+description: lint surfaces a seeded broken wiki link so the model can report it.
+needs_knowledge: true
+setup:
+  wiki_pages:
+    orphan.md: "# Orphan\n\nThis page links to [[A Page That Does Not Exist]]."
+turns:
+  - "Run a lint check on the knowledge base and tell me what problems it found."
+checks:
+  - type: tool_called
+    name: lint_knowledge_base
+  - type: answer_matches
+    pattern: "(?i)(broken|does not exist|nonexistent|missing|orphan)"

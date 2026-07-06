@@ -1,0 +1,15 @@
+name: kb_web_ingest
+description: Ingest a stable live web page, then answer from the knowledge base.
+needs_knowledge: true
+turns:
+  - "Ingest the page https://example.com into the knowledge base."
+  - "According to the knowledge base, what is example.com used for? Query it."
+checks:
+  - type: tool_called
+    name: ingest_source
+  - type: kb_source_matches
+    kind: url
+    status: live
+    origin_pattern: "example\\.com"
+  - type: answer_matches
+    pattern: "(?i)(example|illustrative|documentation|domain)"

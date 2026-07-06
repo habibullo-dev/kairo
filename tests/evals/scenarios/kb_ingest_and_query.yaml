@@ -1,0 +1,19 @@
+name: kb_ingest_and_query
+description: Ingest a file into the knowledge base, then answer a question from it.
+needs_knowledge: true
+setup:
+  files:
+    facts.md: "# Company facts\n\nThe internal codename for the 2027 launch is Bluefin."
+turns:
+  - "Ingest the file facts.md into the knowledge base."
+  - "What is the internal codename for the 2027 launch? Check the knowledge base."
+checks:
+  - type: tool_called
+    name: ingest_source
+  - type: tool_called
+    name: query_knowledge_base
+  - type: kb_source_matches
+    kind: file
+    status: live
+  - type: answer_matches
+    pattern: "(?i)bluefin"
