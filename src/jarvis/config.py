@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # service name -> (Secrets attribute, env var name) for require() error messages.
@@ -26,6 +26,8 @@ _REQUIRED_KEYS: dict[str, tuple[str, str]] = {
     "anthropic": ("anthropic_api_key", "ANTHROPIC_API_KEY"),
     "voyage": ("voyage_api_key", "VOYAGE_API_KEY"),
     "tavily": ("tavily_api_key", "TAVILY_API_KEY"),
+    "openai": ("openai_api_key", "OPENAI_API_KEY"),  # cloud STT (Phase 7, opt-in)
+    "elevenlabs": ("elevenlabs_api_key", "ELEVENLABS_API_KEY"),  # cloud TTS (Phase 7, opt-in)
 }
 
 
@@ -60,6 +62,8 @@ class Secrets(BaseSettings):
     anthropic_api_key: str = ""
     voyage_api_key: str = ""
     tavily_api_key: str = ""
+    openai_api_key: str = ""  # cloud STT (Phase 7 voice, opt-in)
+    elevenlabs_api_key: str = ""  # cloud TTS (Phase 7 voice, opt-in)
 
 
 class ModelsConfig(BaseModel):
@@ -155,6 +159,50 @@ class SubAgentsConfig(BaseModel):
     max_spawn_calls_per_turn: int = 8
 
 
+#: Providers that send data off-device — reachable only with voice.cloud_providers opt-in.
+_CLOUD_STT: frozenset[str] = frozenset({"openai"})
+_CLOUD_TTS: frozenset[str] = frozenset({"elevenlabs"})
+
+
+class VoiceConfig(BaseModel):
+    """Voice interface (Phase 7). Push-to-talk MVP; wake-word activation deferred. The
+    safety floor is docs/PLAN-7-voice-permissions-checkpoint.md; design in docs/PLAN-7-voice.md
+    and ADR-0007. Read-only by default; risky actions escalate to on-screen confirmation
+    (never voice-only); transcribed audio is untrusted; no unattended mic."""
+
+    enabled: bool = False  # opt-in surface; off => byte-identical to Phase 6
+    # Third-party (cloud) STT/TTS send audio / spoken text off-device. They are reachable
+    # ONLY behind this explicit opt-in (ADR-0007); with it off, voice uses local providers.
+    cloud_providers: bool = False
+    stt_provider: str = "local"  # 'local' (faster-whisper) | 'openai' (cloud; needs opt-in)
+    tts_provider: str = "local"  # 'local' (OS/offline) | 'elevenlabs' (cloud; needs opt-in)
+    tts_voice: str | None = None  # provider-specific voice id (None/blank = provider default)
+    # DEFERRED: the wake contract is designed + tested, but activation is unwired in the MVP
+    # (push-to-talk only) unless explicitly enabled later. A non-empty value does NOT turn
+    # wake on by itself in this phase. None/blank in yaml is fine (like sub_agents.model).
+    wake_word: str | None = None
+    retain_audio: bool = False  # default: keep the transcript (untrusted), discard raw audio
+    endpoint_silence_seconds: float = 0.8  # push-to-talk: silence that ends an utterance
+    long_turn_ack_seconds: float = 1.5  # speak a brief "working on it" ack past this
+
+    @model_validator(mode="after")
+    def _cloud_requires_optin(self) -> VoiceConfig:
+        """A cloud provider selection is refused unless cloud_providers is explicitly set —
+        no audio or spoken text leaves the machine to a third party by accident (ADR-0007)."""
+        if not self.cloud_providers:
+            if self.stt_provider in _CLOUD_STT:
+                raise ValueError(
+                    f"voice.stt_provider '{self.stt_provider}' sends audio off-device; "
+                    "set voice.cloud_providers: true to opt in"
+                )
+            if self.tts_provider in _CLOUD_TTS:
+                raise ValueError(
+                    f"voice.tts_provider '{self.tts_provider}' sends spoken text off-device; "
+                    "set voice.cloud_providers: true to opt in"
+                )
+        return self
+
+
 class PathsConfig(BaseModel):
     """Filesystem locations, relative to the project root unless absolute."""
 
@@ -173,6 +221,7 @@ class Config(BaseModel):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     sub_agents: SubAgentsConfig = Field(default_factory=SubAgentsConfig)
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
     paths: PathsConfig
     secrets: Secrets
 
@@ -255,6 +304,7 @@ def load_config(
             scheduler=SchedulerConfig(**data.get("scheduler", {})),
             knowledge=KnowledgeConfig(**data.get("knowledge", {})),
             sub_agents=SubAgentsConfig(**data.get("sub_agents", {})),
+            voice=VoiceConfig(**data.get("voice", {})),
             paths=PathsConfig(**data.get("paths", {})),
             secrets=secrets,
         )

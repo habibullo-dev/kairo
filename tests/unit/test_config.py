@@ -124,6 +124,39 @@ def test_sub_agents_blank_model_yaml_is_none(tmp_path: Path) -> None:
     assert cfg.sub_agents.model is None
 
 
+def test_voice_config_defaults(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.voice.enabled is False  # opt-in surface, off by default
+    assert cfg.voice.cloud_providers is False
+    assert cfg.voice.stt_provider == "local"  # no-egress default
+    assert cfg.voice.tts_provider == "local"
+    assert cfg.voice.wake_word is None  # activation deferred (blank/None)
+    assert cfg.voice.retain_audio is False  # transcript kept, raw audio discarded
+
+
+def test_voice_cloud_provider_requires_optin(tmp_path: Path) -> None:
+    # Selecting a cloud STT/TTS without the explicit opt-in is refused at config load —
+    # no audio/spoken text leaves the machine to a third party by accident (ADR-0007).
+    _write_settings(tmp_path, "voice:\n  stt_provider: openai\n")
+    with pytest.raises(ConfigError):
+        load_config(root=tmp_path, env_file=None)
+    _write_settings(tmp_path, "voice:\n  tts_provider: elevenlabs\n")
+    with pytest.raises(ConfigError):
+        load_config(root=tmp_path, env_file=None)
+
+
+def test_voice_cloud_provider_allowed_with_optin(tmp_path: Path) -> None:
+    _write_settings(
+        tmp_path,
+        "voice:\n  enabled: true\n  cloud_providers: true\n  stt_provider: openai\n"
+        "  tts_provider: elevenlabs\n",
+    )
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.voice.cloud_providers is True
+    assert cfg.voice.stt_provider == "openai"
+    assert cfg.voice.tts_provider == "elevenlabs"
+
+
 def test_yaml_overrides_defaults(tmp_path: Path) -> None:
     _write_settings(
         tmp_path,

@@ -1780,3 +1780,31 @@ non-obvious *implementation* decisions per task.
   the demo: Opus spawned a read_file-scoped child, the child read + reported, the parent
   synthesized, and the agent_runs row linked parent trace a7912b8b → child 57c8e4fe. Every
   Phase 6 non-negotiable held; no safety contract weakened.
+
+## Phase 7 Task 1 — voice seams + ADR-0007 (safety floor first)
+
+- **Voice is an interface, not an authority — and that's the whole safety argument.**
+  `VoiceSession` will be a peer of the REPL that drives the same `AgentLoop` through the
+  same two seams (events out, the injected `Approver` in). Because the `Approver` is the
+  *only* approval path, the checkpoint's escalation can't be bypassed by realtime plumbing
+  — voice can only narrow, never widen (the `SubAgentGate` property, restated). ADR-0007
+  records this before any code that could quietly add a second path.
+- **The cloud opt-in is enforced at config load, fail-closed.** `voice.cloud_providers`
+  defaults off, and a `model_validator` *refuses* a cloud STT/TTS selection without it —
+  so no audio or spoken text can leave the machine to a third party by accident. The
+  privacy default is local; quality-first cloud is a conscious per-install choice.
+- **Blank YAML keys parse to `None`, so "unset string" fields must be `str | None`.**
+  `tts_voice:`/`wake_word:` shipped blank in settings.yaml → `None` → a `str`-typed field
+  rejected them and broke *every* test that calls `load_config` on the real settings file
+  (9 failures, none in voice tests). The fix is the `sub_agents.model` pattern: `str | None
+  = None`. Lesson restated: a committed blank key is a `None`, not an `""`.
+- **Provider protocols + fakes extend the FakeClient discipline to two more modalities.**
+  `STTProvider`/`TTSProvider` with `FakeTranscriber`/`FakeSynthesizer` make the entire
+  voice safety + orchestration layer (tasks 2–5) unit-testable with no audio and no
+  network; live engines drop in behind the protocol at task 6. `Transcript.is_final`
+  lives in the protocol so the session can enforce finalized-only-drives-a-turn.
+- **Transcribed audio is framed exactly like fetched web content.** `frame_transcript`
+  mirrors `web.py::_FETCH_HEADER`: a mic is a fetch from a hostile source, so the same
+  untrusted-delimiter discipline applies, and the voice-mode prompt says hearing ≠
+  authorization. The `voice` optional-dependency extra is deferred to task 6 (the live
+  adapters) to avoid churning the lockfile for deps nothing uses until then.

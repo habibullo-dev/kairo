@@ -65,6 +65,20 @@ sub_agents:
   max_parallel: 4               # concurrency semaphore (a resource bound, NOT a safety bound)
   max_spawn_calls_per_turn: 8   # runaway/UX guard: cap spawn calls in one parent turn (not a safety bound)
 
+voice:
+  # Voice interface (Phase 7). Push-to-talk MVP; wake-word activation is deferred. Voice
+  # is read-only by default and NEVER approves risky actions by voice — those escalate to
+  # an on-screen typed confirmation. Safety floor: docs/PLAN-7-voice-permissions-checkpoint.md.
+  enabled: false                 # opt-in; off = byte-identical to Phase 6
+  cloud_providers: false         # explicit opt-in for third-party STT/TTS (audio leaves the machine)
+  stt_provider: local            # 'local' (faster-whisper) | 'openai' (cloud; needs cloud_providers)
+  tts_provider: local            # 'local' (OS/offline) | 'elevenlabs' (cloud; needs cloud_providers)
+  tts_voice:                     # provider-specific voice id (blank = provider default)
+  wake_word:                     # DEFERRED: designed + tested, not activated in the MVP
+  retain_audio: false            # keep the transcript (untrusted); discard raw audio by default
+  endpoint_silence_seconds: 0.8  # push-to-talk: silence that ends an utterance
+  long_turn_ack_seconds: 1.5     # speak a brief "working on it" ack if a turn runs longer
+
 paths:
   data_dir: data   # SQLite db (relative to project root)
   logs_dir: logs   # JSON-lines audit/trace logs
