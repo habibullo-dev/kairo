@@ -17,6 +17,12 @@ from jarvis.voice.approver import (
     VoiceApprover,
 )
 from jarvis.voice.framing import frame_transcript
+from jarvis.voice.listening import (
+    CaptureSource,
+    FakeCapture,
+    PushToTalkListener,
+    wake_active,
+)
 from jarvis.voice.protocols import (
     FakeSynthesizer,
     FakeTranscriber,
@@ -28,8 +34,11 @@ from jarvis.voice.render import VoiceRenderer
 from jarvis.voice.session import VoiceOutput, VoiceSession
 
 __all__ = [
+    "CaptureSource",
+    "FakeCapture",
     "FakeSynthesizer",
     "FakeTranscriber",
+    "PushToTalkListener",
     "STTProvider",
     "ScreenApprover",
     "ScriptedScreenApprover",
@@ -41,4 +50,5 @@ __all__ = [
     "VoiceRenderer",
     "VoiceSession",
     "frame_transcript",
+    "wake_active",
 ]

@@ -1891,3 +1891,28 @@ non-obvious *implementation* decisions per task.
   privacy rule is about.** Testing against it (not the renderer's own record) makes the
   pins read exactly as the guarantee: assert the secret is not among the strings the TTS
   engine was asked to speak.
+
+## Phase 7 Task 5 — listening: push-to-talk now, wake designed-not-activated
+
+- **Wake is a tested contract, not a shipped feature.** `wake_active()` returns False in
+  the MVP even when a `wake_word` is configured — the state machine and the one-turn
+  scope are verified (a "spurious wake" test drives one activation and asserts it commits
+  nothing), but no wake engine is wired. Landing the contract + its tests now means
+  turning wake on later is a config/enable step against an already-verified floor, not new
+  unaudited listening surface.
+- **"No unattended mic" is enforced two ways: structure and a guard.** Structurally, a
+  background run never constructs a listener (the mic analogue of `spawn_agent` in the
+  unattended `HARD_DENY` set). Belt-and-suspenders, `PushToTalkListener(attended=False)`
+  *refuses to open the mic* and the test asserts `capture.calls == 0` — the refusal
+  happens before any capture, not after.
+- **One activation = one utterance = one turn, enforced by `finally`.** `listen_once`
+  captures a single utterance and the `finally` returns state to idle no matter what —
+  there is no path to an indefinite listening window. The observable `on_state` callback
+  fires the transitions so a UI can never show "listening" while the mic is actually off
+  (or vice versa).
+- **The T8 safety property (spurious wake) reduces to the safety core, not the mic.**
+  Even if a trigger fires on ambient audio and the transcript is a risky command, the
+  outcome is bounded by everything already built: one utterance, the risky action
+  escalates, and with no screen it's denied. The listening layer doesn't need its own
+  "was this really the user?" check — read-only-default + prepare-don't-commit already
+  make a false trigger harmless.
