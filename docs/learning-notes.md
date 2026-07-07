@@ -2150,3 +2150,30 @@ project-monthly refusal (nothing spawns) and a between-stage per-run hard stop (
 the execution fan-out is refused) → `budget_stopped`. The worst-case *estimate* reservation is
 Task 14; the store's `sweep_orphans` (crash-`running` → `aborted`, mirroring agent/task runs)
 is tested here and wired at startup in Task 15 alongside engine construction.
+
+## Phase 10B Task 14 — a reservation must over-count, and fail closed
+
+The worst-case estimator (`estimate.py`) is a pure function — no DB, no model calls — so the
+whole cost/decision matrix is table-testable. Two design choices carry the safety weight. First,
+the estimate is a deliberate **over**-count: every member is assumed to loop to the iteration
+cap, re-sending the full framed context on each call, across every revise round, with cache
+discounts ignored. A reservation that *under*-counts is the dangerous direction (you authorize a
+run you can't afford to finish), so the bias is intentional and documented — this is a
+reservation, not a forecast. Second, it is **fail-closed on price**: an unpriced route (unknown
+model) or a metered service with no `pricing.yaml` entry makes `total_usd` None, and under the
+default `treat_unpriced_as_blocking` that is a hard block. Never guess a price — the same
+NULL-not-$0 contract the ledger already enforces, now applied before the spend happens. Local
+free tools (`fixed_zero`) contribute a *known* $0, which is distinct from the fail-closed NULL.
+
+The decision order matters: unpriced → per-role cap → per-team budget → per-run reservation →
+confirm → ok, most-conservative first, so the reported reason is the strongest one. Per-run
+reservation only hard-blocks when the caller sets an explicit `budget_usd` — otherwise the
+default config would block routine runs, and the between-stage hard-stop (Task 13) remains the
+backstop on *actual* spend. The two-step confirm is a control-flow gate, not a status: when the
+worst case exceeds `confirm_above_usd` and the caller hasn't confirmed, `run()` raises
+`ConfirmationRequired(estimate)` **before opening any run row** (a "needs confirmation" isn't a
+terminal outcome and shouldn't litter the audit table); the API shows the estimate, the human
+confirms, and the caller re-invokes `confirmed=True`. A `block`, by contrast, *does* open an
+auditable `budget_stopped` row with the reason — a refusal the user should see in history. And
+the engine recomputes the estimate itself inside `run()` rather than trusting the caller's copy
+(the caller could lie about `confirmed`; it cannot make the recomputed decision disagree).

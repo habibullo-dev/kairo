@@ -25,13 +25,29 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from jarvis.config import BudgetsConfig
 from jarvis.core.client import LLMClient
+from jarvis.models.registry import ModelRegistry
 from jarvis.observability import get_logger
+from jarvis.observability.cost import PricingTable
 from jarvis.orchestration.context import ContextBundle
+from jarvis.orchestration.estimate import RunEstimate, estimate_run
 from jarvis.orchestration.roles import Capability, RosterRole
 from jarvis.orchestration.store import OrchestrationStore
 from jarvis.orchestration.teams import TeamProfile
 from jarvis.orchestration.workflows import WorkflowTemplate
+
+
+class ConfirmationRequired(Exception):
+    """Raised by :meth:`OrchestrationEngine.run` when the worst-case estimate exceeds the
+    confirm threshold and the caller has not confirmed. Carries the estimate so the API/Studio
+    can present the two-step confirm; NO run row is opened until the caller re-invokes with
+    ``confirmed=True``."""
+
+    def __init__(self, estimate: RunEstimate) -> None:
+        super().__init__(estimate.reason)
+        self.estimate = estimate
+
 
 _RECORD_SYNTHESIS = {
     "name": "record_synthesis",
@@ -76,7 +92,11 @@ class OrchestrationEngine:
     """Drives one orchestration run. ``spawn`` is ``SubAgentService.spawn`` (injected for
     tests); ``head_client``/``head_model`` run synthesis+verdict (a thinking-off forced-tool
     client — the planner/Fable route); ``turn_lock`` serializes the execution stage; ``budget``
-    (optional) gates spend between stages."""
+    (a ``BudgetService``, optional) gates ACTUAL spend between stages.
+
+    Pre-fan-out RESERVATION (Task 14) runs only when ``registry`` + ``pricing`` + ``budgets``
+    are all supplied: a worst-case estimate is checked against the caps before any child spawns.
+    Without them the engine skips estimation (the Task 13 stage-machine behavior)."""
 
     def __init__(
         self,
@@ -88,6 +108,12 @@ class OrchestrationEngine:
         turn_lock: asyncio.Lock,
         max_rounds: int = 3,
         budget: object | None = None,
+        registry: ModelRegistry | None = None,
+        pricing: PricingTable | None = None,
+        budgets: BudgetsConfig | None = None,
+        est_iterations: int = 6,
+        est_out_tokens: int = 2048,
+        project_routes: dict | None = None,
     ) -> None:
         self.spawn = spawn
         self.store = store
@@ -96,7 +122,41 @@ class OrchestrationEngine:
         self.turn_lock = turn_lock
         self.max_rounds = max_rounds
         self.budget = budget
+        self.registry = registry
+        self.pricing = pricing
+        self.budgets = budgets
+        self.est_iterations = est_iterations
+        self.est_out_tokens = est_out_tokens
+        self.project_routes = project_routes
         self.log = get_logger("jarvis.orchestration")
+
+    def estimate(
+        self,
+        team: TeamProfile,
+        workflow: WorkflowTemplate,
+        context: ContextBundle,
+        *,
+        budget_usd: float | None = None,
+    ) -> RunEstimate | None:
+        """The worst-case reservation for this run, or None if estimation is not configured.
+        Pure (no DB / no model calls) — the API calls it for a dry-run preview + two-step
+        confirm, and :meth:`run` calls it again itself (never trusting the caller's copy)."""
+        if self.registry is None or self.pricing is None or self.budgets is None:
+            return None
+        context_tokens = sum(item["tokens_est"] for item in context.manifest())
+        return estimate_run(
+            team=team,
+            workflow=workflow,
+            registry=self.registry,
+            pricing=self.pricing,
+            budgets=self.budgets,
+            context_tokens=context_tokens,
+            max_rounds=self.max_rounds,
+            iterations=self.est_iterations,
+            out_per_call=self.est_out_tokens,
+            project_routes=self.project_routes,
+            budget_usd=budget_usd,
+        )
 
     @staticmethod
     def _members(team: TeamProfile, stage_kind: str) -> list[RosterRole]:
@@ -216,9 +276,23 @@ class OrchestrationEngine:
         title: str,
         estimated_cost_usd: float | None = None,
         budget_usd: float | None = None,
+        confirmed: bool = False,
     ) -> int:
         """Execute the workflow and return the run id. Off any turn lock except the brief
-        execution window. Reads run records for control; report text is untrusted data only."""
+        execution window. Reads run records for control; report text is untrusted data only.
+
+        Reservation (when estimation is configured): a worst-case estimate is computed BEFORE
+        opening a run row. ``confirm`` + not ``confirmed`` ⇒ :class:`ConfirmationRequired` is
+        raised with no row opened (the caller re-invokes with ``confirmed=True``); ``block`` ⇒ an
+        auditable ``budget_stopped`` row is recorded and returned; nothing spawns in either case.
+        """
+        estimate = self.estimate(team, workflow, context, budget_usd=budget_usd)
+        if estimate is not None:
+            if estimate.decision == "confirm" and not confirmed:
+                raise ConfirmationRequired(estimate)  # no row opened — two-step confirm
+            if estimated_cost_usd is None:
+                estimated_cost_usd = estimate.total_usd
+
         run_id = await self.store.begin_run(
             project_id=project_id,
             workflow=workflow.id,
@@ -229,8 +303,15 @@ class OrchestrationEngine:
             budget_usd=budget_usd,
         )
         try:
+            # Pre-fan-out RESERVATION: a worst-case estimate over the caps refuses the run
+            # before any child spawns (auditable budget_stopped row, with the reason).
+            if estimate is not None and estimate.decision == "block":
+                await self.store.complete_run(
+                    run_id, status="budget_stopped", synthesis_summary=estimate.reason[:200]
+                )
+                return run_id
             # Pre-fan-out budget gate: refuse to start the fan-out if the project is already
-            # over its monthly cap. (Task 14 adds worst-case ESTIMATE reservation on top.)
+            # over its monthly cap.
             if self.budget is not None and await self.budget.project_month_exceeded(project_id):
                 await self.store.complete_run(
                     run_id,
