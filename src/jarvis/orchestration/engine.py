@@ -109,6 +109,7 @@ class OrchestrationEngine:
         max_rounds: int = 3,
         budget: object | None = None,
         registry: ModelRegistry | None = None,
+        factory: object | None = None,
         pricing: PricingTable | None = None,
         budgets: BudgetsConfig | None = None,
         est_iterations: int = 6,
@@ -123,12 +124,24 @@ class OrchestrationEngine:
         self.max_rounds = max_rounds
         self.budget = budget
         self.registry = registry
+        self.factory = factory  # ClientFactory | None — per-role client (else the shared client)
         self.pricing = pricing
         self.budgets = budgets
         self.est_iterations = est_iterations
         self.est_out_tokens = est_out_tokens
         self.project_routes = project_routes
+        self._on_event: Callable[[dict], Awaitable[None]] | None = None  # set per run()
         self.log = get_logger("jarvis.orchestration")
+
+    async def _emit(self, kind: str, **fields: object) -> None:
+        """Fire one orchestration lifecycle event to the per-run sink (schema v2). Metadata
+        only — never prompt/report bodies. A sink error never breaks the run."""
+        if self._on_event is None:
+            return
+        try:
+            await self._on_event({"kind": kind, "schema_version": 2, **fields})
+        except Exception as exc:  # noqa: BLE001 - a UI sink hiccup must not fail the run
+            self.log.warning("orchestration_event_sink_error", error=repr(exc))
 
     def estimate(
         self,
@@ -183,10 +196,22 @@ class OrchestrationEngine:
         project_id: int,
         prompt: str,
     ) -> StageResult:
+        # Per-role MODEL routing: the member runs on its route's model (researcher→sonnet,
+        # coder→opus, …) so execution matches what the estimate priced. The client stays the
+        # shared Anthropic client unless a factory is wired (default routes are all Anthropic;
+        # OpenAI is opt-in per role and text-only, never for the tool-capable writer).
+        model = client = None
+        if self.registry is not None:
+            route = self.registry.route(member.route_role, project_routes=self.project_routes)
+            model = route.model
+            if self.factory is not None:
+                client = self.factory.for_route(route)
         result = await self.spawn(
             title=f"{team_id}:{member.id}",
             prompt=prompt,
             tools=sorted(member.tools),
+            model=model,
+            client=client,
             role=member.route_role,
             team=team_id,
             stage=stage,
@@ -198,6 +223,11 @@ class OrchestrationEngine:
         # not its report text. The report is untrusted data for the synthesizer only.
         ok = not getattr(result, "is_error", False)
         report = getattr(result, "content", str(result))
+        await self._emit(
+            "orchestration_agent",
+            run_id=run_id, team=team_id, role=member.route_role, member=member.id,
+            stage=stage, ok=ok,
+        )
         return StageResult(role=member.route_role, ok=ok, report=report)
 
     async def _parallel(
@@ -266,6 +296,23 @@ class OrchestrationEngine:
         spent = (await self.budget.run_spend(run_id))["cost_usd"]
         return self.budget.check_run(spent) != "hard"
 
+    async def _stage(self, run_id: int, stage: str) -> None:
+        await self.store.set_stage(run_id, stage)
+        await self._emit("orchestration_stage", run_id=run_id, stage=stage)
+
+    async def _finish(
+        self, run_id: int, *, status: str, verdict: str | None = None,
+        synthesis_summary: str | None = None,
+    ) -> int:
+        await self.store.complete_run(
+            run_id, status=status, verdict=verdict, synthesis_summary=synthesis_summary
+        )
+        await self._emit(
+            "orchestration_completed", run_id=run_id, status=status, verdict=verdict,
+            summary=(synthesis_summary or "")[:200],
+        )
+        return run_id
+
     async def run(
         self,
         *,
@@ -277,15 +324,19 @@ class OrchestrationEngine:
         estimated_cost_usd: float | None = None,
         budget_usd: float | None = None,
         confirmed: bool = False,
+        on_event: Callable[[dict], Awaitable[None]] | None = None,
     ) -> int:
         """Execute the workflow and return the run id. Off any turn lock except the brief
         execution window. Reads run records for control; report text is untrusted data only.
+        ``on_event`` is an async sink for the schema-v2 lifecycle events (started/stage/agent/
+        round/completed) — metadata only, for the Studio timeline.
 
         Reservation (when estimation is configured): a worst-case estimate is computed BEFORE
         opening a run row. ``confirm`` + not ``confirmed`` ⇒ :class:`ConfirmationRequired` is
         raised with no row opened (the caller re-invokes with ``confirmed=True``); ``block`` ⇒ an
         auditable ``budget_stopped`` row is recorded and returned; nothing spawns in either case.
         """
+        self._on_event = on_event
         estimate = self.estimate(team, workflow, context, budget_usd=budget_usd)
         if estimate is not None:
             if estimate.decision == "confirm" and not confirmed:
@@ -302,29 +353,30 @@ class OrchestrationEngine:
             estimated_cost_usd=estimated_cost_usd,
             budget_usd=budget_usd,
         )
+        await self._emit(
+            "orchestration_started", run_id=run_id, team=team.id, workflow=workflow.id,
+            title=title, estimated_cost_usd=estimated_cost_usd,
+        )
         try:
             # Pre-fan-out RESERVATION: a worst-case estimate over the caps refuses the run
             # before any child spawns (auditable budget_stopped row, with the reason).
             if estimate is not None and estimate.decision == "block":
-                await self.store.complete_run(
+                return await self._finish(
                     run_id, status="budget_stopped", synthesis_summary=estimate.reason[:200]
                 )
-                return run_id
             # Pre-fan-out budget gate: refuse to start the fan-out if the project is already
             # over its monthly cap.
             if self.budget is not None and await self.budget.project_month_exceeded(project_id):
-                await self.store.complete_run(
-                    run_id,
-                    status="budget_stopped",
+                return await self._finish(
+                    run_id, status="budget_stopped",
                     synthesis_summary="project monthly budget exceeded before start",
                 )
-                return run_id
 
             has_execution = any(s.kind == "execution" for s in workflow.stages)
             framed_ctx = context.framed()
 
             # A. Council (parallel, read-only)
-            await self.store.set_stage(run_id, "council")
+            await self._stage(run_id, "council")
             council = await self._parallel(
                 self._members(team, "council"),
                 stage="council",
@@ -335,7 +387,7 @@ class OrchestrationEngine:
             )
 
             # B. Synthesis (head, forced schema, over framed untrusted council reports)
-            await self.store.set_stage(run_id, "synthesis")
+            await self._stage(run_id, "synthesis")
             synth = await self._head_call(_RECORD_SYNTHESIS, self._framed(council))
             summary = str(synth.get("summary", ""))[:2000]
 
@@ -343,12 +395,11 @@ class OrchestrationEngine:
             if has_execution:
                 for round_i in range(self.max_rounds):
                     if not await self._budget_ok(run_id):
-                        await self.store.complete_run(
+                        return await self._finish(
                             run_id, status="budget_stopped", synthesis_summary=summary
                         )
-                        return run_id
                     # C. Execution — ONE writer, under the shared turn lock
-                    await self.store.set_stage(run_id, "execution")
+                    await self._stage(run_id, "execution")
                     writer = self._members(team, "execution")
                     exec_prompt = f"Implement per the synthesis.\n\n{summary}\n\n{framed_ctx}"
                     exec_results: list[StageResult] = []
@@ -365,7 +416,7 @@ class OrchestrationEngine:
                                 )
                             ]
                     # D. Review (parallel, read-only, over the produced artifact)
-                    await self.store.set_stage(run_id, "review")
+                    await self._stage(run_id, "review")
                     reviews = await self._parallel(
                         self._members(team, "review"),
                         stage="review",
@@ -375,28 +426,28 @@ class OrchestrationEngine:
                         prompt=f"Review the work.\n\n{self._framed(exec_results)}",
                     )
                     # E. Verdict
-                    await self.store.set_stage(run_id, "verdict")
+                    await self._stage(run_id, "verdict")
                     v = await self._head_call(_RECORD_VERDICT, self._framed(exec_results + reviews))
                     verdict = v.get("verdict", "revise")
-                    self.log.info(
+                    await self._emit(
                         "orchestration_round", run_id=run_id, round=round_i, verdict=verdict
                     )
                     if verdict != "revise":
                         break
             else:
-                await self.store.set_stage(run_id, "verdict")
+                await self._stage(run_id, "verdict")
                 v = await self._head_call(_RECORD_VERDICT, self._framed(council))
                 verdict = v.get("verdict", "accept")
 
             status = _VERDICT_TO_STATUS.get(verdict, "error")
-            await self.store.complete_run(
+            return await self._finish(
                 run_id, status=status, verdict=verdict, synthesis_summary=summary
             )
-            return run_id
         except asyncio.CancelledError:
-            await self.store.complete_run(run_id, status="cancelled")
+            await self._finish(run_id, status="cancelled")
             raise
         except Exception as exc:  # noqa: BLE001 - a run crash is a recorded terminal state
             self.log.warning("orchestration_error", run_id=run_id, error=repr(exc))
-            await self.store.complete_run(run_id, status="error", synthesis_summary=str(exc)[:200])
-            return run_id
+            return await self._finish(
+                run_id, status="error", synthesis_summary=str(exc)[:200]
+            )

@@ -37,11 +37,17 @@ from jarvis.ui.readmodels import (
     list_memories,
     list_sessions_view,
     list_tasks,
+    model_routes_status,
+    orchestration_run_detail,
+    orchestration_runs_view,
     projects_view,
+    services_status,
     session_transcript,
     task_runs,
+    teams_catalog,
     vault_lint,
     vault_overview,
+    workflows_catalog,
 )
 
 if TYPE_CHECKING:
@@ -145,6 +151,7 @@ def create_app(
     app.state.run_digest_now = None  # async () -> DigestOutcome, set by run_ui; None ⇒ 503
     app.state.projects = None  # a ProjectService, set by build_ui_app; None ⇒ projects 503
     app.state.modes = None  # a ModeState, set by build_ui_app; None ⇒ mode reads 'approval'
+    app.state.orchestrator = None  # an OrchestrationController, set by build_ui_app; None ⇒ 503
     # The UI is voice's fail-closed "screen": a VoiceApprover wired to this UIScreenApprover
     # resolves risky voice actions on the authenticated, live, watching Gate surface — or
     # denies. Composed here so the CLI host (Task 9) injects it into the voice VoiceApprover.
@@ -445,6 +452,56 @@ def create_app(
             return _unavailable("costs")
         return JSONResponse(await costs_overview(budgets, project_id=project_id))
 
+    # --- Studio (orchestration): catalog + runs + estimate (all read-only) -------------
+
+    @app.get("/api/studio")
+    async def studio() -> JSONResponse:
+        # The Studio bootstrap: team profiles + workflow templates (code constants) + service
+        # availability + model routes — all presence/metadata only, no key value ever. Always
+        # available (pure over config + constants); the run mutations are gated separately.
+        projects = app.state.projects
+        proj_services = None  # per-project narrowing could pass the project's enabled subset
+        return JSONResponse(
+            {
+                "teams": teams_catalog(),
+                "workflows": workflows_catalog(),
+                "services": services_status(config, project_services=proj_services),
+                "model_routes": model_routes_status(config),
+                "active_project_id": (
+                    projects.current().project_id if projects is not None else None
+                ),
+                "busy": bool(app.state.orchestrator is not None and app.state.orchestrator.busy),
+            }
+        )
+
+    @app.get("/api/orchestration")
+    async def orchestration_list(project_id: int | None = None) -> JSONResponse:
+        store = app.state.services.orchestration
+        if store is None:
+            return _unavailable("orchestration")
+        return JSONResponse(await orchestration_runs_view(store, project_id=project_id))
+
+    @app.get("/api/orchestration/estimate")
+    async def orchestration_estimate(
+        team: str, workflow: str, task: str = "", budget_usd: float | None = None
+    ) -> JSONResponse:
+        # A GET (no state change) so the two-step confirm preview never touches the mutation
+        # closed-set. Returns cost metadata only.
+        orch = app.state.orchestrator
+        if orch is None:
+            return _unavailable("orchestration")
+        result = await orch.estimate(team, workflow, task=task, budget_usd=budget_usd)
+        return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+    @app.get("/api/orchestration/{run_id}")
+    async def orchestration_detail(run_id: int) -> JSONResponse:
+        store = app.state.services.orchestration
+        if store is None:
+            return _unavailable("orchestration")
+        return JSONResponse(
+            await orchestration_run_detail(store, app.state.services.run_store, run_id)
+        )
+
     # --- mutations: the enumerated human-authority set (D5, route-closed-set pin) ------
 
     @app.post("/api/vault/sources/{source_id}/approve")
@@ -650,6 +707,31 @@ def create_app(
             {"kind": "project_changed", "project_id": ctx.project_id, "name": ctx.name}
         )
         return JSONResponse({"ok": True, "active_project_id": ctx.project_id})
+
+    @app.post("/api/orchestration/run")
+    async def orchestration_run(request: Request) -> JSONResponse:
+        # Launch a team+workflow orchestration run. The click authorizes the fan-out; the engine
+        # re-checks the budget reservation itself. Returns 202 on launch, 200 + needs_confirmation
+        # when the worst case crosses the confirm threshold, 409 if a run is already in flight.
+        orch = app.state.orchestrator
+        if orch is None:
+            return _unavailable("orchestration")
+        body = await request.json()
+        result, code = await orch.start(
+            team_id=str(body.get("team", "")),
+            workflow_id=str(body.get("workflow", "")),
+            task=str(body.get("task", "")),
+            budget_usd=body.get("budget_usd"),
+            confirmed=bool(body.get("confirmed", False)),
+        )
+        return JSONResponse(result, status_code=code)
+
+    @app.post("/api/orchestration/{run_id}/cancel")
+    async def orchestration_cancel(run_id: int) -> JSONResponse:
+        orch = app.state.orchestrator
+        if orch is None:
+            return _unavailable("orchestration")
+        return JSONResponse({"cancelled": orch.cancel(run_id)})
 
     # --- voice: status + push-to-talk + meeting capture (unreviewed source) ------------
 

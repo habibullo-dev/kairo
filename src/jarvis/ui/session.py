@@ -37,7 +37,8 @@ if TYPE_CHECKING:
     from jarvis.persistence.sessions import SessionStore
     from jarvis.ui.connections import ConnectionManager
 
-EVENT_SCHEMA_VERSION = 1
+EVENT_SCHEMA_VERSION = 2  # v2: Phase-10B orchestration lifecycle events (started/stage/agent/
+#                                round/completed), broadcast by the OrchestrationController.
 
 
 def serialize_event(event: Event) -> dict:

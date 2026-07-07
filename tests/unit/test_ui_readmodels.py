@@ -165,6 +165,8 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/budgets"),  # Phase 10: tune live budget limits
         ("POST", "/api/memory/remember"),  # Phase 10: human-authority remember (promote target)
         ("POST", "/api/tasks/create"),  # Phase 10: human-authority task create (promote target)
+        ("POST", "/api/orchestration/run"),  # Phase 10B: launch a team+workflow run
+        ("POST", "/api/orchestration/{run_id}/cancel"),  # Phase 10B: cancel the in-flight run
         ("POST", "/api/voice/listen"),
         ("POST", "/api/voice/meeting"),
     }

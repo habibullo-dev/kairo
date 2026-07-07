@@ -2177,3 +2177,30 @@ confirms, and the caller re-invokes `confirmed=True`. A `block`, by contrast, *d
 auditable `budget_stopped` row with the reason — a refusal the user should see in history. And
 the engine recomputes the estimate itself inside `run()` rather than trusting the caller's copy
 (the caller could lie about `confirmed`; it cannot make the recomputed decision disagree).
+
+## Phase 10B Task 15 — the Studio adds two mutations and nothing sensitive to the wire
+
+The orchestration API grew the mutation closed-set by exactly two — `POST /api/orchestration/run`
+and `POST /api/orchestration/{id}/cancel` — pinned at 25 (was 23). The *estimate* preview is a
+**GET** on purpose: a two-step-confirm dry-run changes no state, so it stays out of the mutation
+set (and off the anti-CSRF Origin path) rather than inflating it. The engine's schema-v2 lifecycle
+events (started/stage/agent/round/completed) are metadata only — a run title composed from code
+constants (team + workflow names, never the user's free-text brief), a stage name, a member's
+role/stage/ok. The brief itself only ever enters the framed, untrusted context bundle, never the
+audit title or an event. The run-detail read model surfaces per-member metadata
+(role/stage/status/iterations/denied/cost) via a dedicated `AgentRunStore.member_runs` query that
+does not SELECT `prompt` or `result_text` — a child's report is a fresh injection channel and is
+kept off every UI surface (the secret-absence sweep, extended over the new GET routes, backs this).
+
+`OrchestrationController` mirrors the "one interactive turn at a time" discipline: one orchestration
+run in flight, tracked as a single background `asyncio.Task`. Cancellation is the interesting part —
+the controller's `_run` wrapper *catches* the `CancelledError` the engine re-raises (the engine has
+already recorded `cancelled`, shielded), so a cancelled background run completes cleanly instead of
+surfacing a "task exception never retrieved". The run id needed to target a cancel isn't known until
+`begin_run` fires inside the engine, so the controller learns it from the `orchestration_started`
+event via the same sink it uses to broadcast — the event stream doubles as the control channel.
+Composition wires the engine with the ModelRegistry (per-role member models + reservation pricing),
+the PricingTable, and the budget config; the head runs on a thinking-off Fable client (forced-schema
+synthesis/verdict need thinking off, the utility-client precedent). The orphan sweep runs at
+`run_ui` startup — orchestration runs are only created there, so that is where a crash's `running`
+row is recovered.

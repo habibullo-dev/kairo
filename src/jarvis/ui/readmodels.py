@@ -54,6 +54,8 @@ class UiServices:
     projects: ProjectService | None = None
     ledger: Any = None  # a CostLedger; None when cost tracking isn't composed
     budgets: Any = None  # a BudgetService; None when cost tracking isn't composed
+    # Phase 10B: the orchestration run store backs the Studio history + run detail read models.
+    orchestration: Any = None  # an OrchestrationStore; None when orchestration isn't composed
 
 
 # --- memory ----------------------------------------------------------------
@@ -290,6 +292,98 @@ def serialize_agent_run(run: AgentRun) -> dict:
 
 async def list_agent_runs(run_store: AgentRunStore, *, limit: int = 50) -> list[dict]:
     return [serialize_agent_run(r) for r in await run_store.list(limit=limit)]
+
+
+# --- orchestration (Studio): runs + team/workflow catalog (metadata only) ---
+
+
+def serialize_orchestration_run(run: Any) -> dict:
+    """One orchestration run for the Studio history/detail. Summary + manifest + costs only —
+    the store never holds a verbatim prompt or child report, so nothing sensitive is here."""
+    return {
+        "id": run.id,
+        "project_id": run.project_id,
+        "workflow": run.workflow,
+        "title": run.title,
+        "team": run.config.get("team"),
+        "status": run.status,
+        "stage": run.stage,
+        "verdict": run.verdict,
+        "synthesis_summary": run.synthesis_summary,
+        "estimated_cost_usd": run.estimated_cost_usd,
+        "actual_cost_usd": run.actual_cost_usd,
+        "budget_usd": run.budget_usd,
+        "context_manifest": run.context_manifest,  # refs/hashes/token-est only (bodies-free)
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+    }
+
+
+async def orchestration_runs_view(
+    store: Any, *, project_id: int | None = None, limit: int = 50
+) -> dict:
+    runs = await store.list(project_id=project_id, limit=limit)
+    return {"runs": [serialize_orchestration_run(r) for r in runs]}
+
+
+async def orchestration_run_detail(store: Any, run_store: Any, run_id: int) -> dict:
+    """A run + its per-member metadata (role/stage/status/cost — never bodies). ``run_store``
+    (the AgentRunStore) may be None ⇒ members omitted."""
+    run = await store.get(run_id)
+    if run is None:
+        return {"run": None, "members": []}
+    members = await run_store.member_runs(run_id) if run_store is not None else []
+    return {"run": serialize_orchestration_run(run), "members": members}
+
+
+def serialize_team(team: Any) -> dict:
+    """A team profile for the Studio roster cards. Code-constant metadata: each member's role,
+    tools, services, capability, and output — no secrets, no runtime state."""
+    return {
+        "id": team.id,
+        "name": team.name,
+        "description": team.description,
+        "icon": team.icon,
+        "color": team.color,
+        "default_workflows": list(team.default_workflows),
+        "team_budget_usd": team.team_budget_usd,
+        "members": [
+            {
+                "id": m.id,
+                "title": m.title,
+                "route_role": m.route_role,
+                "capability": m.capability.value,
+                "tools": sorted(m.tools),
+                "services": sorted(m.services),
+                "output": m.output,
+                "max_cost_usd": m.max_cost_usd,
+            }
+            for m in team.members
+        ],
+    }
+
+
+def teams_catalog() -> list[dict]:
+    """All 8 team profiles (code constants) for the Studio team picker."""
+    from jarvis.orchestration import TEAM_PROFILES
+
+    return [serialize_team(t) for t in TEAM_PROFILES.values()]
+
+
+def workflows_catalog() -> list[dict]:
+    """All workflow templates (code constants): stages + ROI baseline minutes."""
+    from jarvis.orchestration import WORKFLOWS
+
+    return [
+        {
+            "id": w.id,
+            "title": w.title,
+            "stages": [{"name": s.name, "kind": s.kind} for s in w.stages],
+            "baseline_minutes": w.baseline_minutes,
+            "has_execution": any(s.kind == "execution" for s in w.stages),
+        }
+        for w in WORKFLOWS.values()
+    ]
 
 
 # --- hub: connector status (PRESENCE BOOLEANS ONLY — never a key value) -----

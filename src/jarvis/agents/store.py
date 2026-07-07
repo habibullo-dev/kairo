@@ -192,6 +192,29 @@ class AgentRunStore:
             )
         return [_row_to_run(row) for row in await cursor.fetchall()]
 
+    async def member_runs(self, orchestration_run_id: int) -> list[dict]:
+        """Bodies-free per-member metadata for one orchestration run (Phase 10B Studio detail):
+        role / stage / status / iterations / denied / cost — NEVER the prompt or result_text
+        (those are a fresh injection channel and stay off every UI surface)."""
+        cursor = await self.db.execute(
+            "SELECT id, role, stage, status, iterations, denied_count, cost_usd, title "
+            "FROM agent_runs WHERE orchestration_run_id = ? ORDER BY id",
+            (orchestration_run_id,),
+        )
+        return [
+            {
+                "id": r[0],
+                "role": r[1],
+                "stage": r[2],
+                "status": r[3],
+                "iterations": r[4],
+                "denied_count": r[5],
+                "cost_usd": r[6],
+                "title": r[7],
+            }
+            for r in await cursor.fetchall()
+        ]
+
     async def sweep_orphans(self) -> list[str]:
         """Mark any still-``'running'`` rows ``'aborted'`` (a crash left them open) and
         return one human-readable note per orphan. Called at startup, mirroring the

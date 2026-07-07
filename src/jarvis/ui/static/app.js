@@ -5,6 +5,7 @@
 
 import { render as renderDaily, onEvent as dailyOnEvent } from "./screens/daily.js";
 import { render as renderProjects } from "./screens/projects.js";
+import { render as renderStudio, onEvent as studioOnEvent } from "./screens/studio.js";
 import { render as renderGate } from "./screens/gate.js";
 import { render as renderVault } from "./screens/vault.js";
 import { render as renderTasks } from "./screens/tasks.js";
@@ -72,6 +73,12 @@ function connect() {
 function handleMessage(msg) {
   if (msg.type === "approval") { onApproval(msg); return; }
   if (msg.type === "approval_nonce") { onNonce(msg); return; }
+  if (msg.kind && msg.kind.startsWith("orchestration_")) {
+    studioOnEvent(state, msg);        // update the in-flight run panel
+    refreshIfActive("studio");
+    if (msg.kind === "orchestration_completed") pollStatus();  // refresh spend/busy chips
+    return;
+  }
   if (msg.kind === "event") { onEvent(msg); return; }
   if (msg.kind === "notice") { onNotice(msg.notice); return; }
   if (msg.kind === "voice") { onVoice(msg); return; }
@@ -201,9 +208,9 @@ function updateGateBadge() {
 
 // --- router ---
 const screens = {
-  daily: renderDaily, projects: renderProjects, gate: renderGate, vault: renderVault,
-  tasks: renderTasks, memory: renderMemory, hub: renderHub, costs: renderCosts,
-  lab: renderLab, meetings: renderMeetings, trace: renderTrace,
+  daily: renderDaily, projects: renderProjects, studio: renderStudio, gate: renderGate,
+  vault: renderVault, tasks: renderTasks, memory: renderMemory, hub: renderHub,
+  costs: renderCosts, lab: renderLab, meetings: renderMeetings, trace: renderTrace,
 };
 
 function refreshIfActive(name) { if (state.route === name) renderRoute(); }

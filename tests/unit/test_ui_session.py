@@ -31,14 +31,14 @@ from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
 from jarvis.ui.connections import ConnectionManager
 from jarvis.ui.server import create_app
-from jarvis.ui.session import UiSession, serialize_event
+from jarvis.ui.session import EVENT_SCHEMA_VERSION, UiSession, serialize_event
 
 # --- serialize_event: every type -> versioned JSON --------------------------
 
 
 def test_serialize_all_event_types() -> None:
     assert serialize_event(TextDelta("hi")) == {
-        "schema_version": 1,
+        "schema_version": EVENT_SCHEMA_VERSION,
         "type": "text_delta",
         "text": "hi",
     }

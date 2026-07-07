@@ -36,6 +36,7 @@ from jarvis.observability import cost_of, get_logger
 from jarvis.observability.budget import BudgetService
 from jarvis.observability.cost import Usage, load_pricing
 from jarvis.observability.ledger import CostLedger, LedgeredClient
+from jarvis.orchestration import OrchestrationStore
 from jarvis.permissions import (
     NEVER_GRANTABLE,
     NEVER_PERSIST,
@@ -1283,6 +1284,11 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
     app.state.projects = repl.projects
     app.state.modes = repl.modes
     run_store = repl.agents.run_store if repl.agents is not None else None
+    # Phase 10B: the orchestration store (Studio history/detail read models) exists whenever the
+    # DB does; the engine + controller are wired only when delegation (spawn) is available.
+    orch_store = (
+        OrchestrationStore(repl.store.db, repl.store.lock) if repl.store is not None else None
+    )
     app.state.services = UiServices(
         memory=repl.memory,
         tasks=repl.tasks,
@@ -1293,10 +1299,43 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
         projects=repl.projects,  # Phase 10: Projects screen read model
         ledger=repl.cost_ledger,  # Phase 10: Costs + A5 ledger-degraded status
         budgets=repl.budgets,  # Phase 10: Costs screen rollups + limits
+        orchestration=orch_store,  # Phase 10B: Studio runs
     )
+    if repl.agents is not None and orch_store is not None:
+        app.state.orchestrator = _build_orchestrator(config, repl=repl, app=app, store=orch_store)
     if config.voice.enabled:
         app.state.voice = _build_ui_voice(config, repl=repl, app=app)
     return app
+
+
+def _build_orchestrator(config: Config, *, repl: Repl, app, store):
+    """Compose the OrchestrationEngine (Task 13/14) + its UI controller (Task 15). The head
+    synthesis/verdict run on a thinking-off Fable client (forced-schema calls need thinking off,
+    the utility-client precedent); members run on their per-role model via the shared client.
+    The engine gets the ModelRegistry + PricingTable + budget config so the pre-fan-out
+    worst-case reservation is live."""
+    from jarvis.models import ModelRegistry
+    from jarvis.observability.cost import load_pricing
+    from jarvis.orchestration import OrchestrationEngine
+    from jarvis.ui.orchestration import OrchestrationController
+
+    model_registry = ModelRegistry(config.models.routes)
+    engine = OrchestrationEngine(
+        spawn=repl.agents.spawn,
+        store=store,
+        head_client=_utility_client(config, ledger=repl.cost_ledger),  # thinking-off, ledgered
+        head_model=model_registry.route("planner").model,  # Fable by default
+        turn_lock=repl.turn_lock,  # execution stage serializes against interactive turns
+        max_rounds=config.budgets.max_rounds,
+        budget=repl.budgets,  # between-stage hard stop + project-monthly gate
+        registry=model_registry,  # per-role member models + reservation pricing
+        pricing=load_pricing(config.root / "config" / "pricing.yaml"),
+        budgets=config.budgets,  # reservation caps + confirm threshold
+        est_iterations=config.sub_agents.max_iterations,
+    )
+    return OrchestrationController(
+        engine=engine, connections=app.state.connections, projects=repl.projects
+    )
 
 
 def _build_ui_voice(config: Config, *, repl: Repl, app):
@@ -1409,6 +1448,12 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
 
         auth = AuthManager()
         app = build_ui_app(config, repl=repl, auth=auth)
+
+        # Recover any orchestration runs a crash left 'running' (backstop; mirrors the sub-agent
+        # / scheduler sweeps). Orchestration runs are only created here in the UI path.
+        if app.state.services.orchestration is not None:
+            for note in await app.state.services.orchestration.sweep_orphans():
+                console.print(f"[yellow]{note}[/]", markup=False)
 
         # Background job/reminder lines fan out to the browser as notices (Phase 9 Task 5).
         from jarvis.ui.notices import NoticeBoard
