@@ -77,42 +77,47 @@ class VoiceRenderer:
         self.max_spoken_chars = max_spoken_chars
         self.spoken: list[str] = []
 
-    async def _say(self, text: str) -> None:
+    async def _say(self, text: str) -> str:
+        """Mask + cap ``text``, speak it, and return the exact SAFE string spoken (``""`` if
+        nothing). The return is the post-privacy text — a caller that mirrors captions to a
+        screen must use *this*, never the raw input, so the privacy rule can't be bypassed."""
         safe = _mask_secrets(text).strip()
         if len(safe) > self.max_spoken_chars:
             safe = safe[: self.max_spoken_chars].rstrip() + " … the rest is on screen."
         if not safe:
-            return
+            return ""
         self.spoken.append(safe)
         audio = await self.tts.synthesize(safe)
         if self.play is not None:
             await self.play(audio)
+        return safe
 
     # --- VoiceOutput ---------------------------------------------------------
 
-    async def on_heard(self, text: str) -> None:
+    async def on_heard(self, text: str) -> str:
         # Echo the user's own words (masked, in case they spoke a secret aloud) so a
         # mishear is caught before acting.
-        await self._say(f"I heard: {text}")
+        return await self._say(f"I heard: {text}")
 
     def __call__(self, event: Event) -> None:
         # Mid-turn events are NOT voiced — the tool/sub-agent firehose stays on the screen
         # (collapse-by-default). Intentionally a no-op for speech.
         return None
 
-    async def on_result(self, result: TurnResult) -> None:
+    async def on_result(self, result: TurnResult) -> str:
         # Speak the model's final answer as a safe, capped summary. Detailed/long output is
         # trimmed with a pointer to the screen; obvious secrets are masked as a backstop.
         if result.text and result.text.strip():
-            await self._say(result.text)
+            return await self._say(result.text)
+        return ""
 
     # --- escalation announcement (wired to VoiceApprover.on_escalate) -------
 
-    async def announce_escalation(self, call: ToolCall, decision: Decision) -> None:
+    async def announce_escalation(self, call: ToolCall, decision: Decision) -> str:
         """Speak that a confirmation is needed — the category and *where*, never the
         sensitive particulars. ``call.input`` is deliberately not referenced, so the
-        command/recipient/token in it cannot reach the synthesizer."""
+        command/recipient/token in it cannot reach the synthesizer. Returns the safe line."""
         verb = _ESCALATION_VERB.get(call.name, f"use {call.name}")
-        await self._say(
+        return await self._say(
             f"I've drafted it, but I can't approve that by voice — review it on screen to {verb}."
         )

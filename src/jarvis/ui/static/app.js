@@ -65,8 +65,16 @@ function handleMessage(msg) {
   if (msg.type === "approval") { onApproval(msg); return; }
   if (msg.type === "approval_nonce") { onNonce(msg); return; }
   if (msg.kind === "event") { onEvent(msg); return; }
+  if (msg.kind === "voice") { onVoice(msg); return; }
   if (msg.kind === "turn_cancelled") { state.chat.push({ role: "assistant", text: "— turn cancelled —" }); refreshIfActive("daily"); }
   if (msg.kind === "turn_error") { state.chat.push({ role: "assistant", text: `— error: ${msg.error} —` }); refreshIfActive("daily"); }
+}
+
+// Voice round-trip, made visible in Daily (one heard bubble + one safe caption). The reply
+// text is the renderer's post-privacy output — the UI never sees a raw answer or a payload.
+function onVoice(msg) {
+  state.chat.push(msg.role === "heard" ? { role: "heard", text: msg.text } : { role: "assistant", text: msg.text });
+  refreshIfActive("daily");
 }
 
 function onEvent(evt) {

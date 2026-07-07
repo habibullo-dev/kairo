@@ -998,12 +998,11 @@ def _build_ui_voice(config: Config, *, repl: Repl, app):
     """Wire the UI's voice surface: a push-to-talk listener whose risky actions escalate to
     the UI screen (``app.state.ui_screen``, fail-closed), and meeting capture → an unreviewed
     KB source. Reuses the Phase-7 pieces with the workstation as the screen."""
-    from jarvis.ui import UiVoice
+    from jarvis.ui import UiVoice, UiVoiceRenderer
     from jarvis.voice import (
         MeetingCapture,
         PushToTalkListener,
         VoiceApprover,
-        VoiceRenderer,
         VoiceSession,
         build_capture,
         build_stt,
@@ -1015,7 +1014,9 @@ def _build_ui_voice(config: Config, *, repl: Repl, app):
         openai_key=config.secrets.openai_api_key,
         elevenlabs_key=config.secrets.elevenlabs_api_key,
     )
-    renderer = VoiceRenderer(tts)
+    # The calm renderer, mirrored to the browser: heard transcript + the SAFE spoken caption
+    # (post-privacy). Mid-turn events stay unvoiced/unmirrored — one attention surface.
+    renderer = UiVoiceRenderer(tts, app.state.connections)
     stt = build_stt(config.voice, openai_key=config.secrets.openai_api_key)
     # The screen is the workstation (not the terminal): fail-closed, modal-bound.
     approver = VoiceApprover(app.state.ui_screen, on_escalate=renderer.announce_escalation)

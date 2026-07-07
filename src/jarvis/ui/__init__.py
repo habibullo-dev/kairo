@@ -20,7 +20,7 @@ from jarvis.ui.auth import SESSION_COOKIE, AuthManager, host_allowed, origin_all
 from jarvis.ui.connections import Connection, ConnectionManager
 from jarvis.ui.readmodels import UiServices, hub_status, lab_overview
 from jarvis.ui.session import UiSession, serialize_event
-from jarvis.ui.voice import UiVoice
+from jarvis.ui.voice import UiVoice, UiVoiceRenderer
 
 __all__ = [
     "SESSION_COOKIE",
@@ -34,6 +34,7 @@ __all__ = [
     "UiServices",
     "UiSession",
     "UiVoice",
+    "UiVoiceRenderer",
     "host_allowed",
     "hub_status",
     "lab_overview",

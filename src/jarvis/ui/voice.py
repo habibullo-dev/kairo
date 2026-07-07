@@ -12,13 +12,59 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from jarvis.observability import get_logger
+from jarvis.voice.render import VoiceRenderer, _mask_secrets
 
 if TYPE_CHECKING:
+    from jarvis.core.agent import TurnResult
+    from jarvis.core.client import ToolCall
+    from jarvis.permissions.gate import Decision
+    from jarvis.ui.connections import ConnectionManager
     from jarvis.voice import MeetingCapture, PushToTalkListener
     from jarvis.voice.listening import CaptureSource
+    from jarvis.voice.protocols import TTSProvider
 
 IDLE = "idle"
 LISTENING = "listening"
+
+
+class UiVoiceRenderer(VoiceRenderer):
+    """The calm renderer, made visible in the browser (Phase 8). It mirrors the voice
+    round-trip to the UI *without weakening the TTS-privacy rule*:
+
+    * ``on_heard`` shows the heard transcript as an (untrusted) user message — obvious
+      secrets masked, since it's echoed to a surface;
+    * ``on_result`` / ``announce_escalation`` show the caption that is **exactly the safe
+      text the base renderer spoke** (post-mask, post-cap, category-only for escalations) —
+      it reuses the base method's return value, so a caption can never carry a raw answer,
+      a command, a payload, or the particulars of a risky action.
+
+    Mid-turn tool events stay a no-op (inherited ``__call__``), so the UI shows one heard
+    bubble + one safe caption (+ the Gate modal when risky) — one attention surface, not an
+    event firehose."""
+
+    def __init__(self, tts: TTSProvider, connections: ConnectionManager, **kw) -> None:
+        super().__init__(tts, **kw)
+        self._conns = connections
+
+    async def _mirror(self, role: str, text: str) -> None:
+        if text:
+            await self._conns.broadcast({"kind": "voice", "role": role, "text": text})
+
+    async def on_heard(self, text: str) -> str:
+        # Show the transcript as an untrusted user message (masked in case a secret was
+        # spoken); the base still speaks the audio "I heard: …" echo.
+        await self._mirror("heard", _mask_secrets(text).strip())
+        return await super().on_heard(text)
+
+    async def on_result(self, result: TurnResult) -> str:
+        safe = await super().on_result(result)  # the SAFE, masked+capped spoken summary
+        await self._mirror("reply", safe)
+        return safe
+
+    async def announce_escalation(self, call: ToolCall, decision: Decision) -> str:
+        safe = await super().announce_escalation(call, decision)  # category + "on screen" only
+        await self._mirror("reply", safe)
+        return safe
 
 
 class UiVoice:
