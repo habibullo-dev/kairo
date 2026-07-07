@@ -125,8 +125,9 @@ async def projects_view(service: ProjectService) -> dict:
 
 
 async def costs_overview(budgets: Any, *, project_id: int | None = None) -> dict:
-    """The Costs screen: today/week/month spend + limits + the 'why this cost' breakdown
-    (by purpose, role, model). Unpriced calls are surfaced separately, never summed as $0."""
+    """The Costs screen: today/week/month spend + limits + the 'why this cost' breakdown (by
+    purpose, role, model, team, and service). Unpriced calls/services are surfaced separately,
+    never summed as $0."""
     status = await budgets.status(project_id=project_id)
     month_start = _period_start_iso("month")
     return {
@@ -134,7 +135,38 @@ async def costs_overview(budgets: Any, *, project_id: int | None = None) -> dict
         "by_purpose": await budgets.grouped("purpose", project_id=project_id, since=month_start),
         "by_role": await budgets.grouped("agent_role", project_id=project_id, since=month_start),
         "by_model": await budgets.grouped("model", project_id=project_id, since=month_start),
+        "by_team": await budgets.grouped("team", project_id=project_id, since=month_start),
+        "by_service": await budgets.grouped_services(
+            "service", project_id=project_id, since=month_start
+        ),
     }
+
+
+async def orchestration_roi(
+    store: Any, budgets: Any, *, project_id: int | None = None, limit: int = 20
+) -> list[dict]:
+    """Per-run ROI for the Studio/Costs surfaces: for each recent completed run, the human-time
+    value its workflow stood in for (baseline_minutes × hourly rate) minus its actual cost. Net
+    is None when the cost is unpriced (fail-closed)."""
+    from jarvis.orchestration import WORKFLOWS
+
+    runs = await store.list(project_id=project_id, limit=limit)
+    out: list[dict] = []
+    for r in runs:
+        wf = WORKFLOWS.get(r.workflow)
+        if wf is None:
+            continue
+        roi = budgets.roi(wf.baseline_minutes, r.actual_cost_usd)
+        out.append(
+            {
+                "run_id": r.id,
+                "team": r.config.get("team"),
+                "workflow": r.workflow,
+                "status": r.status,
+                **roi,
+            }
+        )
+    return out
 
 
 def _period_start_iso(period: str) -> str:
@@ -326,14 +358,25 @@ async def orchestration_runs_view(
     return {"runs": [serialize_orchestration_run(r) for r in runs]}
 
 
-async def orchestration_run_detail(store: Any, run_store: Any, run_id: int) -> dict:
-    """A run + its per-member metadata (role/stage/status/cost — never bodies). ``run_store``
-    (the AgentRunStore) may be None ⇒ members omitted."""
+async def orchestration_run_detail(
+    store: Any, run_store: Any, run_id: int, *, budgets: Any = None
+) -> dict:
+    """A run + its per-member metadata (role/stage/status/cost — never bodies) + (when the
+    budget service is composed) the per-run cost breakdown by role/stage/service and the run's
+    ROI. ``run_store`` (the AgentRunStore) may be None ⇒ members omitted."""
     run = await store.get(run_id)
     if run is None:
         return {"run": None, "members": []}
     members = await run_store.member_runs(run_id) if run_store is not None else []
-    return {"run": serialize_orchestration_run(run), "members": members}
+    detail = {"run": serialize_orchestration_run(run), "members": members}
+    if budgets is not None:
+        from jarvis.orchestration import WORKFLOWS
+
+        detail["cost_breakdown"] = await budgets.run_breakdown(run_id)
+        wf = WORKFLOWS.get(run.workflow)
+        if wf is not None:
+            detail["roi"] = budgets.roi(wf.baseline_minutes, run.actual_cost_usd)
+    return detail
 
 
 def serialize_team(team: Any) -> dict:

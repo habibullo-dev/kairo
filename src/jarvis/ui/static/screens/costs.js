@@ -34,6 +34,10 @@ export async function render(container, api) {
       <table>${rows(c.by_model, "model") || '<tr><td class="dim">—</td></tr>'}</table></div>
     <div class="card rise"><div class="card-label">By role (orchestration)</div>
       <table>${rows(c.by_role, "agent_role") || '<tr><td class="dim">No orchestration spend.</td></tr>'}</table></div>
+    <div class="card rise"><div class="card-label">By team (orchestration)</div>
+      <table>${rows(c.by_team, "team") || '<tr><td class="dim">No team spend.</td></tr>'}</table></div>
+    <div class="card rise"><div class="card-label">By service (local tools)</div>
+      <table>${rows(c.by_service, "service") || '<tr><td class="dim">No service calls.</td></tr>'}</table></div>
     <div class="card rise"><div class="card-label">Limits</div>
       <div class="mono dim">soft/run ${money(lim.soft_warn_usd_per_run)} · hard/run ${money(lim.hard_stop_usd_per_run)}
         · confirm above ${money(lim.confirm_above_usd)}

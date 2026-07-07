@@ -202,10 +202,23 @@ function renderDetail(container) {
      <td style="text-align:right">${money(m.cost_usd)}</td></tr>`).join("");
   const manifest = (r.context_manifest || []).map((c) =>
     `<span class="chip dim">${esc(c.kind)}:${esc(c.ref)}</span>`).join(" ");
+  const roi = S.detail.roi;
+  const roiLine = roi
+    ? `<div class="dim">ROI: value ${money(roi.value_usd)} (${roi.baseline_minutes}m) − actual
+       ${money(roi.actual_cost_usd)} = <b>${roi.net_usd == null ? "unknown" : money(roi.net_usd)}</b></div>`
+    : "";
+  const bd = S.detail.cost_breakdown;
+  const bdLine = bd
+    ? `<div class="dim" style="margin-top:.3rem">by stage: ${(bd.by_stage || [])
+        .map((s) => `${esc(s.stage || "?")} ${money(s.cost_usd)}`).join(" · ") || "—"}
+        ${(bd.services || []).length ? ` · services: ${bd.services
+          .map((s) => `${esc(s.service)}×${s.calls}`).join(" · ")}` : ""}</div>`
+    : "";
   el.innerHTML = `<div class="card rise">
     <div class="card-label">Run #${r.id} · ${esc(r.title)} ${statusPill(r.status, r.verdict)}</div>
     <div class="dim">est ${money(r.estimated_cost_usd)} · actual ${money(r.actual_cost_usd)}
       ${r.budget_usd != null ? ` · cap ${money(r.budget_usd)}` : ""}</div>
+    ${roiLine}${bdLine}
     ${r.synthesis_summary ? `<div class="synth">${esc(r.synthesis_summary)}</div>` : ""}
     <table style="margin-top:.4rem">${members || '<tr><td class="dim">no members</td></tr>'}</table>
     <div class="dim" style="margin-top:.4rem">context: ${manifest || "—"}</div></div>`;

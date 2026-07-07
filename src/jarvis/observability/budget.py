@@ -70,12 +70,17 @@ class BudgetService:
             params.append(project_id)
         return await self._sum(where, tuple(params))
 
+    #: Columns a caller may GROUP BY on model_calls — an allowlist (never interpolate raw input).
+    _MODEL_GROUP_COLS = frozenset({"purpose", "agent_role", "model", "provider", "team", "stage"})
+    #: Columns a caller may GROUP BY on service_calls (Task 17).
+    _SERVICE_GROUP_COLS = frozenset({"service", "team", "agent_role", "stage"})
+
     async def grouped(
         self, by: str, *, project_id: int | None = None, since: str | None = None
     ) -> list[dict]:
-        """Spend grouped by one of ``purpose`` / ``agent_role`` / ``model`` / ``provider`` —
-        the 'why this cost' breakdown. Rows ordered by cost descending."""
-        if by not in ("purpose", "agent_role", "model", "provider"):
+        """Spend grouped by one of ``purpose`` / ``agent_role`` / ``model`` / ``provider`` /
+        ``team`` / ``stage`` — the 'why this cost' breakdown. Rows ordered by cost descending."""
+        if by not in self._MODEL_GROUP_COLS:
             raise ValueError(f"cannot group by {by!r}")
         where_parts: list[str] = []
         params: list[object] = []
@@ -97,9 +102,83 @@ class BudgetService:
             for r in await cur.fetchall()
         ]
 
+    async def grouped_services(
+        self, by: str = "service", *, project_id: int | None = None, since: str | None = None
+    ) -> list[dict]:
+        """Service spend (over ``service_calls``) grouped by ``service`` / ``team`` /
+        ``agent_role`` / ``stage``. Unpriced (NULL est_cost) rows are counted separately — a
+        metered service with no pricing is shown as unknown, never summed as $0 (Task 17)."""
+        if by not in self._SERVICE_GROUP_COLS:
+            raise ValueError(f"cannot group services by {by!r}")
+        where_parts: list[str] = []
+        params: list[object] = []
+        if project_id is not None:
+            where_parts.append("project_id = ?")
+            params.append(project_id)
+        if since is not None:
+            where_parts.append("ts >= ?")
+            params.append(since)
+        where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        cur = await self.db.execute(
+            f"SELECT {by}, COALESCE(SUM(est_cost_usd), 0.0), COUNT(*), "
+            "SUM(CASE WHEN est_cost_usd IS NULL THEN 1 ELSE 0 END) "
+            f"FROM service_calls {where} GROUP BY {by} ORDER BY 3 DESC",
+            tuple(params),
+        )
+        return [
+            {by: r[0], "cost_usd": round(r[1], 6), "calls": r[2], "unpriced": r[3] or 0}
+            for r in await cur.fetchall()
+        ]
+
     async def run_spend(self, orchestration_run_id: int) -> dict:
         """Total spend for one orchestration run (the engine checks this between stages)."""
         return await self._sum("WHERE orchestration_run_id = ?", (orchestration_run_id,))
+
+    async def run_breakdown(self, orchestration_run_id: int) -> dict:
+        """Per-run cost attribution for the Studio detail / ROI: LLM spend by role and by stage,
+        plus service invocations by service. Metadata only."""
+        rid = ("WHERE orchestration_run_id = ?", (orchestration_run_id,))
+
+        async def _group(col: str) -> list[dict]:
+            cur = await self.db.execute(
+                f"SELECT {col}, COALESCE(SUM(cost_usd), 0.0), COUNT(*), "
+                "SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) "
+                f"FROM model_calls {rid[0]} GROUP BY {col} ORDER BY 2 DESC",
+                rid[1],
+            )
+            return [
+                {col: r[0], "cost_usd": round(r[1], 6), "calls": r[2], "unpriced": r[3] or 0}
+                for r in await cur.fetchall()
+            ]
+
+        cur = await self.db.execute(
+            "SELECT service, COALESCE(SUM(est_cost_usd), 0.0), COUNT(*) "
+            f"FROM service_calls {rid[0]} GROUP BY service ORDER BY 3 DESC",
+            rid[1],
+        )
+        services = [
+            {"service": r[0], "cost_usd": round(r[1], 6), "calls": r[2]}
+            for r in await cur.fetchall()
+        ]
+        return {
+            "total": await self.run_spend(orchestration_run_id),
+            "by_role": await _group("agent_role"),
+            "by_stage": await _group("stage"),
+            "services": services,
+        }
+
+    def roi(self, baseline_minutes: int, actual_cost_usd: float | None) -> dict:
+        """ROI for one run: the human-time value it stood in for, minus what it cost. Value =
+        baseline_minutes × the configured hourly rate; ``net`` is None when the cost is unknown
+        (fail-closed — never claim a savings we can't price)."""
+        value = round(self.config.hourly_rate_usd * baseline_minutes / 60.0, 4)
+        net = None if actual_cost_usd is None else round(value - actual_cost_usd, 4)
+        return {
+            "baseline_minutes": baseline_minutes,
+            "value_usd": value,
+            "actual_cost_usd": actual_cost_usd,
+            "net_usd": net,
+        }
 
     def check_run(self, spent_usd: float) -> str:
         """Gate an orchestration run's accumulated spend against the per-run limits:

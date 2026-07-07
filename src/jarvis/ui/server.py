@@ -499,7 +499,12 @@ def create_app(
         if store is None:
             return _unavailable("orchestration")
         return JSONResponse(
-            await orchestration_run_detail(store, app.state.services.run_store, run_id)
+            await orchestration_run_detail(
+                store,
+                app.state.services.run_store,
+                run_id,
+                budgets=app.state.services.budgets,
+            )
         )
 
     # --- mutations: the enumerated human-authority set (D5, route-closed-set pin) ------
