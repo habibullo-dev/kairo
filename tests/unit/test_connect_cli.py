@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 from pathlib import Path
 
+import httpx
 import pytest
 
 from jarvis.cli import connect
@@ -103,3 +105,129 @@ async def test_connect_telegram_missing_token_returns_1(
     cfg = load_config(root=tmp_path, env_file=None)
     rc = await connect.connect_telegram(cfg, test=True, emit=lambda _ln: None)
     assert rc == 1
+
+
+# --- kakao connect --test (Phase 9 Task 12.5) ------------------------------
+
+
+def _kakao_client(handler) -> httpx.AsyncClient:
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _seed_kakao(cfg, *, expires_in_hours: int = 1, access: str = "at", refresh: str = "rt") -> None:
+    exp = (_dt.datetime.now(_dt.UTC) + _dt.timedelta(hours=expires_in_hours)).isoformat()
+    write_token_state(
+        connect.token_path(cfg, "kakao"),
+        TokenState(
+            provider="kakao",
+            access_token=access,
+            refresh_token=refresh,
+            expires_at=exp,
+            obtained_at="2026-01-01T00:00:00+00:00",
+            scopes=["talk_message"],
+        ),
+    )
+
+
+async def test_connect_kakao_test_sends_memo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "rk")
+    cfg = load_config(root=tmp_path, env_file=None)
+    _seed_kakao(cfg)  # fresh token
+    hits = {"memo": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "memo/default/send" in str(req.url):
+            hits["memo"] += 1
+            return httpx.Response(200, json={"result_code": 0})
+        return httpx.Response(200, json={})
+
+    lines: list[str] = []
+    async with _kakao_client(handler) as http:
+        rc = await connect.connect_kakao(cfg, test=True, http=http, emit=lines.append)
+    assert rc == 0 and hits["memo"] == 1
+    assert any("Sent a test memo to Kakao" in ln for ln in lines)
+
+
+async def test_connect_kakao_test_refreshes_expired_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "rk")
+    cfg = load_config(root=tmp_path, env_file=None)
+    _seed_kakao(cfg, expires_in_hours=-1)  # expired, but has a refresh token
+    hits = {"token": 0, "memo": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if "oauth/token" in url:  # the single-flight refresh through TokenStore
+            hits["token"] += 1
+            return httpx.Response(200, json={"access_token": "new", "expires_in": 3600})
+        if "memo/default/send" in url:
+            hits["memo"] += 1
+            return httpx.Response(200, json={"result_code": 0})
+        return httpx.Response(200, json={})
+
+    lines: list[str] = []
+    async with _kakao_client(handler) as http:
+        rc = await connect.connect_kakao(cfg, test=True, http=http, emit=lines.append)
+    assert rc == 0 and hits == {"token": 1, "memo": 1}  # refreshed, then sent
+
+
+async def test_connect_kakao_test_expired_shows_reconnect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "rk")
+    cfg = load_config(root=tmp_path, env_file=None)
+    _seed_kakao(cfg, expires_in_hours=-1)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "oauth/token" in str(req.url):
+            return httpx.Response(400, json={"error": "invalid_grant", "detail": "LEAK"})
+        return httpx.Response(200, json={})
+
+    lines: list[str] = []
+    async with _kakao_client(handler) as http:
+        rc = await connect.connect_kakao(cfg, test=True, http=http, emit=lines.append)
+    assert rc == 1
+    joined = "\n".join(lines)
+    assert "Kakao needs reconnect: run jarvis connect kakao" in joined
+    assert "LEAK" not in joined and "invalid_grant" not in joined  # provider body never shown
+
+
+async def test_connect_kakao_test_without_token_shows_reconnect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "rk")
+    cfg = load_config(root=tmp_path, env_file=None)  # no token file seeded
+    lines: list[str] = []
+    rc = await connect.connect_kakao(cfg, test=True, emit=lines.append)  # no network reached
+    assert rc == 1
+    assert any("Kakao needs reconnect: run jarvis connect kakao" in ln for ln in lines)
+
+
+async def test_connect_kakao_test_missing_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)  # no KAKAO_REST_API_KEY
+    lines: list[str] = []
+    rc = await connect.connect_kakao(cfg, test=True, emit=lines.append)
+    assert rc == 1 and any("KAKAO_REST_API_KEY" in ln for ln in lines)
+
+
+async def test_connect_kakao_test_leaks_no_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "REST-CANARY")
+    cfg = load_config(root=tmp_path, env_file=None)
+    _seed_kakao(cfg, access="ACCESS-CANARY", refresh="REFRESH-CANARY")
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"result_code": 0, "leak": "PROVIDER-CANARY"})
+
+    lines: list[str] = []
+    async with _kakao_client(handler) as http:
+        await connect.connect_kakao(cfg, test=True, http=http, emit=lines.append)
+    blob = "\n".join(lines)
+    for canary in ("ACCESS-CANARY", "REFRESH-CANARY", "REST-CANARY", "PROVIDER-CANARY"):
+        assert canary not in blob
