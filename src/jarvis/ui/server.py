@@ -41,6 +41,7 @@ from jarvis.ui.readmodels import (
     orchestration_run_detail,
     orchestration_runs_view,
     projects_view,
+    providers_status,
     services_status,
     session_transcript,
     task_runs,
@@ -467,6 +468,7 @@ def create_app(
                 "workflows": workflows_catalog(),
                 "services": services_status(config, project_services=proj_services),
                 "model_routes": model_routes_status(config),
+                "providers": providers_status(config),
                 "active_project_id": (
                     projects.current().project_id if projects is not None else None
                 ),

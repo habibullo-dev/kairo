@@ -85,6 +85,22 @@ def test_unknown_provider_is_unknown() -> None:
     assert _reg(["deepseek"], ["deepseek"], {}).state("mystery") is ProviderState.UNKNOWN
 
 
+def test_pricing_covers_priced_providers_and_leaves_qwen_unpriced() -> None:
+    # T5: the real pricing table prices deepseek/zai/gemini (+ core anthropic/openai) and
+    # deliberately leaves qwen UNPRICED (fail-closed) until official numbers are filled.
+    from pathlib import Path
+
+    from jarvis.observability.cost import load_pricing
+
+    pricing = load_pricing(Path("config/pricing.yaml"))
+    priced = pricing.priced_providers()
+    assert {"anthropic", "openai", "deepseek", "zai", "gemini"} <= priced
+    assert "qwen" not in priced
+    assert pricing.price_for("deepseek", "deepseek-v4-flash") is not None
+    assert pricing.price_for("gemini", "gemini-2.5-flash") is not None
+    assert pricing.price_for("deepseek", "deepseek-does-not-exist") is None  # exact-match only
+
+
 def test_availability_view_has_no_secret_values() -> None:
     reg = _reg(["deepseek"], ["deepseek"], {"DEEPSEEK_API_KEY": "sk-SECRET-do-not-leak"})
     view = reg.availability()

@@ -174,13 +174,18 @@ class ProviderRegistry:
 
     @classmethod
     def from_config(cls, config: object, pricing: object | None = None) -> ProviderRegistry:
-        """Build from a loaded Config (+ optional pre-loaded PricingTable)."""
+        """Build from a loaded Config (+ optional pre-loaded PricingTable). Credential presence
+        is checked against the LOADED ``config.secrets`` (the same source the client factory and
+        ``config.require`` use) — not raw ``os.environ`` — so a config loaded from a specific
+        env_file is authoritative and matches what would actually be used to build a client."""
+        from jarvis.config import _REQUIRED_KEYS
         from jarvis.observability.cost import load_pricing
 
         if pricing is None:
             pricing = load_pricing(config.root / "config" / "pricing.yaml")  # type: ignore[attr-defined]
         enabled = list(getattr(getattr(config, "providers", None), "enabled", []) or [])
-        return cls(enabled=enabled, priced_providers=pricing.priced_providers())  # type: ignore[attr-defined]
+        env = {var: getattr(config.secrets, attr, "") for attr, var in _REQUIRED_KEYS.values()}  # type: ignore[attr-defined]
+        return cls(enabled=enabled, priced_providers=pricing.priced_providers(), env=env)  # type: ignore[attr-defined]
 
     def _creds_present(self, spec: ProviderSpec) -> bool:
         return all(bool(self._env.get(var)) for var in spec.credential_env)

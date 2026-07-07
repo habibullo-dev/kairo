@@ -5,7 +5,7 @@
 # silent $0. Update `effective` + bump `schema_version` on a real change; unknown-here models
 # are treated as unpriced (the code table in observability/cost.py is the Anthropic fallback).
 schema_version: 2
-effective: "2026-07-01"
+effective: "2026-07-08"
 cache_multipliers:
   write: 1.25   # 5-minute ephemeral cache write, vs the input rate
   read: 0.10    # cache hit, vs the input rate
@@ -24,6 +24,22 @@ models:
     # model is unpriced and fails closed. Fill in real ids/prices before routing a role here.
     gpt-5.2: {input: 1.75, output: 14.0}
     gpt-5.2-mini: {input: 0.30, output: 2.40}
+  # --- Phase 10C direct provider workers (EXACT match only; unlisted model ⇒ unpriced ⇒
+  # blocked). Prices per 1M tokens, verified from official provider docs 2026-07-08. ---
+  deepseek:
+    deepseek-v4-pro: {input: 0.435, output: 0.87}
+    deepseek-v4-flash: {input: 0.14, output: 0.28}
+  zai:
+    glm-5.1: {input: 1.0, output: 3.2}
+    glm-4.7: {input: 0.6, output: 2.2}
+    glm-4-air: {input: 0.1, output: 0.3}
+  gemini:
+    # Flat-rate text tiers only. The tiered (>200k-token) Pro models are intentionally omitted
+    # ⇒ unpriced ⇒ blocked until the pricing table can represent context-tiered rates.
+    gemini-3.5-flash: {input: 1.5, output: 9.0}
+    gemini-2.5-flash: {input: 0.3, output: 2.5}
+  # qwen: intentionally ABSENT — no official pricing was verified, so Qwen stays UNPRICED and
+  # fail-closed (blocked) until real DashScope numbers are filled here (see docs/verification-10C).
 
 # Phase 10B team services with a METERED cost model. A metered service NOT listed here is
 # treated as unpriced and fails closed (its tool won't be available). Local free tools

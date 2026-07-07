@@ -490,18 +490,20 @@ def services_status(config: Config, *, project_services: list[str] | None = None
 
 
 def model_routes_status(config: Config) -> list[dict]:
-    """The resolved role → route registry for the Hub (Phase 10). Reports provider + model +
-    effort and a ``configured`` boolean (is the provider's key present) — NEVER a key value.
-    ``configured=false`` means selecting that route would fail closed at run time."""
+    """The resolved role → route registry for the Hub/Studio (Phase 10; provider states 10C).
+    Reports provider + model + effort, a ``configured`` boolean (is the provider's key present),
+    and the provider's fail-closed availability ``provider_state`` — NEVER a key value. A route
+    that violates the authority pin or a text-only-on-tool-role rule reports an ``error`` string.
+    Note: authority is validated here, but availability is NOT gated (no provider_registry), so a
+    disabled/unpriced provider still resolves and its ``provider_state`` shows why it's unusable."""
     from jarvis.models import ModelRegistry
+    from jarvis.models.providers import ProviderRegistry
     from jarvis.models.registry import RouteError
     from jarvis.models.roles import ROLES
 
     registry = ModelRegistry(config.models.routes)
-    present = {
-        "anthropic": bool(config.secrets.anthropic_api_key),
-        "openai": bool(config.secrets.openai_api_key),
-    }
+    preg = ProviderRegistry.from_config(config)
+    present = {row["name"]: row["credentials_present"] for row in preg.availability()}
     out: list[dict] = []
     for role in ROLES:
         try:
@@ -517,9 +519,20 @@ def model_routes_status(config: Config) -> list[dict]:
                 "effort": route.effort,
                 "text_only": route.text_only,
                 "configured": present.get(route.provider, False),
+                "provider_state": preg.state(route.provider).value,
             }
         )
     return out
+
+
+def providers_status(config: Config) -> list[dict]:
+    """Presence-only availability of every catalog provider for the Studio providers panel
+    (Phase 10C). Shows available / disabled / missing_credentials / unpriced + the classification
+    (tool_capable, trusted_authority, private_ok) and the credential env-var NAMES — never a key
+    value. Mirrors the Phase 10B services availability view."""
+    from jarvis.models.providers import ProviderRegistry
+
+    return ProviderRegistry.from_config(config).availability()
 
 
 # --- daily: the bootstrap read model (Phase 9) ------------------------------

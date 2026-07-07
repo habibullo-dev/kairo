@@ -219,3 +219,43 @@ def test_hub_model_routes_report_configured_without_keys(tmp_path: Path) -> None
     assert j["provider"] == "openai" and j["configured"] is False
     # No key value anywhere in the serialized view.
     assert "SECRET-ANTHROPIC-CANARY" not in str(rows)
+
+
+def test_model_routes_report_provider_state(tmp_path: Path) -> None:
+    from jarvis.ui.readmodels import model_routes_status
+
+    cfg = _cfg(tmp_path, anthropic="k", openai="")
+    by_role = {r["role"]: r for r in model_routes_status(cfg)}
+    # anthropic core + key + priced ⇒ available
+    assert by_role["planner"]["provider_state"] == "available"
+
+
+def _write_pricing(tmp_path: Path) -> None:
+    (tmp_path / "config").mkdir(exist_ok=True)
+    (tmp_path / "config" / "pricing.yaml").write_text(
+        "schema_version: 2\nmodels:\n"
+        "  anthropic:\n    claude-opus-4-8: {input: 5.0, output: 25.0}\n"
+        "  openai:\n    gpt-5.2: {input: 1.75, output: 14.0}\n"
+        "  deepseek:\n    deepseek-v4-flash: {input: 0.14, output: 0.28}\n"
+        "  gemini:\n    gemini-2.5-flash: {input: 0.3, output: 2.5}\n",
+        encoding="utf-8",
+    )
+
+
+def test_providers_status_states_and_secret_sweep(tmp_path: Path) -> None:
+    from jarvis.ui.readmodels import providers_status
+
+    _write_pricing(tmp_path)  # deepseek+gemini priced here; qwen intentionally absent
+    cfg = _cfg(tmp_path, anthropic="k", openai="")
+    cfg.secrets = cfg.secrets.model_copy(update={"deepseek_api_key": "SECRET-DS-CANARY"})
+    cfg.providers = cfg.providers.model_copy(update={"enabled": ["deepseek", "gemini"]})
+    rows = {r["name"]: r for r in providers_status(cfg)}
+    assert rows["anthropic"]["state"] == "available"  # core + key + priced
+    assert rows["deepseek"]["state"] == "available"  # enabled + key + priced
+    assert rows["gemini"]["state"] == "missing_credentials"  # enabled + priced, no key
+    assert rows["qwen"]["state"] == "disabled"  # not enabled (and unpriced anyway)
+    assert rows["openai"]["state"] == "missing_credentials"  # core, priced, but no key here
+    # presence booleans + env-var NAMES only — never a key value.
+    assert "SECRET-DS-CANARY" not in str(rows)
+    assert rows["deepseek"]["credentials_present"] is True
+    assert rows["deepseek"]["credential_env"] == ["DEEPSEEK_API_KEY"]
