@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 from jarvis.knowledge import converters
 from jarvis.knowledge import links as _links
 from jarvis.knowledge.chunking import chunk_markdown, embed_text
+from jarvis.knowledge.store import ANY_PROJECT as _ANY_PROJECT
 from jarvis.knowledge.store import KnowledgeStore, NewChunk, Source, WikiLink
 from jarvis.knowledge.wiki import (
     build_front_matter,
@@ -237,6 +238,7 @@ class KnowledgeService:
         title: str | None = None,
         created_by: str = "user",
         source_session_id: int | None = None,
+        project_id: int | None = None,
     ) -> IngestResult:
         """Ingest exactly one of a file ``path``, a ``url``, or freeform ``text`` into
         an immutable raw artifact + deterministic markdown + a chunk index.
@@ -298,6 +300,7 @@ class KnowledgeService:
             review_status=review_status,
             created_by=created_by,
             source_session_id=source_session_id,
+            project_id=project_id,
         )
         if prior is not None:
             await self.store.supersede_source(prior.id, source_id)
@@ -380,16 +383,23 @@ class KnowledgeService:
 
     # --- query -------------------------------------------------------------
 
-    async def query(self, text: str, top_k: int | None = None) -> str:
+    async def query(
+        self, text: str, top_k: int | None = None, *, project_id: object = _ANY_PROJECT
+    ) -> str:
         """Retrieve the most relevant chunks and render them as cited, delimited,
         NOT-instructions reference material (D7). Embedder errors propagate so the
-        tool can surface a KB outage as an error result (a turn is never broken)."""
+        tool can surface a KB outage as an error result (a turn is never broken).
+
+        ``project_id`` scopes retrieval (Phase 10 A1): a project sees its own sources +
+        global; global scope sees only global sources; the default is unscoped. Curated
+        wiki pages are visible in every scope."""
         vec = await self.embedder.embed_query(text)
         hits = await self.store.search(
             vec,
             self.embedder.model,
             top_k=top_k or self.config.top_k,
             min_similarity=self.config.min_similarity,
+            project_id=project_id,
         )
         if not hits:
             return "No relevant knowledge-base entries found."

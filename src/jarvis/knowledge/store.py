@@ -37,8 +37,12 @@ from jarvis.persistence.db import transaction
 _SOURCE_COLUMNS = (
     "id, kind, origin, title, content_hash, raw_path, markdown_path, markdown_hash, "
     "converter, converter_version, byte_size, mime, status, superseded_by, review_status, "
-    "created_by, source_session_id, created_at, updated_at"
+    "created_by, source_session_id, created_at, updated_at, project_id"
 )
+
+#: Sentinel for "any project" (no scope filter) in search — distinct from ``None`` (global
+#: only, project_id IS NULL). Mirrors the memory store's scope contract.
+ANY_PROJECT: object = object()
 _CHUNK_COLUMNS = (
     "id, source_id, wiki_path, heading_path, seq, text, embedding, embedding_model, created_at"
 )
@@ -86,6 +90,7 @@ class Source:
     source_session_id: int | None
     created_at: str
     updated_at: str
+    project_id: int | None = None  # Phase 10: scope (None == global)
 
 
 @dataclass(frozen=True)
@@ -162,13 +167,15 @@ class KnowledgeStore:
         review_status: str = "reviewed",
         created_by: str,
         source_session_id: int | None = None,
+        project_id: int | None = None,
     ) -> int:
-        """Insert a live source; returns its id."""
+        """Insert a live source; returns its id. ``project_id`` scopes it (None == global);
+        retrieval only surfaces sources in the querying project's scope (Phase 10 A1)."""
         now = _now()
         async with self.lock:
             cursor = await self.db.execute(
                 f"INSERT INTO kb_sources ({_SOURCE_COLUMNS}) VALUES "
-                "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live', NULL, ?, ?, ?, ?, ?)",
+                "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live', NULL, ?, ?, ?, ?, ?, ?)",
                 (
                     kind,
                     origin,
@@ -186,6 +193,7 @@ class KnowledgeStore:
                     source_session_id,
                     now,
                     now,
+                    project_id,
                 ),
             )
             await self.db.commit()
@@ -342,21 +350,35 @@ class KnowledgeStore:
         top_k: int,
         min_similarity: float,
         include_unreviewed: bool = False,
+        project_id: object = ANY_PROJECT,
     ) -> list[ScoredChunk]:
         """Top-k chunks (same embedding model) with cosine ≥ ``min_similarity``.
 
         Excludes chunks of superseded/rejected sources and — unless
         ``include_unreviewed`` — of unreviewed sources. Wiki-page chunks (no source)
-        are always eligible: a page on disk is curated content."""
+        are always eligible: a page on disk is curated content.
+
+        ``project_id`` scopes SOURCE chunks (Phase 10 A1): an int P admits P's sources plus
+        global (project_id IS NULL); ``None`` admits only global sources; ``ANY_PROJECT``
+        (default) does not filter. Wiki-page chunks stay eligible in every scope — they are
+        curated, project-agnostic pages (chunk-level project scoping is a documented follow-up)."""
         review_ok = "1" if include_unreviewed else "(s.review_status = 'reviewed')"
+        params: list[object] = [embedding_model]
+        if project_id is ANY_PROJECT:
+            scope = "1"
+        elif project_id is None:
+            scope = "s.project_id IS NULL"
+        else:
+            scope = "(s.project_id = ? OR s.project_id IS NULL)"
+            params.append(project_id)
         cursor = await self.db.execute(
             f"SELECT {_prefixed(_CHUNK_COLUMNS, 'c')}, "
             "s.kind, s.origin, s.title, s.created_by, s.created_at "
             "FROM kb_chunks c LEFT JOIN kb_sources s ON c.source_id = s.id "
             "WHERE c.embedding_model = ? AND ("
-            f"  c.wiki_path IS NOT NULL OR (s.status = 'live' AND {review_ok})"
+            f"  c.wiki_path IS NOT NULL OR (s.status = 'live' AND {review_ok} AND {scope})"
             ")",
-            (embedding_model,),
+            tuple(params),
         )
         rows = await cursor.fetchall()
         if not rows:
@@ -444,6 +466,7 @@ def _row_to_source(row: tuple) -> Source:
         source_session_id=row[16],
         created_at=row[17],
         updated_at=row[18],
+        project_id=row[19],
     )
 
 

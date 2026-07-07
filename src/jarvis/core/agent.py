@@ -134,11 +134,20 @@ class AgentLoop:
             return self.system
         return self.system + "\n\n" + "\n\n".join(extras)
 
-    async def _recall_block(self, messages: list[dict]) -> str | None:
+    async def _recall_block(
+        self, messages: list[dict], project: ProjectContext | None
+    ) -> str | None:
         if self.memory is None:
             return None
         text = _latest_user_text(messages)
-        return await self.memory.auto_recall_context(text) if text else None
+        if not text:
+            return None
+        # No project layer ⇒ unscoped recall (byte-identical to pre-Phase-10). With a project
+        # layer, scope recall: global (project_id None) recalls only global memories; a project
+        # recalls its own + global. This is what stops a global chat leaking project memories.
+        if project is None:
+            return await self.memory.auto_recall_context(text)
+        return await self.memory.auto_recall_context(text, project_id=project.project_id)
 
     async def run_turn(
         self,
@@ -163,8 +172,9 @@ class AgentLoop:
         # the next turn, not mid-flight). None provider => global scope, no extra.
         project = self.project() if self.project is not None else None
         project_extra = project.system_extra if project is not None else None
-        # Auto-recall runs once per turn, on the new user message (not per iteration).
-        recall_block = await self._recall_block(messages)
+        # Auto-recall runs once per turn, on the new user message (not per iteration), scoped
+        # to the active project (see _recall_block).
+        recall_block = await self._recall_block(messages, project)
         # Freeze the compaction cut + summary for the whole turn: the summary stays
         # stable across iterations, and within-turn growth is absorbed by elision.
         frozen_cut, summary = 0, None

@@ -16,6 +16,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, model_validator
 
 from jarvis.knowledge.service import KnowledgeError
+from jarvis.knowledge.store import ANY_PROJECT as _KB_ANY_PROJECT
 from jarvis.knowledge.wiki import WikiPathError
 from jarvis.tools.base import Permission, Tool, ToolContext, ToolResult
 
@@ -29,6 +30,15 @@ class _NeedsKnowledge:
     @classmethod
     def is_available(cls, context: ToolContext) -> bool:
         return getattr(context, "knowledge", None) is not None
+
+    def _active_project_id(self) -> object:
+        """The active project's id for scoping KB reads/ingests (Phase 10 A1). Reads the
+        context's project provider live (a switch only happens between turns). Returns
+        ``ANY_PROJECT`` when there's no project layer — unscoped, byte-identical to Phase 9."""
+        provider = getattr(self.context, "project", None)
+        if provider is None:
+            return _KB_ANY_PROJECT
+        return provider().project_id
 
 
 class IngestSourceParams(BaseModel):
@@ -61,6 +71,7 @@ class IngestSourceTool(_NeedsKnowledge, Tool):
         kb = self.context.knowledge
         if kb is None:
             return ToolResult(content="Knowledge base is not enabled.", is_error=True)
+        pid = self._active_project_id()
         try:
             result = await kb.ingest(
                 path=params.path,
@@ -68,6 +79,9 @@ class IngestSourceTool(_NeedsKnowledge, Tool):
                 text=params.text,
                 title=params.title,
                 created_by="agent",
+                # Tag the ingest with the active project (None when global or no project layer),
+                # so it's retrievable in that scope and not leaked to others (A1).
+                project_id=pid if isinstance(pid, int) else None,
             )
         except KnowledgeError as exc:
             return ToolResult(content=str(exc), is_error=True)
@@ -102,7 +116,7 @@ class QueryKnowledgeBaseTool(_NeedsKnowledge, Tool):
         if kb is None:
             return ToolResult(content="Knowledge base is not enabled.", is_error=True)
         try:
-            return await kb.query(params.query, params.top_k)
+            return await kb.query(params.query, params.top_k, project_id=self._active_project_id())
         except Exception as exc:  # noqa: BLE001 - surface a KB outage, don't crash the turn
             return ToolResult(content=f"knowledge query failed: {exc}", is_error=True)
 

@@ -298,11 +298,16 @@ def create_app(
     # passthrough — no response-model inference over a Response|data union.
 
     @app.get("/api/memory")
-    async def memory(type: str | None = None) -> JSONResponse:
+    async def memory(type: str | None = None, project_id: int | None = None) -> JSONResponse:
+        # project_id scopes to "what Kairo knows about this project" (project + global). Absent
+        # ⇒ unscoped (every live memory). The ANY sentinel is the readmodel default.
+        from jarvis.ui.readmodels import _MEM_ANY_PROJECT
+
         svc = app.state.services.memory
         if svc is None:
             return _unavailable("memory")
-        return JSONResponse(await list_memories(svc, type_filter=type))
+        scope = _MEM_ANY_PROJECT if project_id is None else project_id
+        return JSONResponse(await list_memories(svc, type_filter=type, project_id=scope))
 
     @app.get("/api/tasks")
     async def tasks() -> JSONResponse:
@@ -398,8 +403,14 @@ def create_app(
             decision = app.state.gate.check("ingest_source", {"path": path})
             if decision.permission is Permission.DENY:
                 return JSONResponse({"ok": False, "message": decision.reason}, status_code=403)
+        # Tag the ingest with the active project (Phase 10 A1) so it's retrievable in that
+        # scope and never leaked to another project; None (global) when no project is active.
+        projects = app.state.projects
+        active_pid = projects.current().project_id if projects is not None else None
         try:
-            result = await svc.ingest(path=path, url=url, text=text, title=title, created_by="user")
+            result = await svc.ingest(
+                path=path, url=url, text=text, title=title, created_by="user", project_id=active_pid
+            )
         except Exception as exc:
             return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
         return JSONResponse({"ok": True, "action": result.action, "source_id": result.source_id})

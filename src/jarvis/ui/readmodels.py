@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from jarvis.memory.store import ANY_PROJECT as _MEM_ANY_PROJECT
 from jarvis.reporting.repo import RepoReader
 
 if TYPE_CHECKING:
@@ -62,14 +63,22 @@ def serialize_memory(memory: Memory) -> dict:
         "content": memory.content,
         "source": memory.source,
         "status": memory.status,
+        "project_id": memory.project_id,  # Phase 10: scope (None == global)
         "provenance": dataclasses.asdict(memory.provenance),
         "created_at": memory.created_at,
         "access_count": memory.access_count,
     }
 
 
-async def list_memories(memory: MemoryService, *, type_filter: str | None = None) -> list[dict]:
-    rows = await memory.store.all_live()
+async def list_memories(
+    memory: MemoryService,
+    *,
+    type_filter: str | None = None,
+    project_id: object = _MEM_ANY_PROJECT,
+) -> list[dict]:
+    """Live memories, optionally scoped to a project ("what Kairo knows about this project"
+    = the project's own + global memories). Default is unscoped (every live memory)."""
+    rows = await memory.store.all_live(project_id=project_id)
     if type_filter:
         rows = [m for m in rows if m.type == type_filter]
     return [serialize_memory(m) for m in rows]

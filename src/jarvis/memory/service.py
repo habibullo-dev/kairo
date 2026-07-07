@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from jarvis.config import MemoryConfig
 from jarvis.core.client import LLMClient
 from jarvis.memory.embeddings import Embedder
+from jarvis.memory.store import ANY_PROJECT as _ANY_PROJECT
 from jarvis.memory.store import MemoryStore, Provenance, ScoredMemory
 from jarvis.observability import get_logger
 
@@ -79,15 +80,26 @@ class MemoryService:
         *,
         source: str = "agent",
         provenance: Provenance | None = None,
+        project_id: int | None = None,
     ) -> RememberResult:
-        """Embed and store ``content``, deduping against the nearest live memory."""
+        """Embed and store ``content``, deduping against the nearest live memory.
+
+        Dedup is scoped **exactly** to ``project_id`` (a project write compares only against
+        that project; a global write only against global). This is deliberately narrower than
+        recall's project∪global union: it stops a project memory from ever superseding a
+        global memory (or another project's) — silent cross-scope data loss (pre-mortem #3)."""
         vec = (await self.embedder.embed_documents([content]))[0]  # embed once, reuse below
         nearest = await self.store.search(
-            vec, self.embedder.model, top_k=1, min_similarity=self.config.dedup_trigger
+            vec,
+            self.embedder.model,
+            top_k=1,
+            min_similarity=self.config.dedup_trigger,
+            project_id=project_id,
+            include_global=False,  # EXACT scope for dedup — never cross global↔project
         )
 
         if not nearest:
-            mid = await self._add(content, type, source, provenance, vec)
+            mid = await self._add(content, type, source, provenance, vec, project_id)
             self.log.info("memory_remembered", action="inserted", id=mid, source=source)
             return RememberResult(action="inserted", memory_id=mid)
 
@@ -101,19 +113,25 @@ class MemoryService:
             await self.store.update_content(hit.memory.id, content)
             return RememberResult("duplicate", hit.memory.id, similarity=hit.score)
         if decision == "supersede":
-            mid = await self._add(content, type, source, provenance, vec)
+            mid = await self._add(content, type, source, provenance, vec, project_id)
             await self.store.supersede(hit.memory.id, mid)
             self.log.info("memory_remembered", action="superseded", id=mid, replaced=hit.memory.id)
             return RememberResult(
                 "superseded", mid, similarity=hit.score, superseded_id=hit.memory.id
             )
 
-        mid = await self._add(content, type, source, provenance, vec)
+        mid = await self._add(content, type, source, provenance, vec, project_id)
         self.log.info("memory_remembered", action="inserted", id=mid, source=source)
         return RememberResult("inserted", mid, similarity=hit.score)
 
     async def _add(
-        self, content: str, type: str, source: str, provenance: Provenance | None, vec: list[float]
+        self,
+        content: str,
+        type: str,
+        source: str,
+        provenance: Provenance | None,
+        vec: list[float],
+        project_id: int | None = None,
     ) -> int:
         return await self.store.add(
             type=type,
@@ -122,6 +140,7 @@ class MemoryService:
             embedding_model=self.embedder.model,
             source=source,
             provenance=provenance,
+            project_id=project_id,
         )
 
     async def _adjudicate(self, content: str, type: str, hit: ScoredMemory) -> str:
@@ -148,29 +167,40 @@ class MemoryService:
 
     # --- read --------------------------------------------------------------
 
-    async def recall(self, query: str, k: int | None = None) -> list[ScoredMemory]:
+    async def recall(
+        self, query: str, k: int | None = None, *, project_id: object = _ANY_PROJECT
+    ) -> list[ScoredMemory]:
         """Top live memories similar to ``query`` (bumps their access stats).
 
-        Propagates embedder errors — callers decide how to degrade."""
+        ``project_id`` scopes recall: an int P returns P's memories PLUS global ones (global
+        knowledge is visible inside a project); ``None`` returns global-only (a global chat
+        must never surface a project's memories); the default is unscoped. Propagates
+        embedder errors — callers decide how to degrade."""
         vec = await self.embedder.embed_query(query)
         hits = await self.store.search(
             vec,
             self.embedder.model,
             top_k=k or self.config.top_k,
             min_similarity=self.config.min_similarity,
+            project_id=project_id,
+            include_global=True,  # recall: project memories + global (see remember for dedup)
         )
         await self.store.touch([h.memory.id for h in hits])
         return hits
 
-    async def auto_recall_context(self, user_text: str) -> str | None:
+    async def auto_recall_context(
+        self, user_text: str, *, project_id: object = _ANY_PROJECT
+    ) -> str | None:
         """A background-memory block for the system prompt, or None to inject nothing.
 
-        Returns None for trivial inputs, when nothing clears the similarity floor, or
-        if recall fails (memory degrades silently — it must never break a turn)."""
+        Scoped by ``project_id`` (see :meth:`recall`) so a project chat recalls its own +
+        global memories, and a global chat recalls only global — no cross-project leakage.
+        Returns None for trivial inputs, when nothing clears the similarity floor, or if
+        recall fails (memory degrades silently — it must never break a turn)."""
         if self._is_trivial(user_text):
             return None
         try:
-            hits = await self.recall(user_text)
+            hits = await self.recall(user_text, project_id=project_id)
         except Exception as exc:  # noqa: BLE001 - a memory outage must not break the turn
             self.log.warning("auto_recall_failed", error=str(exc))
             return None

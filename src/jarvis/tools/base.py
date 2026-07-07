@@ -46,6 +46,11 @@ class ToolContext:
     # External connectors (Phase 9): Google client + notifiers. None when nothing configured;
     # connector tools gate their own registration on the specific piece being present.
     connectors: ConnectorRegistry | Any = None
+    # Project scope (Phase 10): a callable returning the active ProjectContext, or None when
+    # there's no project layer. Tools that read project-scoped data (query_knowledge_base) use
+    # it so a project can't retrieve another project's content. Read live — a project switch
+    # only happens between turns, so within a turn the scope is stable.
+    project: Any = None
 
 
 class Permission(StrEnum):

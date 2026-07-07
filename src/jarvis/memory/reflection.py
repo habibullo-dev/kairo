@@ -152,8 +152,14 @@ async def reflect(
     service: MemoryService,
     client: LLMClient,
     model: str,
+    project_id: int | None = None,
 ) -> list[RememberResult]:
-    """Extract and store durable memories from ``transcript``. Never raises."""
+    """Extract and store durable memories from ``transcript``. Never raises.
+
+    ``project_id`` scopes the memories to the session's project (Phase 10): a project
+    session's memories are stored under that project, a global session's under NULL. The
+    caller passes the session row's project so reflection never mis-attributes (a memory
+    from project A must not become a global memory that leaks everywhere)."""
     log = get_logger("jarvis.memory")
     if not _has_substance(transcript):
         return []
@@ -183,7 +189,11 @@ async def reflect(
         )
         try:
             result = await service.remember(
-                c["content"], c["type"], source="reflection", provenance=provenance
+                c["content"],
+                c["type"],
+                source="reflection",
+                provenance=provenance,
+                project_id=project_id,
             )
         except Exception as exc:  # noqa: BLE001 - one bad memory shouldn't sink the rest
             log.warning("reflection_store_failed", error=str(exc), content=c["content"][:80])

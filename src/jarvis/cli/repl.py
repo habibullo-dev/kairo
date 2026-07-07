@@ -228,12 +228,16 @@ async def _reflect_session(
             return
         if announce:
             console.print("[dim]reflecting…[/]")
+        # Attribute the extracted memories to the session's project (Phase 10) — a project
+        # session's memories are scoped to it, never leaked into global recall.
+        meta = await store.get_meta(session_id)
         results = await reflect(
             transcript=transcript,
             session_id=session_id,
             service=memory,
             client=utility,
             model=model,
+            project_id=meta.project_id if meta is not None else None,
         )
         if announce:
             saved = sum(1 for r in results if r.action in ("inserted", "superseded"))
@@ -326,6 +330,7 @@ class Repl:
                 knowledge=knowledge,
                 agents=self.agents,
                 connectors=self.connectors,
+                project=self.projects.current if self.projects is not None else None,
             ),
         )
         if self.agents is not None:
@@ -550,8 +555,38 @@ class Repl:
             await self._switch_project(project.id)
             self.console.print(f"Switched to [bold]{project.name}[/].\n")
             return
+        if sub in ("export", "import"):
+            await self._project_export_import(sub, rest)
+            return
         self.console.print(
-            "[dim]Usage: project [list | use <slug|id> | new <name> | none][/]\n"
+            "[dim]Usage: project [list | use <slug|id> | new <name> | none | "
+            "export | import <dir>][/]\n"
+        )
+
+    async def _project_export_import(self, sub: str, rest: str) -> None:
+        """`project export` writes the active project's memories to Markdown under
+        data/exports/<slug>/memories/; `project import <dir>` imports a directory into the
+        active project (forcing scope + source='import' — a human ritual, never a tool)."""
+        from jarvis.projects.export import export_project_memories, import_project_memories
+
+        if self.memory is None:
+            self.console.print("[dim]Memory is not enabled.[/]\n")
+            return
+        cur = self.projects.current()
+        if cur.project_id is None:
+            self.console.print("[dim]Select a project first (project use <slug>).[/]\n")
+            return
+        project = await self.projects.store.get(cur.project_id)
+        base = self.config.data_dir / "exports" / project.slug / "memories"
+        if sub == "export":
+            n = await export_project_memories(self.memory.store, cur.project_id, base)
+            self.console.print(f"Exported {n} memories to [bold]{base}[/].\n")
+            return
+        src = Path(rest.strip()) if rest.strip() else base
+        report = await import_project_memories(self.memory, cur.project_id, src)
+        self.console.print(
+            f"Imported into [bold]{project.name}[/]: {report.created} new, "
+            f"{report.duplicate} duplicate, {len(report.skipped)} skipped.\n"
         )
 
     async def _switch_project(self, project_id: int | None) -> None:

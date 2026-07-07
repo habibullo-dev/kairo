@@ -30,12 +30,37 @@ import numpy as np
 _COLUMNS = (
     "id, type, content, embedding, embedding_model, source, status, superseded_by, "
     "source_session_id, source_seq_start, source_seq_end, evidence_summary, confidence, "
-    "created_at, updated_at, last_accessed_at, access_count"
+    "created_at, updated_at, last_accessed_at, access_count, project_id"
 )
+
+#: Sentinel for "any project" (no scope filter) in search/all_live — distinct from ``None``,
+#: which means the *global* scope (project_id IS NULL). See :func:`_scope_clause`.
+ANY_PROJECT: object = object()
 
 
 def _now() -> str:
     return _dt.datetime.now(_dt.UTC).isoformat()
+
+
+def _scope_clause(project_id: object, *, include_global: bool) -> tuple[str, list[object]]:
+    """SQL fragment + params for a project-scope filter (Phase 10). Two axes:
+
+    * ``project_id`` — ``ANY_PROJECT`` (no filter), ``None`` (global only), or an int P.
+    * ``include_global`` — for an int P: True gives ``(project_id = P OR IS NULL)`` (RECALL:
+      global memories are visible inside a project); False gives ``project_id = P`` exactly
+      (DEDUP: a project write must only ever compare against its own scope, so it can never
+      supersede a global memory or another project's — the pre-mortem's cross-scope corruption).
+
+    ``None`` (global scope) is always exact ``IS NULL`` — global recall must not surface any
+    project's memories.
+    """
+    if project_id is ANY_PROJECT:
+        return "", []
+    if project_id is None:
+        return " AND project_id IS NULL", []
+    if include_global:
+        return " AND (project_id = ? OR project_id IS NULL)", [project_id]
+    return " AND project_id = ?", [project_id]
 
 
 def _to_unit_blob(vec: np.ndarray | list[float]) -> tuple[bytes, np.ndarray]:
@@ -82,6 +107,7 @@ class Memory:
     updated_at: str
     last_accessed_at: str | None
     access_count: int
+    project_id: int | None = None  # Phase 10: scope (None == global)
 
 
 @dataclass
@@ -108,15 +134,19 @@ class MemoryStore:
         embedding_model: str,
         source: str,
         provenance: Provenance | None = None,
+        project_id: int | None = None,
     ) -> int:
-        """Insert a live memory (embedding stored unit-normalized). Returns its id."""
+        """Insert a live memory (embedding stored unit-normalized). Returns its id.
+
+        ``project_id`` scopes the memory (None == global). A project session's reflection
+        must pass its project id, never NULL, or the memory leaks into global recall."""
         prov = provenance or Provenance()
         blob, _ = _to_unit_blob(embedding)
         now = _now()
         async with self.lock:
             cursor = await self.db.execute(
                 f"INSERT INTO memories ({_COLUMNS}) VALUES "
-                "(NULL, ?, ?, ?, ?, ?, 'live', NULL, ?, ?, ?, ?, ?, ?, ?, NULL, 0)",
+                "(NULL, ?, ?, ?, ?, ?, 'live', NULL, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?)",
                 (
                     type,
                     content,
@@ -130,6 +160,7 @@ class MemoryStore:
                     prov.confidence,
                     now,
                     now,
+                    project_id,
                 ),
             )
             await self.db.commit()
@@ -187,9 +218,16 @@ class MemoryStore:
         row = await cursor.fetchone()
         return _row_to_memory(row) if row else None
 
-    async def all_live(self) -> list[Memory]:
+    async def all_live(
+        self, *, project_id: object = ANY_PROJECT, include_global: bool = True
+    ) -> list[Memory]:
+        """All live memories, optionally scoped to a project. Default is unscoped (every
+        live memory). A project scope (``project_id=P``) returns P's memories plus global
+        ones — "what Kairo knows about this project"."""
+        scope_sql, scope_params = _scope_clause(project_id, include_global=include_global)
         cursor = await self.db.execute(
-            f"SELECT {_COLUMNS} FROM memories WHERE status='live' ORDER BY id"
+            f"SELECT {_COLUMNS} FROM memories WHERE status='live'{scope_sql} ORDER BY id",
+            tuple(scope_params),
         )
         return [_row_to_memory(r) for r in await cursor.fetchall()]
 
@@ -200,15 +238,20 @@ class MemoryStore:
         *,
         top_k: int,
         min_similarity: float,
+        project_id: object = ANY_PROJECT,
+        include_global: bool = True,
     ) -> list[ScoredMemory]:
-        """Top-k live memories (same embedding model) with cosine ≥ ``min_similarity``.
+        """Top-k live memories (same embedding model) with cosine ≥ ``min_similarity``,
+        within the project scope (see :func:`_scope_clause`).
 
         Filtering by ``embedding_model`` prevents comparing vectors from different
-        embedding spaces (a switch of model must not silently pollute results).
+        embedding spaces (a switch of model must not silently pollute results). The scope
+        filter is applied in SQL, so the matmul runs over only the in-scope rows.
         """
+        scope_sql, scope_params = _scope_clause(project_id, include_global=include_global)
         cursor = await self.db.execute(
-            f"SELECT {_COLUMNS} FROM memories WHERE status='live' AND embedding_model=?",
-            (embedding_model,),
+            f"SELECT {_COLUMNS} FROM memories WHERE status='live' AND embedding_model=?{scope_sql}",
+            (embedding_model, *scope_params),
         )
         rows = await cursor.fetchall()
         if not rows:
@@ -246,4 +289,5 @@ def _row_to_memory(row: tuple) -> Memory:
         updated_at=row[14],
         last_accessed_at=row[15],
         access_count=row[16],
+        project_id=row[17],
     )
