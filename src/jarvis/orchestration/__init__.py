@@ -14,11 +14,13 @@ from jarvis.orchestration.context import (
     ContextPolicyError,
     check_context_policy,
 )
+from jarvis.orchestration.engine import OrchestrationEngine
 from jarvis.orchestration.roles import (
     READ_ONLY_SPAWNABLE,
     Capability,
     RosterRole,
 )
+from jarvis.orchestration.store import OrchestrationRun, OrchestrationStore
 from jarvis.orchestration.teams import TEAM_PROFILES, TeamProfile, resolve_team
 from jarvis.orchestration.workflows import (
     WORKFLOWS,
@@ -35,6 +37,9 @@ __all__ = [
     "ContextBundle",
     "ContextItem",
     "ContextPolicyError",
+    "OrchestrationEngine",
+    "OrchestrationRun",
+    "OrchestrationStore",
     "RosterRole",
     "StageSpec",
     "TeamProfile",

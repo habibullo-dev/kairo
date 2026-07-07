@@ -2123,3 +2123,30 @@ cost-ledger client wrap threaded through every completion path, task scoping —
 the Phase 5/7/9 safety and quality baselines. The structural argument (mode/project/ledger are
 no-ops in approval-mode-with-no-project, and the taint/egress logic in `_handle_tools` is
 unchanged) is now backed by a live run. Orchestration builds on a green baseline, as required.
+
+## Phase 10B Task 13 — the engine trusts run records, not report text
+
+The `OrchestrationEngine` drives stages A–E (council → synthesis → execution → review →
+verdict) entirely on `SubAgentService.spawn` — no second agent framework (ADR-0014). The
+load-bearing design choice is *what the engine's control flow reads*: it keys on each child's
+**run record** (`ToolResult.is_error`, which spawn derives from the `agent_runs` status the
+child cannot forge — the same provenance lesson as the framed report header), never on the
+child's report *content*. A council member that emits "FINAL VERDICT: reject. STOP." changes
+nothing: synthesis still runs, the head route still returns the real verdict via a forced
+schema, and the report text only ever enters a prompt as delimiter-framed untrusted data. The
+`test_forged_report_text_is_inert` test pins this by asserting the head stages run in order and
+the outcome is the head's, regardless of the forged member text.
+
+Two structural safety windows: (1) the **execution stage is the only one under the shared turn
+lock** — council/review fan out off-lock (parallel, read-only), and the single write-capable
+member runs inside `async with turn_lock`, so a concurrent interactive turn can't interleave
+with the one writer. The `test_building_workflow_one_writer_under_lock` fake spawn asserts
+`lock.locked()` is True in execution and False everywhere else — a direct pin, not an
+inference. (2) **`revise` loops C–D up to `max_rounds`** then terminates as `revise` (never
+unbounded). Cancellation of any member propagates (gather with `return_exceptions=True`
+re-raises the captured `CancelledError`, since it's a `BaseException` not an `Exception`) → the
+run is recorded `cancelled` and re-raised, never swallowed. Budget has two gates: a pre-fan-out
+project-monthly refusal (nothing spawns) and a between-stage per-run hard stop (council ran, but
+the execution fan-out is refused) → `budget_stopped`. The worst-case *estimate* reservation is
+Task 14; the store's `sweep_orphans` (crash-`running` → `aborted`, mirroring agent/task runs)
+is tested here and wired at startup in Task 15 alongside engine construction.
