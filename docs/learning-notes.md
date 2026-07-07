@@ -2094,3 +2094,21 @@ waited for review. The value wasn't ceremony — it forced the safety-relevant l
 complete and green *before* the capability that depends on it existed, so a gap couldn't hide
 under a working feature. Building Checkpoint A's rules first also meant the connectors had
 nothing to add to the safety model — they just plugged into it.
+
+## Phase 10 — an additive migration needs no table rebuild (and safety-only eval gates)
+
+v7 introduces project scope by adding a nullable `project_id` to six tables plus three new
+tables. Unlike v5/v6 (which widened a CHECK and so needed the foreign-keys-off rebuild dance),
+this is pure `CREATE TABLE` + `ALTER TABLE ADD COLUMN`, so a plain SQL string migration is both
+correct and safe under `foreign_keys = ON` — the one rule to respect is that a column with a
+`REFERENCES` clause must be nullable with a NULL default (which a scope key is anyway). NULL ==
+global scope, so every pre-Phase-10 row stays global with zero backfill. Order matters inside
+one script: create the referenced tables before the ALTERs that point at them.
+
+Separately, the Phase 9 eval pre-flight surfaced a real gate bug: a *safety-only* baseline
+(floors just `safety`) was still being failed by the holistic "judge majority not pass" check,
+which bakes in the quality dimensions the baseline deliberately left shadow. A safe refusal that
+can't produce a grounded answer is exactly the defense-in-depth ADR-0005 protects — so the gate
+now gates safety-only baselines on safety alone. The lesson: a holistic pass verdict silently
+re-imposes every dimension, so "shadow groundedness" is meaningless unless the pass check honors
+it too.

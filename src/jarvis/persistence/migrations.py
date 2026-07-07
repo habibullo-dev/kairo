@@ -365,6 +365,106 @@ async def _migrate_v6(db: aiosqlite.Connection) -> None:
         raise RuntimeError(f"schema v6 migration left foreign-key violations: {violations}")
 
 
+# Phase 10: project workspaces, orchestration studio, cost ledger. Unlike v5/v6 this is
+# a plain SQL string migration: it only CREATEs new tables and ADDs nullable columns —
+# nothing widens a CHECK, so no FK-off table rebuild is needed. Two ordering rules make
+# it safe under `PRAGMA foreign_keys = ON` (set in db.connect before migrate runs):
+#   1. projects and orchestration_runs are created BEFORE the ALTERs that reference them
+#      (executescript runs statements in order).
+#   2. every ADD COLUMN with a REFERENCES clause is nullable with a NULL default — the one
+#      shape SQLite permits for ALTER ... ADD COLUMN while FK enforcement is on.
+# NULL project_id == global scope (all pre-Phase-10 rows stay global). Never-DELETE holds:
+# projects archive via a status flip; model_calls/orchestration_runs are append-only audit.
+_SCHEMA_V7 = """
+CREATE TABLE projects (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL,
+    slug          TEXT NOT NULL UNIQUE,          -- stable handle for CLI / export dirs
+    description   TEXT,
+    status        TEXT NOT NULL DEFAULT 'active'
+                  CHECK (status IN ('active','paused','archived')),
+    color         TEXT,
+    icon          TEXT,
+    repos_json    TEXT NOT NULL DEFAULT '[]',    -- linked repo/folder absolute paths (JSON)
+    settings_json TEXT NOT NULL DEFAULT '{}',    -- model-route/budget/roster OVERRIDES; never keys
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    archived_at   TEXT
+);
+
+-- Orchestration run audit (10B fills it; the table exists now so v7 is one migration and
+-- agent_runs can FK-reference it). Metadata + short summaries only — never verbatim prompts.
+CREATE TABLE orchestration_runs (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id            INTEGER NOT NULL REFERENCES projects(id),
+    workflow              TEXT NOT NULL,          -- template id (code constant)
+    title                 TEXT NOT NULL,          -- sanitized; never raw user/email text
+    config_json           TEXT NOT NULL,          -- roster/routes/budgets snapshot (no keys)
+    context_manifest_json TEXT NOT NULL,          -- selected context: ids/hashes only, no bodies
+    status                TEXT NOT NULL DEFAULT 'running'
+        CHECK (status IN ('running','ok','rejected','revise','error',
+                          'cancelled','aborted','budget_stopped')),
+    stage                 TEXT,                   -- council|synthesis|execution|review|verdict
+    verdict               TEXT,                   -- accept|reject|revise
+    synthesis_summary     TEXT,                   -- SHORT summary only
+    estimated_cost_usd    REAL,
+    actual_cost_usd       REAL,
+    budget_usd            REAL,                   -- resolved hard per-run cap
+    session_id            INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    trace_id              TEXT,
+    started_at            TEXT NOT NULL,
+    finished_at           TEXT,
+    created_at            TEXT NOT NULL
+);
+
+-- The cost ledger: one row per LLM completion. Metadata only — no prompts/bodies/secrets.
+-- cost_usd IS NULL means pricing was unknown (fail-closed); a 0.0 is a real priced zero.
+CREATE TABLE model_calls (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                   TEXT NOT NULL,           -- UTC ISO
+    trace_id             TEXT,
+    session_id           INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    project_id           INTEGER REFERENCES projects(id),
+    orchestration_run_id INTEGER REFERENCES orchestration_runs(id),
+    agent_role           TEXT,                    -- NULL for plain turns
+    purpose              TEXT NOT NULL,           -- turn|subagent|utility|digest|orchestration
+    provider             TEXT NOT NULL,           -- anthropic|openai
+    model                TEXT NOT NULL,
+    effort               TEXT,
+    input_tokens         INTEGER NOT NULL DEFAULT 0,
+    output_tokens        INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens   INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens    INTEGER NOT NULL DEFAULT 0,
+    tool_call_count      INTEGER NOT NULL DEFAULT 0,
+    latency_ms           REAL,
+    cost_usd             REAL,
+    pricing_version      TEXT,
+    created_at           TEXT NOT NULL
+);
+
+ALTER TABLE sessions   ADD COLUMN project_id INTEGER REFERENCES projects(id);
+ALTER TABLE sessions   ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE memories   ADD COLUMN project_id INTEGER REFERENCES projects(id);
+ALTER TABLE tasks      ADD COLUMN project_id INTEGER REFERENCES projects(id);
+ALTER TABLE kb_sources ADD COLUMN project_id INTEGER REFERENCES projects(id);
+ALTER TABLE digests    ADD COLUMN project_id INTEGER REFERENCES projects(id);
+ALTER TABLE agent_runs ADD COLUMN project_id INTEGER REFERENCES projects(id);
+ALTER TABLE agent_runs ADD COLUMN orchestration_run_id INTEGER REFERENCES orchestration_runs(id);
+ALTER TABLE agent_runs ADD COLUMN role  TEXT;
+ALTER TABLE agent_runs ADD COLUMN stage TEXT;
+
+CREATE INDEX idx_sessions_project   ON sessions(project_id, updated_at);
+CREATE INDEX idx_memories_project   ON memories(project_id) WHERE status = 'live';
+CREATE INDEX idx_kb_sources_project ON kb_sources(project_id) WHERE status = 'live';
+CREATE INDEX idx_tasks_project      ON tasks(project_id);
+CREATE INDEX idx_model_calls_project_ts ON model_calls(project_id, ts);
+CREATE INDEX idx_model_calls_run        ON model_calls(orchestration_run_id);
+CREATE INDEX idx_model_calls_ts         ON model_calls(ts);
+CREATE INDEX idx_orch_runs_project ON orchestration_runs(project_id, id);
+CREATE INDEX idx_orch_runs_running ON orchestration_runs(status) WHERE status = 'running';
+"""
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -377,6 +477,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (4, _SCHEMA_V4),
     (5, _migrate_v5),
     (6, _migrate_v6),
+    (7, _SCHEMA_V7),
 ]
 
 
