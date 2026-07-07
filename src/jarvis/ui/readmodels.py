@@ -291,7 +291,41 @@ def hub_status(
         "egress": egress or {"audio_bytes": 0, "text_chars": 0},
         "connectors": connectors or _empty_connectors(),
         "mcp": {"connected": False, "note": "not connected — future phase"},
+        "model_routes": model_routes_status(config),
     }
+
+
+def model_routes_status(config: Config) -> list[dict]:
+    """The resolved role → route registry for the Hub (Phase 10). Reports provider + model +
+    effort and a ``configured`` boolean (is the provider's key present) — NEVER a key value.
+    ``configured=false`` means selecting that route would fail closed at run time."""
+    from jarvis.models import ModelRegistry
+    from jarvis.models.registry import RouteError
+    from jarvis.models.roles import ROLES
+
+    registry = ModelRegistry(config.models.routes)
+    present = {
+        "anthropic": bool(config.secrets.anthropic_api_key),
+        "openai": bool(config.secrets.openai_api_key),
+    }
+    out: list[dict] = []
+    for role in ROLES:
+        try:
+            route = registry.route(role)
+        except RouteError as exc:
+            out.append({"role": role, "error": str(exc)})
+            continue
+        out.append(
+            {
+                "role": role,
+                "provider": route.provider,
+                "model": route.model,
+                "effort": route.effort,
+                "text_only": route.text_only,
+                "configured": present.get(route.provider, False),
+            }
+        )
+    return out
 
 
 # --- daily: the bootstrap read model (Phase 9) ------------------------------

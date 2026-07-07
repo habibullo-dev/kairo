@@ -78,12 +78,18 @@ class Secrets(BaseSettings):
 
 
 class ModelsConfig(BaseModel):
-    """Model IDs per role. Quality-first — see config/settings.yaml."""
+    """Model IDs per role. Quality-first — see config/settings.yaml.
+
+    ``main``/``utility``/``judge``/``embedding`` are the pre-Phase-10 flat roles (still the
+    live wiring). ``routes`` (Phase 10) is the settings-level override map for the role/route
+    registry — ``{role: {provider, model, effort?, text_only?}}`` — layered over the code
+    defaults and under per-project / per-run overrides (see jarvis.models.registry)."""
 
     main: str = "claude-opus-4-8"
     utility: str = "claude-sonnet-5"
     judge: str = "claude-opus-4-8"
     embedding: str = "voyage-3-large"
+    routes: dict[str, dict] = Field(default_factory=dict)
 
 
 class LimitsConfig(BaseModel):
