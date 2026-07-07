@@ -28,6 +28,7 @@ from jarvis.memory.embeddings import Embedder
 from jarvis.memory.store import ANY_PROJECT as _ANY_PROJECT
 from jarvis.memory.store import MemoryStore, Provenance, ScoredMemory
 from jarvis.observability import get_logger
+from jarvis.observability.ledger import cost_scope
 
 # Inputs too trivial to be worth a recall round-trip (bare acks / confirmations).
 _TRIVIAL = frozenset(
@@ -151,13 +152,14 @@ class MemoryService:
             f"EXISTING (type={hit.memory.type}): {hit.memory.content}\n\n"
             f"NEW (type={type}): {content}\n\nOne word:"
         )
-        response = await self.utility_client.create(
-            model=self.utility_model,
-            system=_ADJUDICATE_SYSTEM,
-            messages=[{"role": "user", "content": user}],
-            tools=[],
-            max_tokens=16,
-        )
+        with cost_scope(purpose="memory_dedup"):
+            response = await self.utility_client.create(
+                model=self.utility_model,
+                system=_ADJUDICATE_SYSTEM,
+                messages=[{"role": "user", "content": user}],
+                tools=[],
+                max_tokens=16,
+            )
         text = response.text.lower()
         if "supersede" in text:
             return "supersede"

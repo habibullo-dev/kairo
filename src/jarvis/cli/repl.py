@@ -33,7 +33,8 @@ from jarvis.knowledge.service import KnowledgeService
 from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder, reflect
 from jarvis.observability import cost_of, get_logger
-from jarvis.observability.cost import Usage
+from jarvis.observability.cost import Usage, load_pricing
+from jarvis.observability.ledger import CostLedger, LedgeredClient
 from jarvis.permissions import (
     NEVER_GRANTABLE,
     NEVER_PERSIST,
@@ -166,15 +167,29 @@ def _short_summary(summary: str, *, lines: int = 12) -> str:
     return "\n".join(shown) + tail
 
 
-def _utility_client(config: Config) -> AnthropicClient:
+def _utility_client(config: Config, *, ledger: CostLedger | None = None) -> LLMClient:
     """The utility model with thinking OFF — used for dedup adjudication, compaction
-    summaries, and reflection (forced tool calls require thinking off)."""
-    return AnthropicClient(
+    summaries, reflection, and the digest (forced/tool-less calls require thinking off).
+
+    Wrapped in a :class:`LedgeredClient` when a cost ledger is supplied (Phase 10), so every
+    compaction/reflection/dedup/digest completion is recorded (the call sites set the purpose
+    via cost_scope)."""
+    client: LLMClient = AnthropicClient(
         api_key=config.secrets.anthropic_api_key,
         effort=config.limits.effort,
         max_retries=config.limits.max_retries,
         thinking=False,
     )
+    if ledger is not None:
+        client = LedgeredClient(
+            client, ledger=ledger, provider="anthropic", effort=config.limits.effort
+        )
+    return client
+
+
+def _build_cost_ledger(config: Config, db, lock) -> CostLedger:
+    """The Phase 10 cost ledger over the shared connection + lock, with versioned pricing."""
+    return CostLedger(db, lock, load_pricing(config.root / "config" / "pricing.yaml"))
 
 
 def _build_memory(
@@ -270,6 +285,7 @@ class Repl:
         make_context_manager: Callable[[], ContextManager] | None = None,
         runner: BackgroundRunner | None = None,
         turn_lock: asyncio.Lock | None = None,
+        cost_ledger: CostLedger | None = None,
     ) -> None:
         self.config = config
         self.console = console or Console()
@@ -293,6 +309,13 @@ class Repl:
         policy_path = config.root / "config" / "permissions.yaml"
         self.gate = PermissionGate(load_policy(policy_path), config.root, source_path=policy_path)
         self.client = client or AnthropicClient.from_config(config)
+        # Phase 10 cost ledger: wrap the main client so every interactive turn AND sub-agent
+        # child (they share this client) is recorded. None in bare/test Repls (unwrapped).
+        self.cost_ledger = cost_ledger
+        if cost_ledger is not None:
+            self.client = LedgeredClient(
+                self.client, ledger=cost_ledger, provider="anthropic", effort=config.limits.effort
+            )
 
         # Sub-agent delegation (Phase 6). Built before tool discovery so spawn_agent
         # registers, then bound to the discovered registry. Needs a session store (to
@@ -921,7 +944,8 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
     reflect_on = False
     runner: BackgroundRunner | None = None
     try:
-        utility = _utility_client(config)
+        ledger = _build_cost_ledger(config, db, store.lock)
+        utility = _utility_client(config, ledger=ledger)
         memory = _build_memory(config, db, console, utility, store.lock)
         context_manager = _build_context_manager(config, utility)
         reflect_on = memory is not None and config.memory.reflection
@@ -959,6 +983,7 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
             knowledge=knowledge,
             run_store=run_store,
             make_context_manager=lambda: _build_context_manager(config, utility),
+            cost_ledger=ledger,
         )
         repl.messages = history
         if resume and history:
@@ -1161,7 +1186,8 @@ async def run_voice(config: Config, *, console: Console | None = None) -> None:
     db = await connect(config.data_dir / "jarvis.db")
     store = SessionStore(db)
     try:
-        utility = _utility_client(config)
+        ledger = _build_cost_ledger(config, db, store.lock)
+        utility = _utility_client(config, ledger=ledger)
         memory = _build_memory(config, db, console, utility, store.lock)
         context_manager = _build_context_manager(config, utility)
         session_id = await store.create_session()
@@ -1179,6 +1205,7 @@ async def run_voice(config: Config, *, console: Console | None = None) -> None:
             knowledge=knowledge,
             run_store=run_store,
             make_context_manager=lambda: _build_context_manager(config, utility),
+            cost_ledger=ledger,
         )
         _session, listener = build_voice_session(config, repl=repl, console=console)
         console.print(
@@ -1257,6 +1284,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
         connectors=repl.connectors,  # Phase 9: Hub + Daily connector status
         sessions=repl.store,  # Phase 10: chats list / search / pin / resume
         projects=repl.projects,  # Phase 10: Projects screen read model
+        ledger=repl.cost_ledger,  # Phase 10: Costs + A5 ledger-degraded status
     )
     if config.voice.enabled:
         app.state.voice = _build_ui_voice(config, repl=repl, app=app)
@@ -1348,7 +1376,8 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
     session_id: int | None = None
     utility = memory = None
     try:
-        utility = _utility_client(config)
+        ledger = _build_cost_ledger(config, db, store.lock)
+        utility = _utility_client(config, ledger=ledger)
         memory = _build_memory(config, db, console, utility, store.lock)
         context_manager = _build_context_manager(config, utility)
         session_id = await store.create_session()
@@ -1366,6 +1395,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
             knowledge=knowledge,
             run_store=run_store,
             make_context_manager=lambda: _build_context_manager(config, utility),
+            cost_ledger=ledger,
         )
         from jarvis.ui import AuthManager
 

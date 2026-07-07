@@ -98,14 +98,104 @@ def price_for(model: str) -> Price | None:
 
 
 def cost_of(model: str, usage: Usage) -> float:
-    """Estimated USD cost of one model call. Unknown models cost ``0.0``."""
+    """Estimated USD cost of one model call. Unknown models cost ``0.0``.
+
+    Legacy helper kept for existing callers (REPL status bar, per-run aggregates). The
+    Phase 10 ledger uses :class:`PricingTable` / :func:`compute_cost` instead, which fail
+    CLOSED (None) on an unknown model rather than returning a silent 0.0."""
     price = price_for(model)
     if price is None:
         return 0.0
+    return _dollars(price, usage, CACHE_WRITE_MULTIPLIER, CACHE_READ_MULTIPLIER)
+
+
+def _dollars(price: Price, usage: Usage, cache_write_mult: float, cache_read_mult: float) -> float:
     dollars = (
         usage.input_tokens * price.input
-        + usage.cache_creation_input_tokens * price.input * CACHE_WRITE_MULTIPLIER
-        + usage.cache_read_input_tokens * price.input * CACHE_READ_MULTIPLIER
+        + usage.cache_creation_input_tokens * price.input * cache_write_mult
+        + usage.cache_read_input_tokens * price.input * cache_read_mult
         + usage.output_tokens * price.output
     )
     return dollars / 1_000_000
+
+
+# --- Phase 10: versioned, provider-keyed pricing (fail-closed) --------------
+
+
+@dataclass(frozen=True)
+class PricingTable:
+    """A versioned pricing table loaded from ``config/pricing.yaml``. Provider-keyed so a
+    lookup never crosses provider price spaces: Anthropic tolerates dated-snapshot suffixes
+    (longest-prefix), every other provider is matched EXACTLY. Unknown ⇒ ``None`` (the ledger
+    records a NULL cost + a warning; orchestration refuses to start) — never a silent $0."""
+
+    version: str
+    effective: str
+    cache_write_multiplier: float
+    cache_read_multiplier: float
+    models: dict[str, dict[str, Price]]  # provider -> model -> Price
+
+    def price_for(self, provider: str, model: str) -> Price | None:
+        table = self.models.get(provider)
+        if not table:
+            return None
+        if model in table:
+            return table[model]
+        if provider == "anthropic":  # only Anthropic ids carry dated snapshots
+            for key in sorted(table, key=len, reverse=True):
+                if model.startswith(key):
+                    return table[key]
+        return None
+
+    def cost(self, provider: str, model: str, usage: Usage) -> float | None:
+        """USD for one call, or ``None`` if the (provider, model) is unpriced (fail-closed)."""
+        price = self.price_for(provider, model)
+        if price is None:
+            return None
+        return _dollars(price, usage, self.cache_write_multiplier, self.cache_read_multiplier)
+
+
+def _code_fallback_table() -> PricingTable:
+    """The Anthropic-only table baked into the code — the fallback when pricing.yaml is
+    missing or malformed (never invents prices for unknown models)."""
+    return PricingTable(
+        version="code-fallback",
+        effective="",
+        cache_write_multiplier=CACHE_WRITE_MULTIPLIER,
+        cache_read_multiplier=CACHE_READ_MULTIPLIER,
+        models={"anthropic": dict(PRICES)},
+    )
+
+
+def load_pricing(path: object | None = None) -> PricingTable:
+    """Load the versioned pricing table from ``path`` (a Path to pricing.yaml). A missing or
+    malformed file falls back to the code table (logged), so a bad edit degrades to known
+    Anthropic prices rather than pricing everything as unknown."""
+    from pathlib import Path
+
+    import yaml
+
+    from jarvis.observability import get_logger
+
+    if path is None or not Path(path).is_file():
+        return _code_fallback_table()
+    try:
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        mult = raw.get("cache_multipliers") or {}
+        models: dict[str, dict[str, Price]] = {}
+        for provider, table in (raw.get("models") or {}).items():
+            models[provider] = {
+                model: Price(float(p["input"]), float(p["output"])) for model, p in table.items()
+            }
+        if not models:
+            raise ValueError("no models in pricing table")
+        return PricingTable(
+            version=str(raw.get("schema_version", "?")),
+            effective=str(raw.get("effective", "")),
+            cache_write_multiplier=float(mult.get("write", CACHE_WRITE_MULTIPLIER)),
+            cache_read_multiplier=float(mult.get("read", CACHE_READ_MULTIPLIER)),
+            models=models,
+        )
+    except Exception as exc:  # noqa: BLE001 - a bad pricing file must not crash startup
+        get_logger("jarvis.cost").warning("pricing_load_failed", error=str(exc))
+        return _code_fallback_table()

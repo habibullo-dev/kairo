@@ -20,6 +20,7 @@ from jarvis.connectors.google import calendar as cal
 from jarvis.connectors.google import gmail
 from jarvis.observability import get_logger, log_egress
 from jarvis.observability.cost import cost_of
+from jarvis.observability.ledger import cost_scope
 
 if TYPE_CHECKING:
     from jarvis.config import Config
@@ -264,13 +265,14 @@ class DigestBuilder:
             f"{_INPUT_HEADER}\n--- begin digest items (untrusted) ---\n"
             f"{body}\n--- end digest items ---"
         )
-        resp = await self.utility.create(
-            model=self.config.models.utility,
-            system=_SUMMARY_SYSTEM,
-            messages=[{"role": "user", "content": framed}],
-            tools=[],  # TOOL-LESS: the summarizer can never call anything (ADR-0010)
-            max_tokens=1024,
-        )
+        with cost_scope(purpose="digest"):
+            resp = await self.utility.create(
+                model=self.config.models.utility,
+                system=_SUMMARY_SYSTEM,
+                messages=[{"role": "user", "content": framed}],
+                tools=[],  # TOOL-LESS: the summarizer can never call anything (ADR-0010)
+                max_tokens=1024,
+            )
         self._cost = cost_of(self.config.models.utility, resp.usage)
         return _parse_summary(resp.text)
 

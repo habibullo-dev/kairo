@@ -1,0 +1,26 @@
+# Versioned model pricing for the Phase 10 cost ledger. USD per 1,000,000 tokens.
+# Keyed by provider then model so lookups can't cross provider price spaces (pre-mortem #15):
+# Anthropic tolerates dated-snapshot suffixes via longest-prefix match; other providers are
+# matched EXACTLY, so an unknown model fails closed (cost_usd NULL + a warning), never a
+# silent $0. Update `effective` + bump `schema_version` on a real change; unknown-here models
+# are treated as unpriced (the code table in observability/cost.py is the Anthropic fallback).
+schema_version: 1
+effective: "2026-07-01"
+cache_multipliers:
+  write: 1.25   # 5-minute ephemeral cache write, vs the input rate
+  read: 0.10    # cache hit, vs the input rate
+models:
+  anthropic:
+    claude-fable-5: {input: 10.0, output: 50.0}
+    claude-mythos-5: {input: 10.0, output: 50.0}
+    claude-opus-4-8: {input: 5.0, output: 25.0}
+    claude-opus-4-7: {input: 5.0, output: 25.0}
+    claude-opus-4-6: {input: 5.0, output: 25.0}
+    claude-sonnet-5: {input: 3.0, output: 15.0}
+    claude-sonnet-4-6: {input: 3.0, output: 15.0}
+    claude-haiku-4-5: {input: 1.0, output: 5.0}
+  openai:
+    # Example OpenAI text-only analysis models. EXACT match only (no prefix) — an unlisted
+    # model is unpriced and fails closed. Fill in real ids/prices before routing a role here.
+    gpt-5.2: {input: 1.75, output: 14.0}
+    gpt-5.2-mini: {input: 0.30, output: 2.40}

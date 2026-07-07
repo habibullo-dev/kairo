@@ -33,6 +33,7 @@ from dataclasses import dataclass
 
 from jarvis.core.client import LLMClient
 from jarvis.observability.cost import Usage
+from jarvis.observability.ledger import cost_scope
 
 _SUMMARY_SYSTEM = """\
 You are compacting a long assistant/user conversation so it fits the context \
@@ -185,13 +186,14 @@ class ContextManager:
         if prior:
             parts.append(f"PRIOR SUMMARY:\n{prior}\n")
         parts.append("NEW MESSAGES TO FOLD IN:\n" + _render_for_summary(new_messages))
-        response = await self.summarizer.create(
-            model=self.utility_model,
-            system=_SUMMARY_SYSTEM,
-            messages=[{"role": "user", "content": "\n".join(parts)}],
-            tools=[],
-            max_tokens=2000,
-        )
+        with cost_scope(purpose="compaction"):
+            response = await self.summarizer.create(
+                model=self.utility_model,
+                system=_SUMMARY_SYSTEM,
+                messages=[{"role": "user", "content": "\n".join(parts)}],
+                tools=[],
+                max_tokens=2000,
+            )
         return response.text or prior
 
     def _find_cut(self, messages: list[dict]) -> int:

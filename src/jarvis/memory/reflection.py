@@ -27,6 +27,7 @@ from jarvis.core.client import LLMClient
 from jarvis.memory.service import MemoryService, RememberResult
 from jarvis.memory.store import Provenance
 from jarvis.observability import get_logger
+from jarvis.observability.ledger import cost_scope
 
 _TYPES = frozenset({"fact", "preference", "project", "episode"})
 
@@ -166,14 +167,15 @@ async def reflect(
 
     firewalled = _strip_tool_results(transcript)
     try:
-        response = await client.create(
-            model=model,
-            system=REFLECT_SYSTEM,
-            messages=[{"role": "user", "content": _render_transcript(firewalled)}],
-            tools=[SAVE_MEMORIES_TOOL],
-            tool_choice={"type": "tool", "name": "save_memories"},
-            max_tokens=2000,
-        )
+        with cost_scope(purpose="reflection", project_id=project_id, session_id=session_id):
+            response = await client.create(
+                model=model,
+                system=REFLECT_SYSTEM,
+                messages=[{"role": "user", "content": _render_transcript(firewalled)}],
+                tools=[SAVE_MEMORIES_TOOL],
+                tool_choice={"type": "tool", "name": "save_memories"},
+                max_tokens=2000,
+            )
     except Exception as exc:  # noqa: BLE001 - reflection must never block exit
         log.warning("reflection_extract_failed", error=str(exc))
         return []

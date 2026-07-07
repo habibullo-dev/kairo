@@ -38,6 +38,7 @@ from jarvis.core.events import (
 from jarvis.core.prompts import build_system
 from jarvis.observability import bind_trace, get_logger
 from jarvis.observability.cost import Usage, cost_of
+from jarvis.observability.ledger import CostContext, cost_context
 from jarvis.permissions.gate import Decision, PermissionGate
 from jarvis.permissions.modes import Mode, auto_approves, plan_blocks
 from jarvis.tools.base import Permission
@@ -95,6 +96,7 @@ class AgentLoop:
         memory: MemoryService | None = None,
         project: Callable[[], ProjectContext] | None = None,
         mode: Callable[[], Mode] | None = None,
+        cost_purpose: str = "turn",
         add_time_context: bool = False,
         now: Callable[[], _dt.datetime] = _default_now,
     ) -> None:
@@ -116,6 +118,10 @@ class AgentLoop:
         # _handle_tools, co-located with egress taint. auto_allow_tools is the opt-in Auto set.
         self.mode = mode
         self._auto_allow: frozenset[str] = frozenset(config.modes.auto_allow_tools)
+        # Phase 10 cost ledger: the purpose recorded for this loop's completions ("turn" for
+        # interactive, "subagent"/"orchestration" for children). Nested utility calls
+        # (compaction/reflection/dedup/digest) override it via cost_scope at their call sites.
+        self.cost_purpose = cost_purpose
         # Per-turn snapshot of "did this turn start in Auto" (pre-mortem #12): a mid-turn flip
         # INTO Auto must not retroactively auto-approve the in-flight turn.
         self._turn_started_auto = False
@@ -186,6 +192,16 @@ class AgentLoop:
         # the next turn, not mid-flight). None provider => global scope, no extra.
         project = self.project() if self.project is not None else None
         project_extra = project.system_extra if project is not None else None
+        # Bind the cost-ledger context for this turn (purpose + scope + trace). Nested utility
+        # calls override the purpose via cost_scope. Set fresh each turn (children copy their
+        # own context at task creation), so no reset is needed here.
+        cost_context.set(
+            CostContext(
+                purpose=self.cost_purpose,
+                project_id=project.project_id if project is not None else None,
+                trace_id=trace_id,
+            )
+        )
         # Auto-recall runs once per turn, on the new user message (not per iteration), scoped
         # to the active project (see _recall_block).
         recall_block = await self._recall_block(messages, project)

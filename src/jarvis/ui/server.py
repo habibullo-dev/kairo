@@ -301,8 +301,11 @@ def create_app(
     @app.get("/api/hub")
     async def hub() -> dict:
         connectors = app.state.services.connectors
+        ledger = app.state.services.ledger
         return hub_status(
-            config, connectors=connectors.status() if connectors is not None else None
+            config,
+            connectors=connectors.status() if connectors is not None else None,
+            ledger_status=ledger.status() if ledger is not None else None,
         )
 
     @app.get("/api/daily")

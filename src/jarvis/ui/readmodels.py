@@ -47,9 +47,11 @@ class UiServices:
     connectors: Any = None
     digests: DigestStore | None = None
     # Phase 10: the session store backs the chats list / search / pin / resume; the project
-    # service backs the Projects screen + the active-project switcher.
+    # service backs the Projects screen + the active-project switcher; the cost ledger backs
+    # the Costs screen + the A5 ledger-degraded status.
     sessions: SessionStore | None = None
     projects: ProjectService | None = None
+    ledger: Any = None  # a CostLedger; None when cost tracking isn't composed
 
 
 # --- memory ----------------------------------------------------------------
@@ -268,7 +270,11 @@ def _empty_connectors() -> dict:
 
 
 def hub_status(
-    config: Config, *, egress: dict | None = None, connectors: dict | None = None
+    config: Config,
+    *,
+    egress: dict | None = None,
+    connectors: dict | None = None,
+    ledger_status: dict | None = None,
 ) -> dict:
     """Connector status. Providers are reported as key-*presence* booleans — a secret value
     must never cross the wire (asserted by the secret-absence sweep). ``connectors`` is the
@@ -292,6 +298,9 @@ def hub_status(
         "connectors": connectors or _empty_connectors(),
         "mcp": {"connected": False, "note": "not connected — future phase"},
         "model_routes": model_routes_status(config),
+        # A5: cost-tracking health. degraded=True means ledger writes are failing (surfaced,
+        # never silent). None ⇒ not composed (a bare app / cost tracking off).
+        "cost_ledger": ledger_status or {"degraded": False, "unrecorded": 0},
     }
 
 
