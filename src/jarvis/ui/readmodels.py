@@ -432,6 +432,15 @@ async def daily_overview(
         services.connectors.status() if services.connectors is not None else _empty_connectors()
     )
     total_dirty = sum(r["state"]["dirty_files"] for r in repos if r["state"])
+    # Phase 10: project cards + the active project (a calm summary; the Projects screen is full).
+    projects: list[dict] = []
+    active_project: int | None = None
+    if services.projects is not None:
+        projects = [
+            {"id": p.id, "name": p.name, "slug": p.slug, "color": p.color, "status": p.status}
+            for p in await services.projects.store.list(status="active")
+        ]
+        active_project = services.projects.current().project_id
     return {
         "repos": repos,
         "evals": _eval_freshness(config, repos),
@@ -443,6 +452,8 @@ async def daily_overview(
         "connectors": connectors,
         "demo": bool(connectors.get("demo")),
         "what_changed": {"repos": len(repos), "dirty_files": total_dirty},
+        "projects": projects,
+        "active_project": active_project,
     }
 
 

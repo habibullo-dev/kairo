@@ -50,6 +50,9 @@ if TYPE_CHECKING:
 #: Methods that mutate state — Origin-checked (anti-CSRF). GETs are session-gated instead.
 _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+#: Valid memory types for the human-authority remember route (matches the store CHECK).
+_MEMORY_TYPES = frozenset({"fact", "preference", "project", "episode"})
+
 #: Paths reachable WITHOUT a session. The exchange mints the session; health is safe.
 #: Everything else — including static app assets and data GETs — requires the session cookie
 #: (the authenticated browser has it after the exchange; an anonymous fetch gets 401).
@@ -248,9 +251,21 @@ def create_app(
 
     @app.get("/api/runner")
     async def runner_status() -> dict:
+        # The status-strip feed: runner/turn state + mode + active project + today's spend +
+        # pending approvals + cost-ledger health (A5). One calm surface; all read-only.
         status = _runner_status(app.state.runner, app.state.session)
         modes = app.state.modes
         status["mode"] = modes.current().value if modes is not None else "approval"
+        projects = app.state.projects
+        cur = projects.current() if projects is not None else None
+        status["project"] = {"id": cur.project_id, "name": cur.name} if cur is not None else None
+        status["pending_approvals"] = len(app.state.approvals.pending())
+        budgets = app.state.services.budgets
+        status["today_spend_usd"] = (
+            (await budgets.period_spend("day"))["cost_usd"] if budgets is not None else None
+        )
+        ledger = app.state.services.ledger
+        status["ledger_degraded"] = ledger.status()["degraded"] if ledger is not None else False
         return status
 
     @app.post("/api/budgets")
@@ -504,6 +519,44 @@ def create_app(
         forgotten = await svc.store.forget(memory_id)  # status flip, never DELETE
         return JSONResponse({"ok": bool(forgotten)})
 
+    @app.post("/api/memory/remember")
+    async def memory_remember(request: Request) -> JSONResponse:
+        # Human-authority remember (the promote-to-memory target): the click IS the authority,
+        # like vault ingest. Stored source='user', scoped to the ACTIVE project (never a body-
+        # supplied project_id — a promote can't cross-scope). Content is the user-selected text.
+        svc = app.state.services.memory
+        if svc is None:
+            return _unavailable("memory")
+        body = await request.json()
+        content = str(body.get("content", "")).strip()
+        if not content:
+            return JSONResponse({"ok": False, "message": "content required"}, status_code=400)
+        mem_type = body.get("type") if body.get("type") in _MEMORY_TYPES else "fact"
+        projects = app.state.projects
+        pid = projects.current().project_id if projects is not None else None
+        result = await svc.remember(content, mem_type, source="user", project_id=pid)
+        return JSONResponse({"ok": True, "id": result.memory_id, "action": result.action})
+
+    @app.post("/api/tasks/create")
+    async def tasks_create(request: Request) -> JSONResponse:
+        # Human-authority task/reminder creation (the promote-to-task target). created_by=user.
+        svc = app.state.services.tasks
+        if svc is None:
+            return _unavailable("tasks")
+        body = await request.json()
+        try:
+            task = await svc.schedule(
+                kind=str(body.get("kind", "reminder")),
+                title=str(body.get("title", "")).strip() or "reminder",
+                payload=str(body.get("payload", "")),
+                schedule_kind=str(body.get("schedule_kind", "once")),
+                schedule_spec=str(body.get("schedule_spec", "")),
+                created_by="user",
+            )
+        except Exception as exc:  # noqa: BLE001 - a bad schedule is a 400, not a 500
+            return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True, "id": task.id})
+
     @app.post("/api/sessions/{session_id}/pin")
     async def sessions_pin(session_id: int, request: Request) -> JSONResponse:
         # Pin/unpin a chat (body {"pinned": bool}) — a display preference, no new authority.
@@ -585,6 +638,9 @@ def create_app(
             return JSONResponse({"ok": False, "message": str(exc)}, status_code=404)
         if app.state.session is not None:
             app.state.session.start_new_session(ctx.project_id)
+        await app.state.connections.broadcast(
+            {"kind": "project_changed", "project_id": ctx.project_id, "name": ctx.name}
+        )
         return JSONResponse({"ok": True, "active_project_id": ctx.project_id})
 
     # --- voice: status + push-to-talk + meeting capture (unreviewed source) ------------

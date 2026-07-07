@@ -163,6 +163,8 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/projects/select"),  # Phase 10: set the active-project scope
         ("POST", "/api/mode"),  # Phase 10: set the interactive run mode
         ("POST", "/api/budgets"),  # Phase 10: tune live budget limits
+        ("POST", "/api/memory/remember"),  # Phase 10: human-authority remember (promote target)
+        ("POST", "/api/tasks/create"),  # Phase 10: human-authority task create (promote target)
         ("POST", "/api/voice/listen"),
         ("POST", "/api/voice/meeting"),
     }

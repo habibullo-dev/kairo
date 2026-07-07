@@ -243,6 +243,11 @@ function renderRunnerState() {
   setText("st-turn", busy ? "working" : "ready");
   const stop = document.getElementById("st-stop"); if (stop) stop.style.display = s.runner_running ? "" : "none";
   const resume = document.getElementById("st-resume"); if (resume) resume.style.display = s.runner_running ? "none" : "";
+  // Phase 10 status strip: active project, run mode, today's spend, cost-ledger health.
+  setText("st-project", s.project && s.project.name ? s.project.name : "global");
+  setText("st-mode", s.mode || "approval");
+  if (typeof s.today_spend_usd === "number") setText("st-spend", `$${s.today_spend_usd.toFixed(4)}`);
+  const led = document.getElementById("st-ledger"); if (led) led.style.display = s.ledger_degraded ? "" : "none";
   // Daily current-activity card (if mounted) — same source, same result
   if (document.getElementById("daily-now-lead")) {
     setClass("daily-now-dot", dotClass);
