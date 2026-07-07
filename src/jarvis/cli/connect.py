@@ -19,7 +19,7 @@ import datetime as _dt
 from pathlib import Path
 from typing import Any
 
-from jarvis.config import Config
+from jarvis.config import Config, resolve_kakao_redirect_uri, resolve_telegram_chat_id
 from jarvis.connectors.base import ConnectorError
 from jarvis.connectors.google import google_provider
 from jarvis.connectors.kakao import KakaoNotifier, kakao_provider
@@ -75,7 +75,8 @@ def _kakao_store(config: Config, *, http: Any = None) -> TokenStore:
         token_path(config, "kakao"),
         provider=kakao_provider(config.connectors.kakao.redirect_port),
         client_id=config.secrets.kakao_rest_api_key,
-        client_secret="",  # Kakao's client secret is optional; PKCE covers the flow
+        # Optional: set only if the Kakao app enabled a client secret; "" ⇒ PKCE-only flow.
+        client_secret=config.secrets.kakao_client_secret,
         http=http,
     )
 
@@ -94,13 +95,19 @@ async def connect_kakao(
         return 1
     if test:
         return await _kakao_test(config, http=http, now=now, emit=emit)
+    # Validate the redirect URI (KAKAO_REDIRECT_URI, if set, must match the port-derived one) —
+    # a mismatch would silently break OAuth, so fail closed with a clear message.
+    redirect_uri = resolve_kakao_redirect_uri(config)
     provider = kakao_provider(config.connectors.kakao.redirect_port)
-    emit(
-        f"Kakao redirect must be registered as http://127.0.0.1:{provider.redirect_port} "
-        "in the Kakao developer console."
+    emit(f"Kakao redirect must be registered as {redirect_uri} in the Kakao developer console.")
+    # Kakao uses the REST API key as the client id; the client secret is optional (PKCE covers
+    # the flow) — pass it when the app enabled one, else "".
+    state = await authorize(
+        provider,
+        client_id=sec.kakao_rest_api_key,
+        client_secret=sec.kakao_client_secret,
+        emit=emit,
     )
-    # Kakao uses the REST API key as the client id; client secret is optional (PKCE covers it).
-    state = await authorize(provider, client_id=sec.kakao_rest_api_key, client_secret="", emit=emit)
     _kakao_store(config).save(state)
     emit("Kakao connected.")
     return 0
@@ -125,17 +132,17 @@ async def _kakao_test(config: Config, *, http: Any = None, now=None, emit=print)
 
 async def connect_telegram(config: Config, *, test: bool, emit=print) -> int:
     sec = config.secrets
-    tg = config.connectors.telegram
+    chat_id = resolve_telegram_chat_id(config)  # TELEGRAM_CHAT_ID (.env) or settings.yaml
     if not sec.telegram_bot_token:
         emit("Missing TELEGRAM_BOT_TOKEN in .env. Talk to @BotFather to create a bot.")
         return 1
-    if not tg.chat_id:
-        emit("Set connectors.telegram.chat_id in config/settings.yaml (your numeric chat id).")
+    if not chat_id:
+        emit("Set TELEGRAM_CHAT_ID in .env or connectors.telegram.chat_id in config/settings.yaml.")
         return 1
     if test:
         await send_telegram_message(
             bot_token=sec.telegram_bot_token,
-            chat_id=tg.chat_id,
+            chat_id=chat_id,
             text=_test_message(),
         )
         emit("Sent a test message to Telegram.")
@@ -153,8 +160,9 @@ def show_status(config: Config, *, emit=print) -> int:
         else:
             scopes = ", ".join(state.scopes) or "(none recorded)"
             emit(f"  {provider}: connected — scopes: {scopes}; access expires {state.expires_at}")
-    tg = config.connectors.telegram
-    ready = bool(config.secrets.telegram_bot_token and tg.chat_id)
+    # Effective chat id from TELEGRAM_CHAT_ID (.env) or settings.yaml — presence only, never
+    # the value (a routing id, but there's no need to print it).
+    ready = bool(config.secrets.telegram_bot_token and resolve_telegram_chat_id(config))
     emit(f"  telegram: {'configured' if ready else 'not configured'}")
     return 0
 

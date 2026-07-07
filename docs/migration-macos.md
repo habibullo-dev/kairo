@@ -34,8 +34,17 @@ ELEVENLABS_API_KEY=...        # cloud voice (optional)
 GOOGLE_CLIENT_ID=...          # Google connector (see §5)
 GOOGLE_CLIENT_SECRET=...
 TELEGRAM_BOT_TOKEN=...        # Telegram notifier (from @BotFather)
+TELEGRAM_CHAT_ID=...          # your numeric chat id; precedence over settings.yaml chat_id
 KAKAO_REST_API_KEY=...        # Kakao notifier
+KAKAO_CLIENT_SECRET=...       # optional — only if your Kakao app enabled a client secret
+KAKAO_REDIRECT_URI=...        # optional — must match http://127.0.0.1:<redirect_port> or connect fails closed
 ```
+
+`TELEGRAM_CHAT_ID` in `.env` overrides `connectors.telegram.chat_id` in `settings.yaml`
+(either works; the env var wins). `KAKAO_CLIENT_SECRET` is optional — leave it blank for a
+PKCE-only Kakao app. If you set `KAKAO_REDIRECT_URI`, it must equal
+`http://127.0.0.1:<connectors.kakao.redirect_port>` exactly (the value registered in the Kakao
+Developers console) — a mismatch fails closed with a message telling you to align them.
 
 ## 3. `config/` — review before copying
 

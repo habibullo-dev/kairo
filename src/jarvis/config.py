@@ -74,7 +74,9 @@ class Secrets(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     telegram_bot_token: str = ""
+    telegram_chat_id: str = ""  # optional: overrides connectors.telegram.chat_id (settings.yaml)
     kakao_rest_api_key: str = ""
+    kakao_client_secret: str = ""  # optional: only if the Kakao app enabled a client secret
 
 
 class ModelsConfig(BaseModel):
@@ -288,6 +290,33 @@ class KakaoConfig(BaseModel):
 
     enabled: bool = False
     redirect_port: int = 8788  # MUST match the redirect URI registered in the Kakao dev console
+
+
+def resolve_telegram_chat_id(config: Config) -> str:
+    """The effective Telegram chat id: the ``TELEGRAM_CHAT_ID`` secret if set, else the
+    ``connectors.telegram.chat_id`` from settings.yaml (fallback). A routing id, not a secret,
+    but surfaced only as a presence boolean in status."""
+    return config.secrets.telegram_chat_id or config.connectors.telegram.chat_id
+
+
+def resolve_kakao_redirect_uri(config: Config) -> str:
+    """The effective Kakao redirect URI, which MUST match the Kakao Developers registration.
+
+    Derived from ``connectors.kakao.redirect_port`` as ``http://127.0.0.1:<port>``. If
+    ``KAKAO_REDIRECT_URI`` is set in the env, it must AGREE with the derived value — a
+    disagreement fails closed (a mismatched redirect silently breaks OAuth), raising
+    :class:`ConfigError` with both values so the user can align the port or the env var."""
+    import os
+
+    derived = f"http://127.0.0.1:{config.connectors.kakao.redirect_port}"
+    env_uri = (os.getenv("KAKAO_REDIRECT_URI") or "").strip().rstrip("/")
+    if env_uri and env_uri != derived:
+        raise ConfigError(
+            f"KAKAO_REDIRECT_URI ({env_uri}) disagrees with the port-derived redirect "
+            f"({derived}). Set connectors.kakao.redirect_port to match your Kakao console "
+            "registration, or unset KAKAO_REDIRECT_URI."
+        )
+    return derived
 
 
 class DigestConfig(BaseModel):

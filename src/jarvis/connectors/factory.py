@@ -8,7 +8,7 @@ connected (keys present, token file on disk); otherwise its tools simply don't r
 
 from __future__ import annotations
 
-from jarvis.config import Config
+from jarvis.config import Config, resolve_telegram_chat_id
 from jarvis.connectors.base import ConnectorRegistry, Notifier
 from jarvis.connectors.demo import DemoGoogleClient, DemoNotifier
 from jarvis.connectors.google import google_provider
@@ -29,7 +29,10 @@ def _has_real_keys(config: Config) -> bool:
     sec = config.secrets
     c = config.connectors
     google = bool(sec.google_client_id and sec.google_client_secret)
-    telegram = bool(c.telegram.enabled and sec.telegram_bot_token and c.telegram.chat_id)
+    # The effective chat id may come from TELEGRAM_CHAT_ID (.env) or settings.yaml.
+    telegram = bool(
+        c.telegram.enabled and sec.telegram_bot_token and resolve_telegram_chat_id(config)
+    )
     kakao = bool(c.kakao.enabled and sec.kakao_rest_api_key)
     return google or telegram or kakao
 
@@ -63,9 +66,10 @@ def build_connectors(config: Config) -> ConnectorRegistry | None:
         if store.load() is not None:  # only expose once actually connected
             google = GoogleClient(store)
 
-    if c.telegram.enabled and sec.telegram_bot_token and c.telegram.chat_id:
+    telegram_chat_id = resolve_telegram_chat_id(config)
+    if c.telegram.enabled and sec.telegram_bot_token and telegram_chat_id:
         notifiers["telegram"] = TelegramNotifier(
-            bot_token=sec.telegram_bot_token, chat_id=c.telegram.chat_id
+            bot_token=sec.telegram_bot_token, chat_id=telegram_chat_id
         )
 
     if c.kakao.enabled and sec.kakao_rest_api_key:
@@ -73,7 +77,7 @@ def build_connectors(config: Config) -> ConnectorRegistry | None:
             _token_path(config, "kakao"),
             provider=kakao_provider(c.kakao.redirect_port),
             client_id=sec.kakao_rest_api_key,
-            client_secret="",
+            client_secret=sec.kakao_client_secret,  # optional; "" for a PKCE-only Kakao app
         )
         if read_token_state(_token_path(config, "kakao")) is not None:
             notifiers["kakao"] = KakaoNotifier(kstore)

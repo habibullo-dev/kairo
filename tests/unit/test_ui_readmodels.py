@@ -185,7 +185,9 @@ def test_no_secret_crosses_the_wire_on_any_get(tmp_path: Path) -> None:
             "elevenlabs_api_key": "SECRET-CANARY-ELEVEN",
             "google_client_secret": "SECRET-CANARY-GOOGLE-SECRET",
             "telegram_bot_token": "SECRET-CANARY-TELEGRAM",
+            "telegram_chat_id": "SECRET-CANARY-CHATID",
             "kakao_rest_api_key": "SECRET-CANARY-KAKAO",
+            "kakao_client_secret": "SECRET-CANARY-KAKAO-SECRET",
         }
     )
     auth = AuthManager(token="SECRET-CANARY-TOKEN")
