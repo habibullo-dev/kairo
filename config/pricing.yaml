@@ -4,7 +4,7 @@
 # matched EXACTLY, so an unknown model fails closed (cost_usd NULL + a warning), never a
 # silent $0. Update `effective` + bump `schema_version` on a real change; unknown-here models
 # are treated as unpriced (the code table in observability/cost.py is the Anthropic fallback).
-schema_version: 1
+schema_version: 2
 effective: "2026-07-01"
 cache_multipliers:
   write: 1.25   # 5-minute ephemeral cache write, vs the input rate
@@ -24,3 +24,12 @@ models:
     # model is unpriced and fails closed. Fill in real ids/prices before routing a role here.
     gpt-5.2: {input: 1.75, output: 14.0}
     gpt-5.2-mini: {input: 0.30, output: 2.40}
+
+# Phase 10B team services with a METERED cost model. A metered service NOT listed here is
+# treated as unpriced and fails closed (its tool won't be available). Local free tools
+# (semgrep/gitleaks/playwright_local) are fixed_zero in the catalog and need NO entry here.
+# usd_per_unit is per the service's `unit` (a page crawled, a search, an image, …). Fill in
+# real numbers before enabling any metered service; none are enabled in 10B.
+services: {}
+  # firecrawl: {unit: page, usd_per_unit: 0.002}
+  # exa:       {unit: search, usd_per_unit: 0.005}

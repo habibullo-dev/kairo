@@ -359,6 +359,15 @@ class ModesConfig(BaseModel):
     auto_allow_tools: list[str] = Field(default_factory=list)
 
 
+class ServicesConfig(BaseModel):
+    """Team service enablement (Phase 10B). ``enabled`` is the global opt-in flag list — a
+    service is usable only if it appears here AND has a "now" adapter AND its credentials +
+    pricing check out (fail closed). Empty by default: no external service is on until a human
+    lists it. Per-project narrowing lives in the project's settings_json["services"]."""
+
+    enabled: list[str] = Field(default_factory=list)
+
+
 class BudgetsConfig(BaseModel):
     """Cost budgets + ROI inputs (Phase 10). 0 / None means "no limit". Per-run limits gate
     an orchestration run's accumulated spend; project_monthly caps month-to-date per project;
@@ -391,6 +400,7 @@ class Config(BaseModel):
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)  # Phase 9
     modes: ModesConfig = Field(default_factory=ModesConfig)  # Phase 10
     budgets: BudgetsConfig = Field(default_factory=BudgetsConfig)  # Phase 10
+    services: ServicesConfig = Field(default_factory=ServicesConfig)  # Phase 10B
     paths: PathsConfig
     secrets: Secrets
 

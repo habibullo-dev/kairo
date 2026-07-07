@@ -328,10 +328,28 @@ def hub_status(
         "connectors": connectors or _empty_connectors(),
         "mcp": {"connected": False, "note": "not connected — future phase"},
         "model_routes": model_routes_status(config),
+        "services": services_status(config),
         # A5: cost-tracking health. degraded=True means ledger writes are failing (surfaced,
         # never silent). None ⇒ not composed (a bare app / cost tracking off).
         "cost_ledger": ledger_status or {"degraded": False, "unrecorded": 0},
     }
+
+
+def services_status(config: Config, *, project_services: list[str] | None = None) -> list[dict]:
+    """Team-service availability for the Hub/Studio (Phase 10B). Presence-only: each catalog
+    service + its derived state (available/disabled/deferred/missing_credentials/unpriced) and
+    whether its credential env vars are set — NEVER a key value. ``project_services`` narrows
+    per project page."""
+    from jarvis.observability.cost import load_pricing
+    from jarvis.services import ServiceRegistry
+
+    pricing = load_pricing(config.root / "config" / "pricing.yaml")
+    registry = ServiceRegistry(
+        enabled=config.services.enabled,
+        priced_services=pricing.priced_services(),
+        project_services=project_services,
+    )
+    return registry.availability()
 
 
 def model_routes_status(config: Config) -> list[dict]:

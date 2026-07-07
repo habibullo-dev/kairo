@@ -134,6 +134,12 @@ class PricingTable:
     cache_write_multiplier: float
     cache_read_multiplier: float
     models: dict[str, dict[str, Price]]  # provider -> model -> Price
+    services: dict[str, dict] = None  # type: ignore[assignment]  # Phase 10B: service name -> {unit, usd_per_unit}
+
+    def priced_services(self) -> frozenset[str]:
+        """Names of services with a pricing entry (a metered service is only 'priced' —
+        and therefore usable — when it appears here; unpriced fails closed)."""
+        return frozenset(self.services or {})
 
     def price_for(self, provider: str, model: str) -> Price | None:
         table = self.models.get(provider)
@@ -164,6 +170,7 @@ def _code_fallback_table() -> PricingTable:
         cache_write_multiplier=CACHE_WRITE_MULTIPLIER,
         cache_read_multiplier=CACHE_READ_MULTIPLIER,
         models={"anthropic": dict(PRICES)},
+        services={},
     )
 
 
@@ -195,6 +202,7 @@ def load_pricing(path: object | None = None) -> PricingTable:
             cache_write_multiplier=float(mult.get("write", CACHE_WRITE_MULTIPLIER)),
             cache_read_multiplier=float(mult.get("read", CACHE_READ_MULTIPLIER)),
             models=models,
+            services=dict(raw.get("services") or {}),
         )
     except Exception as exc:  # noqa: BLE001 - a bad pricing file must not crash startup
         get_logger("jarvis.cost").warning("pricing_load_failed", error=str(exc))

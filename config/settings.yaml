@@ -89,6 +89,15 @@ budgets:
   hourly_rate_usd: 100.0          # ROI: the human-time value a workflow saves
   treat_unpriced_as_blocking: true
 
+services:
+  # Team services (Phase 10B). Global opt-in flags: a service is usable ONLY if listed here
+  # AND it has a 10B adapter (semgrep / gitleaks / playwright_local) AND its credentials +
+  # pricing check out. Everything else in the catalog is "deferred" (shown in the UI, not
+  # usable). Empty by default — enable the safe local scanners/inspectors when you want them.
+  # Per-project narrowing lives in the project's settings. Adapters land after Checkpoint D.
+  enabled: []
+  # enabled: [semgrep, gitleaks, playwright_local]   # the 10B "now" set, once adapters ship
+
 voice:
   # Voice interface (Phase 7). Push-to-talk MVP; wake-word activation is deferred. Voice
   # is read-only by default and NEVER approves risky actions by voice — those escalate to
