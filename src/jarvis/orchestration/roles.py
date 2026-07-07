@@ -16,11 +16,19 @@ from enum import StrEnum
 from jarvis.agents import SPAWNABLE
 
 #: The read-only floor for council/review roles: local reads only. NO run_shell (never
-#: read-only), NO write_file, and NO web_search/web_fetch (egress). In Task 16 this grows by
-#: exactly {semgrep_scan, gitleaks_scan} (hardened read-only scanners); until then it is the
-#: base four. Pinned by a test.
+#: read-only), NO write_file, and NO web_search/web_fetch (egress). Task 16 grows it by
+#: EXACTLY {semgrep_scan, gitleaks_scan} — hardened read-only scanners (no shell, no write, no
+#: egress). playwright_inspect is deliberately NOT here: it is execution-stage only, so the
+#: council/review floor stays exactly local-reads + the two scanners. Pinned by a test.
 READ_ONLY_SPAWNABLE: frozenset[str] = frozenset(
-    {"read_file", "list_dir", "glob_search", "query_knowledge_base"}
+    {
+        "read_file",
+        "list_dir",
+        "glob_search",
+        "query_knowledge_base",
+        "semgrep_scan",
+        "gitleaks_scan",
+    }
 )
 
 

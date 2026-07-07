@@ -397,6 +397,60 @@ def test_engine_member_selection_respects_capability_floors() -> None:
             assert m.capability is Capability.WRITE_CAPABLE
 
 
+# --- Task 16: service-tool scope (stage + floor + context_policy) -----------
+
+
+def _scope_engine() -> OrchestrationEngine:
+    return OrchestrationEngine(
+        spawn=lambda **kw: None,
+        store=None,
+        head_client=FakeClient([]),
+        head_model="m",
+        turn_lock=asyncio.Lock(),
+    )
+
+
+def _member(cap, services):
+    from jarvis.orchestration.roles import RosterRole
+
+    return RosterRole("m", "M", "utility", frozenset({"read_file"}), frozenset(services), cap, "r")
+
+
+def test_scanner_services_enter_council_scope() -> None:
+    # A security council member's semgrep/gitleaks services become scoped read-only tools.
+    engine = _scope_engine()
+    sec_lead = next(m for m in resolve_team("security").members if m.id == "sec_lead")
+    scope = set(engine._member_scope(sec_lead, "council", _CTX))
+    assert {"semgrep_scan", "gitleaks_scan"} <= scope
+    assert scope <= READ_ONLY_SPAWNABLE  # everything the council member holds is read-only
+
+
+def test_execution_service_never_enters_read_only_scope() -> None:
+    # A read-only member declaring an execution-stage service (playwright) is NEVER granted it —
+    # the floor is not widened. Only a writer in the execution stage gets it.
+    engine = _scope_engine()
+    ro = _member(Capability.READ_ONLY, {"playwright_local"})
+    assert "playwright_inspect" not in engine._member_scope(ro, "review", _CTX)
+    writer = _member(Capability.WRITE_CAPABLE, {"playwright_local"})
+    assert "playwright_inspect" in engine._member_scope(writer, "execution", _CTX)
+    # ...and not in a non-execution stage (playwright's stages are execution-only).
+    assert "playwright_inspect" not in engine._member_scope(writer, "council", _CTX)
+
+
+def test_service_dropped_when_context_policy_refuses() -> None:
+    # #6: the engine runs check_context_policy before granting a service. A repo_code_only
+    # scanner is dropped from scope when the bundle carries PRIVATE provenance.
+    engine = _scope_engine()
+    private = ContextBundle(
+        items=(ContextItem(kind="memory", ref="m", provenance=Provenance.PRIVATE, text="secret"),)
+    )
+    sec_lead = next(m for m in resolve_team("security").members if m.id == "sec_lead")
+    scope = set(engine._member_scope(sec_lead, "council", private))
+    assert "semgrep_scan" not in scope and "gitleaks_scan" not in scope  # refused the bundle
+    # base tools survive; only the policy-incompatible services are dropped.
+    assert "read_file" in scope
+
+
 # --- Integration: the REAL SubAgentService.spawn ----------------------------
 
 

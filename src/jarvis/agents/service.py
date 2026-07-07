@@ -67,6 +67,12 @@ SPAWNABLE: frozenset[str] = frozenset(
         "web_search",
         "web_fetch",
         "query_knowledge_base",
+        # Phase 10B local service tools (registered only when the service flag is on). The
+        # read-only scanners join the council/review floor too (see READ_ONLY_SPAWNABLE);
+        # playwright_inspect is execution-stage only (ASK-gated, writer-held).
+        "semgrep_scan",
+        "gitleaks_scan",
+        "playwright_inspect",
     }
 )
 

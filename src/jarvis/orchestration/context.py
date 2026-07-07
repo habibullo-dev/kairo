@@ -33,13 +33,22 @@ class Provenance(StrEnum):
 
 
 #: What each service context_policy is ALLOWED to receive (B1). Anything outside ⇒ refused.
+#: The load-bearing guarantees: PUBLIC_ONLY external services get PUBLIC and nothing else
+#: (never private/project/repo — non-negotiable #13); nothing but PRIVATE_ALLOWED_WITH_GATE ever
+#: receives PRIVATE. repo_code_only/local_only additionally tolerate PROJECT_NON_PRIVATE (the
+#: non-private project name/brief legitimately accompanies a local scan/inspect); they still
+#: refuse PRIVATE and external PUBLIC.
 _ALLOWED: dict[ContextPolicy, frozenset[Provenance]] = {
     ContextPolicy.PUBLIC_ONLY: frozenset({Provenance.PUBLIC}),
     ContextPolicy.PROJECT_NON_PRIVATE: frozenset(
         {Provenance.PUBLIC, Provenance.PROJECT_NON_PRIVATE, Provenance.REPO_CODE, Provenance.LOCAL}
     ),
-    ContextPolicy.REPO_CODE_ONLY: frozenset({Provenance.REPO_CODE, Provenance.LOCAL}),
-    ContextPolicy.LOCAL_ONLY: frozenset({Provenance.LOCAL, Provenance.REPO_CODE}),
+    ContextPolicy.REPO_CODE_ONLY: frozenset(
+        {Provenance.REPO_CODE, Provenance.LOCAL, Provenance.PROJECT_NON_PRIVATE}
+    ),
+    ContextPolicy.LOCAL_ONLY: frozenset(
+        {Provenance.LOCAL, Provenance.REPO_CODE, Provenance.PROJECT_NON_PRIVATE}
+    ),
     ContextPolicy.PRIVATE_ALLOWED_WITH_GATE: frozenset(Provenance),  # it IS the private source
     ContextPolicy.NEVER_PRIVATE: frozenset(
         {Provenance.PUBLIC, Provenance.PROJECT_NON_PRIVATE, Provenance.REPO_CODE, Provenance.LOCAL}

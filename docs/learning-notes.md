@@ -2204,3 +2204,45 @@ the PricingTable, and the budget config; the head runs on a thinking-off Fable c
 synthesis/verdict need thinking off, the utility-client precedent). The orphan sweep runs at
 `run_ui` startup — orchestration runs are only created there, so that is where a crash's `running`
 row is recovered.
+
+## Phase 10B Task 16 — enabling adapters is a policy-derivation exercise, not integration glue
+
+Three local adapters went live (Semgrep, Gitleaks, Playwright-localhost), and the discipline that
+made it small was **deriving everything from the ServiceSpec** rather than hand-wiring each tool.
+`ServiceTool.__init_subclass__` copies `egress`/`write`/`dangerous`/`reads_private`/
+`permission_default` from the catalog row onto the Tool ClassVars the gate already reads — so a
+scanner is ALLOW+read-only and Playwright is ASK, without a single per-tool gate decision. (One
+sharp edge: `Tool.__init_subclass__` checks `name`/`Params` eagerly, but `__abstractmethods__`
+isn't populated until *after* subclass creation, so an abstract intermediate base can't be
+detected that way — the base needs placeholder `name`/`Params` and stays out of the registry by
+having no `run`, which discovery *does* detect.)
+
+Availability is fail-closed via the same ServiceRegistry the Studio reads: `is_available` returns
+True only when the flag is on ∧ creds present ∧ pricing known. `services.enabled` stays `[]` in the
+committed config — the adapters exist but nothing is live until a human lists them (Task 19 does
+that for this repo). Registration is name-level (`SPAWNABLE` grew by the three tool names), but a
+disabled service's tool simply never registers, so `ScopedRegistry` drops it from any spawn scope.
+
+The floor decision that took the most care: **Playwright is execution-stage only.** It is
+inspect-only and non-egress, so it would be *safe* in the read-only floor — but the plan pins
+`READ_ONLY_SPAWNABLE` to grow by exactly `{semgrep_scan, gitleaks_scan}`, and constraint #10 says
+don't touch the council/review floor. So Playwright's catalog `stages` became execution-only, it
+moved from the read-only UX/QA reviewers onto the frontend *writer*, and the engine's
+`_member_scope` drops any non-`READ_ONLY_SPAWNABLE` service tool for a read-only member — the floor
+is never widened, even structurally. (Cost: QA has no writer, so QA loses Playwright in 10B — a
+QA execution path is a documented follow-up. The conservative choice beats a floor argument.)
+
+Two context_policy enforcement points, both real now: the **engine** runs `check_context_policy`
+before granting a service (a repo_code_only scanner is dropped from scope if the bundle carries
+PRIVATE provenance — constraint #6), and the **adapter call-site** re-enforces it (the scanner
+refuses a target that escapes the repo root or lands on the sensitive floor). B4 is three belts:
+`--exclude` globs derived from `paths.py`, a second-belt `is_sensitive_path` filter on every
+finding's path, and — for gitleaks — reducing each finding to `file:line + rule id` so the matched
+secret value is *structurally* absent (plus gitleaks' own `--redact`). Output is framed per
+`output_trust`: scanner findings are `security_finding_untrusted` (a finding quotes code a hostile
+repo could have authored), so they re-enter a prompt delimiter-framed, never as instructions.
+
+One refinement I had to make: `repo_code_only`/`local_only` now tolerate `PROJECT_NON_PRIVATE`
+provenance. A scan member legitimately sees its own project's (non-private) task brief, and the
+Task-12 `_ALLOWED` map was stricter than the stated B1 intent — the guarantee that *matters*
+(public_only never gets private; nothing but the private source gets PRIVATE) is unchanged.

@@ -29,12 +29,20 @@ from jarvis.services.catalog import ContextPolicy
 
 
 def test_read_only_floor_is_exactly_local_reads() -> None:
-    # Pinned: no shell, no write, no egress web tools in the council/review floor. Task 16
-    # grows it by exactly the two scanners; this test guards that boundary.
-    assert (
-        frozenset({"read_file", "list_dir", "glob_search", "query_knowledge_base"})
-        == READ_ONLY_SPAWNABLE
-    )
+    # Pinned: no shell, no write, no egress web tools in the council/review floor. Task 16 grows
+    # it by EXACTLY the two hardened read-only scanners — and NOTHING else (playwright_inspect is
+    # execution-stage, deliberately kept out). This test guards that exact boundary.
+    assert frozenset(
+        {
+            "read_file",
+            "list_dir",
+            "glob_search",
+            "query_knowledge_base",
+            "semgrep_scan",
+            "gitleaks_scan",
+        }
+    ) == READ_ONLY_SPAWNABLE
+    assert "playwright_inspect" not in READ_ONLY_SPAWNABLE  # execution-stage, not council/review
 
 
 def test_read_only_member_cannot_hold_writer_tools() -> None:
@@ -223,12 +231,17 @@ def test_public_only_refuses_private_context() -> None:
 
 
 def test_repo_code_only_refuses_private_and_public() -> None:
+    # The load-bearing guarantee: a repo scanner NEVER receives PRIVATE material or external
+    # PUBLIC content — both refused.
     with pytest.raises(ContextPolicyError):
         check_context_policy(_bundle(Provenance.PRIVATE), ContextPolicy.REPO_CODE_ONLY)
     with pytest.raises(ContextPolicyError):
         check_context_policy(_bundle(Provenance.PUBLIC), ContextPolicy.REPO_CODE_ONLY)
+    # Repo code + local artifacts + the non-private project brief are fine (Task 16 refinement:
+    # a scan member legitimately sees the project's own task brief alongside the code).
     check_context_policy(
-        _bundle(Provenance.REPO_CODE, Provenance.LOCAL), ContextPolicy.REPO_CODE_ONLY
+        _bundle(Provenance.REPO_CODE, Provenance.LOCAL, Provenance.PROJECT_NON_PRIVATE),
+        ContextPolicy.REPO_CODE_ONLY,
     )
 
 

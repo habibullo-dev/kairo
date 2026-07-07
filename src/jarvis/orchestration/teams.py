@@ -77,9 +77,13 @@ TEAM_PROFILES: dict[str, TeamProfile] = {
         "🎨",
         "#a855f7",
         (
-            _ro("ux_lead", "UX Lead", "ux", services=frozenset({"playwright_local"})),
-            _writer("fe_implementer", "Implementer", "coder"),
-            _ro("visual_qa", "Visual QA", "qa", services=frozenset({"playwright_local"})),
+            # playwright_local is execution-stage (ASK-gated) so it sits with the writer, not
+            # the read-only UX/QA reviewers — the read-only council/review floor stays clean.
+            _ro("ux_lead", "UX Lead", "ux"),
+            _writer(
+                "fe_implementer", "Implementer", "coder", services=frozenset({"playwright_local"})
+            ),
+            _ro("visual_qa", "Visual QA", "qa"),
         ),
         ("ux_critique", "implement", "review_diff"),
     ),
@@ -118,9 +122,12 @@ TEAM_PROFILES: dict[str, TeamProfile] = {
         "✅",
         "#22c55e",
         (
-            _ro("qa_lead", "QA Lead", "qa", services=frozenset({"playwright_local"})),
+            # QA is read-only (no writer), so it holds no execution-stage playwright service in
+            # 10B — UI inspection via playwright needs a QA execution path (a future step). QA
+            # reads eval freshness/regressions and reviews diffs.
+            _ro("qa_lead", "QA Lead", "qa"),
             _ro("eval_reader", "Eval Reader", "utility"),
-            _ro("ui_tester", "UI Tester", "qa", services=frozenset({"playwright_local"})),
+            _ro("ui_tester", "UI Tester", "qa"),
         ),
         ("debug_eval", "review_diff"),
     ),

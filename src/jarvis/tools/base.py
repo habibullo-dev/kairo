@@ -51,6 +51,10 @@ class ToolContext:
     # it so a project can't retrieve another project's content. Read live — a project switch
     # only happens between turns, so within a turn the scope is stable.
     project: Any = None
+    # Service cost ledger (Phase 10B): a ServiceLedger the local service adapters write a
+    # metadata-only row to on each invocation (attribution from the cost_context). None when
+    # cost tracking isn't composed — recording is then a no-op.
+    service_ledger: Any = None
 
 
 class Permission(StrEnum):

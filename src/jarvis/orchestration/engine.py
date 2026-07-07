@@ -30,12 +30,22 @@ from jarvis.core.client import LLMClient
 from jarvis.models.registry import ModelRegistry
 from jarvis.observability import get_logger
 from jarvis.observability.cost import PricingTable
-from jarvis.orchestration.context import ContextBundle
+from jarvis.orchestration.context import ContextBundle, ContextPolicyError, check_context_policy
 from jarvis.orchestration.estimate import RunEstimate, estimate_run
-from jarvis.orchestration.roles import Capability, RosterRole
+from jarvis.orchestration.roles import READ_ONLY_SPAWNABLE, Capability, RosterRole
 from jarvis.orchestration.store import OrchestrationStore
 from jarvis.orchestration.teams import TeamProfile
 from jarvis.orchestration.workflows import WorkflowTemplate
+from jarvis.services.catalog import SERVICE_CATALOG
+
+#: Service name → the tool that exposes it in a member's spawn scope (Task 16). A member's
+#: declared services become scoped tools only when available, stage-appropriate, and within the
+#: member's floor — computed in :meth:`OrchestrationEngine._member_scope`.
+SERVICE_TOOLS: dict[str, str] = {
+    "semgrep": "semgrep_scan",
+    "gitleaks": "gitleaks_scan",
+    "playwright_local": "playwright_inspect",
+}
 
 
 class ConfirmationRequired(Exception):
@@ -186,6 +196,31 @@ class OrchestrationEngine:
             return writers[:1]  # exactly one writer (teams validate ≤1)
         return []
 
+    def _member_scope(self, member: RosterRole, stage: str, context: ContextBundle) -> list[str]:
+        """The member's spawn tool-scope = its base tools ∪ the tool for each of its services
+        that is (a) stage-appropriate, (b) within the member's floor (a read-only/review member
+        never gets a non-READ_ONLY_SPAWNABLE service tool — the floor is never widened here), and
+        (c) allowed the current context by the service's ``context_policy`` (B1, constraint #6 —
+        a public_only/repo_code_only service is refused a bundle it may not receive)."""
+        scope = set(member.tools)
+        read_only = member.capability in (Capability.READ_ONLY, Capability.REVIEW_ONLY)
+        for svc in sorted(member.services):
+            tool = SERVICE_TOOLS.get(svc)
+            spec = SERVICE_CATALOG.get(svc)
+            if tool is None or spec is None or stage not in spec.stages:
+                continue
+            if read_only and tool not in READ_ONLY_SPAWNABLE:
+                continue  # floor: an execution-stage service never enters council/review scope
+            try:
+                check_context_policy(context, spec.context_policy)
+            except ContextPolicyError as exc:
+                self.log.warning(
+                    "service_dropped_context_policy", service=svc, stage=stage, reason=str(exc)
+                )
+                continue
+            scope.add(tool)
+        return sorted(scope)
+
     async def _spawn_member(
         self,
         member: RosterRole,
@@ -195,6 +230,7 @@ class OrchestrationEngine:
         run_id: int,
         project_id: int,
         prompt: str,
+        context: ContextBundle,
     ) -> StageResult:
         # Per-role MODEL routing: the member runs on its route's model (researcher→sonnet,
         # coder→opus, …) so execution matches what the estimate priced. The client stays the
@@ -209,7 +245,7 @@ class OrchestrationEngine:
         result = await self.spawn(
             title=f"{team_id}:{member.id}",
             prompt=prompt,
-            tools=sorted(member.tools),
+            tools=self._member_scope(member, stage, context),
             model=model,
             client=client,
             role=member.route_role,
@@ -225,8 +261,12 @@ class OrchestrationEngine:
         report = getattr(result, "content", str(result))
         await self._emit(
             "orchestration_agent",
-            run_id=run_id, team=team_id, role=member.route_role, member=member.id,
-            stage=stage, ok=ok,
+            run_id=run_id,
+            team=team_id,
+            role=member.route_role,
+            member=member.id,
+            stage=stage,
+            ok=ok,
         )
         return StageResult(role=member.route_role, ok=ok, report=report)
 
@@ -239,6 +279,7 @@ class OrchestrationEngine:
         run_id: int,
         project_id: int,
         prompt: str,
+        context: ContextBundle,
     ) -> list[StageResult]:
         if not members:
             return []
@@ -251,6 +292,7 @@ class OrchestrationEngine:
                     run_id=run_id,
                     project_id=project_id,
                     prompt=prompt,
+                    context=context,
                 )
                 for m in members
             ),
@@ -301,14 +343,21 @@ class OrchestrationEngine:
         await self._emit("orchestration_stage", run_id=run_id, stage=stage)
 
     async def _finish(
-        self, run_id: int, *, status: str, verdict: str | None = None,
+        self,
+        run_id: int,
+        *,
+        status: str,
+        verdict: str | None = None,
         synthesis_summary: str | None = None,
     ) -> int:
         await self.store.complete_run(
             run_id, status=status, verdict=verdict, synthesis_summary=synthesis_summary
         )
         await self._emit(
-            "orchestration_completed", run_id=run_id, status=status, verdict=verdict,
+            "orchestration_completed",
+            run_id=run_id,
+            status=status,
+            verdict=verdict,
             summary=(synthesis_summary or "")[:200],
         )
         return run_id
@@ -354,8 +403,12 @@ class OrchestrationEngine:
             budget_usd=budget_usd,
         )
         await self._emit(
-            "orchestration_started", run_id=run_id, team=team.id, workflow=workflow.id,
-            title=title, estimated_cost_usd=estimated_cost_usd,
+            "orchestration_started",
+            run_id=run_id,
+            team=team.id,
+            workflow=workflow.id,
+            title=title,
+            estimated_cost_usd=estimated_cost_usd,
         )
         try:
             # Pre-fan-out RESERVATION: a worst-case estimate over the caps refuses the run
@@ -368,7 +421,8 @@ class OrchestrationEngine:
             # over its monthly cap.
             if self.budget is not None and await self.budget.project_month_exceeded(project_id):
                 return await self._finish(
-                    run_id, status="budget_stopped",
+                    run_id,
+                    status="budget_stopped",
                     synthesis_summary="project monthly budget exceeded before start",
                 )
 
@@ -384,6 +438,7 @@ class OrchestrationEngine:
                 run_id=run_id,
                 project_id=project_id,
                 prompt=f"Analyze the task for your specialty.\n\n{framed_ctx}",
+                context=context,
             )
 
             # B. Synthesis (head, forced schema, over framed untrusted council reports)
@@ -413,6 +468,7 @@ class OrchestrationEngine:
                                     run_id=run_id,
                                     project_id=project_id,
                                     prompt=exec_prompt,
+                                    context=context,
                                 )
                             ]
                     # D. Review (parallel, read-only, over the produced artifact)
@@ -424,6 +480,7 @@ class OrchestrationEngine:
                         run_id=run_id,
                         project_id=project_id,
                         prompt=f"Review the work.\n\n{self._framed(exec_results)}",
+                        context=context,
                     )
                     # E. Verdict
                     await self._stage(run_id, "verdict")
@@ -448,6 +505,4 @@ class OrchestrationEngine:
             raise
         except Exception as exc:  # noqa: BLE001 - a run crash is a recorded terminal state
             self.log.warning("orchestration_error", run_id=run_id, error=repr(exc))
-            return await self._finish(
-                run_id, status="error", synthesis_summary=str(exc)[:200]
-            )
+            return await self._finish(run_id, status="error", synthesis_summary=str(exc)[:200])

@@ -35,7 +35,7 @@ from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder, reflect
 from jarvis.observability import cost_of, get_logger
 from jarvis.observability.budget import BudgetService
 from jarvis.observability.cost import Usage, load_pricing
-from jarvis.observability.ledger import CostLedger, LedgeredClient
+from jarvis.observability.ledger import CostLedger, LedgeredClient, ServiceLedger
 from jarvis.orchestration import OrchestrationStore
 from jarvis.permissions import (
     NEVER_GRANTABLE,
@@ -354,22 +354,28 @@ class Repl:
         # Budgets (Phase 10): cost rollups + limit checks over the ledger. Needs the ledger's
         # table (same db); None in bare/test Repls without a store.
         self.budgets: BudgetService | None = None
+        # Phase 10B: the service-call ledger the local adapters write to (metadata only).
+        self.service_ledger: ServiceLedger | None = None
         if store is not None:
             self.budgets = BudgetService(store.db, store.lock, config.budgets)
+            self.service_ledger = ServiceLedger(store.db, store.lock)
 
         self.registry = ToolRegistry()
-        self.registry.discover(
-            "jarvis.tools.builtin",
-            ToolContext(
-                config=config,
-                memory=memory,
-                tasks=tasks,
-                knowledge=knowledge,
-                agents=self.agents,
-                connectors=self.connectors,
-                project=self.projects.current if self.projects is not None else None,
-            ),
+        tool_ctx = ToolContext(
+            config=config,
+            memory=memory,
+            tasks=tasks,
+            knowledge=knowledge,
+            agents=self.agents,
+            connectors=self.connectors,
+            project=self.projects.current if self.projects is not None else None,
+            service_ledger=self.service_ledger,
         )
+        self.registry.discover("jarvis.tools.builtin", tool_ctx)
+        # Phase 10B: register the local service adapters (semgrep/gitleaks/playwright_inspect).
+        # Each is_available()-gates on the ServiceRegistry (flag ∧ creds ∧ pricing), so a
+        # disabled service's tool simply never registers — no adapter is live unless enabled.
+        self.registry.discover("jarvis.services", tool_ctx)
         if self.agents is not None:
             self.agents.bind(registry=self.registry)
 
