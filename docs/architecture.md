@@ -321,10 +321,47 @@ approver seams swapped in (one shared gate; child ASKs escalate to the UI screen
 REPL parity (runner finishes in-flight then stops; reflect on exit). Optional:
 `ui.enabled: false` ⇒ no server, REPL unchanged.
 
+## Connectors, Digest & Reporting (`connectors/`, `digest/`, `reporting/`) — Phase 9
+
+**`connectors/`** — narrow, audited adapters to the outside world, behind the PermissionGate.
+`base.py`: `ConnectorRegistry` (the `ToolContext.connectors` seam; `status()` is presence-only)
++ the `Notifier` protocol + `ConnectorError`/`ConnectorAuthError` (friendly-message-only).
+`oauth.py`: shared authorization-code + PKCE loopback flow (Google + Kakao). `tokens.py`:
+`TokenStore` — atomic `os.replace` write, best-effort 0600, single-flight refresh, tokens under
+the sensitive-path floor. `google/`: `client.py` (bearer, 401→refresh→retry-once) + calendar/
+gmail/drive adapters returning frozen dataclasses with hard caps; **no send method exists**.
+`telegram.py`/`kakao.py`: send-only notifiers. `demo.py`: badged fake adapters (also the eval
+fakes). `factory.py`: `build_connectors(config)` — live vs demo, demo never masks live. Tools:
+`tools/builtin/connectors_google.py` (calendar/gmail read + `gmail_create_draft`) and
+`connectors_notify.py` (`send_notification`). Reads are `reads_private` (taint the turn), writes
+are `egress` + ASK + HARD_DENY unattended. See [ADR-0009](decisions/0009-connectors-and-egress.md).
+
+**Data-flow permissions.** `Tool.egress`/`Tool.reads_private` ClassVars drive three rules in the
+gate layer: per-turn taint in `AgentLoop` (private read ⇒ egress ALLOW→non-persistable ASK),
+`UnattendedGate` egress demotion, and a cross-cutting sensitive floor (`run_shell` token-path
+DENY, `glob`/`list_dir` redaction). `observability/egress.py`: the `log_egress` "what left the
+box" ledger (category + destination type only).
+
+**`digest/`** — the Daily Digest. `builder.py`: fail-soft collectors (schedule/email/repo/tasks/
+kb, each `ok|degraded|failed`) + one **tool-less** `models.utility` summarize; UI/DB-first
+delivery then best-effort notifiers; `ensure_digest_task` (host-created only). `store.py`:
+minimized `digests` rows (snippets/counts/status — never raw bodies). Fired by `BackgroundRunner`
+with job semantics, off the turn lock. See [ADR-0010](decisions/0010-digest.md).
+
+**`reporting/repo.py`** — `RepoReader`, a hardened read-only git reader (argv not shell,
+`GIT_CONFIG_NOSYSTEM`, hooks/fsmonitor/ext-transport disabled, timeout) for the Daily
+"what changed" card. Commit subjects are untrusted data (UI escapes, digest frames).
+
+**UI Phase 9 additions.** `GET /api/daily` (repo/eval-freshness/tasks/digest/connectors) +
+`GET /api/notices` (background events reach the browser via `ui/notices.py` `NoticeBoard`);
+mutations `POST /api/vault/ingest` + `POST /api/digest/run` grow the closed set to 13. Hub gains
+connector status. Daily renders Briefing/Today/What-changed/Workflows (all untrusted content via
+`textContent`); the eval chip is a copy-command, never a run button (ADR-0005 stands).
+
 ## Persistence (`persistence/`)
 
 SQLite via aiosqlite. `sessions` + `messages` + `memories` + `tasks`/`task_runs` +
-`kb_sources`/`kb_chunks`/`kb_wiki_links` + `agent_runs` tables; schema version tracked
+`kb_sources`/`kb_chunks`/`kb_wiki_links` + `agent_runs` + `digests` tables; schema version tracked
 by `PRAGMA user_version` with an ordered migration list (v2 memory; v3 tasks +
 `sessions.kind`; v4 knowledge base; v5 sub-agents). v5 is the highest-blast-radius
 migration: `sessions.kind`'s CHECK can't be ALTERed to add `'subagent'`, so the table is

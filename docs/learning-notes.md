@@ -2036,3 +2036,61 @@ non-obvious *implementation* decisions per task.
   refactor, so an **N=1** run across all 36 (which checkpoints per scenario and converges)
   detects any regression, and the all-N safety evidence stands from the Phase-7 gates.
   Result: GATE PASS 36/36 at `0a9a023`, identical verdict to `6bd4620`.
+
+## Phase 9 — the permission model must reason about data flow, not just tools
+
+Every prior phase gated *per tool*: one call, one allow/ask/deny. Connectors broke that frame.
+A silent mail read (ALLOW, like `recall`) and a silent `web_fetch` (egress the user once
+"always-allowed") are each individually reasonable, but composed they're an exfiltration pipe —
+and no per-tool check sees it. The fix was two `Tool` ClassVars (`egress`, `reads_private`) and
+a **per-turn taint** rule in the loop: once private data is read this turn, any egress ALLOW
+becomes a *non-persistable* ASK. The lesson: when you add both new private-read sources AND new
+egress sinks in one phase, the dangerous unit is the *turn*, not the call — and the control
+belongs in the loop that sees the whole turn, above the pure gate. Landing this substrate
+*before* any connector (Checkpoint A) meant every connector inherited it for free.
+
+## Phase 9 — "tool-less" is a structural safety property, and worth the awkwardness
+
+The Daily Digest reads attacker-influenced email. The safe shape is NOT "an agent that reads
+your inbox" — it's deterministic collectors + one model call with `tools=[]`. That single
+constraint means injected text can colour the summary's words but has *no path* to an action,
+because the summarizer literally cannot call anything. It cost some ergonomics (parse a
+plain-text SUMMARY/ACTIONS format instead of a forced-tool schema — the drafts-only rule forbade
+the reflection-style forced tool), but it's a property you can point at and a test can assert
+(`fake.calls[-1]["tools"] == []`). "It has no tools" beats "we told it not to act."
+
+## Phase 9 — a digest's *output* is an egress payload, even with no tool loop
+
+"No tool loop ⇒ can't act" is necessary but not sufficient: the summarizer's output is rendered
+in the UI and sent to notifiers, so a "include this status link" injection is an exfil/phishing
+vector the moment it's linkified or forwarded. So the output is treated as untrusted too —
+rendered `textContent` only (never HTML/linkified), notifiers get headers/counts by default, and
+a re-injection into a later turn is framed. Reasoning about the *inputs'* trust wasn't enough;
+we had to reason about the *output's* reach.
+
+## Phase 9 — failure must never look like "zero"
+
+An unattended digest at 3am hits an expired token and the naive collector returns `[]` → the
+briefing says "no unread email" and the user, trusting it, misses an urgent thread. Absence
+silently rendered as zero is a lie a scheduled summary can't afford. Each collector returns an
+explicit `ok|degraded|failed(reason)`, and the failure reason is the *friendly reconnect string*
+— never a provider error body (which can echo tokens/addresses). "Failure ≠ zero" and
+"friendly-reconnect-only" are both pinned.
+
+## Phase 9 — git is an execution surface; a read-only reader must be hardened
+
+Reading an untrusted repo's state is not inert: git runs repo-local config (fsmonitor hooks,
+pagers, `ext::` transports), so a naive `git log` in a cloned repo is an RCE. The RepoReader
+runs argv (never a shell) with `GIT_CONFIG_NOSYSTEM=1` and `-c core.fsmonitor=false
+-c core.hooksPath= -c protocol.ext.allow=never --no-pager`, a pinned cwd, and a timeout — and
+treats every commit subject as untrusted data the UI escapes. "Read-only" said nothing about
+*whose* code runs during the read.
+
+## Phase 9 — mandatory checkpoints between substrate and capability
+
+The user set two hard stops: after the egress/taint substrate (before any OAuth) and after the
+connector tools (before any live-key run). Each was reported with per-bullet test evidence and
+waited for review. The value wasn't ceremony — it forced the safety-relevant layer to be
+complete and green *before* the capability that depends on it existed, so a gap couldn't hide
+under a working feature. Building Checkpoint A's rules first also meant the connectors had
+nothing to add to the safety model — they just plugged into it.

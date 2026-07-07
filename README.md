@@ -14,6 +14,27 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 9 (make Kairo useful daily) — complete.** Kairo now flows real daily context in and
+real workflows out, all behind the existing PermissionGate. **Connectors** are narrow, audited
+httpx REST adapters (not a library, not MCP): Google Calendar/Gmail/Drive (read-first) plus
+Telegram + Kakao send-only notifications, connected by a terminal ritual (`jarvis connect
+google|kakao|telegram`). Gmail is **drafts-only forever** — no send scope, no send method
+anywhere (a grep pin enforces it); "prepare a reply" makes a draft you send yourself. The
+safety centerpiece is that the permission model now reasons about **data flow, not just tools**
+([ADR-0009](docs/decisions/0009-connectors-and-egress.md)): reads are silent+framed+audited, but
+the moment a turn reads private data any egress is demoted to a non-persistable ASK (no silent
+mail-read → silent-fetch pipe), egress is never unattended, and OAuth tokens sit under a
+cross-cutting sensitive-path floor. The **Daily Digest** is deterministic collectors + one
+**tool-less** summarize ([ADR-0010](docs/decisions/0010-digest.md)) — injected email text can
+colour the words but can never trigger an action; failures render "needs reconnect", never
+"zero results"; delivery is UI/DB-first then best-effort notifiers, rendered as text (never
+linkified). Daily bootstraps with real context (repo state via a hardened git reader, eval
+freshness, tasks, the latest digest, connector status), background job/reminder/digest results
+finally reach the browser as notices, the Vault gains bulk folder ingestion + a UI ingest box +
+an informed review preview, and workflow chips run prepared prompts through the one gated turn
+path. **Demo mode** populates it all with badged fake data without OAuth. Design in
+[`docs/PLAN-9-daily.md`](docs/PLAN-9-daily.md); Mac setup in [`docs/migration-macos.md`](docs/migration-macos.md).
+
 **Phase 8 (workstation UI) — complete.** Jarvis has a local web workstation (`jarvis --ui`):
 a calm daily command center over the same core — memory, tasks, KB/wiki, evals, sub-agents,
 voice — with **zero new autonomy**. It is a third peer interface (REPL, voice, workstation)
