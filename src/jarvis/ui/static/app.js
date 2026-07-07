@@ -186,7 +186,30 @@ async function pollStatus() {
     document.getElementById("st-resume").style.display = s.runner_running ? "none" : "";
   }
   const v = await api.get("/api/voice/status");
-  if (v) document.getElementById("st-voice").textContent = v.enabled ? (v.listening || "ready") : "off";
+  if (v) {
+    document.getElementById("st-voice").textContent = v.enabled ? (v.listening || "ready") : "off";
+    const mic = document.getElementById("st-mic");
+    mic.style.display = v.enabled ? "" : "none";  // only show when voice is wired
+    if (mic.dataset.busy !== "1") {
+      mic.textContent = v.listening === "listening" ? "🎤 Listening…" : "🎤 Talk";
+    }
+  }
+}
+
+// Push-to-talk: one activation opens the SERVER's mic for one utterance → one turn. Risky
+// actions in that turn still escalate to the on-screen Gate (voice prepares, screen commits).
+async function listenOnce() {
+  const mic = document.getElementById("st-mic");
+  if (mic.dataset.busy === "1") return;
+  mic.dataset.busy = "1"; mic.disabled = true; mic.textContent = "🎤 Listening…";
+  try {
+    const res = await api.post("/api/voice/listen");
+    if (!res.ok) mic.textContent = "🎤 (unavailable)";
+  } finally {
+    mic.dataset.busy = ""; mic.disabled = false;
+    setTimeout(() => { mic.textContent = "🎤 Talk"; }, 1500);
+    pollStatus();
+  }
 }
 
 // --- wire up ---
@@ -196,6 +219,7 @@ function init() {
   document.getElementById("ap-deny").addEventListener("click", () => resolveApproval("deny"));
   document.getElementById("st-stop").addEventListener("click", async () => { await api.post("/api/runner/pause"); pollStatus(); });
   document.getElementById("st-resume").addEventListener("click", async () => { await api.post("/api/runner/resume"); pollStatus(); });
+  document.getElementById("st-mic").addEventListener("click", listenOnce);
   document.getElementById("st-debug").addEventListener("change", (e) => document.body.classList.toggle("debug", e.target.checked));
   window.addEventListener("hashchange", navigate);
   connect();
