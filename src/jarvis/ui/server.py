@@ -33,7 +33,9 @@ from jarvis.ui.readmodels import (
     lab_overview,
     list_agent_runs,
     list_memories,
+    list_sessions_view,
     list_tasks,
+    session_transcript,
     task_runs,
     vault_lint,
     vault_overview,
@@ -335,6 +337,20 @@ def create_app(
             return _unavailable("agents")
         return JSONResponse(await list_agent_runs(svc))
 
+    @app.get("/api/sessions")
+    async def sessions_list(query: str | None = None, pinned: bool | None = None) -> JSONResponse:
+        svc = app.state.services.sessions
+        if svc is None:
+            return _unavailable("sessions")
+        return JSONResponse(await list_sessions_view(svc, query=query, pinned=pinned))
+
+    @app.get("/api/sessions/{session_id}")
+    async def sessions_get(session_id: int) -> JSONResponse:
+        svc = app.state.services.sessions
+        if svc is None:
+            return _unavailable("sessions")
+        return JSONResponse(await session_transcript(svc, session_id))
+
     # --- mutations: the enumerated human-authority set (D5, route-closed-set pin) ------
 
     @app.post("/api/vault/sources/{source_id}/approve")
@@ -407,6 +423,25 @@ def create_app(
             return _unavailable("memory")
         forgotten = await svc.store.forget(memory_id)  # status flip, never DELETE
         return JSONResponse({"ok": bool(forgotten)})
+
+    @app.post("/api/sessions/{session_id}/pin")
+    async def sessions_pin(session_id: int, request: Request) -> JSONResponse:
+        # Pin/unpin a chat (body {"pinned": bool}) — a display preference, no new authority.
+        svc = app.state.services.sessions
+        if svc is None:
+            return _unavailable("sessions")
+        body = await request.json()
+        ok = await svc.set_pinned(session_id, bool(body.get("pinned", True)))
+        return JSONResponse({"ok": ok})
+
+    @app.post("/api/sessions/{session_id}/resume")
+    async def sessions_resume(session_id: int) -> JSONResponse:
+        # Load a past chat into the live UI session (mirrors REPL --resume). 409 if a turn is
+        # in flight (the loop state must not change mid-turn).
+        if app.state.session is None:
+            return _unavailable("sessions")
+        resumed = await app.state.session.resume(session_id)
+        return JSONResponse({"ok": resumed}, status_code=200 if resumed else 409)
 
     # --- voice: status + push-to-talk + meeting capture (unreviewed source) ------------
 

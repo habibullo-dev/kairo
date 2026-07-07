@@ -155,6 +155,8 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/digest/run"),  # Phase 9: run the Daily Digest now
         ("POST", "/api/tasks/{task_id}/cancel"),
         ("POST", "/api/memory/{memory_id}/forget"),
+        ("POST", "/api/sessions/{session_id}/pin"),  # Phase 10: pin/unpin a chat
+        ("POST", "/api/sessions/{session_id}/resume"),  # Phase 10: resume a chat into the UI
         ("POST", "/api/voice/listen"),
         ("POST", "/api/voice/meeting"),
     }

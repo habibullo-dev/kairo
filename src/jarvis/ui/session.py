@@ -33,6 +33,8 @@ from jarvis.observability import get_logger
 if TYPE_CHECKING:
     from jarvis.core.agent import AgentLoop, Event
     from jarvis.core.client import TurnResult
+    from jarvis.core.context import ContextManager
+    from jarvis.persistence.sessions import SessionStore
     from jarvis.ui.connections import ConnectionManager
 
 EVENT_SCHEMA_VERSION = 1
@@ -117,6 +119,9 @@ class UiSession:
         connections: ConnectionManager,
         turn_lock: asyncio.Lock | None = None,
         ring_buffer_events: int = 2000,
+        sessions: SessionStore | None = None,
+        context_manager: ContextManager | None = None,
+        project_id: int | None = None,
         log=None,
     ) -> None:
         self.loop = loop
@@ -129,6 +134,13 @@ class UiSession:
         self.log = log or get_logger("jarvis.ui.session")
         self._current: asyncio.Task | None = None
         self._pushes: set[asyncio.Task] = set()  # strong refs so pushes aren't GC'd mid-flight
+        # Persistence (Phase 10 Task 2): the UI conversation is a real interactive session —
+        # lazily created on the first turn, saved each turn, resumable. ``project_id`` scopes
+        # the session for its lifetime (None == global; Task 3 wires the active project).
+        self.sessions = sessions
+        self.context_manager = context_manager
+        self.project_id = project_id
+        self.session_id: int | None = None
 
     def _emit(self, event: Event) -> None:
         """EventSink: record to the ring buffer and best-effort push to live clients. Sync
@@ -141,12 +153,49 @@ class UiSession:
 
     async def handle_text(self, text: str) -> TurnResult:
         """Run one turn to completion under the turn lock. Deterministic entry point for
-        tests; the route uses :meth:`submit` to fire-and-forget."""
+        tests; the route uses :meth:`submit` to fire-and-forget.
+
+        The session row is created lazily on the first turn (kind interactive, scoped to
+        ``project_id``) and the full conversation is persisted after the turn — all inside
+        the held turn lock, so a background job can't interleave the DB write."""
         async with self.turn_lock:
+            if self.sessions is not None and self.session_id is None:
+                self.session_id = await self.sessions.create_session(project_id=self.project_id)
             turn_messages = [*self.messages, {"role": "user", "content": text}]
             result = await self.loop.run_turn(turn_messages, on_event=self._emit)
             self.messages = result.messages
+            await self._persist()
             return result
+
+    async def _persist(self) -> None:
+        """Save the conversation + frozen compaction state for the current session. A save
+        failure is logged, never fatal — mirrors ``Repl._persist``."""
+        if self.sessions is None or self.session_id is None:
+            return
+        try:
+            await self.sessions.save_messages(self.session_id, self.messages)
+            if self.context_manager is not None:
+                summary, cut = self.context_manager.state()
+                await self.sessions.save_compaction(self.session_id, summary, cut)
+        except Exception as exc:  # noqa: BLE001 - a save failure must not kill the session
+            self.log.warning("ui_persist_failed", error=str(exc))
+
+    async def resume(self, session_id: int) -> bool:
+        """Load a past session's messages + frozen compaction into the live loop (mirrors
+        the REPL ``--resume`` mechanics). Refuses while a turn is in flight. Returns False
+        if there's no store or the session has no transcript."""
+        if self.sessions is None or self.busy:
+            return False
+        async with self.turn_lock:
+            history = await self.sessions.load_messages(session_id)
+            if not history:
+                return False
+            self.messages = history
+            self.session_id = session_id
+            if self.context_manager is not None:
+                summary, cut = await self.sessions.load_compaction(session_id)
+                self.context_manager.restore(summary, cut)
+        return True
 
     def submit(self, text: str) -> bool:
         """Start a turn in the background (events flow over WS). Returns False if a turn is

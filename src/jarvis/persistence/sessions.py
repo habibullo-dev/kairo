@@ -24,15 +24,37 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import aiosqlite
 
 from jarvis.persistence.db import connect, transaction
 
+#: Sentinel for "don't filter by project" in list/search (distinct from ``None``, which
+#: means the *global* scope — project_id IS NULL). A plain object so the default can't
+#: collide with a real project id.
+_ANY_PROJECT: object = object()
+
 
 def _now() -> str:
     return _dt.datetime.now(_dt.UTC).isoformat()
+
+
+@dataclass(frozen=True)
+class SessionMeta:
+    """A session summary for the chats list/search — no message bodies, just the row
+    metadata plus a message count. ``pinned`` is surfaced so the UI can sort/badge."""
+
+    id: int
+    title: str | None
+    kind: str
+    project_id: int | None
+    pinned: bool
+    created_at: str
+    updated_at: str
+    reflected_at: str | None
+    message_count: int
 
 
 #: Session kinds that may EVER feed reflection into long-term memory. 'subagent' is
@@ -68,12 +90,18 @@ class SessionStore:
     async def close(self) -> None:
         await self.db.close()
 
-    async def create_session(self, title: str | None = None, *, kind: str = "interactive") -> int:
+    async def create_session(
+        self, title: str | None = None, *, kind: str = "interactive", project_id: int | None = None
+    ) -> int:
+        """Create a session. ``project_id`` scopes it to a project (NULL == global). A
+        session is bound to one project for its lifetime — reflection/promotion attribute
+        to it, so switching projects starts a new session, never re-tags this one."""
         now = _now()
         async with self.lock:
             cursor = await self.db.execute(
-                "INSERT INTO sessions (created_at, updated_at, title, kind) VALUES (?, ?, ?, ?)",
-                (now, now, title, kind),
+                "INSERT INTO sessions (created_at, updated_at, title, kind, project_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (now, now, title, kind, project_id),
             )
             await self.db.commit()
         assert cursor.lastrowid is not None
@@ -123,6 +151,118 @@ class SessionStore:
         )
         row = await cursor.fetchone()
         return row[0] if row else None
+
+    _META_COLS = (
+        "s.id, s.title, s.kind, s.project_id, s.pinned, s.created_at, s.updated_at, "
+        "s.reflected_at, (SELECT count(*) FROM messages m WHERE m.session_id = s.id)"
+    )
+
+    @staticmethod
+    def _row_to_meta(row: tuple) -> SessionMeta:
+        return SessionMeta(
+            id=row[0],
+            title=row[1],
+            kind=row[2],
+            project_id=row[3],
+            pinned=bool(row[4]),
+            created_at=row[5],
+            updated_at=row[6],
+            reflected_at=row[7],
+            message_count=row[8],
+        )
+
+    def _scope_clause(self, project_id: object) -> tuple[str, list[object]]:
+        """SQL fragment + params for a project filter. ``_ANY_PROJECT`` (default) adds
+        nothing; ``None`` restricts to global (IS NULL); an int restricts to that project."""
+        if project_id is _ANY_PROJECT:
+            return "", []
+        if project_id is None:
+            return " AND s.project_id IS NULL", []
+        return " AND s.project_id = ?", [project_id]
+
+    async def list_sessions(
+        self,
+        *,
+        kind: str | None = "interactive",
+        project_id: object = _ANY_PROJECT,
+        pinned: bool | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[SessionMeta]:
+        """Sessions newest-first (pinned first), filtered by kind / project / pinned. Only
+        sessions that have at least one message are returned — an empty lazily-created row
+        never shows in the chats list."""
+        where = "WHERE (SELECT count(*) FROM messages m WHERE m.session_id = s.id) > 0"
+        params: list[object] = []
+        if kind is not None:
+            where += " AND s.kind = ?"
+            params.append(kind)
+        scope_sql, scope_params = self._scope_clause(project_id)
+        where += scope_sql
+        params += scope_params
+        if pinned is not None:
+            where += " AND s.pinned = ?"
+            params.append(1 if pinned else 0)
+        cursor = await self.db.execute(
+            f"SELECT {self._META_COLS} FROM sessions s {where} "
+            "ORDER BY s.pinned DESC, s.updated_at DESC, s.id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        return [self._row_to_meta(r) for r in await cursor.fetchall()]
+
+    async def search_sessions(
+        self,
+        query: str,
+        *,
+        kind: str | None = "interactive",
+        project_id: object = _ANY_PROJECT,
+        limit: int = 50,
+    ) -> list[SessionMeta]:
+        """Case-insensitive substring search over titles AND message content, within the
+        given kind/project scope. A plain LIKE — no embeddings — matching the chats UX."""
+        like = f"%{query}%"
+        where = (
+            "WHERE (s.title LIKE ? OR EXISTS "
+            "(SELECT 1 FROM messages m WHERE m.session_id = s.id AND m.content LIKE ?))"
+        )
+        params: list[object] = [like, like]
+        if kind is not None:
+            where += " AND s.kind = ?"
+            params.append(kind)
+        scope_sql, scope_params = self._scope_clause(project_id)
+        where += scope_sql
+        params += scope_params
+        cursor = await self.db.execute(
+            f"SELECT {self._META_COLS} FROM sessions s {where} "
+            "ORDER BY s.pinned DESC, s.updated_at DESC, s.id DESC LIMIT ?",
+            (*params, limit),
+        )
+        return [self._row_to_meta(r) for r in await cursor.fetchall()]
+
+    async def get_meta(self, session_id: int) -> SessionMeta | None:
+        cursor = await self.db.execute(
+            f"SELECT {self._META_COLS} FROM sessions s WHERE s.id = ?", (session_id,)
+        )
+        row = await cursor.fetchone()
+        return self._row_to_meta(row) if row else None
+
+    async def set_pinned(self, session_id: int, pinned: bool) -> bool:
+        async with self.lock:
+            cursor = await self.db.execute(
+                "UPDATE sessions SET pinned = ? WHERE id = ?", (1 if pinned else 0, session_id)
+            )
+            await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def set_project(self, session_id: int, project_id: int | None) -> bool:
+        """Re-scope a session. Used by promotion/admin paths — a live chat keeps its
+        project for life (switching projects starts a new session instead)."""
+        async with self.lock:
+            cursor = await self.db.execute(
+                "UPDATE sessions SET project_id = ? WHERE id = ?", (project_id, session_id)
+            )
+            await self.db.commit()
+        return cursor.rowcount > 0
 
     async def save_compaction(self, session_id: int, summary: str | None, cut: int) -> None:
         """Persist the ContextManager's frozen summary + cut so ``--resume`` restores

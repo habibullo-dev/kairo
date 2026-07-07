@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from jarvis.knowledge.service import KnowledgeService
     from jarvis.memory.service import MemoryService
     from jarvis.memory.store import Memory
+    from jarvis.persistence.sessions import SessionMeta, SessionStore
     from jarvis.scheduler.service import TaskService
     from jarvis.scheduler.store import Task, TaskRun
 
@@ -43,6 +44,8 @@ class UiServices:
     # Phase 9: the connector registry and the digest store back the Daily/Hub read models.
     connectors: Any = None
     digests: DigestStore | None = None
+    # Phase 10: the session store backs the chats list / search / pin / resume.
+    sessions: SessionStore | None = None
 
 
 # --- memory ----------------------------------------------------------------
@@ -67,6 +70,73 @@ async def list_memories(memory: MemoryService, *, type_filter: str | None = None
     if type_filter:
         rows = [m for m in rows if m.type == type_filter]
     return [serialize_memory(m) for m in rows]
+
+
+# --- sessions (chats) ------------------------------------------------------
+
+
+def serialize_session_meta(meta: SessionMeta) -> dict:
+    """A chat summary — metadata only, no message bodies. ``reflected`` is a boolean (the
+    timestamp itself isn't useful to the UI)."""
+    return {
+        "id": meta.id,
+        "title": meta.title,
+        "kind": meta.kind,
+        "project_id": meta.project_id,
+        "pinned": meta.pinned,
+        "created_at": meta.created_at,
+        "updated_at": meta.updated_at,
+        "reflected": meta.reflected_at is not None,
+        "message_count": meta.message_count,
+    }
+
+
+async def list_sessions_view(
+    sessions: SessionStore,
+    *,
+    query: str | None = None,
+    pinned: bool | None = None,
+    limit: int = 50,
+) -> dict:
+    """The chats list (or a search over titles + message text). Interactive sessions only."""
+    if query:
+        rows = await sessions.search_sessions(query, limit=limit)
+    else:
+        rows = await sessions.list_sessions(pinned=pinned, limit=limit)
+    return {"sessions": [serialize_session_meta(m) for m in rows]}
+
+
+def _message_text(content: object) -> str:
+    """Render one stored message's content to display text: plain string, or the text
+    blocks of a block list, with tool calls noted compactly (tool *results* are plumbing
+    and are dropped from the human-readable transcript)."""
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+            elif block.get("type") == "tool_use":
+                parts.append(f"[used {block.get('name')}]")
+    return "\n".join(p for p in parts if p)
+
+
+async def session_transcript(sessions: SessionStore, session_id: int) -> dict:
+    """One chat's transcript for the history view — the user's own conversation, rendered
+    to {role, text} (no tool-result plumbing). ``ok: False`` if the session is unknown."""
+    meta = await sessions.get_meta(session_id)
+    if meta is None:
+        return {"ok": False, "message": "no such session"}
+    messages = await sessions.load_messages(session_id)
+    rendered = [
+        {"role": m.get("role"), "text": text}
+        for m in messages
+        if (text := _message_text(m.get("content")))
+    ]
+    return {"ok": True, "session": serialize_session_meta(meta), "messages": rendered}
 
 
 # --- tasks -----------------------------------------------------------------

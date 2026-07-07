@@ -1103,6 +1103,10 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
         connections=app.state.connections,
         turn_lock=repl.turn_lock,
         ring_buffer_events=config.ui.ring_buffer_events,
+        # Phase 10: the UI conversation persists as a real interactive session (its own row,
+        # distinct from the REPL's), reusing the REPL's store + shared context manager.
+        sessions=repl.store,
+        context_manager=repl.context_manager,
     )
     run_store = repl.agents.run_store if repl.agents is not None else None
     app.state.services = UiServices(
@@ -1111,6 +1115,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
         knowledge=repl.knowledge,
         run_store=run_store,
         connectors=repl.connectors,  # Phase 9: Hub + Daily connector status
+        sessions=repl.store,  # Phase 10: chats list / search / pin / resume
     )
     if config.voice.enabled:
         app.state.voice = _build_ui_voice(config, repl=repl, app=app)
