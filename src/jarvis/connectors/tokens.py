@@ -154,6 +154,18 @@ class TokenStore:
             self.save(refreshed)
             return refreshed.access_token
 
+    async def force_refresh(self) -> str:
+        """Refresh now regardless of expiry — for a 401 on a token that hasn't expired yet
+        (revoked/rotated). Single-flight under the same lock. Raises ConnectorAuthError if
+        there is no refresh token."""
+        async with self._get_lock():
+            state = self._state or self.load()
+            if state is None or not state.refresh_token:
+                raise ConnectorAuthError(self.provider.name)
+            refreshed = await self._refresh(state.refresh_token)
+            self.save(refreshed)
+            return refreshed.access_token
+
     async def _refresh(self, refresh_token: str) -> TokenState:
         # Deferred import breaks the tokens<->oauth cycle (oauth imports TokenState at load).
         from jarvis.connectors.oauth import refresh_token_grant
