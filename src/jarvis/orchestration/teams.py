@@ -60,7 +60,11 @@ TEAM_PROFILES: dict[str, TeamProfile] = {
         "🔎",
         "#3b82f6",
         (
-            _ro("lead_researcher", "Lead Researcher", "researcher", services=frozenset({"exa"})),
+            # The lead holds NO egress research service here: egress (exa/tavily/…) is
+            # execution-stage authority, and `research` is an analysis-only workflow. A proper
+            # egress-research member is a future design with an execution path (ADR-0014 §2:
+            # web egress OR cross-source private context, never both) — not a read-only council.
+            _ro("lead_researcher", "Lead Researcher", "researcher"),
             _ro("analyst", "Analyst", "utility"),
             _ro("archivist", "Archivist", "docs"),
         ),
@@ -171,6 +175,19 @@ def validate_team(team: TeamProfile) -> None:
         unknown = m.services - set(SERVICE_CATALOG)
         if unknown:
             raise TeamError(f"role {m.id!r}: unknown services {sorted(unknown)}")
+        # Service floor mirrors the tool floor: a read-only / review-only member may hold only
+        # non-egress, non-write, non-dangerous services (an egress/write service is execution-
+        # stage authority and belongs to the single writer). This makes "council/review can't
+        # hold an egress or write service" a static team invariant, not an invocation-time hope.
+        if m.capability in (Capability.READ_ONLY, Capability.REVIEW_ONLY):
+            for name in sorted(m.services):
+                spec = SERVICE_CATALOG[name]
+                if spec.egress or spec.write or spec.dangerous:
+                    kind = "egress" if spec.egress else ("write" if spec.write else "dangerous")
+                    raise TeamError(
+                        f"{m.capability.value} member {m.id!r} holds {kind} service {name!r}; "
+                        "read-only/review-only members may hold only read-only local services"
+                    )
 
 
 def resolve_team(team_id: str, overrides: dict | None = None) -> TeamProfile:

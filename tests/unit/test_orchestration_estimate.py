@@ -126,18 +126,38 @@ def test_unpriced_route_blocks_and_can_be_allowed() -> None:
     assert est2.decision == "ok" and est2.total_usd is None
 
 
+def _team_with_writer_service(service: str) -> object:
+    # A writer legitimately may hold an egress/metered service (execution-stage authority). Build
+    # one directly so the estimate sees an unpriced metered service without violating the
+    # read-only service floor.
+    from jarvis.orchestration.roles import Capability, RosterRole
+    from jarvis.orchestration.teams import TeamProfile
+
+    writer = RosterRole(
+        "impl", "Impl", "coder",
+        frozenset({"write_file"}), frozenset({service}), Capability.WRITE_CAPABLE, "diff_proposal",
+    )
+    return TeamProfile("t", "T", "d", "x", "#fff", (writer,), ("implement",))
+
+
 def test_unpriced_metered_service_blocks() -> None:
-    # research's lead holds "exa" (metered). With no services pricing entry it is unpriced.
-    est = _est("research", "research")
+    # A writer holds "exa" (metered). With no services pricing entry it is unpriced ⇒ fail-closed.
+    team = _team_with_writer_service("exa")
+    est = estimate_run(
+        team=team, workflow=WORKFLOWS["implement"], registry=_REG, pricing=_pricing(),
+        budgets=BudgetsConfig(), context_tokens=200, max_rounds=3, iterations=6, out_per_call=2048,
+    )
     assert est.decision == "block" and any(u == "service:exa" for u in est.unpriced)
     # Give exa a price ⇒ no longer unpriced; the flat per-op cost is included.
-    priced = _pricing({"exa": {"unit": "search", "usd_per_unit": 0.02}})
-    est2 = _est(
-        "research", "research", pricing=priced, budgets=BudgetsConfig(confirm_above_usd=1e9)
+    est2 = estimate_run(
+        team=team, workflow=WORKFLOWS["implement"], registry=_REG,
+        pricing=_pricing({"exa": {"unit": "search", "usd_per_unit": 0.02}}),
+        budgets=BudgetsConfig(confirm_above_usd=1e9), context_tokens=200, max_rounds=3,
+        iterations=6, out_per_call=2048,
     )
     assert est2.decision == "ok"
-    lead = next(m for m in est2.members if m.member_id == "lead_researcher")
-    assert lead.service_usd == pytest.approx(0.02 * lead.turns)  # 1 op per turn
+    impl = next(m for m in est2.members if m.member_id == "impl")
+    assert impl.service_usd == pytest.approx(0.02 * impl.turns)  # 1 op per turn
 
 
 # --- the four block conditions + confirm ------------------------------------

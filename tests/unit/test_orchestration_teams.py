@@ -103,6 +103,32 @@ def test_team_services_reference_real_catalog_entries() -> None:
             assert m.services <= set(SERVICE_CATALOG), (team.id, m.id)
 
 
+def test_read_only_members_hold_no_egress_or_write_service() -> None:
+    # Checkpoint-D invariant (iii): a council/review (read-only) member may hold only non-egress,
+    # non-write local services. Enforced statically for every built-in team...
+    from jarvis.services.catalog import SERVICE_CATALOG
+
+    for team in TEAM_PROFILES.values():
+        for m in team.members:
+            if m.capability in (Capability.READ_ONLY, Capability.REVIEW_ONLY):
+                for name in m.services:
+                    spec = SERVICE_CATALOG[name]
+                    assert not (spec.egress or spec.write or spec.dangerous), (team.id, m.id, name)
+
+
+def test_read_only_member_with_egress_service_is_rejected() -> None:
+    # ...and a hand-built team that violates it is refused (exa is an egress research service).
+    from jarvis.orchestration.teams import TeamProfile
+
+    bad_member = RosterRole(
+        "leak", "Leak", "researcher",
+        frozenset({"read_file"}), frozenset({"exa"}), Capability.READ_ONLY, "report",
+    )
+    bad = TeamProfile("t", "T", "d", "x", "#fff", (bad_member,), ("research",))
+    with pytest.raises(TeamError, match="egress service"):
+        validate_team(bad)
+
+
 def test_resolve_team_applies_budget_override() -> None:
     t = resolve_team("security", {"team_budget_usd": 3.0})
     assert t.team_budget_usd == 3.0
