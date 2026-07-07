@@ -43,6 +43,7 @@ from jarvis.permissions import (
     persist_always,
 )
 from jarvis.permissions.gate import Decision
+from jarvis.permissions.modes import Mode, ModeState
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
 from jarvis.projects import ProjectService, ProjectStore
@@ -320,6 +321,11 @@ class Repl:
         if store is not None:
             self.projects = ProjectService(ProjectStore(store.db, store.lock))
 
+        # Run modes (Phase 10): Plan/Approval/Auto, surface state shared into the UI loop.
+        # Voice stays pinned to Approval (its loop gets mode=None). Background runs never see
+        # a mode (they keep the UnattendedGate), so Auto can't leak into unattended jobs.
+        self.modes = ModeState(Mode(config.modes.default))
+
         self.registry = ToolRegistry()
         self.registry.discover(
             "jarvis.tools.builtin",
@@ -353,6 +359,7 @@ class Repl:
             context_manager=context_manager,
             memory=memory,
             project=self.projects.current if self.projects is not None else None,
+            mode=self.modes.current,
             # With scheduling on, the model needs the current date to resolve
             # relative times ("tomorrow 9am") — it has no clock otherwise.
             add_time_context=tasks is not None,
@@ -1217,6 +1224,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
         context_manager=repl.context_manager,
         memory=repl.memory,
         project=repl.projects.current if repl.projects is not None else None,
+        mode=repl.modes.current,
         add_time_context=repl.tasks is not None,
         system=build_system(
             memory_enabled=repl.memory is not None,
@@ -1239,6 +1247,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
         project_id=active_pid,
     )
     app.state.projects = repl.projects
+    app.state.modes = repl.modes
     run_store = repl.agents.run_store if repl.agents is not None else None
     app.state.services = UiServices(
         memory=repl.memory,

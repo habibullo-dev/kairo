@@ -344,6 +344,15 @@ class PathsConfig(BaseModel):
     logs_dir: Path = Path("logs")
 
 
+class ModesConfig(BaseModel):
+    """Run modes (Phase 10). ``auto_allow_tools`` is the opt-in allowlist Auto mode may
+    auto-approve — empty by default (Auto adds no standing authority until a human lists
+    tools). run_shell / write_file can never be added (enforced in code, not config)."""
+
+    default: str = "approval"  # plan | approval | auto — the mode a fresh surface starts in
+    auto_allow_tools: list[str] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     """Fully assembled configuration passed through the app."""
 
@@ -358,6 +367,7 @@ class Config(BaseModel):
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)  # Phase 9
+    modes: ModesConfig = Field(default_factory=ModesConfig)  # Phase 10
     paths: PathsConfig
     secrets: Secrets
 

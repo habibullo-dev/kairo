@@ -161,6 +161,7 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/projects/{project_id}/update"),  # Phase 10: edit a project
         ("POST", "/api/projects/{project_id}/archive"),  # Phase 10: archive a project
         ("POST", "/api/projects/select"),  # Phase 10: set the active-project scope
+        ("POST", "/api/mode"),  # Phase 10: set the interactive run mode
         ("POST", "/api/voice/listen"),
         ("POST", "/api/voice/meeting"),
     }

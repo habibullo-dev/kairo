@@ -39,6 +39,7 @@ from jarvis.core.prompts import build_system
 from jarvis.observability import bind_trace, get_logger
 from jarvis.observability.cost import Usage, cost_of
 from jarvis.permissions.gate import Decision, PermissionGate
+from jarvis.permissions.modes import Mode, auto_approves, plan_blocks
 from jarvis.tools.base import Permission
 from jarvis.tools.executor import ToolExecutor
 from jarvis.tools.registry import ToolRegistry
@@ -93,6 +94,7 @@ class AgentLoop:
         context_manager: ContextManager | None = None,
         memory: MemoryService | None = None,
         project: Callable[[], ProjectContext] | None = None,
+        mode: Callable[[], Mode] | None = None,
         add_time_context: bool = False,
         now: Callable[[], _dt.datetime] = _default_now,
     ) -> None:
@@ -109,6 +111,14 @@ class AgentLoop:
         # Phase 10: the active project scope, read once per turn (a callable so switching
         # projects on screen applies from the next turn). None => global scope, no extra.
         self.project = project
+        # Phase 10: the run mode (Plan/Approval/Auto). None => Approval (the default and the
+        # only mode background/voice loops ever run in). Plan/Auto enforcement lives in
+        # _handle_tools, co-located with egress taint. auto_allow_tools is the opt-in Auto set.
+        self.mode = mode
+        self._auto_allow: frozenset[str] = frozenset(config.modes.auto_allow_tools)
+        # Per-turn snapshot of "did this turn start in Auto" (pre-mortem #12): a mid-turn flip
+        # INTO Auto must not retroactively auto-approve the in-flight turn.
+        self._turn_started_auto = False
         # Phase-3: give the model the current date/time (it has no clock otherwise,
         # so scheduling relative times is impossible without it). Off by default so
         # the null path stays byte-identical to earlier phases.
@@ -165,6 +175,10 @@ class AgentLoop:
         total_latency_ms = 0.0
         limits = self.config.limits
         self._turn_tainted = False  # egress taint is per-turn (Phase 9)
+        # Freeze the permissive side of mode for the whole turn (Phase 10, pre-mortem #12):
+        # a mid-turn flip into Auto never applies to an in-flight turn. Plan (restrictive) is
+        # read live per iteration, so tightening takes effect immediately.
+        self._turn_started_auto = self.mode is not None and self.mode() is Mode.AUTO
 
         self.log.info("turn_start", trace_id=trace_id, model=self.config.models.main)
 
@@ -267,6 +281,9 @@ class AgentLoop:
         # together can't slip the fetch through before the read "runs" (permission for the
         # whole batch is resolved before any executes). Order within the batch is irrelevant.
         effective_taint = self._turn_tainted or self._batch_reads_private(tool_calls)
+        # The run mode, read live this iteration (Plan tightening applies immediately; the
+        # permissive Auto side is gated by the per-turn _turn_started_auto snapshot).
+        mode = self.mode() if self.mode is not None else Mode.APPROVAL
 
         # Phase 1 — resolve permission for each call sequentially (orderly prompts).
         resolved: list[tuple[ToolCall, object, Permission]] = []
@@ -292,26 +309,50 @@ class AgentLoop:
                     persistable=False,
                 )
                 self.log.info("egress_taint_demotion", tool=call.name)
+            # Plan mode (Phase 10): deny anything not in PLAN_SAFE, on the post-taint decision.
+            # An allowlist, so a future unclassified tool fails closed. Applied before the
+            # approver — a plan-denied tool never prompts and never runs.
+            if plan_blocks(mode, call.name):
+                decision = Decision(
+                    Permission.DENY, "plan mode: only read-only tools are permitted"
+                )
             self.log.info(
                 "permission_decision",
                 tool=call.name,
                 permission=str(decision.permission),
                 reason=decision.reason,
+                mode=str(mode),
             )
             perm = decision.permission
+            resolution = str(perm)
             if perm is Permission.ASK:
-                perm = await self.approver(call, decision) if self.approver else Permission.DENY
+                # Auto mode (Phase 10): auto-approve a configured low-risk ASK — but ONLY on a
+                # still-persistable decision, so a tainted-egress demotion (persistable=False)
+                # always reaches the human. Visible as resolution="auto_approved" in Trace.
+                if auto_approves(
+                    mode=mode,
+                    started_auto=self._turn_started_auto,
+                    decision=decision,
+                    tool_name=call.name,
+                    auto_allow_tools=self._auto_allow,
+                ):
+                    perm = Permission.ALLOW
+                    resolution = "auto_approved"
+                    self.log.info("mode_auto_approved", tool=call.name, mode=str(mode))
+                else:
+                    perm = await self.approver(call, decision) if self.approver else Permission.DENY
+                    resolution = str(perm)
                 self.log.info("permission_resolved", tool=call.name, permission=str(perm))
             # Emitted before execution for EVERY call — including denials, which
             # ToolStarted (post-ALLOW only) never sees. This is what lets an eval
             # record what the model attempted, not just what ran. gate_decision is the RAW
-            # gate verdict (pre-taint); resolution is the final permission after the approver.
+            # gate verdict (pre-taint); resolution is the final disposition (incl. auto_approved).
             emit(
                 ToolDecision(
                     call.name,
                     call.input,
                     gate_decision=str(raw.permission),
-                    resolution=str(perm),
+                    resolution=resolution,
                 )
             )
             resolved.append((call, tool, perm))

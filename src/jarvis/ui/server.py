@@ -21,6 +21,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from jarvis.observability import get_logger
 from jarvis.permissions import PermissionGate, load_policy
+from jarvis.permissions.modes import Mode
 from jarvis.tools import Permission
 from jarvis.ui.approver import ApprovalManager, UIApprover, UIScreenApprover
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager, host_allowed, origin_allowed
@@ -139,6 +140,7 @@ def create_app(
     app.state.notices = None  # a NoticeBoard, set by the CLI host (run_ui); None ⇒ empty tail
     app.state.run_digest_now = None  # async () -> DigestOutcome, set by run_ui; None ⇒ 503
     app.state.projects = None  # a ProjectService, set by build_ui_app; None ⇒ projects 503
+    app.state.modes = None  # a ModeState, set by build_ui_app; None ⇒ mode reads 'approval'
     # The UI is voice's fail-closed "screen": a VoiceApprover wired to this UIScreenApprover
     # resolves risky voice actions on the authenticated, live, watching Gate surface — or
     # denies. Composed here so the CLI host (Task 9) injects it into the voice VoiceApprover.
@@ -245,7 +247,31 @@ def create_app(
 
     @app.get("/api/runner")
     async def runner_status() -> dict:
-        return _runner_status(app.state.runner, app.state.session)
+        status = _runner_status(app.state.runner, app.state.session)
+        modes = app.state.modes
+        status["mode"] = modes.current().value if modes is not None else "approval"
+        return status
+
+    @app.post("/api/mode")
+    async def set_mode(request: Request) -> JSONResponse:
+        # Set the interactive run mode (plan|approval|auto). Backend-enforced in the loop;
+        # this only flips the surface state (and never affects background/voice). Debug is a
+        # client-only flag, never a mode here.
+        modes = app.state.modes
+        if modes is None:
+            return _unavailable("mode")
+        body = await request.json()
+        try:
+            new_mode = Mode(str(body.get("mode", "")))
+        except ValueError:
+            return JSONResponse(
+                {"ok": False, "message": "mode must be plan|approval|auto"}, status_code=400
+            )
+        modes.set(new_mode)
+        log.info("mode_changed", mode=new_mode.value)
+        # Announce so any open surface updates its chip (Task 9 adds the WS event type).
+        await app.state.connections.broadcast({"kind": "mode_changed", "mode": new_mode.value})
+        return JSONResponse({"ok": True, "mode": new_mode.value})
 
     @app.post("/api/runner/pause")
     async def runner_pause() -> dict:

@@ -27,6 +27,8 @@ AUDIT_EVENTS = frozenset(
         "ui_approval_requested",
         "ui_approval_resolved",
         "ui_approval_failed_closed",
+        "mode_changed",  # Phase 10: run mode flipped (plan|approval|auto)
+        "mode_auto_approved",  # Phase 10: Auto mode resolved an allowlisted ASK without a human
     }
 )
 
