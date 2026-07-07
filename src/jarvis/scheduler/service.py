@@ -93,6 +93,7 @@ class TaskService:
         schedule_spec: str,
         created_by: str,
         timezone: str | None = None,
+        project_id: int | None = None,
     ) -> Task:
         """Validate and insert a task; returns it. Raises :class:`ScheduleError`
         with a model-readable message when the spec is unusable."""
@@ -124,6 +125,7 @@ class TaskService:
             next_run_at=_iso(first),
             created_by=created_by,
             source_session_id=self.bound_session_id,
+            project_id=project_id,
         )
         task = await self.store.get(task_id)
         assert task is not None

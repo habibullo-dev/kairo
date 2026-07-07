@@ -27,8 +27,12 @@ from jarvis.persistence.db import transaction
 _TASK_COLUMNS = (
     "id, kind, title, payload, schedule_kind, schedule_spec, timezone, next_run_at, "
     "status, created_by, source_session_id, consecutive_failures, last_run_at, "
-    "last_error, created_at, updated_at"
+    "last_error, created_at, updated_at, project_id"
 )
+
+#: Sentinel for "any project" (no scope filter) in list() — distinct from ``None`` (global
+#: only, project_id IS NULL). Mirrors the memory/session/KB scope contract.
+ANY_PROJECT: object = object()
 
 _RUN_COLUMNS = (
     "id, task_id, scheduled_for, started_at, finished_at, status, session_id, "
@@ -61,6 +65,7 @@ class Task:
     last_error: str | None
     created_at: str
     updated_at: str
+    project_id: int | None = None  # Phase 10: scope (None == global)
 
 
 @dataclass(frozen=True)
@@ -111,15 +116,17 @@ class TaskStore:
         next_run_at: str,
         created_by: str,
         source_session_id: int | None = None,
+        project_id: int | None = None,
     ) -> int:
-        """Insert an active task with its first fire time. Returns its id."""
+        """Insert an active task with its first fire time. Returns its id. ``project_id``
+        scopes the task to a project (None == global; existing tasks stay global)."""
         now = _now()
         async with self.lock:
             cursor = await self.db.execute(
                 "INSERT INTO tasks (kind, title, payload, schedule_kind, schedule_spec, "
                 "timezone, next_run_at, status, created_by, source_session_id, "
-                "created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)",
+                "created_at, updated_at, project_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
                 (
                     kind,
                     title,
@@ -132,6 +139,7 @@ class TaskStore:
                     source_session_id,
                     now,
                     now,
+                    project_id,
                 ),
             )
             await self.db.commit()
@@ -145,9 +153,31 @@ class TaskStore:
         row = await cursor.fetchone()
         return _row_to_task(row) if row else None
 
-    async def list(self, *, include_finished: bool = False) -> list[Task]:
-        where = "" if include_finished else "WHERE status = 'active' "
-        cursor = await self.db.execute(f"SELECT {_TASK_COLUMNS} FROM tasks {where}ORDER BY id")
+    async def list(
+        self,
+        *,
+        include_finished: bool = False,
+        project_id: object = ANY_PROJECT,
+        include_global: bool = True,
+    ) -> list[Task]:
+        """Tasks, optionally scoped to a project (Phase 10). ``project_id`` ANY_PROJECT
+        (default) = every task; P = P's tasks (+ global when ``include_global``); None =
+        global only. A project page passes P; the REPL/global views use the default."""
+        clauses: list[str] = [] if include_finished else ["status = 'active'"]
+        params: list[object] = []
+        if project_id is not ANY_PROJECT:
+            if project_id is None:
+                clauses.append("project_id IS NULL")
+            elif include_global:
+                clauses.append("(project_id = ? OR project_id IS NULL)")
+                params.append(project_id)
+            else:
+                clauses.append("project_id = ?")
+                params.append(project_id)
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        cursor = await self.db.execute(
+            f"SELECT {_TASK_COLUMNS} FROM tasks {where}ORDER BY id", tuple(params)
+        )
         return [_row_to_task(r) for r in await cursor.fetchall()]
 
     async def earliest_next_run(self) -> str | None:

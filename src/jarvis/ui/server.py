@@ -378,11 +378,16 @@ def create_app(
         return JSONResponse(await list_memories(svc, type_filter=type, project_id=scope))
 
     @app.get("/api/tasks")
-    async def tasks() -> JSONResponse:
+    async def tasks(project_id: int | None = None) -> JSONResponse:
+        # project_id scopes to a project page (P + global); absent ⇒ every task (the global
+        # Tasks screen). A project page passes ?project_id= to filter out other projects.
+        from jarvis.scheduler.store import ANY_PROJECT
+
         svc = app.state.services.tasks
         if svc is None:
             return _unavailable("tasks")
-        return JSONResponse(await list_tasks(svc))
+        scope = ANY_PROJECT if project_id is None else project_id
+        return JSONResponse(await list_tasks(svc, project_id=scope))
 
     @app.get("/api/tasks/{task_id}/runs")
     async def tasks_runs(task_id: int) -> JSONResponse:
@@ -544,6 +549,8 @@ def create_app(
         if svc is None:
             return _unavailable("tasks")
         body = await request.json()
+        projects = app.state.projects
+        pid = projects.current().project_id if projects is not None else None
         try:
             task = await svc.schedule(
                 kind=str(body.get("kind", "reminder")),
@@ -552,6 +559,7 @@ def create_app(
                 schedule_kind=str(body.get("schedule_kind", "once")),
                 schedule_spec=str(body.get("schedule_spec", "")),
                 created_by="user",
+                project_id=pid,  # a promoted task belongs to the active project
             )
         except Exception as exc:  # noqa: BLE001 - a bad schedule is a 400, not a 500
             return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)

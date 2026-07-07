@@ -25,7 +25,7 @@ from jarvis.projects import ProjectService, ProjectStore
 from jarvis.scheduler.service import TaskService
 from jarvis.scheduler.store import TaskStore
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.readmodels import UiServices
+from jarvis.ui.readmodels import UiServices, list_tasks
 from jarvis.ui.server import create_app
 
 _OPEN: list = []
@@ -144,3 +144,71 @@ async def test_status_feed_reports_project_mode_spend(tmp_path: Path) -> None:
     assert status["mode"] == "approval"  # no ModeState wired ⇒ default
     assert status["project"] == {"id": pid, "name": "Proj"}
     assert status["today_spend_usd"] == 0.0 and status["ledger_degraded"] is False
+
+
+# --- task project scoping (Task 9.5) ---------------------------------------
+
+
+async def test_tasks_scoped_by_project_no_cross_leak(tmp_path: Path) -> None:
+    # Two projects + a global task. A project page (?project_id=) shows that project's tasks
+    # + global, and NEVER another project's — the isolation guarantee.
+    client, auth, _m, db, lock, _pid = await _app(tmp_path)
+    from jarvis.config import SchedulerConfig
+    from jarvis.projects import ProjectStore
+    from jarvis.scheduler.service import TaskService
+    from jarvis.scheduler.store import TaskStore
+
+    b = await ProjectStore(db, lock).create(name="ProjectB")  # id 2 (Proj=1 from _app)
+    tasks = TaskService(TaskStore(db, lock), SchedulerConfig())
+
+    async def _mk(title: str, project_id: int | None) -> None:
+        await tasks.schedule(
+            kind="reminder",
+            title=title,
+            payload="p",
+            schedule_kind="cron",
+            schedule_spec="0 9 * * *",
+            created_by="user",
+            project_id=project_id,
+        )
+
+    await _mk("A-only task", 1)
+    await _mk("B-only task", b)
+    await _mk("global task", None)
+
+    def titles(rows):
+        return {t["title"] for t in rows}
+
+    # Project A page: A + global, never B.
+    a_rows = await list_tasks(tasks, project_id=1)
+    assert titles(a_rows) == {"A-only task", "global task"}
+    # Project B page: B + global, never A.
+    b_rows = await list_tasks(tasks, project_id=b)
+    assert titles(b_rows) == {"B-only task", "global task"}
+    # Global/unscoped Tasks screen: everything.
+    all_rows = await list_tasks(tasks)
+    assert titles(all_rows) == {"A-only task", "B-only task", "global task"}
+    # And the row carries its scope.
+    assert next(t for t in a_rows if t["title"] == "A-only task")["project_id"] == 1
+
+
+async def test_promote_to_task_scopes_to_active_project(tmp_path: Path) -> None:
+    client, auth, _m, db, lock, pid = await _app(tmp_path)
+    r = client.post(
+        "/api/tasks/create",
+        json={
+            "title": "promoted",
+            "payload": "x",
+            "schedule_kind": "cron",
+            "schedule_spec": "0 9 * * *",
+        },
+        headers=_hdr(auth, post=True),
+    )
+    assert r.status_code == 200
+    from jarvis.config import SchedulerConfig
+    from jarvis.scheduler.service import TaskService
+    from jarvis.scheduler.store import TaskStore
+
+    tasks = TaskService(TaskStore(db, lock), SchedulerConfig())
+    rows = await list_tasks(tasks, project_id=pid)
+    assert any(t["title"] == "promoted" and t["project_id"] == pid for t in rows)

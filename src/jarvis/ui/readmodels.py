@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from jarvis.memory.store import ANY_PROJECT as _MEM_ANY_PROJECT
 from jarvis.reporting.repo import RepoReader
+from jarvis.scheduler.store import ANY_PROJECT as _TASK_ANY_PROJECT
 
 if TYPE_CHECKING:
     from jarvis.agents.store import AgentRun, AgentRunStore
@@ -218,8 +219,14 @@ def serialize_task_run(run: TaskRun) -> dict:
     return dataclasses.asdict(run)
 
 
-async def list_tasks(tasks: TaskService, *, include_finished: bool = True) -> list[dict]:
-    return [serialize_task(t) for t in await tasks.store.list(include_finished=include_finished)]
+async def list_tasks(
+    tasks: TaskService, *, include_finished: bool = True, project_id: object = _TASK_ANY_PROJECT
+) -> list[dict]:
+    """Tasks for the Tasks screen / a project page. ``project_id`` scopes to a project
+    (P + global); the default is unscoped (every task). Project A's tasks (project_id=A)
+    never appear when scoped to project B."""
+    rows = await tasks.store.list(include_finished=include_finished, project_id=project_id)
+    return [serialize_task(t) for t in rows]
 
 
 async def task_runs(tasks: TaskService, task_id: int, *, limit: int = 20) -> list[dict]:
@@ -389,10 +396,12 @@ def _eval_freshness(config: Config, repos: list[dict]) -> dict:
     }
 
 
-async def _tasks_today(tasks: TaskService) -> list[dict]:
+async def _tasks_today(tasks: TaskService, *, project_id: object = _TASK_ANY_PROJECT) -> list[dict]:
     now = _dt.datetime.now().astimezone()
     out: list[dict] = []
-    for t in await tasks.store.list(include_finished=False):
+    # Global Daily (project_id=ANY) shows every due task; when a project is active it scopes to
+    # that project + global (the user's "aggregate global + active project" rule).
+    for t in await tasks.store.list(include_finished=False, project_id=project_id):
         if not t.next_run_at:
             continue
         try:
@@ -425,7 +434,15 @@ async def daily_overview(
     """The Daily screen's bootstrap: repo state, eval freshness, today's tasks, the review
     queue count, the latest digest, notices, and connector status — all read-only views."""
     repos = await _repo_states(config)
-    tasks_today = await _tasks_today(services.tasks) if services.tasks is not None else []
+    # Daily scopes "today's tasks" to the active project (+ global); global scope shows all.
+    active_pid: object = _TASK_ANY_PROJECT
+    if services.projects is not None and services.projects.current().project_id is not None:
+        active_pid = services.projects.current().project_id
+    tasks_today = (
+        await _tasks_today(services.tasks, project_id=active_pid)
+        if services.tasks is not None
+        else []
+    )
     kb_review = len(await services.knowledge.unreviewed_sources()) if services.knowledge else 0
     latest = await services.digests.latest() if services.digests is not None else None
     connectors = (
