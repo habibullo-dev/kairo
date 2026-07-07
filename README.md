@@ -14,6 +14,32 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 10 (project workspaces + Orchestration Studio) — framework complete; local adapters
+built, live scans/eval-gate pending your machine.** Phase 10A adds **projects** (project-scoped
+memory/KB/tasks via a nullable `project_id`, enforced in SQL), **run modes** (Plan / Approval /
+Auto, composed at the documented gate/approver seams — [ADR-0012](docs/decisions/0012-modes.md)),
+a **model registry + cost ledger** (per-role routes, fail-closed pricing, a metadata-only
+`model_calls` ledger — [ADR-0013](docs/decisions/0013-model-registry-and-cost-ledger.md)), and
+budgets. Phase 10B adds the **Orchestration Studio**: project *teams* (Research, Frontend,
+Backend, Security, QA, PM, Ops, Custom) run a workflow through a stage machine — council →
+synthesis → execution → review → verdict — built **on Phase-6 spawn, not a second agent
+framework** ([ADR-0014](docs/decisions/0014-orchestration-on-spawn.md)). Council/review members
+are read-only with no egress; exactly one write-capable member runs, only in the execution stage,
+under the shared turn lock; the engine trusts run records, never a child's report text (a forged
+"verdict: accept" is inert). A worst-case **cost reservation** with a two-step confirm runs before
+any fan-out; unpriced routes/services block (fail-closed). **Team Tool Intelligence**
+([ADR-0015](docs/decisions/0015-team-tool-intelligence.md)) is a classified `SERVICE_CATALOG`
+whose enforcement is *derived* from each row (`egress`/`write`/`context_policy`/`output_trust`),
+never hand-set; three local, free, flag-gated adapters ship — **Semgrep** and **Gitleaks**
+(hardened-argv, offline, sensitive-path excluded, Gitleaks findings redacted to `file:line + rule
+id`) and **Playwright-localhost** (localhost-only, inspect-only: navigate/screenshot/DOM/a11y/
+visual-diff, no click/type/submit). `services.enabled` is empty by default — nothing external is
+on, and nothing is live until a human lists it. **Honest status:** the keyless suite is green and
+the adapter guards are verified against this repo, but the live scans (need the Semgrep/Gitleaks/
+Playwright binaries), real orchestration runs, and the judged eval gate (need an API key) are
+**not yet run** — the checklist + commands are in [`docs/verification-10B.md`](docs/verification-10B.md).
+Design in [`docs/PLAN-10B-teams.md`](docs/PLAN-10B-teams.md).
+
 **Phase 9 (make Kairo useful daily) — complete.** Kairo now flows real daily context in and
 real workflows out, all behind the existing PermissionGate. **Connectors** are narrow, audited
 httpx REST adapters (not a library, not MCP): Google Calendar/Gmail/Drive (read-first) plus

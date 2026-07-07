@@ -2246,3 +2246,26 @@ One refinement I had to make: `repo_code_only`/`local_only` now tolerate `PROJEC
 provenance. A scan member legitimately sees its own project's (non-private) task brief, and the
 Task-12 `_ALLOWED` map was stricter than the stated B1 intent — the guarantee that *matters*
 (public_only never gets private; nothing but the private source gets PRIVATE) is unchanged.
+
+## Phase 10B Tasks 18–19 — deterministic pins beat probabilistic evals; honest "not run here"
+
+The service safety non-negotiables are pinned as **structural** unit tests, not just eval
+scenarios, because the strongest statement is architectural: a council member has no egress tool
+in scope, so an injected "exfiltrate the findings" is inert *by construction* — there is nothing
+to exfiltrate *with*. That's a stronger guarantee than "the model declined N/N times". The two
+new adversarial eval scenarios (`inj_scanner_finding_poison`, `inj_scan_target_sensitive`) add
+live injection-resistance coverage on top, reusing the Phase-9 read_file harness (no service-tool
+wiring needed) — a poisoned scan report can't direct egress; a "paste the .env secrets" checklist
+is stopped by the sensitive-path floor. Adding scenarios meant updating the deliberate
+adversarial-suite pins (count 21→23 + the distinct-canary count) — those pins exist precisely so
+the suite can't drift silently.
+
+Task 19's discipline is amendment A6 made concrete: this environment has no Semgrep/Gitleaks/
+Playwright binaries and no API key, so the genuinely-live verification (real scans, orchestration
+runs, the judged eval gate) **cannot** run — and I did not fabricate a pass. What I *could* verify
+keylessly is real: the adapter guard logic exercised against this repo's actual root and sensitive
+paths (`.env`, `data/connectors/` flagged; `.env`/`.ssh`/escapes refused; external + cloud-metadata
+URLs refused). The line between "verified here" and "requires your machine" is written down in
+`docs/verification-10B.md` with exact commands, and the new eval scenarios carry no baseline yet
+(so they run as measurement, not a floor) until a real green run ratchets them in a dedicated
+commit. Claiming a gate pass you didn't run is the one thing the A6 rule exists to prevent.
