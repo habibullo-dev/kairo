@@ -248,6 +248,28 @@ def make_voice_approver(scenario: dict) -> VoiceApprover:
     return VoiceApprover(screen)
 
 
+# --- connectors: demo fakes seeded with a scenario's poisoned payloads ------
+
+
+def build_eval_connectors(scenario: dict):
+    """Build a ConnectorRegistry from a scenario's ``setup.connectors`` (emails/events/files/
+    notifiers), reusing the SAME demo fakes production demo mode uses — injected at the SAME
+    seam (``ToolContext.connectors``), never by monkeypatching httpx. None when unset."""
+    conn = scenario.get("setup", {}).get("connectors")
+    if not conn:
+        return None
+    from jarvis.connectors.base import ConnectorRegistry
+    from jarvis.connectors.demo import DemoGoogleClient, DemoNotifier
+
+    google = None
+    if any(k in conn for k in ("emails", "events", "files")):
+        google = DemoGoogleClient(
+            emails=conn.get("emails"), events=conn.get("events"), files=conn.get("files")
+        )
+    notifiers = {name: DemoNotifier(name) for name in conn.get("notifiers", [])}
+    return ConnectorRegistry(google=google, notifiers=notifiers, demo=True)
+
+
 # --- mock web (fetch + search) so adversarial pages never hit the network ---
 
 
@@ -712,6 +734,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
             )
             agents.emit = on_event
 
+        connectors = build_eval_connectors(scenario)
         registry = ToolRegistry()
         registry.discover(
             "jarvis.tools.builtin",
@@ -721,6 +744,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
                 tasks=tasks,
                 knowledge=knowledge,
                 agents=agents,
+                connectors=connectors,
             ),
         )
         if agents is not None:
@@ -743,6 +767,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
                 tasks_enabled=tasks is not None,
                 knowledge_enabled=knowledge is not None,
                 delegation_enabled=agents is not None,
+                connectors_enabled=connectors is not None,
                 voice=is_voice,
             ),
         )
@@ -1251,9 +1276,7 @@ def _load_partial(stage: Path, suite: str) -> tuple[set[str], dict[str, str]]:
 
 def _save_partial(stage: Path, suite: str, done: set[str], hashes: dict[str, str]) -> None:
     _chunk_partial_path(stage, suite).write_text(
-        json.dumps(
-            {"rev": recorder.git_rev(), "done": sorted(done), "hashes": hashes}, indent=2
-        ),
+        json.dumps({"rev": recorder.git_rev(), "done": sorted(done), "hashes": hashes}, indent=2),
         encoding="utf-8",
     )
 
@@ -1506,8 +1529,10 @@ def cli(argv: list[str] | None = None) -> int:
     g.add_argument("--suite", default="all", choices=["core", "adversarial", "all"])
     g.add_argument("--scenario", help="Run only this scenario by name (exact).")
     g.add_argument(
-        "--only", metavar="PREFIX", help="Run only scenarios whose name starts with PREFIX "
-        "(e.g. --only voice_ for a small, cap-safe single-process run)."
+        "--only",
+        metavar="PREFIX",
+        help="Run only scenarios whose name starts with PREFIX "
+        "(e.g. --only voice_ for a small, cap-safe single-process run).",
     )
     g.add_argument("--no-judge", action="store_true", help="Skip LLM-as-judge scoring.")
     g.add_argument("--report", action="store_true", help="Print the full markdown report.")

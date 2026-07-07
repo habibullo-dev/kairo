@@ -23,28 +23,85 @@ def _b64url(text: str) -> str:
     return base64.urlsafe_b64encode(text.encode("utf-8")).rstrip(b"=").decode("ascii")
 
 
-def _demo_message(mid: str, subject: str, body: str) -> dict:
-    # Shaped so BOTH the metadata parse (headers+snippet) and the full parse (body) work.
+def _message_payload(msg: dict) -> dict:
+    """Shape one email dict {id,sender,subject,snippet?,body?} into Gmail's API form (works for
+    both the metadata parse — headers+snippet — and the full parse — body)."""
+    subject = msg.get("subject", "(no subject)")
     return {
-        "id": mid,
-        "threadId": f"demo-thread-{mid}",
-        "snippet": f"{subject} — this is clearly-labelled demo data.",
+        "id": msg["id"],
+        "threadId": msg.get("thread_id", f"demo-thread-{msg['id']}"),
+        "snippet": msg.get("snippet", subject),
         "payload": {
             "mimeType": "text/plain",
             "headers": [
-                {"name": "From", "value": "demo@kairo.local"},
+                {"name": "From", "value": msg.get("sender", "demo@kairo.local")},
                 {"name": "Subject", "value": subject},
-                {"name": "Date", "value": "Mon, 6 Jul 2026 09:00:00 +0000"},
+                {"name": "Date", "value": msg.get("date", "Mon, 6 Jul 2026 09:00:00 +0000")},
             ],
-            "body": {"data": _b64url(body)},
+            "body": {"data": _b64url(msg.get("body", msg.get("snippet", "")))},
         },
     }
 
 
+_DEFAULT_EMAILS = [
+    {
+        "id": "demo-m1",
+        "subject": "[DEMO] Standup at 10",
+        "body": "Reminder: standup at 10am.",
+        "snippet": "[DEMO] standup reminder",
+        "sender": "demo@kairo.local",
+    },
+    {
+        "id": "demo-m2",
+        "subject": "[DEMO] Invoice due Friday",
+        "body": "Please review the invoice.",
+        "snippet": "[DEMO] invoice due",
+        "sender": "demo@kairo.local",
+    },
+]
+_DEFAULT_EVENTS = [
+    {
+        "id": "demo-e1",
+        "summary": "[DEMO] Standup",
+        "start": {"dateTime": "2026-07-06T10:00:00+00:00"},
+        "end": {"dateTime": "2026-07-06T10:15:00+00:00"},
+        "organizer": {"email": "demo@kairo.local"},
+        "location": "[DEMO] Zoom",
+    },
+    {
+        "id": "demo-e2",
+        "summary": "[DEMO] Company holiday",
+        "start": {"date": "2026-07-07"},
+        "end": {"date": "2026-07-08"},
+    },
+]
+_DEFAULT_FILES = [
+    {
+        "id": "demo-f1",
+        "name": "[DEMO] Roadmap",
+        "mimeType": "application/vnd.google-apps.document",
+        "modifiedTime": "2026-07-05T12:00:00Z",
+        "webViewLink": "https://drive.google.com/demo-f1",
+    },
+]
+
+
 class DemoGoogleClient:
-    """A fake GoogleClient returning canned, obviously-fictional API-shaped JSON, so the REAL
-    calendar/gmail/drive adapters (and the tools/collectors above them) run unchanged against
-    demo data. Everything is prefixed [DEMO] and nothing leaves the box."""
+    """A fake GoogleClient returning canned, API-shaped JSON, so the REAL calendar/gmail/drive
+    adapters (and the tools/collectors above them) run unchanged against demo data — nothing
+    leaves the box. The default data is obviously-fictional ``[DEMO]`` content; the adversarial
+    eval harness passes per-scenario ``emails``/``events`` to stage a poisoned payload."""
+
+    def __init__(
+        self,
+        *,
+        emails: list[dict] | None = None,
+        events: list[dict] | None = None,
+        files: list[dict] | None = None,
+    ) -> None:
+        self._emails = emails if emails is not None else _DEFAULT_EMAILS
+        self._events = events if events is not None else _DEFAULT_EVENTS
+        self._files = files if files is not None else _DEFAULT_FILES
 
     def status(self) -> dict[str, Any]:
         return {
@@ -56,51 +113,17 @@ class DemoGoogleClient:
 
     async def get_json(self, url: str, *, params: dict | None = None) -> dict:
         if "/calendar/" in url:
-            return {
-                "items": [
-                    {
-                        "id": "demo-e1",
-                        "summary": "[DEMO] Standup",
-                        "start": {"dateTime": "2026-07-06T10:00:00+00:00"},
-                        "end": {"dateTime": "2026-07-06T10:15:00+00:00"},
-                        "organizer": {"email": "demo@kairo.local"},
-                        "location": "[DEMO] Zoom",
-                    },
-                    {
-                        "id": "demo-e2",
-                        "summary": "[DEMO] Company holiday",
-                        "start": {"date": "2026-07-07"},
-                        "end": {"date": "2026-07-08"},
-                    },
-                ]
-            }
+            return {"items": list(self._events)}
         if "/messages/" in url:  # a single message get (metadata or full)
             mid = url.rsplit("/", 1)[-1]
-            if mid == "demo-m2":
-                return _demo_message(
-                    "demo-m2", "[DEMO] Invoice due Friday", "Please review the attached invoice."
-                )
-            return _demo_message("demo-m1", "[DEMO] Standup at 10", "Reminder: standup at 10am.")
+            msg = next((m for m in self._emails if m["id"] == mid), None)
+            return _message_payload(msg) if msg else {}
         if url.endswith("/messages"):  # search listing
-            return {"messages": [{"id": "demo-m1"}, {"id": "demo-m2"}]}
+            return {"messages": [{"id": m["id"]} for m in self._emails]}
         if "/files/" in url:  # drive file metadata
-            return {
-                "id": "demo-f1",
-                "name": "[DEMO] Roadmap",
-                "mimeType": "application/vnd.google-apps.document",
-            }
+            return self._files[0] if self._files else {}
         if "/files" in url:  # drive search
-            return {
-                "files": [
-                    {
-                        "id": "demo-f1",
-                        "name": "[DEMO] Roadmap",
-                        "mimeType": "application/vnd.google-apps.document",
-                        "modifiedTime": "2026-07-05T12:00:00Z",
-                        "webViewLink": "https://drive.google.com/demo-f1",
-                    }
-                ]
-            }
+            return {"files": list(self._files)}
         return {}
 
     async def get_text(self, url: str, *, params: dict | None = None) -> str:
