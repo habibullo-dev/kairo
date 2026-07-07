@@ -42,6 +42,7 @@ from jarvis.core.events import SubAgentCompleted, SubAgentEvent
 from jarvis.core.prompts import build_system
 from jarvis.observability import get_logger, get_trace_id
 from jarvis.observability.cost import Usage, cost_of, price_for
+from jarvis.observability.ledger import CostContext, cost_context
 from jarvis.permissions.subagent import SubAgentGate
 from jarvis.permissions.unattended import HeadlessApprover
 from jarvis.persistence.sessions import SessionStore
@@ -180,11 +181,11 @@ class SubAgentService:
             return False
         return self._spawn_count >= self.config.sub_agents.max_spawn_calls_per_turn
 
-    def _child_config(self) -> Config:
-        """A config for the child loop: the child model (``sub_agents.model`` or, by
-        default, ``models.main`` — quality-first, no downgrade) and the tighter child
-        iteration bound. Everything else is inherited."""
-        child_model = self.config.sub_agents.model or self.config.models.main
+    def _child_config(self, model: str | None = None) -> Config:
+        """A config for the child loop: the child model and the tighter child iteration bound;
+        everything else is inherited. ``model`` (Phase 10B per-role override) wins; else
+        ``sub_agents.model``; else ``models.main`` (quality-first, no downgrade)."""
+        child_model = model or self.config.sub_agents.model or self.config.models.main
         return self.config.model_copy(
             update={
                 "models": self.config.models.model_copy(update={"main": child_model}),
@@ -205,12 +206,32 @@ class SubAgentService:
     ) -> None:
         self.emit(SubAgentCompleted(agent_id, title, status, usage, cost_usd))
 
-    async def spawn(self, *, title: str, prompt: str, tools: list[str]) -> ToolResult | str:
+    async def spawn(
+        self,
+        *,
+        title: str,
+        prompt: str,
+        tools: list[str],
+        client: LLMClient | None = None,
+        model: str | None = None,
+        role: str | None = None,
+        stage: str | None = None,
+        team: str | None = None,
+        orchestration_run_id: int | None = None,
+        project_id: int | None = None,
+        fresh_trace: bool = False,
+    ) -> ToolResult | str:
         """Run one scoped sub-agent and return its framed report (or an error result).
 
-        Called by the ``spawn_agent`` tool. Never raises for a normal failure — the
-        parent model reads the error result and adapts — except a genuine cancellation,
-        which is recorded and re-raised."""
+        Called by the ``spawn_agent`` tool with only ``title``/``prompt``/``tools`` — model
+        routing stays config-only, never model-controllable (the tool schema exposes none of
+        the keyword-only extras). The host orchestration engine (10B) passes the extras to
+        run a role on a per-role ``client``/``model``, attribute it to a team/stage/run, and
+        (``fresh_trace``) reset the per-turn spawn cap so a multi-stage run isn't throttled by
+        the interactive runaway guard (the engine has its own budget/parallel/round bounds).
+
+        Never raises for a normal failure — the caller reads the error result and adapts —
+        except a genuine cancellation, which is recorded and re-raised."""
         # Depth 1: a child never spawns (three mechanisms; this is the innermost).
         if _IN_SUBAGENT.get():
             return ToolResult(
@@ -237,10 +258,13 @@ class SubAgentService:
 
         trace_id = get_trace_id()
         cap = self.config.sub_agents.max_spawn_calls_per_turn
-        if trace_id != self._spawn_trace:  # new turn — reset the per-turn counter
+        # fresh_trace (host orchestration): treat this as a new counting context so a
+        # multi-stage run isn't capped by the interactive runaway guard — the engine bounds
+        # itself (max_parallel / max_rounds / budget). Otherwise the tool path is capped.
+        if fresh_trace or trace_id != self._spawn_trace:  # new turn/stage — reset the counter
             self._spawn_trace = trace_id
             self._spawn_count = 0
-        if self._spawn_count >= cap:
+        if not fresh_trace and self._spawn_count >= cap:
             return ToolResult(
                 content=(
                     f"Sub-agent spawn cap for this turn reached ({cap}); not spawning. "
@@ -250,10 +274,34 @@ class SubAgentService:
             )
         self._spawn_count += 1
 
-        return await self._run(title=title, prompt=prompt, scope=scope, parent_trace_id=trace_id)
+        return await self._run(
+            title=title,
+            prompt=prompt,
+            scope=scope,
+            parent_trace_id=trace_id,
+            client=client,
+            model=model,
+            role=role,
+            stage=stage,
+            team=team,
+            orchestration_run_id=orchestration_run_id,
+            project_id=project_id,
+        )
 
     async def _run(
-        self, *, title: str, prompt: str, scope: frozenset[str], parent_trace_id: str | None
+        self,
+        *,
+        title: str,
+        prompt: str,
+        scope: frozenset[str],
+        parent_trace_id: str | None,
+        client: LLMClient | None = None,
+        model: str | None = None,
+        role: str | None = None,
+        stage: str | None = None,
+        team: str | None = None,
+        orchestration_run_id: int | None = None,
+        project_id: int | None = None,
     ) -> ToolResult | str:
         run_id = await self.run_store.begin_run(
             parent_session_id=self.bound_session_id,
@@ -261,6 +309,10 @@ class SubAgentService:
             title=title,
             prompt=prompt,
             tools_scope=sorted(scope),
+            project_id=project_id,
+            orchestration_run_id=orchestration_run_id,
+            role=role,
+            stage=stage,
         )
         agent_id = str(run_id)
         child_session_id = await self.session_store.create_session(
@@ -273,9 +325,9 @@ class SubAgentService:
             if self.make_approver is not None
             else HeadlessApprover()
         )
-        child_config = self._child_config()
+        child_config = self._child_config(model)
         loop = AgentLoop(
-            client=self.client,
+            client=client or self.client,  # per-role client (10B) or the shared parent client
             registry=ScopedRegistry(self._registry, scope),  # type: ignore[arg-type]
             executor=self.executor,
             gate=gate,
@@ -284,6 +336,10 @@ class SubAgentService:
             system=build_system(subagent=True, knowledge_enabled="query_knowledge_base" in scope),
             context_manager=self.make_context_manager() if self.make_context_manager else None,
             memory=None,  # isolation: no auto-recall, no personal memory
+            # Cost attribution: an orchestration child records purpose="orchestration", a plain
+            # spawn "subagent". run_turn overlays purpose/trace and preserves the team/role/run
+            # /stage set just below (it has no project provider ⇒ project_id rides through too).
+            cost_purpose="orchestration" if orchestration_run_id is not None else "subagent",
             add_time_context=True,
         )
         sink = self._child_sink(agent_id, title)
@@ -301,6 +357,19 @@ class SubAgentService:
         run_error: str | None = None
         child_trace_id: str | None = None
         token = _IN_SUBAGENT.set(True)
+        # Cost attribution set INSIDE this coroutine (a parallel council's gather can't share
+        # one role — pre-mortem #8). run_turn merges purpose/trace/project over this, keeping
+        # team/role/run/stage. A plain spawn sets all-None (byte-identical attribution to a
+        # normal turn other than purpose="subagent").
+        cost_token = cost_context.set(
+            CostContext(
+                project_id=project_id,
+                orchestration_run_id=orchestration_run_id,
+                agent_role=role,
+                team=team,
+                stage=stage,
+            )
+        )
         try:
             # Semaphore first, THEN the deadline: queue-wait must not burn the budget.
             async with self._semaphore:
@@ -331,6 +400,7 @@ class SubAgentService:
             run_error = f"{type(exc).__name__}: {exc}"
         finally:
             _IN_SUBAGENT.reset(token)
+            cost_context.reset(cost_token)
 
         if result is not None:
             status = "ok" if result.stop_reason == "end_turn" else "error"

@@ -98,15 +98,21 @@ class AgentRunStore:
         title: str,
         prompt: str,
         tools_scope: list[str],
+        project_id: int | None = None,
+        orchestration_run_id: int | None = None,
+        role: str | None = None,
+        stage: str | None = None,
     ) -> int:
-        """Open a ``'running'`` row before the child executes; returns its id."""
+        """Open a ``'running'`` row before the child executes; returns its id. The Phase 10
+        columns (project_id / orchestration_run_id / role / stage) are NULL for a plain
+        Phase-6 spawn and set when the host orchestration engine drives the run (10B)."""
         now = _now()
         async with self.lock:
             cursor = await self.db.execute(
                 "INSERT INTO agent_runs "
                 "(parent_session_id, parent_trace_id, title, prompt, tools_scope, "
-                "status, started_at, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'running', ?, ?)",
+                "status, started_at, created_at, project_id, orchestration_run_id, role, stage) "
+                "VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)",
                 (
                     parent_session_id,
                     parent_trace_id,
@@ -115,6 +121,10 @@ class AgentRunStore:
                     json.dumps(tools_scope),
                     now,
                     now,
+                    project_id,
+                    orchestration_run_id,
+                    role,
+                    stage,
                 ),
             )
             await self.db.commit()

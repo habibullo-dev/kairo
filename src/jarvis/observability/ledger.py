@@ -32,7 +32,8 @@ from jarvis.observability.cost import PricingTable, Usage
 _COLUMNS = (
     "id, ts, trace_id, session_id, project_id, orchestration_run_id, agent_role, purpose, "
     "provider, model, effort, input_tokens, output_tokens, cache_write_tokens, "
-    "cache_read_tokens, tool_call_count, latency_ms, cost_usd, pricing_version, created_at"
+    "cache_read_tokens, tool_call_count, latency_ms, cost_usd, pricing_version, created_at, "
+    "team, stage"
 )
 
 
@@ -51,6 +52,8 @@ class CostContext:
     session_id: int | None = None
     orchestration_run_id: int | None = None
     agent_role: str | None = None
+    team: str | None = None  # Phase 10B: orchestration team
+    stage: str | None = None  # Phase 10B: council|synthesis|execution|review|verdict
     trace_id: str | None = None
 
 
@@ -107,7 +110,7 @@ class CostLedger:
             async with self.lock:
                 await self.db.execute(
                     f"INSERT INTO model_calls ({_COLUMNS}) VALUES "
-                    "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         _now(),
                         ctx.trace_id,
@@ -128,6 +131,8 @@ class CostLedger:
                         cost,  # None ⇒ SQL NULL (fail-closed; never a silent 0.0)
                         self.pricing.version,
                         _now(),
+                        ctx.team,
+                        ctx.stage,
                     ),
                 )
                 await self.db.commit()
@@ -173,6 +178,74 @@ class CostLedger:
         )
         row = await cur.fetchone()
         return {"cost_usd": row[0], "calls": row[1], "unpriced": row[2] or 0}
+
+
+_SERVICE_COLUMNS = (
+    "id, ts, trace_id, project_id, orchestration_run_id, team, agent_role, stage, service, "
+    "operation, units, est_cost_usd, pricing_version, created_at"
+)
+
+
+class ServiceLedger:
+    """Records non-LLM service invocations (Semgrep/Gitleaks/Playwright/… — 10B) to the
+    ``service_calls`` table. Metadata only: service, operation, units, cost — NEVER a matched
+    secret value or a scanned body. Unknown/unpriced cost ⇒ NULL (fail-closed, never 0.0); a
+    known-free local tool records a real 0.0. Shares the A5 degradation contract."""
+
+    def __init__(
+        self, db: aiosqlite.Connection, lock: asyncio.Lock, pricing_version: str = "?"
+    ) -> None:
+        self.db = db
+        self.lock = lock
+        self.pricing_version = pricing_version
+        self.log = get_logger("jarvis.cost")
+        self._degraded_since: str | None = None
+        self._unrecorded = 0
+
+    async def record(
+        self,
+        *,
+        service: str,
+        operation: str | None = None,
+        units: float | None = None,
+        est_cost_usd: float | None = None,
+        ctx: CostContext | None = None,
+    ) -> None:
+        """Insert one service invocation's metadata. A DB failure flips degraded, never fatal."""
+        c = ctx or cost_context.get()
+        try:
+            async with self.lock:
+                await self.db.execute(
+                    f"INSERT INTO service_calls ({_SERVICE_COLUMNS}) VALUES "
+                    "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        _now(),
+                        c.trace_id,
+                        c.project_id,
+                        c.orchestration_run_id,
+                        c.team,
+                        c.agent_role,
+                        c.stage,
+                        service,
+                        operation,
+                        units,
+                        est_cost_usd,
+                        self.pricing_version,
+                        _now(),
+                    ),
+                )
+                await self.db.commit()
+            if self._degraded_since is not None:
+                self._degraded_since = None
+                self._unrecorded = 0
+        except Exception as exc:  # noqa: BLE001 - a ledger failure is visible, never fatal
+            if self._degraded_since is None:
+                self._degraded_since = _now()
+            self._unrecorded += 1
+            self.log.warning("service_ledger_write_failed", error=str(exc), service=service)
+
+    def status(self) -> dict:
+        return {"degraded": self._degraded_since is not None, "unrecorded": self._unrecorded}
 
 
 class LedgeredClient:

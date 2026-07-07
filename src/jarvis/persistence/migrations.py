@@ -465,6 +465,36 @@ CREATE INDEX idx_orch_runs_running ON orchestration_runs(status) WHERE status = 
 """
 
 
+# Phase 10B: team-aware orchestration + the service ledger. Additive again (no CHECK widened),
+# so a plain SQL string migration: model_calls gains team/stage attribution columns, and a new
+# service_calls table records non-LLM service invocations (Semgrep/Gitleaks/Playwright/…) as
+# metadata only — never a matched secret value or a body. est_cost_usd NULL = unpriced/unknown
+# (fail-closed; never a silent 0.0), a real 0.0 = a known-free local tool.
+_SCHEMA_V8 = """
+ALTER TABLE model_calls ADD COLUMN team  TEXT;   -- orchestration team (NULL for plain calls)
+ALTER TABLE model_calls ADD COLUMN stage TEXT;   -- council|synthesis|execution|review|verdict
+
+CREATE TABLE service_calls (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                   TEXT NOT NULL,           -- UTC ISO
+    trace_id             TEXT,
+    project_id           INTEGER REFERENCES projects(id),
+    orchestration_run_id INTEGER REFERENCES orchestration_runs(id),
+    team                 TEXT,
+    agent_role           TEXT,
+    stage                TEXT,
+    service              TEXT NOT NULL,           -- catalog service name (semgrep|gitleaks|…)
+    operation            TEXT,                    -- the op invoked (scan|screenshot|…)
+    units                REAL,                    -- metered units, when applicable
+    est_cost_usd         REAL,                    -- NULL = unpriced/unknown (fail-closed)
+    pricing_version      TEXT,
+    created_at           TEXT NOT NULL
+);
+CREATE INDEX idx_service_calls_project_ts ON service_calls(project_id, ts);
+CREATE INDEX idx_service_calls_run        ON service_calls(orchestration_run_id);
+"""
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -478,6 +508,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (5, _migrate_v5),
     (6, _migrate_v6),
     (7, _SCHEMA_V7),
+    (8, _SCHEMA_V8),
 ]
 
 

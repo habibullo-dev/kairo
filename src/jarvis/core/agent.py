@@ -22,6 +22,7 @@ import asyncio
 import datetime as _dt
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING
 
 from jarvis.config import Config
@@ -38,7 +39,7 @@ from jarvis.core.events import (
 from jarvis.core.prompts import build_system
 from jarvis.observability import bind_trace, get_logger
 from jarvis.observability.cost import Usage, cost_of
-from jarvis.observability.ledger import CostContext, cost_context
+from jarvis.observability.ledger import cost_context
 from jarvis.permissions.gate import Decision, PermissionGate
 from jarvis.permissions.modes import Mode, auto_approves, plan_blocks
 from jarvis.tools.base import Permission
@@ -192,13 +193,17 @@ class AgentLoop:
         # the next turn, not mid-flight). None provider => global scope, no extra.
         project = self.project() if self.project is not None else None
         project_extra = project.system_extra if project is not None else None
-        # Bind the cost-ledger context for this turn (purpose + scope + trace). Nested utility
-        # calls override the purpose via cost_scope. Set fresh each turn (children copy their
-        # own context at task creation), so no reset is needed here.
+        # Bind the cost-ledger context for this turn: the loop OWNS purpose (from cost_purpose),
+        # trace_id, and — when it has a project layer — project_id. It MERGES over the current
+        # context so caller-set orchestration attribution (team / role / run / stage, set by
+        # SubAgentService before run_turn) is preserved, not wiped. A child loop has no project
+        # provider, so its run's project_id (set by the caller) rides through untouched.
+        base = cost_context.get()
         cost_context.set(
-            CostContext(
+            _dc_replace(
+                base,
                 purpose=self.cost_purpose,
-                project_id=project.project_id if project is not None else None,
+                project_id=(project.project_id if project is not None else base.project_id),
                 trace_id=trace_id,
             )
         )
