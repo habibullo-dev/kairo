@@ -19,6 +19,7 @@ const state = {
   runner: {},          // last /api/runner status
   voice: { enabled: false },
   trace: [],           // raw events (Debug/Trace)
+  notices: [],         // background job/reminder/digest notices (Phase 9)
   route: "daily",
 };
 
@@ -70,6 +71,7 @@ function handleMessage(msg) {
   if (msg.type === "approval") { onApproval(msg); return; }
   if (msg.type === "approval_nonce") { onNonce(msg); return; }
   if (msg.kind === "event") { onEvent(msg); return; }
+  if (msg.kind === "notice") { onNotice(msg.notice); return; }
   if (msg.kind === "voice") { onVoice(msg); return; }
   if (msg.kind === "voice_state") { onVoiceState(msg.state); return; }
   if (msg.kind === "turn_cancelled" || msg.kind === "turn_error") {
@@ -79,6 +81,15 @@ function handleMessage(msg) {
     refreshIfActive("daily");
     renderRunnerState();
   }
+}
+
+// Background notices (job/reminder/digest) reach the browser here — the calm, non-modal
+// surface (never an attention grab). A digest notice quietly refreshes Daily's Briefing.
+function onNotice(notice) {
+  if (!notice) return;
+  state.notices.unshift(notice);
+  if (state.notices.length > 50) state.notices.pop();
+  if (notice.kind === "digest") refreshIfActive("daily");
 }
 
 // Voice round-trip, made visible in Daily (one heard bubble + one safe caption). The reply

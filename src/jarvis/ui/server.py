@@ -134,6 +134,7 @@ def create_app(
     app.state.services = services or UiServices()
     app.state.voice = voice
     app.state.notices = None  # a NoticeBoard, set by the CLI host (run_ui); None ⇒ empty tail
+    app.state.run_digest_now = None  # async () -> DigestOutcome, set by run_ui; None ⇒ 503
     # The UI is voice's fail-closed "screen": a VoiceApprover wired to this UIScreenApprover
     # resolves risky voice actions on the authenticated, live, watching Gate surface — or
     # denies. Composed here so the CLI host (Task 9) injects it into the voice VoiceApprover.
@@ -377,6 +378,19 @@ def create_app(
         except Exception as exc:
             return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
         return JSONResponse({"ok": True, "action": result.action, "source_id": result.source_id})
+
+    @app.post("/api/digest/run")
+    async def digest_run() -> JSONResponse:
+        # "Run digest now" — deterministic collectors + one tool-less summarize, then UI/DB
+        # delivery. 503 if not composed; 409 if a turn is in flight (same busy contract as
+        # /api/turn, since the digest makes a model call).
+        run_now = getattr(app.state, "run_digest_now", None)
+        if run_now is None:
+            return _unavailable("digest")
+        if app.state.session is not None and app.state.session.busy:
+            return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
+        outcome = await run_now()
+        return JSONResponse({"ok": True, "summary": outcome.text})
 
     @app.post("/api/tasks/{task_id}/cancel")
     async def tasks_cancel(task_id: int) -> JSONResponse:

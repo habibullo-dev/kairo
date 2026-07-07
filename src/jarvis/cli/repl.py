@@ -1236,6 +1236,21 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
             digest_store = DigestStore(db, store.lock)
             app.state.digests = digest_store
             app.state.services.digests = digest_store  # Daily's Briefing reads the latest digest
+
+            async def _run_digest_now():
+                # "Run digest now" from the UI — a fresh builder, no scheduler task.
+                builder = DigestBuilder(
+                    config=config,
+                    utility=utility,
+                    store=digest_store,
+                    connectors=repl.connectors,
+                    tasks=tasks,
+                    knowledge=knowledge,
+                    notices=board,
+                )
+                return await builder.build_and_deliver()
+
+            app.state.run_digest_now = _run_digest_now
             runner = _build_runner(
                 config,
                 repl,
