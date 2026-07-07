@@ -27,6 +27,7 @@ from jarvis.ui.connections import Connection, ConnectionManager
 from jarvis.ui.gate_api import policy_snapshot, read_today_audit
 from jarvis.ui.readmodels import (
     UiServices,
+    daily_overview,
     hub_status,
     lab_overview,
     list_agent_runs,
@@ -267,7 +268,20 @@ def create_app(
 
     @app.get("/api/hub")
     async def hub() -> dict:
-        return hub_status(config)
+        connectors = app.state.services.connectors
+        return hub_status(
+            config, connectors=connectors.status() if connectors is not None else None
+        )
+
+    @app.get("/api/daily")
+    async def daily() -> JSONResponse:
+        # Read-only Daily bootstrap (Phase 9). NOT a mutating route.
+        pending = len(app.state.approvals.pending())
+        return JSONResponse(
+            await daily_overview(
+                config, app.state.services, notices=app.state.notices, gate_pending=pending
+            )
+        )
 
     @app.get("/api/lab")
     async def lab() -> dict:

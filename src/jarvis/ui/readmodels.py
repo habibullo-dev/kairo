@@ -12,14 +12,18 @@ The service-backed models take a service/store and are tested against a temp DB 
 from __future__ import annotations
 
 import dataclasses
+import datetime as _dt
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from jarvis.reporting.repo import RepoReader
 
 if TYPE_CHECKING:
     from jarvis.agents.store import AgentRun, AgentRunStore
     from jarvis.config import Config
+    from jarvis.digest.store import DigestStore
     from jarvis.knowledge.service import KnowledgeService
     from jarvis.memory.service import MemoryService
     from jarvis.memory.store import Memory
@@ -36,6 +40,9 @@ class UiServices:
     tasks: TaskService | None = None
     knowledge: KnowledgeService | None = None
     run_store: AgentRunStore | None = None
+    # Phase 9: the connector registry and the digest store back the Daily/Hub read models.
+    connectors: Any = None
+    digests: DigestStore | None = None
 
 
 # --- memory ----------------------------------------------------------------
@@ -137,10 +144,17 @@ async def list_agent_runs(run_store: AgentRunStore, *, limit: int = 50) -> list[
 # --- hub: connector status (PRESENCE BOOLEANS ONLY — never a key value) -----
 
 
-def hub_status(config: Config, *, egress: dict | None = None) -> dict:
+def _empty_connectors() -> dict:
+    return {"demo": False, "google": None, "notifiers": {}}
+
+
+def hub_status(
+    config: Config, *, egress: dict | None = None, connectors: dict | None = None
+) -> dict:
     """Connector status. Providers are reported as key-*presence* booleans — a secret value
-    must never cross the wire (asserted by the secret-absence sweep). MCP is honestly 'not
-    connected — a future phase'."""
+    must never cross the wire (asserted by the secret-absence sweep). ``connectors`` is the
+    registry's presence-only status (Phase 9: google scopes/expiry, notifier configured flags —
+    never a token). MCP is honestly 'not connected — a future phase'."""
     secrets = config.secrets
     return {
         "providers": {
@@ -156,7 +170,94 @@ def hub_status(config: Config, *, egress: dict | None = None) -> dict:
             "tts_provider": config.voice.tts_provider,
         },
         "egress": egress or {"audio_bytes": 0, "text_chars": 0},
+        "connectors": connectors or _empty_connectors(),
         "mcp": {"connected": False, "note": "not connected — future phase"},
+    }
+
+
+# --- daily: the bootstrap read model (Phase 9) ------------------------------
+
+
+async def _repo_states(config: Config) -> list[dict]:
+    out: list[dict] = []
+    for spec in config.connectors.repos:
+        root = Path(spec) if Path(spec).is_absolute() else (config.root / spec)
+        state = await RepoReader(root).state()
+        out.append({"path": spec, "state": dataclasses.asdict(state) if state else None})
+    return out
+
+
+def _eval_freshness(config: Config, repos: list[dict]) -> dict:
+    history = _read_history(config.data_dir / "evals" / "history.jsonl")
+    last = history[-1] if history else None
+    head = next((r["state"]["head_rev"] for r in repos if r["path"] == "." and r["state"]), None)
+    last_rev = last.get("git_rev") if last else None
+    return {
+        "ever_run": bool(history),
+        "last_gate_at": last.get("timestamp") if last else None,
+        "last_gate_rev": last_rev,
+        "verdict": last.get("verdict") if last else None,
+        "head_rev": head,
+        # stale = HEAD has moved past the last gated revision (freshness chip goes gray).
+        "stale": bool(head and last_rev and head != last_rev),
+        "command": "jarvis eval gate",  # a terminal ritual — shown to copy, never a run button
+    }
+
+
+async def _tasks_today(tasks: TaskService) -> list[dict]:
+    now = _dt.datetime.now().astimezone()
+    out: list[dict] = []
+    for t in await tasks.store.list(include_finished=False):
+        if not t.next_run_at:
+            continue
+        try:
+            when = _dt.datetime.fromisoformat(t.next_run_at).astimezone(now.tzinfo)
+        except ValueError:
+            continue
+        if when.date() == now.date():
+            out.append({"id": t.id, "title": t.title, "kind": t.kind, "next_run_at": t.next_run_at})
+    return out
+
+
+def _digest_dict(record) -> dict:
+    return {
+        "date_local": record.date_local,
+        "generated_at": record.generated_at,
+        "summary": record.summary,
+        "suggested_actions": record.suggested_actions,
+        "sections": record.sections,
+        "delivered_to": record.delivered_to,
+    }
+
+
+async def daily_overview(
+    config: Config,
+    services: UiServices,
+    *,
+    notices: Any = None,
+    gate_pending: int = 0,
+) -> dict:
+    """The Daily screen's bootstrap: repo state, eval freshness, today's tasks, the review
+    queue count, the latest digest, notices, and connector status — all read-only views."""
+    repos = await _repo_states(config)
+    tasks_today = await _tasks_today(services.tasks) if services.tasks is not None else []
+    kb_review = len(await services.knowledge.unreviewed_sources()) if services.knowledge else 0
+    latest = await services.digests.latest() if services.digests is not None else None
+    connectors = (
+        services.connectors.status() if services.connectors is not None else _empty_connectors()
+    )
+    total_dirty = sum(r["state"]["dirty_files"] for r in repos if r["state"])
+    return {
+        "repos": repos,
+        "evals": _eval_freshness(config, repos),
+        "tasks_today": tasks_today,
+        "pending_approvals": gate_pending,
+        "kb_review_count": kb_review,
+        "digest": _digest_dict(latest) if latest else None,
+        "notices": notices.tail(20) if notices is not None else [],
+        "connectors": connectors,
+        "demo": bool(connectors.get("demo")),
+        "what_changed": {"repos": len(repos), "dirty_files": total_dirty},
     }
 
 

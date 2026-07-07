@@ -171,10 +171,41 @@ def test_no_secret_crosses_the_wire_on_any_get(tmp_path: Path) -> None:
             "voyage_api_key": "SECRET-CANARY-VOYAGE",
             "tavily_api_key": "SECRET-CANARY-TAVILY",
             "elevenlabs_api_key": "SECRET-CANARY-ELEVEN",
+            "google_client_secret": "SECRET-CANARY-GOOGLE-SECRET",
+            "telegram_bot_token": "SECRET-CANARY-TELEGRAM",
+            "kakao_rest_api_key": "SECRET-CANARY-KAKAO",
         }
     )
     auth = AuthManager(token="SECRET-CANARY-TOKEN")
     app = create_app(cfg, auth=auth)
+
+    # Phase 9: seed a real connector token file on disk and expose it through the connector
+    # status path — Hub/Daily must report scopes/expiry, never the token itself.
+    from jarvis.connectors.base import ConnectorRegistry
+    from jarvis.connectors.google import google_provider
+    from jarvis.connectors.google.client import GoogleClient
+    from jarvis.connectors.tokens import TokenState, TokenStore, write_token_state
+
+    tokdir = cfg.data_dir / "connectors"
+    write_token_state(
+        tokdir / "google_token.json",
+        TokenState(
+            provider="google",
+            access_token="SECRET-CANARY-ACCESS",
+            refresh_token="SECRET-CANARY-REFRESH",
+            expires_at="2030-01-01T00:00:00+00:00",
+            obtained_at="2026-01-01T00:00:00+00:00",
+            scopes=["calendar.readonly"],
+        ),
+    )
+    store = TokenStore(
+        tokdir / "google_token.json",
+        provider=google_provider(),
+        client_id="cid",
+        client_secret="SECRET-CANARY-GOOGLE-SECRET",
+    )
+    app.state.services.connectors = ConnectorRegistry(google=GoogleClient(store))
+
     client = TestClient(app, base_url="http://127.0.0.1")
     sid = auth.mint_session()
     needles = [
@@ -183,6 +214,11 @@ def test_no_secret_crosses_the_wire_on_any_get(tmp_path: Path) -> None:
         "SECRET-CANARY-VOYAGE",
         "SECRET-CANARY-TAVILY",
         "SECRET-CANARY-ELEVEN",
+        "SECRET-CANARY-GOOGLE-SECRET",
+        "SECRET-CANARY-TELEGRAM",
+        "SECRET-CANARY-KAKAO",
+        "SECRET-CANARY-ACCESS",  # the token file's access token — never on the wire
+        "SECRET-CANARY-REFRESH",  # the refresh token — never on the wire
         "SECRET-CANARY-TOKEN",
         sid,
     ]

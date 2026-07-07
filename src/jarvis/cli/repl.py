@@ -1051,7 +1051,11 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
     )
     run_store = repl.agents.run_store if repl.agents is not None else None
     app.state.services = UiServices(
-        memory=repl.memory, tasks=repl.tasks, knowledge=repl.knowledge, run_store=run_store
+        memory=repl.memory,
+        tasks=repl.tasks,
+        knowledge=repl.knowledge,
+        run_store=run_store,
+        connectors=repl.connectors,  # Phase 9: Hub + Daily connector status
     )
     if config.voice.enabled:
         app.state.voice = _build_ui_voice(config, repl=repl, app=app)
@@ -1176,6 +1180,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
         if tasks is not None:  # background runner shares the turn lock (no interleaving)
             digest_store = DigestStore(db, store.lock)
             app.state.digests = digest_store
+            app.state.services.digests = digest_store  # Daily's Briefing reads the latest digest
             runner = _build_runner(
                 config,
                 repl,
