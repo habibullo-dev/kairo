@@ -272,6 +272,45 @@ def test_require_reports_missing_connector_keys(tmp_path: Path) -> None:
     assert "GOOGLE_CLIENT_ID" in msg and "KAKAO_REST_API_KEY" in msg
 
 
+def test_services_config_defaults(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.services.enabled == []  # fail-closed: nothing on until a human lists it
+    assert cfg.services.semgrep_config == "auto"
+    assert cfg.services.playwright_allow_ports == []
+
+
+def test_services_config_yaml_override(tmp_path: Path) -> None:
+    # Regression: load_config must actually read the services: block. It previously dropped it,
+    # so services.enabled stayed [] no matter the YAML — the whole 10B enablement flag was inert.
+    _write_settings(
+        tmp_path,
+        "services:\n"
+        "  enabled: [semgrep, gitleaks, playwright_local]\n"
+        "  semgrep_config: ./rules\n"
+        "  playwright_allow_ports: [5173, 3000]\n",
+    )
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.services.enabled == ["semgrep", "gitleaks", "playwright_local"]
+    assert cfg.services.semgrep_config == "./rules"
+    assert cfg.services.playwright_allow_ports == [5173, 3000]
+
+
+def test_budgets_config_yaml_override(tmp_path: Path) -> None:
+    # Regression: the budgets: block was likewise dropped by load_config.
+    _write_settings(
+        tmp_path,
+        "budgets:\n"
+        "  hard_stop_usd_per_run: 12.5\n"
+        "  confirm_above_usd: 3.0\n"
+        "  treat_unpriced_as_blocking: false\n",
+    )
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.budgets.hard_stop_usd_per_run == 12.5
+    assert cfg.budgets.confirm_above_usd == 3.0
+    assert cfg.budgets.treat_unpriced_as_blocking is False
+    assert cfg.budgets.soft_warn_usd_per_run == 1.0  # unspecified keeps default
+
+
 def test_yaml_overrides_defaults(tmp_path: Path) -> None:
     _write_settings(
         tmp_path,

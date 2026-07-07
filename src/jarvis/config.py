@@ -523,6 +523,8 @@ def load_config(
             ui=UIConfig(**data.get("ui", {})),
             connectors=ConnectorsConfig(**data.get("connectors", {})),
             paths=PathsConfig(**data.get("paths", {})),
+            budgets=BudgetsConfig(**data.get("budgets", {})),
+            services=ServicesConfig(**data.get("services", {})),
             secrets=secrets,
         )
     except ValidationError as e:
