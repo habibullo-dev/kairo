@@ -247,7 +247,16 @@ def test_providers_status_states_and_secret_sweep(tmp_path: Path) -> None:
 
     _write_pricing(tmp_path)  # deepseek+gemini priced here; qwen intentionally absent
     cfg = _cfg(tmp_path, anthropic="k", openai="")
-    cfg.secrets = cfg.secrets.model_copy(update={"deepseek_api_key": "SECRET-DS-CANARY"})
+    # Set ALL provider keys explicitly so the test is hermetic (ambient os.environ can't leak a
+    # key into config.secrets and flip a state).
+    cfg.secrets = cfg.secrets.model_copy(
+        update={
+            "deepseek_api_key": "SECRET-DS-CANARY",
+            "gemini_api_key": "",
+            "zai_api_key": "",
+            "dashscope_api_key": "",
+        }
+    )
     cfg.providers = cfg.providers.model_copy(update={"enabled": ["deepseek", "gemini"]})
     rows = {r["name"]: r for r in providers_status(cfg)}
     assert rows["anthropic"]["state"] == "available"  # core + key + priced
