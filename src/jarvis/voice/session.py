@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from jarvis.observability import get_logger
@@ -67,6 +68,7 @@ class VoiceSession:
         stt: STTProvider,
         output: VoiceOutput,
         turn_lock: asyncio.Lock | None = None,
+        on_state: Callable[[str], None] | None = None,
         log=None,
     ) -> None:
         self.loop = loop
@@ -75,14 +77,22 @@ class VoiceSession:
         # Shared with the REPL/background runner when composed (Task 8): a voice turn is
         # an interactive turn and must not interleave with a background job.
         self.turn_lock = turn_lock or asyncio.Lock()
+        # Observes turn-lifecycle state (transcribing/thinking/speaking/idle) — a read-only
+        # signal for the UI status pill. Carries ONLY the state name, never any content.
+        self.on_state = on_state
         self.log = log or get_logger("jarvis.voice")
         self.messages: list[dict] = []  # the voice conversation (accumulates across turns)
         self.state = IDLE
 
+    def _set(self, state: str) -> None:
+        self.state = state
+        if self.on_state is not None:
+            self.on_state(state)  # observable; a fixed state string, never transcript/answer
+
     async def handle_audio(self, audio: bytes) -> TurnResult | None:
         """Process one utterance's audio as one voice turn. Returns the ``TurnResult``, or
         ``None`` if the utterance was non-final or empty (no turn ran)."""
-        self.state = TRANSCRIBING
+        self._set(TRANSCRIBING)
         try:
             transcript = await self.stt.transcribe(audio)
             # Finalized-only: a partial or empty utterance never drives a turn or a tool.
@@ -95,11 +105,11 @@ class VoiceSession:
             if inspect.isawaitable(maybe):
                 await maybe
             self.messages.append({"role": "user", "content": frame_transcript(transcript.text)})
-            self.state = THINKING
+            self._set(THINKING)
             async with self.turn_lock:
                 result = await self.loop.run_turn(self.messages, on_event=self.output)
             self.messages = result.messages
-            self.state = SPEAKING
+            self._set(SPEAKING)
             await self.output.on_result(result)  # speak the safe summary
             return result
         except asyncio.CancelledError:
@@ -108,4 +118,4 @@ class VoiceSession:
             self.log.info("voice_turn_cancelled", state=self.state)
             raise
         finally:
-            self.state = IDLE
+            self._set(IDLE)

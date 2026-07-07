@@ -186,6 +186,10 @@ class VoiceConfig(BaseModel):
     retain_audio: bool = False  # default: keep the transcript (untrusted), discard raw audio
     endpoint_silence_seconds: float = 0.8  # push-to-talk: silence that ends an utterance
     long_turn_ack_seconds: float = 1.5  # speak a brief "working on it" ack past this
+    # Play the synthesized audio through the speakers. OFF by default (subtitle-only). When
+    # on, it plays ONLY the bytes the renderer synthesized from its safe caption text —
+    # never raw model output or a risky-action payload (the renderer is the sole source).
+    play_audio: bool = False
 
     @model_validator(mode="after")
     def _cloud_requires_optin(self) -> VoiceConfig:

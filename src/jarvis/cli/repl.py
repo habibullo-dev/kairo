@@ -1005,18 +1005,22 @@ def _build_ui_voice(config: Config, *, repl: Repl, app):
         VoiceApprover,
         VoiceSession,
         build_capture,
+        build_playback,
         build_stt,
         build_tts,
     )
 
+    # UiVoice first, so its read-only note_state hook can wire the state machines below.
+    voice = UiVoice(connections=app.state.connections)
     tts = build_tts(
         config.voice,
         openai_key=config.secrets.openai_api_key,
         elevenlabs_key=config.secrets.elevenlabs_api_key,
     )
     # The calm renderer, mirrored to the browser: heard transcript + the SAFE spoken caption
-    # (post-privacy). Mid-turn events stay unvoiced/unmirrored — one attention surface.
-    renderer = UiVoiceRenderer(tts, app.state.connections)
+    # (post-privacy). Optional playback plays ONLY those synthesized-from-safe bytes; mid-turn
+    # events stay unvoiced/unmirrored — one attention surface.
+    renderer = UiVoiceRenderer(tts, app.state.connections, play=build_playback(config.voice))
     stt = build_stt(config.voice, openai_key=config.secrets.openai_api_key)
     # The screen is the workstation (not the terminal): fail-closed, modal-bound.
     approver = VoiceApprover(app.state.ui_screen, on_escalate=renderer.announce_escalation)
@@ -1038,10 +1042,17 @@ def _build_ui_voice(config: Config, *, repl: Repl, app):
             voice=True,
         ),
     )
-    voice_session = VoiceSession(loop=loop, stt=stt, output=renderer, turn_lock=repl.turn_lock)
-    listener = PushToTalkListener(build_capture(config.voice), voice_session)
-    meeting = MeetingCapture(repl.knowledge, stt) if repl.knowledge is not None else None
-    return UiVoice(listener=listener, meeting=meeting, capture=build_capture(config.voice))
+    capture = build_capture(config.voice)
+    # on_state → note_state streams the read-only state pill (listening/transcribing/thinking/
+    # speaking/idle) to the browser — never any content.
+    voice_session = VoiceSession(
+        loop=loop, stt=stt, output=renderer, turn_lock=repl.turn_lock, on_state=voice.note_state
+    )
+    voice.listener = PushToTalkListener(capture, voice_session, on_state=voice.note_state)
+    voice.capture = capture
+    if repl.knowledge is not None:
+        voice.meeting = MeetingCapture(repl.knowledge, stt, on_state=voice.note_state)
+    return voice
 
 
 async def run_ui(config: Config, *, console: Console | None = None) -> None:

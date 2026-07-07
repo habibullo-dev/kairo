@@ -106,8 +106,10 @@ class OpenAISynthesizer:
         self.egress_chars += len(text)
         self.log.info("text_egress", provider="openai", chars=len(text))  # visible egress
         client = self._get_client()
+        # WAV so the bytes are playable via stdlib `wave` + sounddevice (optional playback);
+        # the text sent is exactly what the caller passed — the renderer's safe caption.
         resp = await client.audio.speech.create(  # type: ignore[attr-defined]
-            model=self._model, voice=self._voice, input=text
+            model=self._model, voice=self._voice, input=text, response_format="wav"
         )
         # openai returns binary content (resp.content); tolerate a fake that returns bytes.
         audio = getattr(resp, "content", resp)

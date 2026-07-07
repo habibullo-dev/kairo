@@ -50,3 +50,14 @@ def build_tts(
 
 def build_capture(config: VoiceConfig, *, log=None) -> CaptureSource:
     return SoundDeviceCapture(silence_seconds=config.endpoint_silence_seconds, log=log)
+
+
+def build_playback(config: VoiceConfig):
+    """Return the renderer's ``play`` hook when ``voice.play_audio`` is on, else ``None``
+    (subtitle-only — the default). The hook plays only the bytes synthesized from the safe
+    caption, so playback cannot become a second, rawer output path."""
+    if not config.play_audio:
+        return None
+    from jarvis.voice.playback import play_wav
+
+    return play_wav

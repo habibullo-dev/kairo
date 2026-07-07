@@ -23,6 +23,7 @@ from jarvis.ui.voice import UiVoiceRenderer
 from jarvis.voice import FakeSynthesizer, FakeTranscriber, VoiceApprover, VoiceSession
 
 ASK = Decision(Permission.ASK, "needs approval")
+_VOICE_STATES = {"idle", "listening", "capturing", "transcribing", "thinking", "speaking"}
 
 
 class _Conns:
@@ -126,3 +127,76 @@ async def test_ui_voice_frames_transcript_untrusted_and_mirrors_roundtrip(tmp_pa
     # 2) the browser saw the heard transcript + the safe reply caption (the round-trip)
     assert _voice(conns.sent, "heard")[0]["text"] == "what is the answer"
     assert _voice(conns.sent, "reply")[0]["text"] == "The answer is 42."
+
+
+# --- optional audio playback: only the safe caption bytes ever reach the speaker ---
+
+
+class _RecordingTTS:
+    """Records every text it was asked to synthesize + returns bytes tied to that text, so a
+    test can prove the speaker only ever gets audio derived from the safe caption."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    async def synthesize(self, text: str) -> bytes:
+        self.texts.append(text)
+        return f"AUDIO::{text}".encode()
+
+
+class _Player:
+    def __init__(self) -> None:
+        self.played: list[bytes] = []
+
+    async def __call__(self, audio: bytes) -> None:
+        self.played.append(audio)
+
+
+async def test_played_audio_derives_only_from_safe_caption() -> None:
+    tts, player = _RecordingTTS(), _Player()
+    r = UiVoiceRenderer(tts, _Conns(), play=player)
+    await r.on_result(SimpleNamespace(text="the token is sk-DEADBEEF12345678, keep it"))
+    # synthesize was called ONLY with the safe (masked) caption — never the raw result.text
+    assert tts.texts == r.spoken
+    assert all("sk-DEADBEEF12345678" not in t for t in tts.texts)
+    # the played bytes are exactly synthesize(safe) — one output path, no rawer second one
+    assert player.played == [f"AUDIO::{r.spoken[-1]}".encode()]
+    assert b"sk-DEADBEEF12345678" not in b"".join(player.played)
+
+
+async def test_played_escalation_audio_has_no_payload() -> None:
+    tts, player = _RecordingTTS(), _Player()
+    r = UiVoiceRenderer(tts, _Conns(), play=player)
+    call = ToolCall("c1", "write_file", {"path": "/etc/passwd", "content": "TOPSECRET-PAYLOAD"})
+    await r.announce_escalation(call, ASK)
+    # the only thing synthesized (and thus played) is the category-only line — never the input
+    assert tts.texts == r.spoken
+    blob = b"".join(player.played)
+    assert b"TOPSECRET-PAYLOAD" not in blob and b"/etc/passwd" not in blob
+    assert b"write a file" in blob and b"on screen" in blob
+
+
+# --- browser-visible voice state: content-free, structurally cannot carry model/tool text ---
+
+
+async def test_voice_state_broadcast_is_state_only() -> None:
+    from jarvis.ui.voice import UiVoice
+
+    conns = _Conns()
+    voice = UiVoice(connections=conns)
+    for s in ("listening", "transcribing", "thinking", "speaking", "idle"):
+        voice.note_state(s)
+    await __import__("asyncio").sleep(0)  # let the broadcast tasks run
+    msgs = [m for m in conns.sent if m.get("kind") == "voice_state"]
+    assert [m["state"] for m in msgs] == [
+        "listening",
+        "transcribing",
+        "thinking",
+        "speaking",
+        "idle",
+    ]
+    # each message carries ONLY {kind, state} — there is no field that could hold a
+    # transcript, an answer, or a tool payload
+    for m in msgs:
+        assert set(m) == {"kind", "state"}
+        assert m["state"] in _VOICE_STATES

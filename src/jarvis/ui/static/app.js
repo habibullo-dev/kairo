@@ -66,6 +66,7 @@ function handleMessage(msg) {
   if (msg.type === "approval_nonce") { onNonce(msg); return; }
   if (msg.kind === "event") { onEvent(msg); return; }
   if (msg.kind === "voice") { onVoice(msg); return; }
+  if (msg.kind === "voice_state") { onVoiceState(msg.state); return; }
   if (msg.kind === "turn_cancelled") { state.chat.push({ role: "assistant", text: "— turn cancelled —" }); refreshIfActive("daily"); }
   if (msg.kind === "turn_error") { state.chat.push({ role: "assistant", text: `— error: ${msg.error} —` }); refreshIfActive("daily"); }
 }
@@ -75,6 +76,19 @@ function handleMessage(msg) {
 function onVoice(msg) {
   state.chat.push(msg.role === "heard" ? { role: "heard", text: msg.text } : { role: "assistant", text: msg.text });
   refreshIfActive("daily");
+}
+
+// Read-only voice state pill (idle/listening/transcribing/thinking/speaking) — content-free.
+const VOICE_LABELS = {
+  listening: "🎤 Listening…", capturing: "🎤 Capturing…", transcribing: "🎤 Transcribing…",
+  thinking: "🎤 Thinking…", speaking: "🎤 Speaking…",
+};
+function onVoiceState(s) {
+  state.voice.listening = s;
+  const voiceEl = document.getElementById("st-voice");
+  if (voiceEl) voiceEl.textContent = s;
+  const mic = document.getElementById("st-mic");
+  if (mic) mic.textContent = VOICE_LABELS[s] || "🎤 Talk";
 }
 
 function onEvent(evt) {

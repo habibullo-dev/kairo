@@ -9,6 +9,7 @@ a voice turn still escalate through the unchanged ``VoiceApprover`` to the ``UIS
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from jarvis.observability import get_logger
@@ -68,8 +69,9 @@ class UiVoiceRenderer(VoiceRenderer):
 
 
 class UiVoice:
-    """Holds the voice surface for the UI: a push-to-talk ``listener`` and/or a
-    ``meeting`` capture (+ a ``capture`` source for the meeting audio). Any may be None."""
+    """Holds the voice surface for the UI: a push-to-talk ``listener`` and/or a ``meeting``
+    capture (+ a ``capture`` source). Any may be None. ``connections`` is wired so the
+    read-only voice *state* can stream to the browser status bar."""
 
     def __init__(
         self,
@@ -77,13 +79,33 @@ class UiVoice:
         listener: PushToTalkListener | None = None,
         meeting: MeetingCapture | None = None,
         capture: CaptureSource | None = None,
+        connections: ConnectionManager | None = None,
         log=None,
     ) -> None:
         self.listener = listener
         self.meeting = meeting
         self.capture = capture
+        self.connections = connections
         self.log = log or get_logger("jarvis.ui.voice")
         self.state = IDLE
+        self._pushes: set = set()
+
+    def note_state(self, state: str) -> None:
+        """Read-only voice-state hook — wired to the listener/session/meeting ``on_state``.
+        Records the latest state and streams a status pill to the browser. It carries ONLY
+        the state name (idle/listening/transcribing/thinking/speaking); it can never derive
+        from a transcript, an answer, or a tool payload (there is no such argument)."""
+        self.state = state
+        if self.connections is None:
+            return
+        try:
+            task = asyncio.create_task(
+                self.connections.broadcast({"kind": "voice_state", "state": state})
+            )
+            self._pushes.add(task)
+            task.add_done_callback(self._pushes.discard)
+        except RuntimeError:
+            pass  # no running loop (sync context) — status() poll still reflects self.state
 
     def status(self) -> dict:
         """Simple, calm status for Daily Mode: is voice available, the listening state, and
@@ -95,16 +117,13 @@ class UiVoice:
         }
 
     async def listen_once(self) -> bool:
-        """One push-to-talk activation (a single utterance → one turn). Returns whether a
-        turn ran (False on silence / no listener)."""
+        """One push-to-talk activation (a single utterance → one turn). State transitions
+        (listening → transcribing → thinking → speaking → idle) are streamed by the
+        listener's/session's ``on_state`` → :meth:`note_state`. Returns whether a turn ran."""
         if self.listener is None:
             return False
-        self.state = LISTENING
-        try:
-            result = await self.listener.listen_once()
-            return result is not None
-        finally:
-            self.state = IDLE
+        result = await self.listener.listen_once()
+        return result is not None
 
     async def capture_meeting(self, *, title: str | None = None) -> object | None:
         """Capture one consented meeting recording → an unreviewed KB source. Requires both a

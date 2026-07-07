@@ -17,7 +17,7 @@ from jarvis.voice.approver import (
     VoiceApprover,
 )
 from jarvis.voice.capture import SoundDeviceCapture, is_utterance_end, pcm16_to_wav
-from jarvis.voice.factory import build_capture, build_stt, build_tts
+from jarvis.voice.factory import build_capture, build_playback, build_stt, build_tts
 from jarvis.voice.framing import frame_transcript
 from jarvis.voice.listening import (
     CaptureSource,
@@ -62,6 +62,7 @@ __all__ = [
     "VoiceRenderer",
     "VoiceSession",
     "build_capture",
+    "build_playback",
     "build_stt",
     "build_tts",
     "frame_transcript",
