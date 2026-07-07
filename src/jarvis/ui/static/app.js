@@ -37,6 +37,11 @@ export const api = {
     });
     return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
   },
+  // Re-open the amber approval modal for the oldest pending item (Daily "Review" button).
+  reviewPending() {
+    const next = [...state.pending.values()][0];
+    if (next) { next._shown = false; showTopApproval(); }
+  },
 };
 
 // --- WebSocket: heartbeat + surface state + event stream ---
@@ -119,6 +124,7 @@ function showTopApproval() {
   document.getElementById("ap-payload").textContent = JSON.stringify(next.input, null, 2);
   document.getElementById("ap-reason").textContent = next.reason || "";
   document.getElementById("ap-waiting").textContent = "Preparing secure confirmation…";
+  document.getElementById("ap-spin").classList.add("show");
   for (const id of ["ap-approve", "ap-always"]) document.getElementById(id).disabled = true;
   document.getElementById("ap-always").style.display = next.kind === "voice" ? "none" : ""; // voice: no "always"
   overlay.dataset.decision = next.decision_id;
@@ -133,6 +139,7 @@ function onNonce(msg) {
   p.nonce = msg.nonce;
   const overlay = document.getElementById("overlay");
   if (overlay.dataset.decision === msg.decision_id) {
+    document.getElementById("ap-spin").classList.remove("show");
     document.getElementById("ap-waiting").textContent = "Confirm below to commit this action.";
     document.getElementById("ap-approve").disabled = false;
     document.getElementById("ap-always").disabled = false;
@@ -180,7 +187,7 @@ function renderRoute() {
   const container = document.getElementById("screen");
   const fn = screens[state.route];
   if (fn) { fn(container, api); }
-  else { container.innerHTML = `<h1>${cap(state.route)}</h1><div class="sub">This screen lands in Task 8.</div>`; }
+  else { container.innerHTML = `<h1>${cap(state.route)}</h1><div class="sub">Unknown screen.</div>`; }
 }
 
 function navigate() {
@@ -200,10 +207,11 @@ async function pollStatus() {
   const s = await api.get("/api/runner");
   if (s) {
     state.runner = s;
-    const pill = document.getElementById("st-runner");
-    pill.textContent = s.turn_busy ? "thinking" : (s.runner_running ? "idle" : "paused");
-    pill.className = "pill " + (s.runner_running ? "running" : "paused");
-    document.getElementById("st-turn").textContent = s.turn_busy ? "busy" : "—";
+    const busy = s.turn_busy;
+    document.getElementById("st-runner").textContent =
+      busy ? "Kairo is working" : (s.runner_running ? "Kairo is idle" : "Kairo is paused");
+    document.getElementById("runner-dot").className = "runner-dot" + (busy ? " busy" : "");
+    document.getElementById("st-turn").textContent = busy ? "working" : "ready";
     document.getElementById("st-stop").style.display = s.runner_running ? "" : "none";
     document.getElementById("st-resume").style.display = s.runner_running ? "none" : "";
   }
@@ -242,7 +250,15 @@ function init() {
   document.getElementById("st-stop").addEventListener("click", async () => { await api.post("/api/runner/pause"); pollStatus(); });
   document.getElementById("st-resume").addEventListener("click", async () => { await api.post("/api/runner/resume"); pollStatus(); });
   document.getElementById("st-mic").addEventListener("click", listenOnce);
-  document.getElementById("st-debug").addEventListener("change", (e) => document.body.classList.toggle("debug", e.target.checked));
+  // Daily/Debug segmented toggle — the clear mode split. Debug reveals telemetry only
+  // (a body class); it never changes any route or capability.
+  const setMode = (debug) => {
+    document.body.classList.toggle("debug", debug);
+    document.getElementById("mode-debug").classList.toggle("active", debug);
+    document.getElementById("mode-daily").classList.toggle("active", !debug);
+  };
+  document.getElementById("mode-daily").addEventListener("click", () => setMode(false));
+  document.getElementById("mode-debug").addEventListener("click", () => setMode(true));
   window.addEventListener("hashchange", navigate);
   connect();
   navigate();

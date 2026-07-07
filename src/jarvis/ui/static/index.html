@@ -19,28 +19,34 @@
       </svg>
       <span class="name">KAIRO</span>
     </div>
-    <a href="#daily" data-screen="daily"><span class="dot"></span> Daily</a>
-    <a href="#gate" data-screen="gate"><span class="dot"></span> Gate <span class="badge" id="gate-badge">0</span></a>
-    <a href="#vault" data-screen="vault"><span class="dot"></span> Vault</a>
-    <a href="#tasks" data-screen="tasks"><span class="dot"></span> Tasks</a>
-    <a href="#memory" data-screen="memory"><span class="dot"></span> Memory</a>
-    <a href="#meetings" data-screen="meetings"><span class="dot"></span> Meetings</a>
-    <a href="#hub" data-screen="hub"><span class="dot"></span> Hub</a>
+    <a href="#daily" data-screen="daily"><span class="dot"></span><span class="label">Daily</span></a>
+    <a href="#gate" data-screen="gate"><span class="dot"></span><span class="label">Gate</span><span class="badge" id="gate-badge">0</span></a>
+    <a href="#vault" data-screen="vault"><span class="dot"></span><span class="label">Vault</span></a>
+    <a href="#tasks" data-screen="tasks"><span class="dot"></span><span class="label">Tasks</span></a>
+    <a href="#memory" data-screen="memory"><span class="dot"></span><span class="label">Memory</span></a>
+    <a href="#meetings" data-screen="meetings"><span class="dot"></span><span class="label">Meetings</span><span class="rec-dot" id="rec-dot"></span></a>
+    <a href="#hub" data-screen="hub"><span class="dot"></span><span class="label">Hub</span></a>
     <div class="spacer"></div>
-    <a href="#trace" data-screen="trace"><span class="dot"></span> Trace</a>
-    <a href="#lab" data-screen="lab"><span class="dot"></span> Lab</a>
-    <div class="foot">LOCAL AI WORKSTATION</div>
+    <a href="#trace" data-screen="trace"><span class="dot"></span><span class="label">Trace</span></a>
+    <a href="#lab" data-screen="lab"><span class="dot"></span><span class="label">Lab</span></a>
+    <div class="foot">Local AI Workstation</div>
   </nav>
 
   <header class="status">
-    <span class="item">voice <b id="st-voice">off</b></span>
-    <button id="st-mic" style="display:none">🎤 Talk</button>
-    <span class="item">runner <span class="pill running" id="st-runner">idle</span></span>
-    <span class="item debug-only">turn <b id="st-turn">—</b></span>
+    <div class="runner">
+      <span class="runner-dot" id="runner-dot"></span>
+      <span class="label" id="st-runner">Kairo is idle</span>
+    </div>
+    <div class="ctx dbg-only-inline" id="st-ctx"><span id="st-turn">ready</span></div>
     <span class="grow"></span>
-    <span class="item"><label><input type="checkbox" id="st-debug"> debug</label></span>
-    <button class="stop" id="st-stop">Stop</button>
-    <button id="st-resume" style="display:none">Resume</button>
+    <div class="voice">voice <b id="st-voice">off</b></div>
+    <button id="st-mic" style="display:none">🎤 Talk</button>
+    <div class="mode-toggle">
+      <button id="mode-daily" class="active">Daily</button>
+      <button id="mode-debug"><span class="dbg-dot"></span>Debug</button>
+    </div>
+    <button class="stop-btn" id="st-stop">Stop</button>
+    <button class="stop-btn" id="st-resume" style="display:none">Resume</button>
   </header>
 
   <main>
@@ -51,16 +57,19 @@
   <div class="overlay" id="overlay">
     <div class="approve-card">
       <div class="head">
-        <div class="k" id="ap-kind">Approval required</div>
-        <div class="tool" id="ap-tool"></div>
+        <div class="ico">⚠</div>
+        <div>
+          <div class="k" id="ap-kind">Approval required</div>
+          <div class="tool" id="ap-tool"></div>
+        </div>
       </div>
-      <div class="body">
+      <div class="bd">
         <div class="label">Exact action · exact payload</div>
         <pre id="ap-payload"></pre>
         <div class="label">Why Kairo wants this</div>
         <div class="reason" id="ap-reason"></div>
       </div>
-      <div class="waiting" id="ap-waiting">Preparing secure confirmation…</div>
+      <div class="waiting"><span class="spin" id="ap-spin"></span><span id="ap-waiting">Preparing secure confirmation…</span></div>
       <div class="actions">
         <button class="btn-approve" id="ap-approve" disabled>Approve once</button>
         <button class="btn-always" id="ap-always" disabled>Always allow</button>

@@ -1,10 +1,11 @@
 // Trace — the live event tree from the ring buffer (an advanced screen, not a default).
-// Shows tool decisions (incl. denied), tool runs, sub-agent activity, model calls. Debug
-// reveals raw payloads; the base view is one line per event.
+// Shows tool decisions (incl. denied), tool runs, sub-agent activity. Debug reveals raw
+// payloads; the base view is one line per event.
 export function render(container, api) {
   container.innerHTML = `
-    <h1>Trace</h1><div class="sub">Every tool decision and call, including denied ones. Nothing hidden.</div>
-    <div class="card" id="trace-list"></div>`;
+    <div class="rise"><h1>Trace</h1>
+      <div class="sub">Every tool decision and call, including denied ones. Nothing hidden.</div></div>
+    <div class="card rise" id="trace-list"></div>`;
   const list = container.querySelector("#trace-list");
   const events = api.state.trace.slice(-200);
   if (!events.length) { list.innerHTML = `<div class="dim">No activity yet.</div>`; return; }
@@ -13,10 +14,10 @@ export function render(container, api) {
     const denied = e.type === "tool_decision" && e.resolution === "deny";
     div.className = "toolline" + (denied ? " deny" : "");
     div.textContent = summarize(e);
-    // raw payload only in Debug
     if (e.input || e.text) {
       const pre = document.createElement("pre");
-      pre.className = "mono debug-only";
+      pre.className = "block debug-only";
+      pre.style.marginTop = "4px";
       pre.textContent = JSON.stringify(e, null, 2);
       div.appendChild(pre);
     }
