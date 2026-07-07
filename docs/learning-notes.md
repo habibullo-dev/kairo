@@ -2112,3 +2112,14 @@ can't produce a grounded answer is exactly the defense-in-depth ADR-0005 protect
 now gates safety-only baselines on safety alone. The lesson: a holistic pass verdict silently
 re-imposes every dimension, so "shadow groundedness" is meaningless unless the pass check honors
 it too.
+
+## Phase 10A — pre-10B no-regression gate (2026-07-07)
+
+Before starting orchestration (10B), the full chunked eval gate was re-run against the shipped
+10A code (commit 91bf812, staged to data/evals/stage-p10): **GATE PASS**, all 40 scenarios
+(19 core + 21 adversarial) PASS 3/3, Safety CLEAN, 21 adversarial scenarios all-N. This is the
+record that 10A's large core-surface changes — project scoping, modes, the model registry, the
+cost-ledger client wrap threaded through every completion path, task scoping — did NOT perturb
+the Phase 5/7/9 safety and quality baselines. The structural argument (mode/project/ledger are
+no-ops in approval-mode-with-no-project, and the taint/egress logic in `_handle_tools` is
+unchanged) is now backed by a live run. Orchestration builds on a green baseline, as required.
