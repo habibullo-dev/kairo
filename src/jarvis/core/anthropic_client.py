@@ -69,8 +69,30 @@ def to_model_response(message: object, fallback_model: str) -> ModelResponse:
     )
 
 
+class CompatResponseError(RuntimeError):
+    """A compat provider (DeepSeek/Qwen/GLM via the Anthropic-Messages endpoint) returned an
+    unusable response — no content, or zero token usage. Fail loud rather than silently succeed
+    with nothing or cost $0 on real tokens (Phase 10C: unmetered spend is untracked spend)."""
+
+
+def _guard_compat_response(response: ModelResponse, model: str) -> None:
+    """Fidelity guard for anthropic_compat endpoints (never applied to native Anthropic, which
+    always reports usage). A native-shaped response has content AND usage; if either is missing,
+    the compat endpoint is misbehaving — raise rather than proceed on bad data."""
+    if not response.content_blocks or (not response.text.strip() and not response.tool_calls):
+        raise CompatResponseError(f"compat provider returned empty content for model {model!r}")
+    if response.usage.total_tokens == 0:
+        raise CompatResponseError(f"compat provider reported zero token usage for model {model!r}")
+
+
 class AnthropicClient:
-    """Live :class:`LLMClient`. Inject ``client`` in tests; otherwise built from a key."""
+    """Live :class:`LLMClient`. Inject ``client`` in tests; otherwise built from a key.
+
+    Also serves the Phase 10C ``anthropic_compat`` providers (DeepSeek/Qwen/GLM) via ``base_url``
+    + ``compat=True``: the Anthropic-Messages wire format is reused, but the capability
+    degradation profile sends ONLY the conservative core — no ``output_config``/effort, no
+    ``thinking`` (compat endpoints reject or ignore them). ``auth_style`` selects the auth header:
+    ``bearer`` (Z.ai → ``auth_token`` → Authorization: Bearer) vs ``x-api-key`` (the default)."""
 
     def __init__(
         self,
@@ -80,14 +102,23 @@ class AnthropicClient:
         effort: str = "high",
         max_retries: int = 4,
         thinking: bool = True,
+        base_url: str | None = None,
+        compat: bool = False,
+        auth_style: str = "x-api-key",
     ) -> None:
         if client is None:
             from anthropic import AsyncAnthropic
 
-            client = AsyncAnthropic(api_key=api_key, max_retries=max_retries)
+            kwargs: dict = {"max_retries": max_retries}
+            if base_url:
+                kwargs["base_url"] = base_url
+            # Auth header varies by compat provider; native Anthropic uses api_key (x-api-key).
+            kwargs["auth_token" if auth_style == "bearer" else "api_key"] = api_key
+            client = AsyncAnthropic(**kwargs)
         self._client = client
         self.effort = effort
         self.thinking = thinking
+        self.compat = compat
 
     @classmethod
     def from_config(cls, config: Config) -> AnthropicClient:
@@ -113,15 +144,18 @@ class AnthropicClient:
             "max_tokens": max_tokens,
             "system": system,
             "messages": messages,
-            "output_config": {"effort": self.effort},
         }
+        if not self.compat:
+            # effort/output_config is Anthropic-native; compat endpoints reject/ignore it.
+            kwargs["output_config"] = {"effort": self.effort}
         if tools:
             kwargs["tools"] = tools
         if tool_choice is not None:
             # Forcing a tool is incompatible with extended thinking; callers that
             # force a tool use a thinking-off client (utility). Belt and suspenders:
             kwargs["tool_choice"] = tool_choice
-        if self.thinking and tool_choice is None:
+        if self.thinking and tool_choice is None and not self.compat:
+            # Adaptive thinking is Anthropic-native — never sent to a compat endpoint.
             kwargs["thinking"] = {"type": "adaptive"}
         if temperature is not None:
             # Explicit temperature (the judge sets 1.0); default None leaves the
@@ -153,4 +187,6 @@ class AnthropicClient:
             message = await stream.get_final_message()
         response = to_model_response(message, fallback_model=model)
         response.latency_ms = (perf_counter() - start) * 1000.0
+        if self.compat:
+            _guard_compat_response(response, model)  # fail loud on empty content / zero usage
         return response

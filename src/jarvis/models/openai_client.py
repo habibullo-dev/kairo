@@ -56,11 +56,20 @@ def _usage_from_openai(usage: object) -> Usage:
 class OpenAIChatClient:
     """Text-only :class:`LLMClient` over OpenAI chat completions. Inject ``client`` in tests."""
 
-    def __init__(self, *, api_key: str | None = None, client: object | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        client: object | None = None,
+        base_url: str | None = None,
+    ) -> None:
         if client is None:
             from openai import AsyncOpenAI
 
-            client = AsyncOpenAI(api_key=api_key)
+            kwargs: dict = {"api_key": api_key}
+            if base_url:  # Gemini's OpenAI-compatible endpoint (Phase 10C); None ⇒ OpenAI default
+                kwargs["base_url"] = base_url
+            client = AsyncOpenAI(**kwargs)
         self._client = client
 
     async def create(

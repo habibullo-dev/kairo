@@ -1,24 +1,34 @@
-"""ClientFactory (Phase 10 Task 6): a :class:`ModelRoute` → a cached ``LLMClient``.
+"""ClientFactory (Phase 10 Task 6; Phase 10C providers): a :class:`ModelRoute` → a cached
+``LLMClient``.
 
 Fails CLOSED: resolving a route whose provider key is unset raises ``ConfigError`` naming the
-env var — never a silent downgrade to a different provider/model. Anthropic clients are cached
-by ``(effort, thinking)`` (the model is a per-call arg, and a text-only route ⇒ thinking off,
-matching the utility-client precedent); the single OpenAI client is cached once. This is the
-one place the Phase 10 cost ledger wrap (Task 7) is applied, so every provider is tapped
-uniformly — until then it returns the bare clients.
+env var — never a silent downgrade to a different provider/model. The client adapter is chosen
+by the provider's ``api_style`` (the catalog is the source of truth):
+
+* ``anthropic`` — the native streaming client (effort + adaptive thinking).
+* ``anthropic_compat`` (DeepSeek/Qwen/GLM) — the SAME client + ``base_url`` + the capability
+  degradation profile (``compat=True``: no effort/thinking) + the provider's ``auth_style``.
+* ``openai_compat`` (OpenAI, Gemini) — the text-only OpenAI chat client + ``base_url``.
+
+Clients are cached: Anthropic-style by ``(provider, effort, thinking, compat)`` (the model is a
+per-call arg; a text-only route ⇒ thinking off), OpenAI-style by ``(provider,)``. This is the one
+place the cost-ledger wrap is applied, so every provider is tapped uniformly.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from jarvis.config import _REQUIRED_KEYS, ConfigError
 from jarvis.core.anthropic_client import AnthropicClient
 from jarvis.models.openai_client import OpenAIChatClient
+from jarvis.models.providers import provider_spec
 from jarvis.models.roles import ModelRoute
 
 if TYPE_CHECKING:
     from jarvis.config import Config
     from jarvis.core.client import LLMClient
+    from jarvis.models.providers import ProviderSpec
 
 
 class ClientFactory:
@@ -29,30 +39,45 @@ class ClientFactory:
         self._cache: dict[tuple, LLMClient] = {}
 
     def for_route(self, route: ModelRoute) -> LLMClient:
-        """The client for ``route`` (cached). Raises ``ConfigError`` if the provider's key is
-        unset (fail-closed — the caller must not fall back to another provider)."""
-        if route.provider == "anthropic":
-            self.config.require("anthropic")
-            thinking = not route.text_only  # text-only analysis roles run thinking-off
-            key = ("anthropic", route.effort, thinking)
-            if key not in self._cache:
-                self._cache[key] = self._build_anthropic(route.effort, thinking)
-            return self._cache[key]
-        if route.provider == "openai":
-            self.config.require("openai")
-            key = ("openai",)
-            if key not in self._cache:
-                self._cache[key] = OpenAIChatClient(api_key=self.config.secrets.openai_api_key)
-            return self._cache[key]
-        # Unreachable if the route was validated, but fail closed regardless.
-        from jarvis.config import ConfigError
+        """The client for ``route`` (cached). Raises ``ConfigError`` if the provider is unknown
+        or its key is unset (fail-closed — the caller must not fall back to another provider)."""
+        spec = provider_spec(route.provider)
+        if spec is None:
+            raise ConfigError(f"unknown model provider: {route.provider!r}")
+        self.config.require(spec.key_service)  # fail-closed; names the exact env var
+        key = self._key_value(spec)
+        base_url = self._base_url(spec)
 
-        raise ConfigError(f"unknown model provider: {route.provider!r}")
+        if spec.api_style in ("anthropic", "anthropic_compat"):
+            compat = spec.api_style == "anthropic_compat"
+            thinking = not route.text_only and not compat  # compat ⇒ no thinking (degradation)
+            cache_key = (route.provider, route.effort, thinking, compat)
+            if cache_key not in self._cache:
+                self._cache[cache_key] = AnthropicClient(
+                    api_key=key,
+                    effort=route.effort,
+                    max_retries=self.config.limits.max_retries,
+                    thinking=thinking,
+                    base_url=base_url,
+                    compat=compat,
+                    auth_style=spec.auth_style,
+                )
+            return self._cache[cache_key]
 
-    def _build_anthropic(self, effort: str, thinking: bool) -> LLMClient:
-        return AnthropicClient(
-            api_key=self.config.secrets.anthropic_api_key,
-            effort=effort,
-            max_retries=self.config.limits.max_retries,
-            thinking=thinking,
-        )
+        # openai_compat — text-only (OpenAI + Gemini)
+        cache_key = (route.provider,)
+        if cache_key not in self._cache:
+            self._cache[cache_key] = OpenAIChatClient(api_key=key, base_url=base_url)
+        return self._cache[cache_key]
+
+    def _key_value(self, spec: ProviderSpec) -> str:
+        """The provider's key value from Secrets (looked up via the same map require() uses —
+        one source of truth for the (attr, env var) pair)."""
+        attr = _REQUIRED_KEYS[spec.key_service][0]
+        return getattr(self.config.secrets, attr)
+
+    def _base_url(self, spec: ProviderSpec) -> str | None:
+        """Config override (``providers.base_urls``) beats the catalog default; None ⇒ SDK
+        default (native Anthropic / OpenAI)."""
+        override = (self.config.providers.base_urls or {}).get(spec.name)
+        return override or spec.default_base_url
