@@ -33,6 +33,7 @@ from jarvis.knowledge.service import KnowledgeService
 from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder, reflect
 from jarvis.observability import cost_of, get_logger
+from jarvis.observability.budget import BudgetService
 from jarvis.observability.cost import Usage, load_pricing
 from jarvis.observability.ledger import CostLedger, LedgeredClient
 from jarvis.permissions import (
@@ -348,6 +349,12 @@ class Repl:
         # Voice stays pinned to Approval (its loop gets mode=None). Background runs never see
         # a mode (they keep the UnattendedGate), so Auto can't leak into unattended jobs.
         self.modes = ModeState(Mode(config.modes.default))
+
+        # Budgets (Phase 10): cost rollups + limit checks over the ledger. Needs the ledger's
+        # table (same db); None in bare/test Repls without a store.
+        self.budgets: BudgetService | None = None
+        if store is not None:
+            self.budgets = BudgetService(store.db, store.lock, config.budgets)
 
         self.registry = ToolRegistry()
         self.registry.discover(
@@ -1285,6 +1292,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
         sessions=repl.store,  # Phase 10: chats list / search / pin / resume
         projects=repl.projects,  # Phase 10: Projects screen read model
         ledger=repl.cost_ledger,  # Phase 10: Costs + A5 ledger-degraded status
+        budgets=repl.budgets,  # Phase 10: Costs screen rollups + limits
     )
     if config.voice.enabled:
         app.state.voice = _build_ui_voice(config, repl=repl, app=app)

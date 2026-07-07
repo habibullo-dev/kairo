@@ -75,6 +75,20 @@ modes:
   # be added (enforced in code). Empty = Auto adds no standing authority.
   auto_allow_tools: []
 
+budgets:
+  # Cost budgets + ROI inputs (Phase 10). 0 / null means "no limit". Per-run limits gate an
+  # orchestration run's accumulated spend; project_monthly caps month-to-date per project;
+  # confirm_above triggers a two-step confirm before an expensive run. Unpriced role models
+  # block orchestration by default (fail-closed). Project overrides in the project's settings.
+  soft_warn_usd_per_run: 1.0
+  hard_stop_usd_per_run: 5.0
+  project_monthly_usd:            # blank = no monthly cap
+  per_role_max_usd:               # blank = no per-role cap
+  confirm_above_usd: 2.0
+  max_rounds: 3                   # orchestration revise-loop cap
+  hourly_rate_usd: 100.0          # ROI: the human-time value a workflow saves
+  treat_unpriced_as_blocking: true
+
 voice:
   # Voice interface (Phase 7). Push-to-talk MVP; wake-word activation is deferred. Voice
   # is read-only by default and NEVER approves risky actions by voice — those escalate to

@@ -359,6 +359,22 @@ class ModesConfig(BaseModel):
     auto_allow_tools: list[str] = Field(default_factory=list)
 
 
+class BudgetsConfig(BaseModel):
+    """Cost budgets + ROI inputs (Phase 10). 0 / None means "no limit". Per-run limits gate
+    an orchestration run's accumulated spend; project_monthly caps month-to-date per project;
+    confirm_above triggers a two-step confirm before an expensive run. Project overrides live
+    in projects.settings_json['budgets']."""
+
+    soft_warn_usd_per_run: float = 1.0
+    hard_stop_usd_per_run: float = 5.0
+    project_monthly_usd: float | None = None
+    per_role_max_usd: float | None = None
+    confirm_above_usd: float = 2.0
+    max_rounds: int = 3  # orchestration revise-loop cap (10B)
+    hourly_rate_usd: float = 100.0  # ROI: the human-time value a workflow saves
+    treat_unpriced_as_blocking: bool = True  # refuse orchestration on unpriced role models
+
+
 class Config(BaseModel):
     """Fully assembled configuration passed through the app."""
 
@@ -374,6 +390,7 @@ class Config(BaseModel):
     ui: UIConfig = Field(default_factory=UIConfig)
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)  # Phase 9
     modes: ModesConfig = Field(default_factory=ModesConfig)  # Phase 10
+    budgets: BudgetsConfig = Field(default_factory=BudgetsConfig)  # Phase 10
     paths: PathsConfig
     secrets: Secrets
 

@@ -253,3 +253,8 @@ body.debug .debug-banner { display: flex; }
 .pj-new { display: flex; gap: 8px; }
 .pj-new input { flex: 1; }
 .pj-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+
+/* Costs (Phase 10) */
+.cost-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.cost-card { flex: 1; min-width: 140px; border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.cost-big { font-size: 22px; font-weight: 600; margin: 4px 0; }

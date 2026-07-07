@@ -137,6 +137,7 @@ def test_all_nav_screens_have_a_module() -> None:
         "memory",
         "meetings",
         "hub",
+        "costs",
         "trace",
         "lab",
     ):

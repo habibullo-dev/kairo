@@ -52,6 +52,7 @@ class UiServices:
     sessions: SessionStore | None = None
     projects: ProjectService | None = None
     ledger: Any = None  # a CostLedger; None when cost tracking isn't composed
+    budgets: Any = None  # a BudgetService; None when cost tracking isn't composed
 
 
 # --- memory ----------------------------------------------------------------
@@ -115,6 +116,28 @@ async def projects_view(service: ProjectService) -> dict:
         "projects": [serialize_project(p) for p in rows],
         "active_project_id": service.current().project_id,
     }
+
+
+# --- costs -----------------------------------------------------------------
+
+
+async def costs_overview(budgets: Any, *, project_id: int | None = None) -> dict:
+    """The Costs screen: today/week/month spend + limits + the 'why this cost' breakdown
+    (by purpose, role, model). Unpriced calls are surfaced separately, never summed as $0."""
+    status = await budgets.status(project_id=project_id)
+    month_start = _period_start_iso("month")
+    return {
+        **status,
+        "by_purpose": await budgets.grouped("purpose", project_id=project_id, since=month_start),
+        "by_role": await budgets.grouped("agent_role", project_id=project_id, since=month_start),
+        "by_model": await budgets.grouped("model", project_id=project_id, since=month_start),
+    }
+
+
+def _period_start_iso(period: str) -> str:
+    from jarvis.observability.budget import _local_now, _period_start
+
+    return _period_start(_local_now(), period).astimezone(_dt.UTC).isoformat()
 
 
 # --- sessions (chats) ------------------------------------------------------

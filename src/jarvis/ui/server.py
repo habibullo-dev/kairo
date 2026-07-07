@@ -29,6 +29,7 @@ from jarvis.ui.connections import Connection, ConnectionManager
 from jarvis.ui.gate_api import policy_snapshot, read_today_audit
 from jarvis.ui.readmodels import (
     UiServices,
+    costs_overview,
     daily_overview,
     hub_status,
     lab_overview,
@@ -252,6 +253,29 @@ def create_app(
         status["mode"] = modes.current().value if modes is not None else "approval"
         return status
 
+    @app.post("/api/budgets")
+    async def set_budgets(request: Request) -> JSONResponse:
+        # Tighten/loosen the live budget limits for this session (durable changes go in
+        # settings.yaml / a project's settings). Only known numeric limit fields are accepted.
+        budgets = app.state.services.budgets
+        if budgets is None:
+            return _unavailable("costs")
+        body = await request.json()
+        allowed = {
+            "soft_warn_usd_per_run",
+            "hard_stop_usd_per_run",
+            "project_monthly_usd",
+            "per_role_max_usd",
+            "confirm_above_usd",
+            "hourly_rate_usd",
+        }
+        updates = {k: v for k, v in body.items() if k in allowed}
+        try:
+            budgets.config = budgets.config.model_copy(update=updates)
+        except Exception as exc:  # noqa: BLE001 - a bad value is a 400, not a 500
+            return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True, "limits": (await budgets.status())["limits"]})
+
     @app.post("/api/mode")
     async def set_mode(request: Request) -> JSONResponse:
         # Set the interactive run mode (plan|approval|auto). Backend-enforced in the loop;
@@ -393,6 +417,13 @@ def create_app(
         if svc is None:
             return _unavailable("projects")
         return JSONResponse(await projects_view(svc))
+
+    @app.get("/api/costs")
+    async def costs(project_id: int | None = None) -> JSONResponse:
+        budgets = app.state.services.budgets
+        if budgets is None:
+            return _unavailable("costs")
+        return JSONResponse(await costs_overview(budgets, project_id=project_id))
 
     # --- mutations: the enumerated human-authority set (D5, route-closed-set pin) ------
 

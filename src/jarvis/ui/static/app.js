@@ -10,6 +10,7 @@ import { render as renderVault } from "./screens/vault.js";
 import { render as renderTasks } from "./screens/tasks.js";
 import { render as renderMemory } from "./screens/memory.js";
 import { render as renderHub } from "./screens/hub.js";
+import { render as renderCosts } from "./screens/costs.js";
 import { render as renderLab } from "./screens/lab.js";
 import { render as renderMeetings } from "./screens/meetings.js";
 import { render as renderTrace } from "./screens/trace.js";
@@ -201,8 +202,8 @@ function updateGateBadge() {
 // --- router ---
 const screens = {
   daily: renderDaily, projects: renderProjects, gate: renderGate, vault: renderVault,
-  tasks: renderTasks, memory: renderMemory, hub: renderHub, lab: renderLab,
-  meetings: renderMeetings, trace: renderTrace,
+  tasks: renderTasks, memory: renderMemory, hub: renderHub, costs: renderCosts,
+  lab: renderLab, meetings: renderMeetings, trace: renderTrace,
 };
 
 function refreshIfActive(name) { if (state.route === name) renderRoute(); }
