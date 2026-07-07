@@ -78,7 +78,7 @@ Three structural rules built on those properties:
 - **Native httpx REST adapters**, not google-api-python-client, not MCP: narrow (only the calls we need exist), audited (every call is our code), MockTransport-testable, zero new runtime deps. Hub keeps its honest `mcp: not connected` stub; ADR-0009 records why.
 - **OAuth (shared `oauth.py`, used by Google and Kakao)**: authorization-code + **PKCE S256** + random `state` (mismatch rejected), loopback redirect server bound to `127.0.0.1` only, single-use short-lived listener, exact redirect-URI match. Google (Desktop-app client): ephemeral port 0, `access_type=offline&prompt=consent`. Kakao: **fixed registered port** (`connectors.kakao.redirect_port`, registered in the Kakao developer console — Kakao requires pre-registered redirect URIs), scope `talk_message`; Kakao refresh tokens expire (~2 months) so `ConnectorAuthError` → "reconnect: `jarvis connect kakao`" must be a routine, friendly path.
 - **`TokenStore`** (one class, one file per provider under `data/connectors/`): atomic write via temp + `os.replace` (atomic on Windows and macOS), 0600 best-effort (real on POSIX), **single-flight refresh** under an `asyncio.Lock` with 120s expiry skew, `invalid_grant`/any refresh failure → typed `ConnectorAuthError` whose `.user_message` is the **friendly reconnect string only** (A6: `"Google needs reconnect: run jarvis connect google"` / `"Kakao needs reconnect: run jarvis connect kakao"`) — the provider's raw error body is logged at debug at most, never carried in the exception surfaced to tools/UI/API. Tools return the friendly message as their `is_error` text; Hub shows `needs_reconnect: true`. The saved file never contains `client_secret` (pinned).
-- **Scopes (final, pinned)**: `calendar.readonly`, `gmail.readonly`, `drive.readonly`, `gmail.compose`. **`gmail.send` is never requested and no send method exists anywhere in `src/`** — "prepare reply" creates a draft the user sends from Gmail themself.
+- **Scopes (final, pinned)**: `calendar.readonly`, `gmail.readonly`, `drive.readonly`, `gmail.compose`. **`gmail.send` is never requested and no send method exists anywhere in `src/`** — "prepare reply" creates a draft the user sends from Gmail themself. **Scopes are exactly the set the current code implements — never over-scoped for future capability** (2026-07-07 clarification): each maps 1:1 to a shipped tool (calendar.readonly→`calendar_list_events`, gmail.readonly→`gmail_search`/`gmail_read`, gmail.compose→`gmail_create_draft` [drafts.create only], drive.readonly→`drive_search`/`drive_fetch`). Reconnecting Google later to add write scopes is acceptable and expected (Phase 9B). A grep/test pin asserts no Gmail send endpoint (`messages/send`, `drafts/send`, `gmail.send`) exists anywhere in `src/`.
 - **CLI ritual** (`jarvis connect google|kakao|telegram --test|status`, early-dispatch in `__main__.py` like `eval`): the deliberate terminal act of granting Kairo access to mail — consistent with the ADR-0005 ritual philosophy. Never prints token values; prints granted scopes.
 - **Adapters return frozen dataclasses with hard caps** (gmail body 20k chars decoded `errors="replace"`, drive text export 200k bytes, result counts le=50); **adapters never accept a URL parameter** (endpoints are module constants — that invariant, not `safe_get`, is the SSRF story here, documented in the module docstring). One 401 → force-refresh → retry once; second 401 → auth error, no loop; 403/429 → typed errors.
 
@@ -99,6 +99,20 @@ Three structural rules built on those properties:
 - The `gmail_create_draft` ASK renders to/subject/body in the approval payload — the human approves the *content* (Gate modal already renders params).
 - `SPAWNABLE` unchanged — sub-agents get no connector tools (pinned). One new system-prompt paragraph when connectors are enabled (mail/calendar content is untrusted data).
 - Silent-read posture recorded in ADR-0009 with its three compensating controls: framing, audit trail (every read logs `tool_call` under the turn's trace_id), and D1 taint.
+
+### Phase 9B / Action Connectors (deferred — NOT built this phase; 2026-07-07)
+
+Phase 9 is read-first. Write actions are wanted eventually but land only when separately
+planned, gated, and tested — never smuggled into a read-first connector task:
+- `calendar_create_event` / `calendar_update_event` / `calendar_cancel_event`, with Google
+  Meet links via `conferenceData.createRequest`.
+- Drive/Docs create/update using the narrow **`drive.file`** scope first (files the app
+  created/opened) — **not** full `drive` scope unless a separate "elevated mode" is planned.
+- Every write is **ASK, never unattended**, with on-screen approval showing a **full
+  preview/diff** of the event/file before it commits (the gmail-draft approval is the model).
+- Adding these means a Google reconnect for the new scopes (that's fine); today's OAuth stays
+  minimal. When built, the same taint/egress/audit rules (D1) and the drafts-only discipline's
+  spirit (explicit, previewed, reversible) apply.
 
 ### D4 — Daily Digest: deterministic collectors + ONE tool-less model call
 

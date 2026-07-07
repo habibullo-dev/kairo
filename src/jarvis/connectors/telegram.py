@@ -1,0 +1,51 @@
+"""Telegram connector (Phase 9): send-only message delivery.
+
+Kairo never reads Telegram — this is a one-way notification sink. Messages go out as PLAIN
+text with no ``parse_mode`` and link previews disabled: notification content can include
+untrusted email/calendar text, and it must never be interpreted as Telegram markup or
+auto-linkified into a clickable exfil URL.
+
+This module owns the low-level send used both by ``jarvis connect telegram --test`` and by the
+``TelegramNotifier`` class that wraps it in Task 5.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+from jarvis.connectors.base import ConnectorError
+from jarvis.observability import log_egress
+
+_TELEGRAM_API = "https://api.telegram.org"
+_MAX_MESSAGE_CHARS = 4096  # Telegram's hard limit
+
+
+async def send_telegram_message(
+    *, bot_token: str, chat_id: str, text: str, http: Any = None
+) -> None:
+    """Send one plain-text message to ``chat_id``. Raises :class:`ConnectorError` (friendly
+    message only) on failure. Logs an egress event with channel type only — never the token,
+    the chat id, or the body."""
+    log_egress(category="notify_telegram", destination_type="telegram")
+    url = f"{_TELEGRAM_API}/bot{bot_token}/sendMessage"
+    data = {
+        "chat_id": chat_id,
+        "text": text[:_MAX_MESSAGE_CHARS],
+        "disable_web_page_preview": True,
+        # No parse_mode: untrusted content is never interpreted as markup.
+    }
+    if http is not None:
+        resp = await http.post(url, data=data)
+    else:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, data=data)
+    if resp.status_code != 200:
+        raise ConnectorError(
+            "telegram",
+            user_message=(
+                "Telegram send failed — check TELEGRAM_BOT_TOKEN in .env and "
+                "connectors.telegram.chat_id in settings."
+            ),
+        )

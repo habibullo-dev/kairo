@@ -40,6 +40,13 @@ def main() -> None:
             sys.exit(2)
         sys.exit(eval_cli(argv[1:]))
 
+    # `jarvis connect <provider>` is the terminal ritual for granting account access (OAuth /
+    # notifier config). A thin delegate imported on demand so --version/--help stay instant.
+    if argv and argv[0] == "connect":
+        from jarvis.cli.connect import connect_cli
+
+        sys.exit(connect_cli(argv[1:]))
+
     parser = argparse.ArgumentParser(prog="jarvis", description="A from-scratch agentic assistant.")
     parser.add_argument("--version", action="version", version=f"jarvis {__version__}")
     parser.add_argument(

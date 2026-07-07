@@ -11,21 +11,27 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 
-class ConnectorAuthError(RuntimeError):
-    """A connector's credentials are missing or expired and must be re-granted.
+class ConnectorError(RuntimeError):
+    """A connector operation failed. ``user_message`` is the ONLY text that may surface to
+    tools / UI / API — the provider's raw error body is deliberately never carried here (it
+    can echo tokens, addresses, or bodies). Log the raw detail at the call site if useful."""
 
-    ``user_message`` is the ONLY text that may surface to tools / UI / API — a friendly
-    "run jarvis connect <provider>" (amendment A6). The provider's raw error body is
-    deliberately NOT carried here: log it at debug at the call site if useful for
-    diagnosis, but never propagate it into a response (it can echo tokens or addresses).
-    """
+    def __init__(self, provider: str, *, user_message: str) -> None:
+        self.provider = provider
+        self.user_message = user_message
+        super().__init__(user_message)
+
+
+class ConnectorAuthError(ConnectorError):
+    """Credentials are missing or expired and must be re-granted — the friendly default is
+    "run jarvis connect <provider>" (amendment A6)."""
 
     def __init__(self, provider: str, *, user_message: str | None = None) -> None:
-        self.provider = provider
-        self.user_message = user_message or (
-            f"{provider.capitalize()} needs reconnect: run jarvis connect {provider}"
+        super().__init__(
+            provider,
+            user_message=user_message
+            or f"{provider.capitalize()} needs reconnect: run jarvis connect {provider}",
         )
-        super().__init__(self.user_message)
 
 
 @runtime_checkable
