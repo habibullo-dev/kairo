@@ -282,6 +282,89 @@ async def _migrate_v5(db: aiosqlite.Connection) -> None:
         raise RuntimeError(f"schema v5 migration left foreign-key violations: {violations}")
 
 
+# Phase 9: the Daily Digest. Two changes, and the first is again why this is imperative:
+# tasks.kind's CHECK must grow 'digest', and SQLite cannot ALTER a CHECK — the table is
+# rebuilt with the same FK-off procedure as v5 (task_runs references tasks textually, so
+# drop+rename preserves its foreign key). The digests table stores only minimized content
+# (snippets/counts/status) — never raw email bodies or provider error bodies (amendment A4).
+_TASKS_V6 = """
+CREATE TABLE tasks_new (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind                 TEXT NOT NULL CHECK (kind IN ('reminder','job','digest')),
+    title                TEXT NOT NULL,
+    payload              TEXT NOT NULL,
+    schedule_kind        TEXT NOT NULL CHECK (schedule_kind IN ('once','cron','interval')),
+    schedule_spec        TEXT NOT NULL,
+    timezone             TEXT NOT NULL,
+    next_run_at          TEXT,
+    status               TEXT NOT NULL DEFAULT 'active'
+                         CHECK (status IN ('active','done','cancelled','failed','missed')),
+    created_by           TEXT NOT NULL CHECK (created_by IN ('user','agent')),
+    source_session_id    INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_run_at          TEXT,
+    last_error           TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    CHECK (status = 'active' OR next_run_at IS NULL)
+);
+"""
+
+_DIGESTS_V6: tuple[str, ...] = (
+    """
+    CREATE TABLE digests (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id                INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+        date_local             TEXT NOT NULL,     -- the local calendar date covered
+        generated_at           TEXT NOT NULL,     -- UTC ISO
+        sections_json          TEXT NOT NULL,     -- minimized: snippets/counts/headers/status only
+        summary                TEXT NOT NULL,
+        suggested_actions_json TEXT NOT NULL,     -- JSON array of plain-text strings
+        delivered_to           TEXT NOT NULL,     -- JSON array: ui/telegram/kakao/demo
+        cost_usd               REAL,
+        created_at             TEXT NOT NULL
+    );
+    """,
+    "CREATE INDEX idx_digests_id ON digests(id)",
+)
+
+
+async def _migrate_v6(db: aiosqlite.Connection) -> None:
+    """Widen tasks.kind's CHECK to allow 'digest' (full table rebuild) and add the digests
+    table. Same FK-off/rebuild/verify procedure as :func:`_migrate_v5`."""
+    await db.execute("PRAGMA foreign_keys = OFF")
+    await db.commit()
+
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        await db.execute(_TASKS_V6)
+        await db.execute(
+            "INSERT INTO tasks_new "
+            "(id, kind, title, payload, schedule_kind, schedule_spec, timezone, next_run_at, "
+            "status, created_by, source_session_id, consecutive_failures, last_run_at, "
+            "last_error, created_at, updated_at) "
+            "SELECT id, kind, title, payload, schedule_kind, schedule_spec, timezone, next_run_at, "
+            "status, created_by, source_session_id, consecutive_failures, last_run_at, "
+            "last_error, created_at, updated_at FROM tasks"
+        )
+        await db.execute("DROP TABLE tasks")
+        await db.execute("ALTER TABLE tasks_new RENAME TO tasks")
+        await db.execute("CREATE INDEX idx_tasks_due ON tasks(next_run_at) WHERE status = 'active'")
+        for statement in _DIGESTS_V6:
+            await db.execute(statement)
+    except BaseException:
+        await db.rollback()
+        await db.execute("PRAGMA foreign_keys = ON")
+        raise
+    await db.commit()
+
+    cursor = await db.execute("PRAGMA foreign_key_check")
+    violations = await cursor.fetchall()
+    await db.execute("PRAGMA foreign_keys = ON")
+    if violations:
+        raise RuntimeError(f"schema v6 migration left foreign-key violations: {violations}")
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -293,6 +376,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (3, _SCHEMA_V3),
     (4, _SCHEMA_V4),
     (5, _migrate_v5),
+    (6, _migrate_v6),
 ]
 
 

@@ -27,6 +27,7 @@ from jarvis.core.client import LLMClient, ToolCall
 from jarvis.core.context import ContextManager
 from jarvis.core.events import SubAgentCompleted
 from jarvis.core.prompts import build_system
+from jarvis.digest import DigestBuilder, DigestStore, ensure_digest_task
 from jarvis.knowledge.service import KnowledgeService
 from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder, reflect
@@ -43,9 +44,9 @@ from jarvis.permissions import (
 from jarvis.permissions.gate import Decision
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
-from jarvis.scheduler.runner import BackgroundRunner
+from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
 from jarvis.scheduler.service import TaskService
-from jarvis.scheduler.store import TaskStore
+from jarvis.scheduler.store import Task, TaskStore
 from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
 from jarvis.voice import (
     PushToTalkListener,
@@ -791,7 +792,19 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
                 console.print(f"[yellow]{note}[/]", markup=False)
 
         if tasks is not None:
-            runner = _build_runner(config, repl, store, tasks, memory, knowledge, utility, console)
+            digest_store = DigestStore(db, store.lock)
+            runner = _build_runner(
+                config,
+                repl,
+                store,
+                tasks,
+                memory,
+                knowledge,
+                utility,
+                console,
+                digest_store=digest_store,
+            )
+            await ensure_digest_task(tasks, config)
             await _scheduler_startup(tasks, runner, console)
             runner.start()
 
@@ -828,12 +841,14 @@ def _build_runner(
     utility: AnthropicClient,
     console: Console,
     board: object | None = None,
+    digest_store: object | None = None,
 ) -> BackgroundRunner:
     """Wire the BackgroundRunner: it fires due tasks, and delegates job execution to
     a JobRunner built from the REPL's already-composed collaborators (same registry,
     executor, gate, client). Both share the REPL's turn lock, so a background run and
     an interactive turn never overlap. ``board`` (a NoticeBoard, UI only) fans notify lines
-    out to the browser as well as the console (Phase 9 Task 5)."""
+    out to the browser as well as the console (Phase 9 Task 5). ``digest_store`` enables the
+    Daily Digest fire path (Phase 9 Task 7)."""
     job_runner = JobRunner(
         session_store=store,
         client=repl.client,
@@ -852,7 +867,36 @@ def _build_runner(
         if board is not None:  # UI: also surface the line as a browser notice
             board.post(line, kind="task")
 
-    return BackgroundRunner(tasks, notify=notify, run_job=job_runner.run, turn_lock=repl.turn_lock)
+    run_digest = None
+    if digest_store is not None:
+
+        async def run_digest(task: Task) -> JobOutcome:
+            # A fresh builder per fire; deterministic collectors + one tool-less summarize.
+            builder = DigestBuilder(
+                config=config,
+                utility=utility,
+                store=digest_store,
+                connectors=repl.connectors,
+                tasks=tasks,
+                knowledge=knowledge,
+                notices=board,
+                task_id=task.id,
+            )
+            outcome = await builder.build_and_deliver()
+            return JobOutcome(
+                session_id=None,
+                text=outcome.text,
+                error=outcome.error,
+                cost_usd=outcome.cost_usd,
+            )
+
+    return BackgroundRunner(
+        tasks,
+        notify=notify,
+        run_job=job_runner.run,
+        run_digest=run_digest,
+        turn_lock=repl.turn_lock,
+    )
 
 
 async def _scheduler_startup(
@@ -1130,10 +1174,22 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
         app.state.notices = board
 
         if tasks is not None:  # background runner shares the turn lock (no interleaving)
+            digest_store = DigestStore(db, store.lock)
+            app.state.digests = digest_store
             runner = _build_runner(
-                config, repl, store, tasks, memory, knowledge, utility, console, board=board
+                config,
+                repl,
+                store,
+                tasks,
+                memory,
+                knowledge,
+                utility,
+                console,
+                board=board,
+                digest_store=digest_store,
             )
             app.state.runner = runner
+            await ensure_digest_task(tasks, config)
             await _scheduler_startup(tasks, runner, console)
             runner.start()
 

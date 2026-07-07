@@ -61,11 +61,13 @@ class BackgroundRunner:
         notify: Notify,
         run_job: RunJob,
         turn_lock: asyncio.Lock,
+        run_digest: RunJob | None = None,
         log=None,
     ) -> None:
         self.service = service
         self.notify = notify
         self.run_job = run_job
+        self.run_digest = run_digest
         self.turn_lock = turn_lock
         self.log = log or get_logger("jarvis.scheduler")
         self._wake = asyncio.Event()
@@ -83,6 +85,13 @@ class BackgroundRunner:
         driven by the service's clock."""
         handled = 0
         for due in await self.service.due():
+            # A digest does network + a model call, so it must NOT hold the turn lock for the
+            # duration (a Google 429 backoff would freeze the UI). It manages its own brief
+            # lock windows around persist + notify (Phase 9, D4).
+            if due.action != "missed" and due.task.kind == "digest":
+                await self._fire_digest(due)
+                handled += 1
+                continue
             async with self.turn_lock:
                 if due.action == "missed":
                     await self._fire_missed(due)
@@ -132,6 +141,44 @@ class BackgroundRunner:
             cost_usd=outcome.cost_usd,
         )
         self._notify_job_done(task, outcome, ok)
+
+    async def _fire_digest(self, due: Due) -> None:
+        task = due.task
+        # Job semantics: open the running row before the work (crash ⇒ visible orphan, swept
+        # to aborted, never a silent re-run of egress). The lock is held only for the DB write.
+        async with self.turn_lock:
+            run_id = await self.service.begin_run(due)
+        if self.run_digest is None:  # not composed (e.g. no utility client) — record, don't crash
+            async with self.turn_lock:
+                await self.service.complete_run(
+                    due, run_id, ok=False, error="digest runner not configured"
+                )
+            return
+        self.in_flight = task.title
+        try:
+            outcome = await self.run_digest(task)  # network + model + UI/notifier, NO turn lock
+        except Exception as exc:
+            self.log.exception("digest_crashed", task_id=task.id)
+            detail = f"{type(exc).__name__}: {exc}"
+            async with self.turn_lock:
+                await self.service.complete_run(due, run_id, ok=False, error=detail)
+                self.notify(f"✗ digest #{task.id} failed: {detail}")
+            return
+        finally:
+            self.in_flight = None
+        ok = outcome.error is None
+        async with self.turn_lock:
+            await self.service.complete_run(
+                due,
+                run_id,
+                ok=ok,
+                session_id=outcome.session_id,
+                result_text=outcome.text or outcome.error,
+                denied_count=outcome.denied_count,
+                error=outcome.error,
+                cost_usd=outcome.cost_usd,
+            )
+            self.notify(f"✓ daily digest ready{'' if ok else ' (with errors)'}")
 
     async def _fire_missed(self, due: Due) -> None:
         task = due.task
