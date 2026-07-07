@@ -1321,11 +1321,17 @@ def _build_orchestrator(config: Config, *, repl: Repl, app, store):
     The engine gets the ModelRegistry + PricingTable + budget config so the pre-fan-out
     worst-case reservation is live."""
     from jarvis.models import ModelRegistry
+    from jarvis.models.providers import ProviderRegistry
     from jarvis.observability.cost import load_pricing
     from jarvis.orchestration import OrchestrationEngine
     from jarvis.ui.orchestration import OrchestrationController
 
-    model_registry = ModelRegistry(config.models.routes)
+    # One pricing table feeds both provider availability (fail-closed: enabled ∧ key ∧ priced)
+    # and the reservation math. ModelRegistry gets the ProviderRegistry so route resolution
+    # rejects a disabled/missing-key/unpriced provider (Phase 10C) rather than downgrading.
+    pricing = load_pricing(config.root / "config" / "pricing.yaml")
+    provider_registry = ProviderRegistry.from_config(config, pricing)
+    model_registry = ModelRegistry(config.models.routes, provider_registry=provider_registry)
     engine = OrchestrationEngine(
         spawn=repl.agents.spawn,
         store=store,
@@ -1335,7 +1341,7 @@ def _build_orchestrator(config: Config, *, repl: Repl, app, store):
         max_rounds=config.budgets.max_rounds,
         budget=repl.budgets,  # between-stage hard stop + project-monthly gate
         registry=model_registry,  # per-role member models + reservation pricing
-        pricing=load_pricing(config.root / "config" / "pricing.yaml"),
+        pricing=pricing,
         budgets=config.budgets,  # reservation caps + confirm threshold
         est_iterations=config.sub_agents.max_iterations,
     )

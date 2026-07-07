@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from jarvis.models.registry import RouteError
 from jarvis.observability import get_logger
 from jarvis.orchestration import (
     WORKFLOWS,
@@ -29,6 +30,7 @@ from jarvis.orchestration import (
     resolve_team,
 )
 from jarvis.orchestration.context import ContextItem, Provenance
+from jarvis.orchestration.engine import ProviderContextError
 
 if TYPE_CHECKING:
     from jarvis.orchestration import OrchestrationEngine
@@ -161,9 +163,17 @@ class OrchestrationController:
         workflow = WORKFLOWS[workflow_id]
         context = self._build_context(task)
 
+        # Provider privacy + fail-closed routing (Phase 10C): refuse a PRIVATE bundle bound for a
+        # non-trusted provider, and surface an unavailable/invalid route as a 400 — before any run
+        # row or spawn (never a 500, never a silent launch that immediately dies).
+        try:
+            self.engine.check_provider_context(team, context)
+            est = self.engine.estimate(team, workflow, context, budget_usd=budget_usd)
+        except (ProviderContextError, RouteError) as exc:
+            return {"ok": False, "message": str(exc)}, 400
+
         # Two-step confirm: if the worst case needs confirmation and the caller hasn't confirmed,
         # return the estimate WITHOUT launching (the engine would raise; we pre-empt it cleanly).
-        est = self.engine.estimate(team, workflow, context, budget_usd=budget_usd)
         if est is not None and est.decision == "confirm" and not confirmed:
             body = {"ok": False, "needs_confirmation": True, "estimate": serialize_estimate(est)}
             return body, 200

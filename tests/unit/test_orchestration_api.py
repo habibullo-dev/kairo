@@ -52,6 +52,9 @@ class FakeEngine:
         self.gate = asyncio.Event()  # release to let a launched run finish
         self.calls: list[dict] = []
 
+    def check_provider_context(self, team, context) -> None:
+        return None  # Phase 10C: the real engine refuses PRIVATE→non-trusted; no-op here
+
     def estimate(self, team, workflow, context, *, budget_usd=None) -> RunEstimate | None:
         return self._est
 

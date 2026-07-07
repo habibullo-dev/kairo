@@ -67,8 +67,10 @@ def test_text_only_rejected_on_tool_capable_role() -> None:
 
 
 def test_text_only_allowed_on_analysis_role() -> None:
-    reg = ModelRegistry({"judge": {"provider": "openai", "model": "gpt-x", "text_only": True}})
-    assert reg.route("judge").text_only is True
+    # reviewer is an analysis role: not tool-capable, and not authority-pinned (Phase 10C) —
+    # so a text-only route is allowed. (judge/planner/utility are authority-pinned to anthropic.)
+    reg = ModelRegistry({"reviewer": {"provider": "openai", "model": "gpt-x", "text_only": True}})
+    assert reg.route("reviewer").text_only is True
 
 
 # --- ClientFactory: caching + fail-closed ----------------------------------
@@ -210,10 +212,10 @@ def test_hub_model_routes_report_configured_without_keys(tmp_path: Path) -> None
     rows = model_routes_status(cfg)
     by_role = {r["role"]: r for r in rows}
     assert by_role["planner"]["configured"] is True  # anthropic key present
-    # An OpenAI-routed role with no OpenAI key reports configured=False (fail-closed signal).
+    # An OpenAI-routed (non-authority) role with no OpenAI key reports configured=False.
     cfg2 = _cfg(tmp_path, anthropic="k", openai="")
-    cfg2.models.routes = {"judge": {"provider": "openai", "model": "gpt-x", "text_only": True}}
-    j = {r["role"]: r for r in model_routes_status(cfg2)}["judge"]
+    cfg2.models.routes = {"reviewer": {"provider": "openai", "model": "gpt-x", "text_only": True}}
+    j = {r["role"]: r for r in model_routes_status(cfg2)}["reviewer"]
     assert j["provider"] == "openai" and j["configured"] is False
     # No key value anywhere in the serialized view.
     assert "SECRET-ANTHROPIC-CANARY" not in str(rows)

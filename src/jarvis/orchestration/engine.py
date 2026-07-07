@@ -27,10 +27,16 @@ from dataclasses import dataclass
 
 from jarvis.config import BudgetsConfig
 from jarvis.core.client import LLMClient
+from jarvis.models.providers import provider_spec
 from jarvis.models.registry import ModelRegistry
 from jarvis.observability import get_logger
 from jarvis.observability.cost import PricingTable
-from jarvis.orchestration.context import ContextBundle, ContextPolicyError, check_context_policy
+from jarvis.orchestration.context import (
+    ContextBundle,
+    ContextPolicyError,
+    Provenance,
+    check_context_policy,
+)
 from jarvis.orchestration.estimate import RunEstimate, estimate_run
 from jarvis.orchestration.roles import READ_ONLY_SPAWNABLE, Capability, RosterRole
 from jarvis.orchestration.store import OrchestrationStore
@@ -57,6 +63,15 @@ class ConfirmationRequired(Exception):
     def __init__(self, estimate: RunEstimate) -> None:
         super().__init__(estimate.reason)
         self.estimate = estimate
+
+
+class ProviderContextError(Exception):
+    """Raised by :meth:`OrchestrationEngine.run` (and pre-empted by the Studio controller)
+    when a member's route resolves to a provider that may not receive PRIVATE context
+    (``ProviderSpec.private_ok`` is False) while the run's context bundle carries PRIVATE
+    provenance. A model is a context SINK, so this REFUSES the whole run before any row is
+    opened — never a silent reroute (Phase 10C non-negotiable #3). No new run status / no
+    migration: like :class:`ConfirmationRequired`, it fires before ``begin_run``."""
 
 
 _RECORD_SYNTHESIS = {
@@ -180,6 +195,25 @@ class OrchestrationEngine:
             project_routes=self.project_routes,
             budget_usd=budget_usd,
         )
+
+    def check_provider_context(self, team: TeamProfile, context: ContextBundle) -> None:
+        """B1 extended to model PROVIDERS (constraint #3). A model is a context SINK, so if the
+        bundle carries PRIVATE provenance and ANY member's route resolves to a provider whose
+        ``private_ok`` is False, refuse the whole run — raise :class:`ProviderContextError`
+        BEFORE any row is opened (never a silent reroute, never a per-member drop that would
+        change the roster). No-op without a registry, or when the bundle has no PRIVATE content.
+        Called by :meth:`run` (defense-in-depth) and pre-empted by the Studio controller."""
+        if self.registry is None or Provenance.PRIVATE not in context.provenance_classes():
+            return
+        for member in team.members:
+            route = self.registry.route(member.route_role, project_routes=self.project_routes)
+            spec = provider_spec(route.provider)
+            if spec is not None and not spec.private_ok:
+                raise ProviderContextError(
+                    f"provider_refused_private_context: role {member.route_role!r} routes to "
+                    f"provider {route.provider!r} (private_ok=False), but this run's context "
+                    f"carries PRIVATE content — refused before fan-out (no silent reroute)"
+                )
 
     @staticmethod
     def _members(team: TeamProfile, stage_kind: str) -> list[RosterRole]:
@@ -386,6 +420,9 @@ class OrchestrationEngine:
         auditable ``budget_stopped`` row is recorded and returned; nothing spawns in either case.
         """
         self._on_event = on_event
+        # Provider privacy (constraint #3): refuse a PRIVATE bundle routed to a non-trusted
+        # provider BEFORE any row opens — same pre-begin_run seam as the two-step confirm.
+        self.check_provider_context(team, context)
         estimate = self.estimate(team, workflow, context, budget_usd=budget_usd)
         if estimate is not None:
             if estimate.decision == "confirm" and not confirmed:

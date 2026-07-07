@@ -200,6 +200,16 @@ class ProviderRegistry:
     def is_available(self, name: str) -> bool:
         return self.state(name) is ProviderState.AVAILABLE
 
+    def route_allowed(self, name: str) -> bool:
+        """May a model route resolve to this provider? CORE providers (anthropic/openai) always
+        may — their key is enforced fail-closed at the client factory (``config.require``), so a
+        keyless route resolution stays valid and only the actual client build fails. An OPT-IN
+        provider must be fully AVAILABLE (enabled ∧ key ∧ priced) to be a routing target."""
+        spec = PROVIDER_CATALOG.get(name)
+        if spec is None:
+            return False
+        return True if spec.core else self.is_available(name)
+
     def availability(self) -> list[dict]:
         """A presence-only view of every catalog provider for the Studio/Hub. NEVER a key
         value — only whether the required credential env var is set."""

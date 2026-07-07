@@ -10,8 +10,11 @@ tools — pre-mortem constraint).
 
 from __future__ import annotations
 
+from jarvis.models.providers import TRUSTED_AUTHORITY_PROVIDERS
 from jarvis.models.roles import (
     DEFAULT_ROUTES,
+    FINAL_AUTHORITY_ROLES,
+    PRIVATE_CONTEXT_ROLES,
     PROVIDERS,
     ROLES,
     TOOL_CAPABLE_ROLES,
@@ -20,7 +23,9 @@ from jarvis.models.roles import (
 
 
 class RouteError(ValueError):
-    """An invalid model route (unknown role/provider, or text-only on a tool role)."""
+    """An invalid model route: unknown role/provider, empty model, text-only on a tool role,
+    a non-trusted provider on a final-authority/private-context role, or (when a provider
+    registry is wired) an unavailable provider (fail-closed — never a silent downgrade)."""
 
 
 def _merge(base: ModelRoute, override: dict) -> ModelRoute:
@@ -34,7 +39,11 @@ def _merge(base: ModelRoute, override: dict) -> ModelRoute:
 
 
 def validate_route(role: str, route: ModelRoute) -> None:
-    """Raise :class:`RouteError` if the route is invalid for the role."""
+    """Raise :class:`RouteError` if the route is invalid for the role. Authority is enforced
+    here (pure, catalog-static — no config): a final-authority role (planner/judge) or a
+    private-context role (utility) can ONLY resolve to a trusted provider (anthropic this
+    phase), at EVERY override layer. Giving another provider final authority is a separate,
+    explicit design change (Phase 10C non-negotiable #1), never a routing override."""
     if route.provider not in PROVIDERS:
         raise RouteError(f"role {role!r}: unknown provider {route.provider!r}")
     if not route.model:
@@ -43,16 +52,32 @@ def validate_route(role: str, route: ModelRoute) -> None:
         raise RouteError(
             f"role {role!r} must drive tools; a text-only route ({route.provider}) is not allowed"
         )
+    if (
+        role in FINAL_AUTHORITY_ROLES or role in PRIVATE_CONTEXT_ROLES
+    ) and route.provider not in TRUSTED_AUTHORITY_PROVIDERS:
+        kind = "final-authority" if role in FINAL_AUTHORITY_ROLES else "private-context"
+        allowed = ", ".join(sorted(TRUSTED_AUTHORITY_PROVIDERS))
+        raise RouteError(
+            f"role {role!r} is a {kind} role; only trusted providers ({allowed}) may hold it, "
+            f"not {route.provider!r} — this is a code-level authority pin, not a routing option"
+        )
 
 
 class ModelRegistry:
     """Resolves a role to its :class:`ModelRoute` across the override layers.
 
     ``settings_routes`` is the config-level map (``settings.yaml``); ``project_routes`` and
-    ``run_routes`` are supplied per-resolution. All are partial ``{role: {...}}`` dicts."""
+    ``run_routes`` are supplied per-resolution. All are partial ``{role: {...}}`` dicts.
 
-    def __init__(self, settings_routes: dict | None = None) -> None:
+    ``provider_registry`` (optional) makes resolution enforce fail-closed AVAILABILITY: a route
+    to a disabled / missing-key / unpriced provider raises :class:`RouteError` with the reason,
+    never a silent downgrade. Omitted (pure/tests) ⇒ only authority + shape are validated."""
+
+    def __init__(
+        self, settings_routes: dict | None = None, *, provider_registry: object | None = None
+    ) -> None:
         self.settings_routes = settings_routes or {}
+        self.provider_registry = provider_registry
 
     def route(
         self,
@@ -69,4 +94,12 @@ class ModelRegistry:
             if override:
                 route = _merge(route, override)
         validate_route(role, route)
+        if self.provider_registry is not None and not self.provider_registry.route_allowed(
+            route.provider
+        ):
+            state = self.provider_registry.state(route.provider).value
+            raise RouteError(
+                f"role {role!r}: provider {route.provider!r} is not available ({state}) — "
+                f"fail-closed, no downgrade to another provider"
+            )
         return route
