@@ -816,11 +816,13 @@ def _build_runner(
     knowledge: KnowledgeService | None,
     utility: AnthropicClient,
     console: Console,
+    board: object | None = None,
 ) -> BackgroundRunner:
     """Wire the BackgroundRunner: it fires due tasks, and delegates job execution to
     a JobRunner built from the REPL's already-composed collaborators (same registry,
     executor, gate, client). Both share the REPL's turn lock, so a background run and
-    an interactive turn never overlap."""
+    an interactive turn never overlap. ``board`` (a NoticeBoard, UI only) fans notify lines
+    out to the browser as well as the console (Phase 9 Task 5)."""
     job_runner = JobRunner(
         session_store=store,
         client=repl.client,
@@ -836,6 +838,8 @@ def _build_runner(
     def notify(line: str) -> None:
         # markup off: task titles/payloads are data, not rich markup.
         console.print(line, markup=False)
+        if board is not None:  # UI: also surface the line as a browser notice
+            board.post(line, kind="task")
 
     return BackgroundRunner(tasks, notify=notify, run_job=job_runner.run, turn_lock=repl.turn_lock)
 
@@ -1108,8 +1112,16 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
         auth = AuthManager()
         app = build_ui_app(config, repl=repl, auth=auth)
 
+        # Background job/reminder lines fan out to the browser as notices (Phase 9 Task 5).
+        from jarvis.ui.notices import NoticeBoard
+
+        board = NoticeBoard(broadcast=app.state.connections.broadcast)
+        app.state.notices = board
+
         if tasks is not None:  # background runner shares the turn lock (no interleaving)
-            runner = _build_runner(config, repl, store, tasks, memory, knowledge, utility, console)
+            runner = _build_runner(
+                config, repl, store, tasks, memory, knowledge, utility, console, board=board
+            )
             app.state.runner = runner
             await _scheduler_startup(tasks, runner, console)
             runner.start()

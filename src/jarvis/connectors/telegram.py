@@ -49,3 +49,23 @@ async def send_telegram_message(
                 "connectors.telegram.chat_id in settings."
             ),
         )
+
+
+class TelegramNotifier:
+    """A send-only :class:`~jarvis.connectors.base.Notifier` over Telegram (Phase 9 Task 5)."""
+
+    name = "telegram"
+
+    def __init__(self, *, bot_token: str, chat_id: str, http: Any = None) -> None:
+        self._bot_token = bot_token
+        self._chat_id = chat_id
+        self._http = http
+
+    async def send(self, text: str) -> None:
+        await send_telegram_message(
+            bot_token=self._bot_token, chat_id=self._chat_id, text=text, http=self._http
+        )
+
+    def status(self) -> dict:
+        # Presence booleans only — never the token or the chat id itself.
+        return {"configured": bool(self._bot_token), "chat_id_set": bool(self._chat_id)}

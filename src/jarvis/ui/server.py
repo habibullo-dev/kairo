@@ -131,6 +131,7 @@ def create_app(
     app.state.runner = runner
     app.state.services = services or UiServices()
     app.state.voice = voice
+    app.state.notices = None  # a NoticeBoard, set by the CLI host (run_ui); None ⇒ empty tail
     # The UI is voice's fail-closed "screen": a VoiceApprover wired to this UIScreenApprover
     # resolves risky voice actions on the authenticated, live, watching Gate surface — or
     # denies. Composed here so the CLI host (Task 9) injects it into the voice VoiceApprover.
@@ -254,6 +255,13 @@ def create_app(
         if app.state.runner is not None and not app.state.runner.is_running:
             app.state.runner.start()
         return _runner_status(app.state.runner, app.state.session)
+
+    @app.get("/api/notices")
+    async def notices() -> JSONResponse:
+        # Background job/reminder lines (Phase 9). Read-only — NOT a mutating route.
+        board = app.state.notices
+        tail = board.tail(50) if board is not None else []
+        return JSONResponse({"notices": tail})
 
     # --- read models: Hub / Lab (always available) ------------------------------------
 
