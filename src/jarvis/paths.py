@@ -80,6 +80,10 @@ _SENSITIVE_PATTERNS: list[str] = [
     "*secrets.json",
     "*secrets.yaml",
     "*secrets.yml",
+    # Connector OAuth/refresh tokens (Phase 9). A path pattern, NOT a _SENSITIVE_DIRS entry:
+    # the dir set matches ANY path component, which would also block reading the source
+    # package src/jarvis/connectors/*.py. This matches only the on-disk token store.
+    "*/data/connectors/*",
 ]
 
 # Env files that are safe by construction (committed templates, no real secrets).

@@ -68,6 +68,21 @@ def test_ordinary_files_are_not_sensitive(tmp_path: Path) -> None:
     assert not is_sensitive_path(tmp_path / "README.md")
 
 
+def test_connector_token_files_are_sensitive(tmp_path: Path) -> None:
+    # Phase 9: OAuth/refresh tokens live under data/connectors/ — a durable credential the
+    # agent must never read/list/exfil. Guarded by a path pattern (not a dir-component set).
+    assert is_sensitive_path(tmp_path / "data" / "connectors" / "google_token.json")
+    assert is_sensitive_path(tmp_path / "data" / "connectors" / "kakao_token.json")
+
+
+def test_connector_source_package_is_not_sensitive(tmp_path: Path) -> None:
+    # The regression the *pattern* (not a _SENSITIVE_DIRS "connectors" entry) exists to avoid:
+    # the source package src/jarvis/connectors/*.py must stay readable. A component-match set
+    # would have blocked it because the path also contains a "connectors" component.
+    assert not is_sensitive_path(tmp_path / "src" / "jarvis" / "connectors" / "base.py")
+    assert not is_sensitive_path(tmp_path / "src" / "jarvis" / "connectors" / "google" / "gmail.py")
+
+
 def test_matching_is_case_insensitive(tmp_path: Path) -> None:
     assert is_sensitive_path(tmp_path / "SERVER.PEM")
 

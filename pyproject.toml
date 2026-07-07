@@ -10,6 +10,7 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "anthropic>=0.116.0",
     "apscheduler>=3.11,<4",
+    "httpx>=0.27",  # connectors REST (Phase 9); also a transitive dep of trafilatura/voyageai
     "markitdown[docx,pdf,pptx,xlsx]>=0.1.6,<0.2",
     "numpy>=2.5.1",
     "prompt-toolkit>=3.0.52",
@@ -52,10 +53,10 @@ dev = [
     "ruff>=0.9",
     "pytest>=8",
     "pytest-asyncio>=0.24",
-    # UI tests use FastAPI's TestClient (httpx ASGI). The runtime dep is the `ui` extra;
-    # this keeps `uv run pytest` self-contained without needing --extra ui.
+    # UI tests use FastAPI's TestClient (httpx ASGI). fastapi is the `ui` extra at runtime;
+    # this keeps `uv run pytest` self-contained without needing --extra ui. (httpx is now a
+    # core dependency — connectors REST — so it's no longer listed here.)
     "fastapi>=0.115",
-    "httpx>=0.27",
     # Voice cloud SDKs: the "needs a key" adapter tests exercise the lazy-import + key-check
     # path, which requires the SDK present to reach the key branch. Runtime dep is the
     # `voice` extra; here so `uv run pytest` is self-contained. (sounddevice omitted — no

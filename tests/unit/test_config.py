@@ -8,7 +8,15 @@ import pytest
 
 from jarvis.config import Config, ConfigError, Secrets, load_config
 
-KEYS = ("ANTHROPIC_API_KEY", "VOYAGE_API_KEY", "TAVILY_API_KEY")
+KEYS = (
+    "ANTHROPIC_API_KEY",
+    "VOYAGE_API_KEY",
+    "TAVILY_API_KEY",
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
+    "TELEGRAM_BOT_TOKEN",
+    "KAKAO_REST_API_KEY",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -180,6 +188,85 @@ def test_ui_non_loopback_host_refused(tmp_path: Path) -> None:
         _write_settings(tmp_path, f"ui:\n  host: {host!r}\n")
         with pytest.raises(ConfigError):
             load_config(root=tmp_path, env_file=None)
+
+
+def test_connectors_config_defaults(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    c = cfg.connectors
+    assert c.demo is False
+    assert c.google.enabled is False and c.google.calendar_id == "primary"
+    assert c.telegram.enabled is False and c.telegram.chat_id == ""
+    assert c.telegram.notify_reminders is False
+    assert c.kakao.enabled is False and c.kakao.redirect_port == 8788
+    assert c.digest.enabled is False and c.digest.deliver == ["ui"]
+    assert c.digest.rich_notify is False
+    assert c.repos == ["."]
+
+
+def test_connectors_config_yaml_override(tmp_path: Path) -> None:
+    _write_settings(
+        tmp_path,
+        "connectors:\n"
+        "  demo: true\n"
+        "  google:\n    enabled: true\n    calendar_id: work@example.com\n"
+        "  telegram:\n    enabled: true\n    chat_id: '12345'\n"
+        "  repos: ['.', '../other']\n",
+    )
+    cfg = load_config(root=tmp_path, env_file=None)
+    c = cfg.connectors
+    assert c.demo is True
+    assert c.google.enabled is True and c.google.calendar_id == "work@example.com"
+    assert c.telegram.enabled is True and c.telegram.chat_id == "12345"
+    assert c.repos == [".", "../other"]
+    assert c.kakao.enabled is False  # unspecified keeps default
+
+
+def test_digest_delivery_requires_enabled_notifier(tmp_path: Path) -> None:
+    # Fail-closed: a digest can't target a channel whose notifier is off (ADR-0010).
+    _write_settings(
+        tmp_path,
+        "connectors:\n  digest:\n    enabled: true\n    deliver: [ui, telegram]\n",
+    )
+    with pytest.raises(ConfigError):
+        load_config(root=tmp_path, env_file=None)
+    # With the notifier enabled it loads fine.
+    _write_settings(
+        tmp_path,
+        "connectors:\n  telegram:\n    enabled: true\n"
+        "  digest:\n    enabled: true\n    deliver: [ui, telegram]\n",
+    )
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.connectors.digest.deliver == ["ui", "telegram"]
+
+
+def test_digest_delivery_rejects_unknown_channel(tmp_path: Path) -> None:
+    _write_settings(tmp_path, "connectors:\n  digest:\n    deliver: [ui, carrier_pigeon]\n")
+    with pytest.raises(ConfigError):
+        load_config(root=tmp_path, env_file=None)
+
+
+def test_connector_secrets_default_empty_and_read_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.secrets.google_client_id == ""
+    assert cfg.secrets.google_client_secret == ""
+    assert cfg.secrets.telegram_bot_token == ""
+    assert cfg.secrets.kakao_rest_api_key == ""
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "gid-123")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-abc")
+    cfg2 = load_config(root=tmp_path, env_file=None)
+    assert cfg2.secrets.google_client_id == "gid-123"
+    cfg2.require("google")  # representative key present
+    cfg2.require("telegram")
+
+
+def test_require_reports_missing_connector_keys(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    with pytest.raises(ConfigError) as exc:
+        cfg.require("google", "kakao")
+    msg = str(exc.value)
+    assert "GOOGLE_CLIENT_ID" in msg and "KAKAO_REST_API_KEY" in msg
 
 
 def test_yaml_overrides_defaults(tmp_path: Path) -> None:

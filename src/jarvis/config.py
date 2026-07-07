@@ -22,12 +22,17 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # service name -> (Secrets attribute, env var name) for require() error messages.
+# For a multi-key service (Google needs id AND secret), the representative key drives the
+# fast-fail here; the connect ritual (Phase 9) checks the full set with its own message.
 _REQUIRED_KEYS: dict[str, tuple[str, str]] = {
     "anthropic": ("anthropic_api_key", "ANTHROPIC_API_KEY"),
     "voyage": ("voyage_api_key", "VOYAGE_API_KEY"),
     "tavily": ("tavily_api_key", "TAVILY_API_KEY"),
     "openai": ("openai_api_key", "OPENAI_API_KEY"),  # cloud STT (Phase 7, opt-in)
     "elevenlabs": ("elevenlabs_api_key", "ELEVENLABS_API_KEY"),  # cloud TTS (Phase 7, opt-in)
+    "google": ("google_client_id", "GOOGLE_CLIENT_ID"),  # Workspace connectors (Phase 9)
+    "telegram": ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),  # send-only notifier (Phase 9)
+    "kakao": ("kakao_rest_api_key", "KAKAO_REST_API_KEY"),  # send-to-me notifier (Phase 9)
 }
 
 
@@ -64,6 +69,12 @@ class Secrets(BaseSettings):
     tavily_api_key: str = ""
     openai_api_key: str = ""  # cloud STT (Phase 7 voice, opt-in)
     elevenlabs_api_key: str = ""  # cloud TTS (Phase 7 voice, opt-in)
+    # Connectors (Phase 9). Google OAuth client (Desktop app); Telegram bot token; Kakao
+    # REST API key. All optional; the connect ritual + Config.require enforce presence.
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    telegram_bot_token: str = ""
+    kakao_rest_api_key: str = ""
 
 
 class ModelsConfig(BaseModel):
@@ -245,6 +256,87 @@ class UIConfig(BaseModel):
         return self
 
 
+class GoogleConnectorConfig(BaseModel):
+    """Google Workspace connector (Phase 9): read Calendar/Gmail/Drive + create Gmail drafts
+    (never send). Off by default; needs GOOGLE_CLIENT_ID/SECRET in .env and a one-time
+    ``jarvis connect google``. Scopes are read-only + gmail.compose (ADR-0009)."""
+
+    enabled: bool = False
+    calendar_id: str = "primary"
+    max_results: int = 25  # default page size cap for list calls (tools clamp their own ≤50)
+
+
+class TelegramConfig(BaseModel):
+    """Telegram send-only notifier (Phase 9). Bot token in .env (TELEGRAM_BOT_TOKEN); chat_id
+    here (a routing id, NOT a secret). Kairo never reads Telegram — delivery only."""
+
+    enabled: bool = False
+    chat_id: str = ""  # numeric chat id as a string; a routing id, safe to commit
+    notify_reminders: bool = False  # mirror scheduler reminders here (host code, not a tool)
+
+
+class KakaoConfig(BaseModel):
+    """KakaoTalk "send to me" (memo) notifier (Phase 9). REST API key in .env
+    (KAKAO_REST_API_KEY); OAuth via ``jarvis connect kakao`` (talk_message scope). Kakao
+    requires a pre-registered redirect URI, so the loopback port is fixed, not ephemeral."""
+
+    enabled: bool = False
+    redirect_port: int = 8788  # MUST match the redirect URI registered in the Kakao dev console
+
+
+class DigestConfig(BaseModel):
+    """Daily Digest (Phase 9): deterministic collectors + one tool-less summarize, delivered
+    calmly (ADR-0010). Off by default. ``deliver`` is a subset of {ui, telegram, kakao};
+    a channel requires its notifier enabled (fail-closed in ConnectorsConfig)."""
+
+    enabled: bool = False
+    cron: str = "0 8 * * *"  # local-tz 5-field crontab; validated by the scheduler's triggers
+    deliver: list[str] = Field(default_factory=lambda: ["ui"])
+    rich_notify: bool = False  # notifiers get headers/counts by default; opt in to snippets
+    max_notify_chars: int = 3500
+
+
+#: Delivery channels a digest may target. "ui" is always available (DB + NoticeBoard + WS).
+_DIGEST_CHANNELS: frozenset[str] = frozenset({"ui", "telegram", "kakao"})
+
+
+class ConnectorsConfig(BaseModel):
+    """External connectors (Phase 9) — narrow, audited adapters behind the PermissionGate.
+    All off by default. ``demo: true`` populates Daily/digest/Hub with clearly-badged fake
+    data for UI testing / screenshots / migration checks (and only when the real provider
+    keys are absent, so demo can never mask a live connection — enforced at wiring time)."""
+
+    demo: bool = False
+    google: GoogleConnectorConfig = Field(default_factory=GoogleConnectorConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    kakao: KakaoConfig = Field(default_factory=KakaoConfig)
+    digest: DigestConfig = Field(default_factory=DigestConfig)
+    # Repos whose git state feeds the Daily "what changed" card + the digest (read-only).
+    repos: list[str] = Field(default_factory=lambda: ["."])
+
+    @model_validator(mode="after")
+    def _digest_delivery_requires_notifier(self) -> ConnectorsConfig:
+        """A digest delivery channel must name a known channel AND (for telegram/kakao) have
+        that notifier enabled — fail closed so a digest can't silently target a dead sink."""
+        for channel in self.digest.deliver:
+            if channel not in _DIGEST_CHANNELS:
+                raise ValueError(
+                    f"connectors.digest.deliver has unknown channel '{channel}'; "
+                    f"allowed: {sorted(_DIGEST_CHANNELS)}"
+                )
+            if channel == "telegram" and not self.telegram.enabled:
+                raise ValueError(
+                    "connectors.digest.deliver includes 'telegram' but "
+                    "connectors.telegram.enabled is false"
+                )
+            if channel == "kakao" and not self.kakao.enabled:
+                raise ValueError(
+                    "connectors.digest.deliver includes 'kakao' but "
+                    "connectors.kakao.enabled is false"
+                )
+        return self
+
+
 class PathsConfig(BaseModel):
     """Filesystem locations, relative to the project root unless absolute."""
 
@@ -265,6 +357,7 @@ class Config(BaseModel):
     sub_agents: SubAgentsConfig = Field(default_factory=SubAgentsConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
+    connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)  # Phase 9
     paths: PathsConfig
     secrets: Secrets
 
@@ -349,6 +442,7 @@ def load_config(
             sub_agents=SubAgentsConfig(**data.get("sub_agents", {})),
             voice=VoiceConfig(**data.get("voice", {})),
             ui=UIConfig(**data.get("ui", {})),
+            connectors=ConnectorsConfig(**data.get("connectors", {})),
             paths=PathsConfig(**data.get("paths", {})),
             secrets=secrets,
         )

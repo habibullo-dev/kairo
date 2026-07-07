@@ -1152,6 +1152,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "anthropic" },
     { name = "apscheduler" },
+    { name = "httpx" },
     { name = "markitdown", extra = ["docx", "pdf", "pptx", "xlsx"] },
     { name = "numpy" },
     { name = "prompt-toolkit" },
@@ -1183,7 +1184,6 @@ voice = [
 dev = [
     { name = "elevenlabs" },
     { name = "fastapi" },
-    { name = "httpx" },
     { name = "openai" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1198,6 +1198,7 @@ requires-dist = [
     { name = "docling", marker = "extra == 'docling'", specifier = ">=2.92" },
     { name = "elevenlabs", marker = "extra == 'voice'", specifier = ">=1.0" },
     { name = "fastapi", marker = "extra == 'ui'", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "markitdown", extras = ["docx", "pdf", "pptx", "xlsx"], specifier = ">=0.1.6,<0.2" },
     { name = "numpy", specifier = ">=2.5.1" },
     { name = "openai", marker = "extra == 'voice'", specifier = ">=1.0" },
@@ -1219,7 +1220,6 @@ provides-extras = ["docling", "voice", "ui"]
 dev = [
     { name = "elevenlabs", specifier = ">=1.0" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "httpx", specifier = ">=0.27" },
     { name = "openai", specifier = ">=1.0" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },

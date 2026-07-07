@@ -89,6 +89,33 @@ ui:
   heartbeat_seconds: 15.0        # approval/voice-screen liveness window (dead client can't approve)
   ring_buffer_events: 2000       # Trace screen scrollback
 
+connectors:
+  # External connectors (Phase 9): Google Calendar/Gmail/Drive, Telegram + Kakao
+  # notifications, and the Daily Digest. All OFF by default. Reads are silent+audited and
+  # framed untrusted; anything that sends/creates asks first and is denied unattended.
+  # Secrets (GOOGLE_CLIENT_ID/SECRET, TELEGRAM_BOT_TOKEN, KAKAO_REST_API_KEY) live in .env.
+  # Safety floor: docs/PLAN-9-daily.md + ADR-0009/ADR-0010.
+  demo: false                    # populate Daily/Hub with clearly-badged FAKE data (no OAuth);
+                                 # ignored when real provider keys are present (never masks live)
+  google:
+    enabled: false               # needs GOOGLE_CLIENT_ID/SECRET + one-time `jarvis connect google`
+    calendar_id: primary
+    max_results: 25
+  telegram:
+    enabled: false               # send-only; needs TELEGRAM_BOT_TOKEN in .env
+    chat_id: ''                  # numeric chat id as a string (a routing id, NOT a secret)
+    notify_reminders: false      # also mirror scheduler reminders to Telegram
+  kakao:
+    enabled: false               # "send to me" memo; needs KAKAO_REST_API_KEY + `jarvis connect kakao`
+    redirect_port: 8788          # MUST match the redirect URI registered in the Kakao dev console
+  digest:
+    enabled: false               # scheduled Daily Digest (deterministic collectors + 1 summarize)
+    cron: '0 8 * * *'            # local-tz 5-field crontab
+    deliver: [ui]                # subset of {ui, telegram, kakao}; a channel needs its notifier on
+    rich_notify: false           # notifiers get headers/counts by default; true adds snippets
+    max_notify_chars: 3500
+  repos: ['.']                   # repos whose git state feeds the Daily "what changed" card
+
 paths:
   data_dir: data   # SQLite db (relative to project root)
   logs_dir: logs   # JSON-lines audit/trace logs
