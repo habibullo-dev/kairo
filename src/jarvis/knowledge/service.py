@@ -61,6 +61,35 @@ class IngestResult:
     title: str | None = None
 
 
+#: Extensions bulk folder-ingest picks up (each still flows through the sandboxed converter +
+#: byte caps). Others are silently skipped so a folder scan can't drown on binaries/junk.
+_INGESTIBLE: frozenset[str] = frozenset(
+    {
+        ".md",
+        ".markdown",
+        ".txt",
+        ".text",
+        ".pdf",
+        ".docx",
+        ".pptx",
+        ".xlsx",
+        ".epub",
+        ".html",
+        ".htm",
+    }
+)
+
+
+@dataclass(frozen=True)
+class FolderIngestReport:
+    """Per-file outcome of :meth:`KnowledgeService.ingest_folder` (bulk vault ingest)."""
+
+    ingested: list[str] = field(default_factory=list)
+    duplicates: list[str] = field(default_factory=list)
+    skipped: list[tuple[str, str]] = field(default_factory=list)  # (path, reason)
+    failed: list[tuple[str, str]] = field(default_factory=list)  # (path, error)
+
+
 @dataclass
 class LintReport:
     """Maintenance issues found by :meth:`KnowledgeService.lint` (all read-only)."""
@@ -439,6 +468,63 @@ class KnowledgeService:
         rejected = await self.store.reject_source(source_id)
         self.log.info("kb_source_reviewed", source_id=source_id, decision="rejected")
         return rejected
+
+    async def source_markdown(self, source_id: int, *, max_chars: int = 2000) -> str | None:
+        """A capped markdown excerpt of a source — the content preview shown before a human
+        approves a quarantined source (so approval is informed, not blind). None if unknown."""
+        source = await self.store.get_source(source_id)
+        if source is None:
+            return None
+        md_path = self.knowledge_dir / source.markdown_path
+        if not md_path.exists():
+            return None
+        text = md_path.read_text(encoding="utf-8", errors="replace")
+        return text[:max_chars] + (" …[truncated]" if len(text) > max_chars else "")
+
+    async def ingest_folder(
+        self,
+        folder: str | Path,
+        *,
+        recursive: bool = True,
+        extensions: frozenset[str] = _INGESTIBLE,
+        created_by: str = "user",
+        limit: int = 500,
+        progress: Callable[[str], None] | None = None,
+    ) -> FolderIngestReport:
+        """Bulk-ingest a folder (Obsidian vault, Downloads, a doc dump). Each file flows through
+        the same :meth:`ingest` pipeline (dedupe, sensitive-path skip, sandboxed conversion).
+
+        Symlinks are refused outright — not just symlinks to sensitive files, but any symlink,
+        so a link planted in the folder can't pull in a file from outside it."""
+        report = FolderIngestReport()
+        root = resolve_path(folder, self.root)
+        if not root.is_dir():
+            report.failed.append((str(root), "not a directory"))
+            return report
+        candidates = sorted(root.rglob("*") if recursive else root.glob("*"))
+        for entry in candidates:
+            if len(report.ingested) + len(report.duplicates) >= limit:
+                report.skipped.append((str(entry), f"limit {limit} reached"))
+                continue
+            if entry.is_symlink():
+                report.skipped.append((str(entry), "symlink refused"))
+                continue
+            if not entry.is_file() or entry.suffix.lower() not in extensions:
+                continue
+            if is_sensitive_path(entry):
+                report.skipped.append((str(entry), "sensitive path"))
+                continue
+            if progress is not None:
+                progress(str(entry))
+            try:
+                result = await self.ingest(path=str(entry), created_by=created_by)
+            except Exception as exc:  # one bad file never aborts the batch
+                report.failed.append((str(entry), str(exc)))
+                continue
+            (report.duplicates if result.action == "duplicate" else report.ingested).append(
+                str(entry)
+            )
+        return report
 
     async def rebuild_index(self) -> dict:
         """Re-chunk + re-embed all live sources and wiki pages with the *current*

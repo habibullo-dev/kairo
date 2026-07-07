@@ -111,7 +111,13 @@ def serialize_source(source) -> dict:
 async def vault_overview(knowledge: KnowledgeService) -> dict:
     stats = await knowledge.stats()
     unreviewed = await knowledge.unreviewed_sources()
-    return {"stats": stats, "unreviewed": [serialize_source(s) for s in unreviewed]}
+    items = []
+    for s in unreviewed:
+        entry = serialize_source(s)
+        # A capped markdown preview so approving a quarantined source is INFORMED, not blind.
+        entry["preview"] = await knowledge.source_markdown(s.id, max_chars=1200)
+        items.append(entry)
+    return {"stats": stats, "unreviewed": items}
 
 
 async def vault_lint(knowledge: KnowledgeService) -> dict:

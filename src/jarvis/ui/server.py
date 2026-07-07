@@ -21,6 +21,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from jarvis.observability import get_logger
 from jarvis.permissions import PermissionGate, load_policy
+from jarvis.tools import Permission
 from jarvis.ui.approver import ApprovalManager, UIApprover, UIScreenApprover
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager, host_allowed, origin_allowed
 from jarvis.ui.connections import Connection, ConnectionManager
@@ -350,6 +351,32 @@ def create_app(
             return _unavailable("knowledge")
         rejected = await svc.reject_source(source_id)
         return JSONResponse({"ok": bool(rejected)})
+
+    @app.post("/api/vault/ingest")
+    async def vault_ingest(request: Request) -> JSONResponse:
+        # Human-initiated ingest (the click IS the approval, like vault approve). A file path
+        # runs the SAME sensitive-path floor as the ingest_source tool (DENY ⇒ 403); a url
+        # keeps the KnowledgeService's SSRF-guarded fetch. Lands 'reviewed' (created_by=user).
+        svc = app.state.services.knowledge
+        if svc is None:
+            return _unavailable("knowledge")
+        body = await request.json()
+        path, url, text = body.get("path"), body.get("url"), body.get("text")
+        title = body.get("title")
+        given = [v for v in (path, url, text) if v]
+        if len(given) != 1:
+            return JSONResponse(
+                {"ok": False, "message": "give exactly one of path / url / text"}, status_code=400
+            )
+        if path:
+            decision = app.state.gate.check("ingest_source", {"path": path})
+            if decision.permission is Permission.DENY:
+                return JSONResponse({"ok": False, "message": decision.reason}, status_code=403)
+        try:
+            result = await svc.ingest(path=path, url=url, text=text, title=title, created_by="user")
+        except Exception as exc:
+            return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True, "action": result.action, "source_id": result.source_id})
 
     @app.post("/api/tasks/{task_id}/cancel")
     async def tasks_cancel(task_id: int) -> JSONResponse:

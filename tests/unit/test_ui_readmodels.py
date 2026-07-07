@@ -151,6 +151,7 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/runner/resume"),
         ("POST", "/api/vault/sources/{source_id}/approve"),
         ("POST", "/api/vault/sources/{source_id}/reject"),
+        ("POST", "/api/vault/ingest"),  # Phase 9: human-initiated ingest (same gate floor)
         ("POST", "/api/tasks/{task_id}/cancel"),
         ("POST", "/api/memory/{memory_id}/forget"),
         ("POST", "/api/voice/listen"),

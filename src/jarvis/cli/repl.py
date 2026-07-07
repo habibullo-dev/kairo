@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Callable
+from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
@@ -58,6 +59,13 @@ from jarvis.voice import (
     build_stt,
     build_tts,
 )
+
+
+def _expand_and_stat(target: str) -> tuple[str, bool]:
+    """Expand ``~`` and stat a path (sync; run via to_thread from the async REPL). Returns
+    the expanded path string and whether it is a directory."""
+    path = Path(target).expanduser()
+    return str(path), path.is_dir()
 
 
 def _call_summary(call: ToolCall) -> str:
@@ -548,10 +556,57 @@ class Repl:
                 self.console.print("[dim]cancelled.[/]\n")
         elif sub == "review":
             await self._kb_review()
+        elif sub.startswith("ingest"):
+            await self._kb_ingest(arg[len("ingest") :].strip())  # keep original case (paths)
         else:
             self.console.print(
-                f"[dim]unknown kb command: {arg!r} (try: lint / rebuild / review)[/]\n"
+                f"[dim]unknown kb command: {arg!r} (try: ingest / lint / rebuild / review)[/]\n"
             )
+
+    async def _kb_ingest(self, spec: str) -> None:
+        """`kb ingest <path|url> [--no-recursive]` — bulk-ingest a folder (Obsidian vault,
+        Downloads, docs), a single file, or a URL. Human-initiated ⇒ lands reviewed."""
+        recursive = True
+        tokens: list[str] = []
+        for part in spec.split():
+            if part in ("--recursive", "-r"):
+                recursive = True
+            elif part == "--no-recursive":
+                recursive = False
+            else:
+                tokens.append(part)
+        target = " ".join(tokens).strip()
+        if not target:
+            self.console.print("[dim]usage: kb ingest <path|url> [--no-recursive][/]\n")
+            return
+        if target.startswith(("http://", "https://")):
+            await self._kb_ingest_one(url=target)
+            return
+        # Resolve + stat off the event loop (filesystem I/O; keeps ASYNC-correctness).
+        path_str, is_dir = await asyncio.to_thread(_expand_and_stat, target)
+        if is_dir:
+            report = await self.knowledge.ingest_folder(path_str, recursive=recursive)
+            self.console.print(
+                f"[bold]Ingested[/] {len(report.ingested)} · {len(report.duplicates)} dup · "
+                f"{len(report.skipped)} skipped · {len(report.failed)} failed"
+            )
+            for pth, reason in report.skipped[:10]:
+                self.console.print(f"[dim]  skip {pth}: {reason}[/]", markup=False)
+            for pth, err in report.failed[:10]:
+                self.console.print(f"[dim]  fail {pth}: {err}[/]", markup=False)
+            self.console.print()
+        else:
+            await self._kb_ingest_one(path=path_str)
+
+    async def _kb_ingest_one(self, **kw: str) -> None:
+        try:
+            result = await self.knowledge.ingest(created_by="user", **kw)
+        except Exception as exc:
+            self.console.print(f"[red]ingest failed:[/] {exc}\n", markup=False)
+            return
+        self.console.print(
+            f"[dim]{result.action}: source #{result.source_id} ({result.review_status})[/]\n"
+        )
 
     async def _kb_review(self) -> None:
         """Walk the quarantine queue: unattended-ingested sources a human must approve
