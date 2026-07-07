@@ -45,6 +45,20 @@ def _has_shell_metacharacters(command: str) -> bool:
     return any(meta in command for meta in _SHELL_METACHARACTERS)
 
 
+def _shell_path_tokens(command: str) -> list[str]:
+    """Whitespace-split argument tokens that could name a file (best-effort).
+
+    Flags (``-x``) are skipped; surrounding quotes are stripped so ``cat "…/token.json"``
+    is still inspected. This is a coarse belt over the metachar rule, not a shell parser —
+    the real credential protection is the read floor + on-disk permissions."""
+    tokens: list[str] = []
+    for raw in command.split():
+        tok = raw.strip("'\"")
+        if tok and not tok.startswith("-"):
+            tokens.append(tok)
+    return tokens
+
+
 def _prefix_matches(command: str, prefix: str) -> bool:
     """True if ``command`` begins with ``prefix`` at a *token boundary*.
 
@@ -61,10 +75,16 @@ def _prefix_matches(command: str, prefix: str) -> bool:
 
 @dataclass(frozen=True)
 class Decision:
-    """A gate outcome plus a human-readable reason (for the prompt + audit log)."""
+    """A gate outcome plus a human-readable reason (for the prompt + audit log).
+
+    ``persistable`` is normally True; it is set False by a caller (the AgentLoop's egress
+    taint rule, Phase 9) when this particular ASK must never be turned into an "always allow"
+    — the approvers suppress the "always" affordance and refuse to persist it. It does not
+    change the allow/ask/deny outcome, only whether a wider grant may be minted from it."""
 
     permission: Permission
     reason: str
+    persistable: bool = True
 
 
 class PermissionGate:
@@ -124,6 +144,18 @@ class PermissionGate:
 
     def _check_shell(self, tool_name: str, tool_input: dict, base: Permission) -> Decision:
         command = str(tool_input.get(self.command_field, "") or "").strip()
+
+        # Absolute floor (Phase 9): a command that names an EXISTING sensitive path — a
+        # connector token, a .env, an SSH key — is denied outright, even under an allowlisted
+        # prefix (`cat data/connectors/google_token.json` must not ride an allowed `cat `).
+        # This closes the leak where the sensitive-path floor covered read_file but not the
+        # shell. Existence-gated so merely mentioning a pattern-ish string is harmless.
+        sensitive = self._sensitive_command_target(command)
+        if sensitive is not None:
+            return Decision(
+                Permission.DENY, f"shell command references a sensitive path: {sensitive}"
+            )
+
         match: ShellRule | None = None
         for rule in self.policy.shell.rules:
             if _prefix_matches(command, rule.prefix) and (
@@ -160,6 +192,18 @@ class PermissionGate:
         if base is Permission.ALLOW:
             return Decision(Permission.ASK, f"write outside allowlist, escalated to ask: {target}")
         return Decision(base, f"write outside allowlist: {target}")
+
+    def _sensitive_command_target(self, command: str) -> Path | None:
+        """The first shell token that resolves to an existing sensitive file, or None."""
+        for token in _shell_path_tokens(command):
+            target = resolve_path(token, self.project_root)
+            try:
+                exists = target.exists()
+            except OSError:
+                exists = False
+            if exists and is_sensitive_path(target):
+                return target
+        return None
 
     def _check_read_path(self, tool_name: str, tool_input: dict, base: Permission) -> Decision:
         raw = tool_input.get(self.path_field)

@@ -165,6 +165,60 @@ def test_tool_level_deny_is_absolute_over_shell_rules(tmp_path: Path) -> None:
     assert g.check("run_shell", {"command": "git status"}).permission is DENY
 
 
+# --- shell sensitive-path floor (Phase 9: token custody) -------------------
+
+
+def _cat_allowed() -> Policy:
+    return Policy(shell=ShellPolicy(rules=[ShellRule(prefix="cat", decision=ALLOW)]))
+
+
+def test_shell_command_naming_connector_token_is_denied(tmp_path: Path) -> None:
+    # The cross-cutting floor: `cat data/connectors/google_token.json` must be DENY even under
+    # an allowlisted `cat ` — closing the leak where the floor covered read_file but not shell.
+    (tmp_path / "data" / "connectors").mkdir(parents=True)
+    (tmp_path / "data" / "connectors" / "google_token.json").write_text("{}", encoding="utf-8")
+    g = gate(_cat_allowed(), tmp_path)
+    d = g.check("run_shell", {"command": "cat data/connectors/google_token.json"}, tool_default=ASK)
+    assert d.permission is DENY
+    assert "sensitive path" in d.reason
+
+
+def test_shell_command_naming_dotenv_is_denied(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
+    g = gate(_cat_allowed(), tmp_path)
+    assert g.check("run_shell", {"command": "cat .env"}, tool_default=ASK).permission is DENY
+
+
+def test_shell_quoted_sensitive_path_still_denied(tmp_path: Path) -> None:
+    # Surrounding quotes don't evade the floor (tokens are unquoted before checking).
+    (tmp_path / "data" / "connectors").mkdir(parents=True)
+    (tmp_path / "data" / "connectors" / "kakao_token.json").write_text("{}", encoding="utf-8")
+    g = gate(_cat_allowed(), tmp_path)
+    d = g.check(
+        "run_shell", {"command": 'cat "data/connectors/kakao_token.json"'}, tool_default=ASK
+    )
+    assert d.permission is DENY
+
+
+def test_shell_nonexistent_sensitive_path_not_floored(tmp_path: Path) -> None:
+    # Existence-gated: naming a not-present path is harmless (cat errors), so the normal
+    # allow rule applies — the floor is about actually reaching a real secret.
+    g = gate(_cat_allowed(), tmp_path)
+    d = g.check("run_shell", {"command": "cat data/connectors/ghost.json"}, tool_default=ASK)
+    assert d.permission is ALLOW
+
+
+def test_shell_ordinary_file_unaffected_by_floor(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("hi", encoding="utf-8")
+    g = gate(_cat_allowed(), tmp_path)
+    assert g.check("run_shell", {"command": "cat notes.txt"}, tool_default=ASK).permission is ALLOW
+
+
+def test_decision_persistable_defaults_true(tmp_path: Path) -> None:
+    g = gate(Policy(), tmp_path)
+    assert g.check("read_file", {"path": "x"}).persistable is True
+
+
 # --- filesystem write allowlist --------------------------------------------
 
 

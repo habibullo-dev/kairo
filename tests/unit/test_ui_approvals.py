@@ -95,6 +95,63 @@ async def test_always_runs_on_always_and_allows() -> None:
     assert marker == ["persisted"]  # the narrow-persist ran exactly once
 
 
+# --- non-persistable (tainted egress, Phase 9) -----------------------------
+
+_TAINTED = Decision(Permission.ASK, "private data was read this turn", persistable=False)
+
+
+async def test_to_public_carries_persistable_flag() -> None:
+    cm = _cm()
+    conn = cm.register(_FakeWS())
+    approvals = ApprovalManager(cm)
+    # A persistable ASK advertises persistable: true.
+    task = await _start(approvals, _call())
+    (pending,) = approvals.pending()
+    assert pending.to_public()["persistable"] is True
+    nonce = await approvals.mint_nonce(pending.decision_id, conn)
+    approvals.resolve(pending.decision_id, nonce, "deny")
+    await task
+    # A tainted-egress ASK advertises persistable: false (client hides "Always allow").
+    t2 = asyncio.create_task(
+        approvals.request(
+            _call("web_fetch", url="http://x"),
+            _TAINTED,
+            kind="turn",
+            title=None,
+            on_always=lambda: "should-not-run",
+        )
+    )
+    await asyncio.sleep(0)
+    (p2,) = approvals.pending()
+    assert p2.to_public()["persistable"] is False
+    approvals.resolve(p2.decision_id, await approvals.mint_nonce(p2.decision_id, conn), "deny")
+    await t2
+
+
+async def test_always_on_non_persistable_does_not_persist() -> None:
+    # Structural guarantee: even if a crafted client sends "always" on a non-persistable
+    # decision, on_always never runs — it degrades to approve-once (ALLOW, nothing persisted).
+    cm = _cm()
+    conn = cm.register(_FakeWS())
+    approvals = ApprovalManager(cm)
+    marker: list[str] = []
+    task = asyncio.create_task(
+        approvals.request(
+            _call("web_fetch", url="http://x"),
+            _TAINTED,
+            kind="turn",
+            title=None,
+            on_always=lambda: marker.append("persisted") or "did",
+        )
+    )
+    await asyncio.sleep(0)
+    (pending,) = approvals.pending()
+    nonce = await approvals.mint_nonce(pending.decision_id, conn)
+    approvals.resolve(pending.decision_id, nonce, "always")
+    assert await task is Permission.ALLOW  # the action still proceeds once
+    assert marker == []  # but nothing was persisted
+
+
 # --- the nonce / replay matrix (the load-bearing safety property) ----------
 
 

@@ -7,6 +7,7 @@ from jarvis.observability.cost import (
     cost_of,
     price_for,
 )
+from jarvis.observability.egress import EGRESS_CATEGORIES, log_egress
 from jarvis.observability.logging import (
     bind_trace,
     clear_trace,
@@ -17,6 +18,7 @@ from jarvis.observability.logging import (
 )
 
 __all__ = [
+    "EGRESS_CATEGORIES",
     "PRICES",
     "Price",
     "Usage",
@@ -26,6 +28,7 @@ __all__ = [
     "cost_of",
     "get_logger",
     "get_trace_id",
+    "log_egress",
     "new_trace_id",
     "price_for",
 ]

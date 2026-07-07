@@ -49,6 +49,27 @@ async def test_read_file(tmp_path: Path) -> None:
     assert content_of(result) == "hello world"
 
 
+async def test_list_dir_redacts_sensitive_entries(tmp_path: Path) -> None:
+    # Phase 9 cross-cutting floor: a secret must not be revealed even by name in a listing.
+    (tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("ok", encoding="utf-8")
+    body = content_of(await ListDirTool().run(ListDirTool.Params(path=str(tmp_path))))
+    assert "notes.txt" in body
+    assert ".env" not in body
+
+
+async def test_glob_search_redacts_sensitive_matches(tmp_path: Path) -> None:
+    d = tmp_path / "data" / "connectors"
+    d.mkdir(parents=True)
+    (d / "google_token.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "keep.json").write_text("{}", encoding="utf-8")
+    body = content_of(
+        await GlobSearchTool().run(GlobSearchTool.Params(pattern="**/*.json", root=str(tmp_path)))
+    )
+    assert "keep.json" in body
+    assert "google_token.json" not in body
+
+
 async def test_read_missing_file_is_error(tmp_path: Path) -> None:
     result = await ReadFileTool().run(ReadFileTool.Params(path=str(tmp_path / "nope.txt")))
     assert is_error(result)

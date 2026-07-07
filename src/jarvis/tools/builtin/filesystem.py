@@ -29,7 +29,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from jarvis.paths import resolve_path
+from jarvis.paths import is_sensitive_path, resolve_path
 from jarvis.tools.base import Permission, Tool, ToolContext, ToolResult
 
 # Fallbacks used only when a tool has no injected config (e.g. bare unit tests);
@@ -113,7 +113,13 @@ def _list_dir(path: Path, max_entries: int) -> ToolResult | str:
         return ToolResult(content=f"No such directory: {path}", is_error=True)
     if not path.is_dir():
         return ToolResult(content=f"{path} is not a directory.", is_error=True)
-    entries = sorted(path.iterdir(), key=lambda e: (e.is_file(), e.name.lower()))
+    # Redact sensitive entries (Phase 9): the connector token file, .env, SSH keys, etc. must
+    # not be revealed even by name — the sensitive-path floor now spans list/glob, not just
+    # read_file. Filtered before slicing so the "N more" count reflects visible entries only.
+    entries = sorted(
+        (e for e in path.iterdir() if not is_sensitive_path(e)),
+        key=lambda e: (e.is_file(), e.name.lower()),
+    )
     shown = entries[:max_entries]
     lines = [f"{'d' if e.is_dir() else 'f'}  {e.name}" for e in shown]
     body = "\n".join(lines) or "(empty directory)"
@@ -143,7 +149,8 @@ class GlobParams(BaseModel):
 def _glob_search(root: Path, pattern: str, max_results: int) -> ToolResult | str:
     if not root.is_dir():
         return ToolResult(content=f"No such directory: {root}", is_error=True)
-    matches = sorted(str(p) for p in root.glob(pattern))
+    # Redact sensitive matches (Phase 9) — a glob must not surface the connector token path.
+    matches = sorted(str(p) for p in root.glob(pattern) if not is_sensitive_path(p))
     shown = matches[:max_results]
     header = f"{len(matches)} match(es)"
     if len(matches) > len(shown):

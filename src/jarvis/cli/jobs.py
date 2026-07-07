@@ -88,10 +88,15 @@ class JobRunner:
         session_id = await self.session_store.create_session(
             title=f"task #{task.id}: {task.title}"[:120], kind="task"
         )
-        # The unattended gate is built HERE — the only gate a job ever sees.
+        # The unattended gate is built HERE — the only gate a job ever sees. The egress-tool
+        # set is derived from the live registry so any tool marked ``egress`` is demoted
+        # ALLOW→DENY unattended (Phase 9), not just the hand-listed DEMOTE_ALLOW names.
         ugate = UnattendedGate(
             self.gate,
             allow_tools=frozenset(self.config.scheduler.unattended_allow_tools),
+            egress_tools=frozenset(
+                t.name for t in self.registry.all() if getattr(t, "egress", False)
+            ),
         )
         approver = HeadlessApprover()
         loop = AgentLoop(

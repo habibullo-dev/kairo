@@ -135,7 +135,10 @@ function showTopApproval() {
   document.getElementById("ap-waiting").textContent = "Preparing secure confirmation…";
   document.getElementById("ap-spin").classList.add("show");
   for (const id of ["ap-approve", "ap-always"]) document.getElementById(id).disabled = true;
-  document.getElementById("ap-always").style.display = next.kind === "voice" ? "none" : ""; // voice: no "always"
+  // No "always" for voice (per-instance only) OR a non-persistable decision (tainted egress:
+  // a private read happened this turn, so sending off-box must not become a standing grant).
+  const noAlways = next.kind === "voice" || next.persistable === false;
+  document.getElementById("ap-always").style.display = noAlways ? "none" : "";
   overlay.dataset.decision = next.decision_id;
   overlay.classList.add("show");
   setSurface("gate", true);                          // the screen is now watching

@@ -22,6 +22,8 @@ AUDIT_EVENTS = frozenset(
         "permission_resolved",
         "tool_call",
         "tool_denied",
+        "egress",  # the "what left the box" ledger (Phase 9, amendment A5)
+        "egress_taint_demotion",  # an egress ALLOW became a non-persistable ASK this turn
         "ui_approval_requested",
         "ui_approval_resolved",
         "ui_approval_failed_closed",

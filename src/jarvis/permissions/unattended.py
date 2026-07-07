@@ -44,9 +44,20 @@ if TYPE_CHECKING:
 #: A background run must not be able to schedule work, cancel your reminders, or
 #: write to long-term memory on its own authority. ``spawn_agent`` is here too
 #: (Phase 6): an unattended job must not fan out into sub-agents — no unsupervised
-#: swarm (ADR-0006; delegation is interactive-only in this phase).
+#: swarm (ADR-0006; delegation is interactive-only in this phase). ``gmail_create_draft``
+#: and ``send_notification`` join it (Phase 9): egress-with-agency is never unattended, and
+#: HARD_DENY means no ``unattended_allow_tools`` opt-in can reopen them — the digest's
+#: deterministic delivery path (host code, not a tool) is the only unattended egress.
 HARD_DENY: frozenset[str] = frozenset(
-    {"schedule_task", "cancel_task", "remember", "forget", "spawn_agent"}
+    {
+        "schedule_task",
+        "cancel_task",
+        "remember",
+        "forget",
+        "spawn_agent",
+        "gmail_create_draft",
+        "send_notification",
+    }
 )
 
 #: Side-effecting tools whose *ALLOW* is demoted to DENY unless explicitly opted in.
@@ -54,7 +65,9 @@ HARD_DENY: frozenset[str] = frozenset(
 #: ingest_source/write_wiki_page persist retrievable content, so an interactive
 #: "always allow" must not silently let a 3am research job feed the knowledge base;
 #: opting a background pipeline in requires scheduler.unattended_allow_tools + the
-#: content lands quarantined 'unreviewed' anyway (ADR-0004).
+#: content lands quarantined 'unreviewed' anyway (ADR-0004). Phase 9 adds a *property*-driven
+#: rule on top of this name set (see ``egress_tools``): any tool marked ``egress`` is demoted
+#: the same way, so a persisted `tools: {web_fetch: allow}` can't send at 3am either.
 DEMOTE_ALLOW: frozenset[str] = frozenset(
     {"run_shell", "write_file", "ingest_source", "write_wiki_page"}
 )
@@ -66,11 +79,23 @@ class UnattendedGate:
     Same ``check`` signature as the wrapped gate, so an :class:`~jarvis.core.agent.AgentLoop`
     uses it interchangeably. ``demoted`` counts ALLOW→DENY demotions this run (the
     runner sums it with the approver's denials for the run's ``denied_count``).
+
+    ``egress_tools`` is the set of tool names whose :attr:`Tool.egress` is True, computed from
+    the registry at construction (jobs.py). Any egress tool's ALLOW is demoted to DENY unless
+    opted into ``allow_tools`` — this is the property-driven half of rule 2, so a new egress
+    connector is covered automatically without editing :data:`DEMOTE_ALLOW`.
     """
 
-    def __init__(self, inner: PermissionGate, *, allow_tools: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self,
+        inner: PermissionGate,
+        *,
+        allow_tools: frozenset[str] = frozenset(),
+        egress_tools: frozenset[str] = frozenset(),
+    ) -> None:
         self.inner = inner
         self.allow_tools = allow_tools
+        self.egress_tools = egress_tools
         self.demoted = 0
 
     def check(
@@ -90,10 +115,11 @@ class UnattendedGate:
 
         decision = self.inner.check(tool_name, tool_input, tool_default=tool_default)
 
-        # 2. A side-effecting ALLOW granted interactively does not extend here.
+        # 2. A side-effecting or egress ALLOW granted interactively does not extend here.
+        demotable = tool_name in DEMOTE_ALLOW or tool_name in self.egress_tools
         if (
             decision.permission is Permission.ALLOW
-            and tool_name in DEMOTE_ALLOW
+            and demotable
             and tool_name not in self.allow_tools
         ):
             self.demoted += 1

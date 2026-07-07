@@ -158,13 +158,51 @@ def test_ask_passes_through_for_the_approver_to_deny(tmp_path: Path) -> None:
     assert gate.demoted == 0
 
 
-def test_web_tool_follows_policy(tmp_path: Path) -> None:
-    # Not in the demote set: a user who allowed web_fetch keeps research jobs working.
-    allowed = _unattended(Policy(tools={"web_fetch": ALLOW}), tmp_path)
-    assert allowed.check("web_fetch", {"url": "https://x"}, tool_default=ASK).permission is ALLOW
-    # ask-by-default (the shipped web default) becomes a headless deny via the approver
+def test_web_tool_ask_by_default_is_headless_denied(tmp_path: Path) -> None:
+    # The shipped default (ASK) becomes a headless deny via the approver — unchanged.
     asked = _unattended(Policy(), tmp_path)
     assert asked.check("web_fetch", {"url": "https://x"}, tool_default=ASK).permission is ASK
+
+
+# --- egress-property demotion (Phase 9) --------------------------------------
+
+
+def _egress_gate(policy: Policy, root: Path, **kw) -> UnattendedGate:
+    # Production wires egress_tools from the registry (jobs.py). web tools are egress=True.
+    return UnattendedGate(_inner(policy, root), egress_tools=frozenset({"web_fetch"}), **kw)
+
+
+def test_persisted_egress_allow_is_demoted(tmp_path: Path) -> None:
+    # Pre-mortem finding #1: a persisted `tools: {web_fetch: allow}` must NOT send at 3am.
+    # With the egress set wired, the ALLOW is demoted to DENY (property-driven, not by name).
+    gate = _egress_gate(Policy(tools={"web_fetch": ALLOW}), tmp_path)
+    decision = gate.check("web_fetch", {"url": "https://x"}, tool_default=ASK)
+    assert decision.permission is DENY
+    assert gate.demoted == 1
+
+
+def test_egress_opt_in_restores_it(tmp_path: Path) -> None:
+    # scheduler.unattended_allow_tools = [web_fetch] is the conscious opt-in.
+    gate = _egress_gate(
+        Policy(tools={"web_fetch": ALLOW}), tmp_path, allow_tools=frozenset({"web_fetch"})
+    )
+    assert gate.check("web_fetch", {"url": "https://x"}, tool_default=ASK).permission is ALLOW
+    assert gate.demoted == 0
+
+
+def test_egress_with_agency_tools_are_hard_denied(tmp_path: Path) -> None:
+    # gmail_create_draft / send_notification are HARD_DENY: egress-with-agency is never
+    # unattended, and no unattended_allow_tools opt-in can reopen them.
+    policy = Policy(tools={"gmail_create_draft": ALLOW, "send_notification": ALLOW})
+    gate = UnattendedGate(
+        _inner(policy, tmp_path),
+        allow_tools=frozenset({"gmail_create_draft", "send_notification"}),
+        egress_tools=frozenset({"gmail_create_draft", "send_notification"}),
+    )
+    for tool in ("gmail_create_draft", "send_notification"):
+        decision = gate.check(tool, {}, tool_default=ASK)
+        assert decision.permission is DENY, tool
+        assert "meta tool" in decision.reason  # hard-denied before any policy/opt-in
 
 
 # --- headless approver -------------------------------------------------------

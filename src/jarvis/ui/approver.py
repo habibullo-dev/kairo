@@ -62,7 +62,9 @@ class PendingApproval:
 
     def to_public(self) -> dict:
         """The client payload — full and untruncated (EXACT ACTION · EXACT PAYLOAD). The
-        screen is private and authenticated, so the whole input is shown before consent."""
+        screen is private and authenticated, so the whole input is shown before consent.
+        ``persistable`` is False for a tainted-egress ASK (Phase 9) so the client hides the
+        "Always allow" affordance — and ``_apply`` refuses to persist it regardless."""
         return {
             "decision_id": self.decision_id,
             "tool": self.call.name,
@@ -70,6 +72,7 @@ class PendingApproval:
             "reason": self.decision.reason,
             "kind": self.kind,
             "title": self.title,
+            "persistable": self.decision.persistable,
         }
 
 
@@ -189,9 +192,12 @@ class ApprovalManager:
     def _apply(self, pending: PendingApproval, action: str) -> tuple[Permission, str | None]:
         if action == "deny":
             return Permission.DENY, None
-        if action == "always":
+        # A non-persistable decision (tainted egress, Phase 9) never persists — even if a
+        # crafted client sends "always", it degrades to approve-once. The client also hides
+        # the button, but this is the structural guarantee.
+        if action == "always" and pending.decision.persistable:
             return Permission.ALLOW, pending.on_always()
-        return Permission.ALLOW, None  # approve once
+        return Permission.ALLOW, None  # approve once (or a suppressed "always")
 
 
 class UIApprover:

@@ -31,6 +31,12 @@ def test_always_allow_is_deemphasized_vs_approve_once() -> None:
     assert INDEX.index("ap-approve") < INDEX.index("ap-always") < INDEX.index("ap-deny")
 
 
+def test_always_allow_hidden_for_tainted_egress() -> None:
+    # Phase 9: the modal hides "Always allow" for a non-persistable decision (an egress ASK
+    # after a private read this turn), the same way it does for voice-kind approvals.
+    assert "persistable === false" in APP_JS
+
+
 def test_debug_is_off_by_default_and_presentation_only() -> None:
     # The mode toggle defaults to Daily; Debug is a body class that only reveals telemetry.
     assert 'id="mode-daily" class="active"' in INDEX

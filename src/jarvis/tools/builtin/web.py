@@ -8,12 +8,14 @@ pulled from the injected ToolContext's config, not from globals.
 from __future__ import annotations
 
 import asyncio
+from urllib.parse import urlsplit
 
 import httpx
 import trafilatura
 from pydantic import BaseModel, Field
 
 from jarvis import net
+from jarvis.observability import log_egress
 from jarvis.tools.base import Permission, Tool, ToolResult
 
 _TAVILY_URL = "https://api.tavily.com/search"
@@ -72,6 +74,7 @@ class WebSearchTool(Tool):
     # Network egress asks by default: the query leaves the machine (and could carry
     # sensitive context). "Always allow" at the prompt persists a tool-level allow.
     permission_default = Permission.ASK
+    egress = True  # the query leaves the box (taint + unattended rules apply)
 
     async def run(self, params: WebSearchParams) -> ToolResult | str:
         cfg = self.context.config
@@ -81,6 +84,8 @@ class WebSearchTool(Tool):
                 content="web_search is not configured (set TAVILY_API_KEY in .env).",
                 is_error=True,
             )
+        # Egress ledger: record the category only — never the query (it may carry context).
+        log_egress(category="web_search", destination_type="public_web")
         data = await _tavily_search(api_key, params.query, params.max_results)
         results = data.get("results", [])
         body: list[str] = []
@@ -112,8 +117,16 @@ class WebFetchTool(Tool):
     # Asks by default: fetching a URL is an outbound request to an arbitrary host
     # (SSRF / exfiltration surface). The human sees the target URL before approving.
     permission_default = Permission.ASK
+    egress = True  # an outbound request to an arbitrary host (taint + unattended rules apply)
 
     async def run(self, params: WebFetchParams) -> ToolResult | str:
+        # Egress ledger: record the bare hostname only — never the full URL (its path/query
+        # is exactly where an exfiltration payload would ride).
+        log_egress(
+            category="web_fetch",
+            destination_type="public_web",
+            detail=urlsplit(params.url).hostname or None,
+        )
         html = await _fetch_html(params.url, params.timeout_seconds)
         text = await asyncio.to_thread(trafilatura.extract, html)
         if not text:

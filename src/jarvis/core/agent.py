@@ -110,6 +110,10 @@ class AgentLoop:
         self.add_time_context = add_time_context
         self.now = now
         self.log = get_logger("jarvis.agent")
+        # Phase 9 egress taint: set True once a reads_private tool runs in the current turn,
+        # after which an egress tool's ALLOW is demoted to a non-persistable ASK. Reset per
+        # turn in run_turn; safe as instance state because turns are serialized (turn_lock).
+        self._turn_tainted = False
 
     def _system_with_extras(self, recall_block: str | None, summary: str | None) -> str:
         """Base system prompt plus dynamic extras, ordered stable → volatile
@@ -142,6 +146,7 @@ class AgentLoop:
         total = Usage()
         total_latency_ms = 0.0
         limits = self.config.limits
+        self._turn_tainted = False  # egress taint is per-turn (Phase 9)
 
         self.log.info("turn_start", trace_id=trace_id, model=self.config.models.main)
 
@@ -232,6 +237,12 @@ class AgentLoop:
         )
 
     async def _handle_tools(self, tool_calls: list[ToolCall], emit: EventSink) -> list[dict]:
+        # Egress taint (Phase 9): a batch is tainted if the turn already is, OR if this same
+        # batch contains any reads_private call — so a model emitting gmail_read + web_fetch
+        # together can't slip the fetch through before the read "runs" (permission for the
+        # whole batch is resolved before any executes). Order within the batch is irrelevant.
+        effective_taint = self._turn_tainted or self._batch_reads_private(tool_calls)
+
         # Phase 1 — resolve permission for each call sequentially (orderly prompts).
         resolved: list[tuple[ToolCall, object, Permission]] = []
         for call in tool_calls:
@@ -243,7 +254,19 @@ class AgentLoop:
                 emit(ToolDecision(call.name, call.input, gate_decision="deny", resolution="deny"))
                 resolved.append((call, None, Permission.DENY))
                 continue
-            decision = self.gate.check(call.name, call.input, tool_default=tool.permission_default)
+            raw = self.gate.check(call.name, call.input, tool_default=tool.permission_default)
+            decision = raw
+            # Egress demotion: once private data is in play this turn, an egress ALLOW must
+            # not run silently — it becomes a non-persistable ASK the human sees. The exfil
+            # pipe (silent mail read → silent web_fetch) is structurally closed.
+            egress = getattr(tool, "egress", False)
+            if effective_taint and egress and raw.permission is Permission.ALLOW:
+                decision = Decision(
+                    Permission.ASK,
+                    "private data was read this turn; sending off-box requires your approval",
+                    persistable=False,
+                )
+                self.log.info("egress_taint_demotion", tool=call.name)
             self.log.info(
                 "permission_decision",
                 tool=call.name,
@@ -256,19 +279,35 @@ class AgentLoop:
                 self.log.info("permission_resolved", tool=call.name, permission=str(perm))
             # Emitted before execution for EVERY call — including denials, which
             # ToolStarted (post-ALLOW only) never sees. This is what lets an eval
-            # record what the model attempted, not just what ran.
+            # record what the model attempted, not just what ran. gate_decision is the RAW
+            # gate verdict (pre-taint); resolution is the final permission after the approver.
             emit(
                 ToolDecision(
                     call.name,
                     call.input,
-                    gate_decision=str(decision.permission),
+                    gate_decision=str(raw.permission),
                     resolution=str(perm),
                 )
             )
             resolved.append((call, tool, perm))
 
+        # A private read that WILL run taints the rest of the turn.
+        if any(
+            tool is not None and getattr(tool, "reads_private", False) and perm is Permission.ALLOW
+            for _c, tool, perm in resolved
+        ):
+            self._turn_tainted = True
+
         # Phase 2 — run approved tools in parallel; denied/unknown become error results.
         return await asyncio.gather(*(self._run_one(c, t, p, emit) for c, t, p in resolved))
+
+    def _batch_reads_private(self, tool_calls: list[ToolCall]) -> bool:
+        """True if any call in this batch is a ``reads_private`` tool (order-independent)."""
+        for call in tool_calls:
+            tool = self.registry.get(call.name)
+            if tool is not None and getattr(tool, "reads_private", False):
+                return True
+        return False
 
     async def _run_one(
         self, call: ToolCall, tool: object, perm: Permission, emit: EventSink

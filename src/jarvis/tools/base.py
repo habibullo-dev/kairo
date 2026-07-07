@@ -100,6 +100,14 @@ class Tool(ABC):
     #: executor's timeout"; a float overrides it; ``None`` disables the executor
     #: timeout so the tool can own its own (see :data:`DEFAULT_TIMEOUT`).
     timeout_override: ClassVar[float | None | _DefaultTimeout] = DEFAULT_TIMEOUT
+    #: This tool sends data off-box under model control (an egress sink: web search/fetch,
+    #: a notification, a mail draft). Consumed by the data-flow rules (Phase 9, ADR-0009):
+    #: a private read this turn demotes an egress ALLOW→ASK (non-persistable), and the
+    #: UnattendedGate denies any egress tool not explicitly opted in. Default False.
+    egress: ClassVar[bool] = False
+    #: This tool returns personal/external data (mail, calendar, drive). Executing it
+    #: *taints* the turn so subsequent egress can't run silently. Default False.
+    reads_private: ClassVar[bool] = False
 
     def __init__(self, context: ToolContext | None = None) -> None:
         self.context = context or ToolContext()

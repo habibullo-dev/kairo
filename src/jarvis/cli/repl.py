@@ -345,16 +345,21 @@ class Repl:
             # 'v' option to page the full text; the full payload is always available
             # before consent, never approved sight-unseen.
             self.console.print(f"  [dim]{_short_summary(summary) if long else summary}[/]")
-        prompt = (
-            "  [y]es / [N]o / [a]lways / [v]iew full: " if long else "  [y]es / [N]o / [a]lways: "
-        )
+        # A non-persistable decision (egress after a private read this turn, Phase 9) never
+        # offers "always" — a wider standing grant must not be minted from a tainted turn.
+        opts = ["[y]es", "[N]o"]
+        if decision.persistable:
+            opts.append("[a]lways")
+        if long:
+            opts.append("[v]iew full")
+        prompt = "  " + " / ".join(opts) + ": "
         while True:
             answer = (await asyncio.to_thread(input, prompt)).strip().lower()
             if long and answer in ("v", "view"):
                 self.console.print(summary, markup=False)  # full, untruncated payload
                 continue
             break
-        if answer in ("a", "always"):
+        if decision.persistable and answer in ("a", "always"):
             self._persist_always(call)
             return Permission.ALLOW
         if answer in ("y", "yes"):
