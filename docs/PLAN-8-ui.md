@@ -378,3 +378,27 @@ surfaces before capability**: auth (2) and approvals/Gate (3) land before turns 
   the deliberate terminal ritual (ADR-0005) stands.
 - **Vanilla static frontend** trades framework ergonomics for zero toolchain, zero supply
   chain, and a testable Python safety layer. Revisit only if screen complexity outgrows it.
+
+## Live verification (Task 11)
+
+Executed against the real server + real model at commit `0a9a023` (workstation UI on
+`127.0.0.1:8787`):
+
+- **Server boots + auth flow (real HTTP).** `jarvis --ui` prints the tokened loopback URL;
+  `GET /api/health` → `{"status":"ok","app":"kairo"}`; `GET /?token=…` → `303 → /` with an
+  `HttpOnly; SameSite=Strict` session cookie (clean URL, no token in history).
+- **Gate approve/deny + audit (real model, deterministic in-loop harness).** A real
+  `AgentLoop` turn asked to `write_file` genuinely **paused at the Gate**; resolving through
+  the real `POST /api/approvals/{id}/resolve` with a single-use nonce bound to a live
+  connection **committed the write on APPROVE** (`demo.txt` created) and **blocked it on
+  DENY** (`secret.txt` absent). Both resolutions were audited `channel=ui`
+  (`write_file/allow/ui`, `write_file/deny/ui`).
+- **No secret on the wire.** `GET /api/hub` returns provider *presence booleans* only; the
+  launch token and the Anthropic key never appear in any response (asserted live + by the
+  route-wide secret-absence sweep).
+
+The remainder of the ritual (voice escalation fail-closed, `kb review` / task-cancel /
+memory-forget flows, one-attention-surface + emergency stop, Debug-reveals-never-enables) is
+exercised by the keyless suite through the *real ASGI stack* (FakeClient replaces only the
+model's token generation) — 40+ UI tests across auth, the nonce/replay matrix, the turn
+stream, read models, the fail-closed screen, and the route-closed-set pin.

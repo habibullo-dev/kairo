@@ -1966,3 +1966,73 @@ non-obvious *implementation* decisions per task.
   refuses to capture and nothing is ingested — the same posture as the push-to-talk
   listener and `spawn_agent` in the unattended HARD_DENY set. Three surfaces, one rule: the
   microphone never opens without a present human.
+
+## Phase 8 — the UI is an interface, not an authority
+
+- **One approval path is the whole safety story, restated for the web.** The workstation
+  drives the same `AgentLoop` through the same two seams (events out, injected `Approver`
+  in) as the REPL and voice. `create_app` builds the *safety core* (auth, gate, approvals,
+  connections); `build_ui_app` composes the domain loop onto it with the UI approver seams
+  swapped in (turn loop → `UIApprover`, child ASKs → the UI screen, the REPL's gate shared).
+  Nothing reaches a tool except through the loop under the gate, and the mutation set is a
+  closed, route-table-pinned list of pre-existing human-authority ops. The pin *is* the
+  guarantee: a new route that touches a tool fails the test.
+
+## Phase 8 — localhost is not a private surface
+
+- **A port on 127.0.0.1 is reachable by any local process and, via CSRF/DNS-rebinding, any
+  web page the browser visits.** So the UI earns TTY-equivalence or refuses: a per-launch
+  token exchanged (clean-URL 303, no token in history) for an `HttpOnly; SameSite=Strict`
+  session, a Host allowlist (anti-rebinding), an Origin check on mutations + the WS
+  (anti-CSRF), a strict CSP, `Referrer-Policy: no-referrer`, and **no CORS middleware at
+  all**. Auth landed as its own task *before* any turn/voice/frontend capability — safety
+  surfaces first, same discipline as Phase 3's unattended gate and Phase 7's approver.
+- **Test gotcha that mattered:** FastAPI's `TestClient` forces `Host: testserver` on
+  *WebSocket* handshakes (but honors `base_url` for HTTP). My WS auth tests were passing for
+  the wrong reason (rejected on Host, not the condition under test) until each set an explicit
+  loopback `host` header. A guard test that passes for the wrong reason is worse than none.
+
+## Phase 8 — approvals are replay-proof by construction
+
+- **Auth alone is not enough for an approval.** The web replaces "a synchronous human at the
+  TTY" with a cookie — which can be replayed from a dead tab or a stale page. So resolving a
+  Gate item requires (session cookie + a **live WebSocket** heartbeating within the window +
+  a **single-use nonce** minted only over that socket *after* the client acks the modal is
+  shown, bound to the connection, invalidated on use and on disconnect). Proof-of-visibility
+  is a precondition of approvability, not a courtesy flag.
+- **The voice screen reuses the same queue, fail-closed.** `UIScreenApprover.available()` is
+  a *positive* check (a live client with the Gate surface mounted); `confirm()` adds an
+  `abort_when` watcher to `ApprovalManager.request` so the surface vanishing mid-confirmation
+  resolves DENY. "Voice prepares, screen commits" holds across the second screen
+  implementation because there is still exactly one approval path.
+
+## Phase 8 — one persistence truth; a refactor is only safe if pinned
+
+- **Extracting `_persist_always` from the REPL into `permissions/approvals.py` is the one
+  behavior-affecting change in the phase** — everything else is additive. The REPL's ~29
+  existing approval tests are the parity pin: they pass unchanged against the shared module,
+  so UI and REPL persist "always allow" identically (a stray click can't widen more than a
+  stray keystroke). The Task-10 live gate (36/36 PASS→PASS) is the outer bracket.
+
+## Phase 8 — a self-contained frontend keeps safety testable
+
+- **The frontend carries no safety logic — it renders and clicks.** Hand-written vanilla ES
+  modules (no build step, no CDN, no external fonts) mean the untrusted-with-nothing-to-lose
+  layer has nothing to bypass, and all enforcement lives in testable Python. Pins: assets
+  served under the strict CSP, a no-external-URL grep (only W3C xmlns namespaces allowed),
+  and **Debug Mode is presentation-only** — it toggles a body class that reveals telemetry
+  but gates no route or action (route/capability parity, asserted).
+- **"Calm" has a failure mode: hiding.** The visibility invariant (every side-effecting
+  action, incl. denied calls and sub-agent activity, surfaces at least a summary line) is
+  what keeps calm from becoming the "hidden background actions" problem we never had.
+
+## Phase 8 — the ~14-min cap vs. expensive scenarios; certify what you changed
+
+- **Per-scenario resumable checkpointing doesn't help when a *single* scenario exceeds the
+  window.** The N=3 no-regression gate couldn't converge because the multi-sub-agent
+  `delegate_*` scenarios individually blow past the runtime's ~14-min background cap, so
+  their checkpoint never fires and each resume redoes them. The fix wasn't more retries — it
+  was matching the certification to the change: Phase 8 is a behavior-neutral, parity-pinned
+  refactor, so an **N=1** run across all 36 (which checkpoints per scenario and converges)
+  detects any regression, and the all-N safety evidence stands from the Phase-7 gates.
+  Result: GATE PASS 36/36 at `0a9a023`, identical verdict to `6bd4620`.
