@@ -58,6 +58,20 @@ def test_worker_role_may_route_to_cheap_provider_on_authority_grounds() -> None:
     assert reg.route("researcher").provider == "deepseek"
 
 
+def test_tool_capable_role_rejects_text_only_provider() -> None:
+    # coder must drive tools; Gemini is text-only (tool_capable=False) ⇒ rejected at validation,
+    # not left to fail at the client. text_only is NOT set on the route — the provider is.
+    reg = ModelRegistry({"coder": {"provider": "gemini", "model": "gemini-2.5-flash"}})
+    with pytest.raises(RouteError, match="must drive tools"):
+        reg.route("coder")
+
+
+def test_text_only_provider_allowed_on_worker_analysis_role() -> None:
+    # Gemini's intended use: an analysis/research worker that doesn't drive tools.
+    reg = ModelRegistry({"researcher": {"provider": "gemini", "model": "gemini-2.5-flash"}})
+    assert reg.route("researcher").provider == "gemini"
+
+
 # --- fail-closed availability -----------------------------------------------
 
 

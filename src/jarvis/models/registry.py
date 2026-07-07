@@ -10,7 +10,7 @@ tools — pre-mortem constraint).
 
 from __future__ import annotations
 
-from jarvis.models.providers import TRUSTED_AUTHORITY_PROVIDERS
+from jarvis.models.providers import TRUSTED_AUTHORITY_PROVIDERS, provider_spec
 from jarvis.models.roles import (
     DEFAULT_ROUTES,
     FINAL_AUTHORITY_ROLES,
@@ -51,6 +51,14 @@ def validate_route(role: str, route: ModelRoute) -> None:
     if route.text_only and role in TOOL_CAPABLE_ROLES:
         raise RouteError(
             f"role {role!r} must drive tools; a text-only route ({route.provider}) is not allowed"
+        )
+    spec = provider_spec(route.provider)
+    if role in TOOL_CAPABLE_ROLES and spec is not None and not spec.tool_capable:
+        # A tool-capable role needs a tool-capable provider. Gemini/OpenAI are text-only this
+        # phase, so `coder → gemini` is rejected at validation — not left to fail at the client.
+        raise RouteError(
+            f"role {role!r} must drive tools; provider {route.provider!r} is text-only "
+            f"(tool_capable=False) and cannot back a write-capable executor"
         )
     if (
         role in FINAL_AUTHORITY_ROLES or role in PRIVATE_CONTEXT_ROLES

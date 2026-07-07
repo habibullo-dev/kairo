@@ -235,3 +235,17 @@ def test_factory_openai_client_for_core_openai(tmp_path: Path) -> None:
     factory = ClientFactory(_cfg(tmp_path, openai_api_key="k"))
     client = factory.for_route(ModelRoute("openai", "gpt-5.2", text_only=True))
     assert isinstance(client, OpenAIChatClient)
+
+
+def test_factory_gemini_builds_openai_client_with_base_url(tmp_path: Path) -> None:
+    factory = ClientFactory(_cfg(tmp_path, gemini_api_key="k"))
+    client = factory.for_route(ModelRoute("gemini", "gemini-2.5-flash", text_only=True))
+    assert isinstance(client, OpenAIChatClient)  # Gemini rides the text-only OpenAI-compat client
+    base = factory._base_url(provider_spec("gemini"))
+    assert base == "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+
+def test_factory_fails_closed_on_missing_gemini_key(tmp_path: Path) -> None:
+    factory = ClientFactory(_cfg(tmp_path))
+    with pytest.raises(ConfigError, match="GEMINI_API_KEY"):
+        factory.for_route(ModelRoute("gemini", "gemini-2.5-flash", text_only=True))
