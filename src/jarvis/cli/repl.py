@@ -21,6 +21,7 @@ from jarvis.agents import AgentRunStore, SubAgentService
 from jarvis.cli.jobs import JobRunner
 from jarvis.cli.render import ConsoleRenderer
 from jarvis.config import Config
+from jarvis.connectors.factory import build_connectors
 from jarvis.core import AgentLoop, AnthropicClient, Approver
 from jarvis.core.client import LLMClient, ToolCall
 from jarvis.core.context import ContextManager
@@ -294,11 +295,20 @@ class Repl:
                 make_approver=self._make_subagent_approver,
             )
 
+        # External connectors (Phase 9): Google client + notifiers, or None. Built before
+        # discovery so the connector tools register (and gate on) the specific pieces present.
+        self.connectors = build_connectors(config)
+
         self.registry = ToolRegistry()
         self.registry.discover(
             "jarvis.tools.builtin",
             ToolContext(
-                config=config, memory=memory, tasks=tasks, knowledge=knowledge, agents=self.agents
+                config=config,
+                memory=memory,
+                tasks=tasks,
+                knowledge=knowledge,
+                agents=self.agents,
+                connectors=self.connectors,
             ),
         )
         if self.agents is not None:
@@ -316,6 +326,7 @@ class Repl:
                 tasks_enabled=tasks is not None,
                 knowledge_enabled=knowledge is not None,
                 delegation_enabled=self.agents is not None,
+                connectors_enabled=self.connectors is not None,
             ),
             context_manager=context_manager,
             memory=memory,
