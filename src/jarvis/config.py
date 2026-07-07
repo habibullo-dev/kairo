@@ -30,6 +30,10 @@ _REQUIRED_KEYS: dict[str, tuple[str, str]] = {
     "tavily": ("tavily_api_key", "TAVILY_API_KEY"),
     "openai": ("openai_api_key", "OPENAI_API_KEY"),  # cloud STT (Phase 7, opt-in)
     "elevenlabs": ("elevenlabs_api_key", "ELEVENLABS_API_KEY"),  # cloud TTS (Phase 7, opt-in)
+    "deepseek": ("deepseek_api_key", "DEEPSEEK_API_KEY"),  # provider worker (Phase 10C)
+    "qwen": ("dashscope_api_key", "DASHSCOPE_API_KEY"),  # Qwen via Alibaba DashScope (Phase 10C)
+    "zai": ("zai_api_key", "ZAI_API_KEY"),  # GLM / Z.ai worker (Phase 10C)
+    "gemini": ("gemini_api_key", "GEMINI_API_KEY"),  # Gemini text-only worker (Phase 10C)
     "google": ("google_client_id", "GOOGLE_CLIENT_ID"),  # Workspace connectors (Phase 9)
     "telegram": ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),  # send-only notifier (Phase 9)
     "kakao": ("kakao_rest_api_key", "KAKAO_REST_API_KEY"),  # send-to-me notifier (Phase 9)
@@ -69,6 +73,12 @@ class Secrets(BaseSettings):
     tavily_api_key: str = ""
     openai_api_key: str = ""  # cloud STT (Phase 7 voice, opt-in)
     elevenlabs_api_key: str = ""  # cloud TTS (Phase 7 voice, opt-in)
+    # Phase 10C direct model providers (opt-in workers). Keys ONLY here — never settings.yaml,
+    # never hardcoded. gemini_api_key is DISTINCT from the Phase 9 google_client_* connector keys.
+    deepseek_api_key: str = ""
+    dashscope_api_key: str = ""  # Qwen (Alibaba DashScope)
+    zai_api_key: str = ""  # GLM / Z.ai
+    gemini_api_key: str = ""
     # Connectors (Phase 9). Google OAuth client (Desktop app); Telegram bot token; Kakao
     # REST API key. All optional; the connect ritual + Config.require enforce presence.
     google_client_id: str = ""
@@ -92,6 +102,17 @@ class ModelsConfig(BaseModel):
     judge: str = "claude-opus-4-8"
     embedding: str = "voyage-3-large"
     routes: dict[str, dict] = Field(default_factory=dict)
+
+
+class ProvidersConfig(BaseModel):
+    """Direct model-provider enablement (Phase 10C). ``enabled`` is the opt-in flag list for the
+    non-core providers (deepseek / qwen / zai / gemini) — a provider is usable only if it appears
+    here AND its key is present AND it has ≥1 priced model (fail closed; anthropic/openai are
+    core and never gated by this list). ``base_urls`` optionally overrides a provider's default
+    endpoint. Empty by default: byte-identical to pre-10C behavior."""
+
+    enabled: list[str] = Field(default_factory=list)
+    base_urls: dict[str, str] = Field(default_factory=dict)
 
 
 class LimitsConfig(BaseModel):
@@ -437,6 +458,7 @@ class Config(BaseModel):
     modes: ModesConfig = Field(default_factory=ModesConfig)  # Phase 10
     budgets: BudgetsConfig = Field(default_factory=BudgetsConfig)  # Phase 10
     services: ServicesConfig = Field(default_factory=ServicesConfig)  # Phase 10B
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)  # Phase 10C
     paths: PathsConfig
     secrets: Secrets
 
@@ -525,6 +547,7 @@ def load_config(
             paths=PathsConfig(**data.get("paths", {})),
             budgets=BudgetsConfig(**data.get("budgets", {})),
             services=ServicesConfig(**data.get("services", {})),
+            providers=ProvidersConfig(**data.get("providers", {})),
             secrets=secrets,
         )
     except ValidationError as e:

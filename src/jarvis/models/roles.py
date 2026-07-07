@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from jarvis.models.providers import PROVIDER_CATALOG
+
 #: The LLM-completion roles the orchestration studio (10B) and the registry know about.
 #: ``planner`` doubles as the head planner / final reviewer (Fable by default).
 ROLES: tuple[str, ...] = (
@@ -28,10 +30,22 @@ ROLES: tuple[str, ...] = (
 )
 
 #: Roles that MUST be able to drive tools (a write-capable executor). A text-only route
-#: (e.g. the OpenAI adapter this phase) is rejected for these — enforced in the registry.
+#: (e.g. the OpenAI/Gemini adapters) is rejected for these — enforced in the registry.
 TOOL_CAPABLE_ROLES: frozenset[str] = frozenset({"coder"})
 
-PROVIDERS: frozenset[str] = frozenset({"anthropic", "openai"})
+#: Known providers — derived from the provider catalog (the single source of truth, Phase 10C).
+PROVIDERS: frozenset[str] = frozenset(PROVIDER_CATALOG)
+
+#: Final-authority roles: the head planner/synthesizer/final reviewer, and the eval judge.
+#: A route on one of these MUST resolve to a TRUSTED_AUTHORITY_PROVIDERS provider (anthropic
+#: this phase) — no config/project/run override can put a cheap worker here. Enforced (pure,
+#: catalog-static) in validate_route. Giving another provider final authority is a separate,
+#: explicit design change, never a routing override (Phase 10C non-negotiable #1).
+FINAL_AUTHORITY_ROLES: frozenset[str] = frozenset({"planner", "judge"})
+
+#: Roles that process raw PRIVATE content (conversation, memory extraction, compaction,
+#: digest summarize) and so must stay on a trusted provider this phase.
+PRIVATE_CONTEXT_ROLES: frozenset[str] = frozenset({"utility"})
 
 
 @dataclass(frozen=True)

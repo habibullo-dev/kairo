@@ -141,6 +141,11 @@ class PricingTable:
         and therefore usable — when it appears here; unpriced fails closed)."""
         return frozenset(self.services or {})
 
+    def priced_providers(self) -> frozenset[str]:
+        """Provider names with ≥1 priced model (Phase 10C provider availability). A provider
+        with no priced model is UNPRICED and therefore unavailable — fail closed."""
+        return frozenset(p for p, table in self.models.items() if table)
+
     def price_for(self, provider: str, model: str) -> Price | None:
         table = self.models.get(provider)
         if not table:

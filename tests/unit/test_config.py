@@ -12,6 +12,11 @@ KEYS = (
     "ANTHROPIC_API_KEY",
     "VOYAGE_API_KEY",
     "TAVILY_API_KEY",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "ZAI_API_KEY",
+    "GEMINI_API_KEY",
     "GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET",
     "TELEGRAM_BOT_TOKEN",
@@ -293,6 +298,40 @@ def test_services_config_yaml_override(tmp_path: Path) -> None:
     assert cfg.services.enabled == ["semgrep", "gitleaks", "playwright_local"]
     assert cfg.services.semgrep_config == "./rules"
     assert cfg.services.playwright_allow_ports == [5173, 3000]
+
+
+def test_providers_config_defaults(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.providers.enabled == []  # fail-closed: no opt-in provider on until listed
+    assert cfg.providers.base_urls == {}
+
+
+def test_providers_config_yaml_override(tmp_path: Path) -> None:
+    # Regression (f086cc6 class): load_config must actually read the providers: block. If it
+    # were dropped, providers.enabled would stay [] regardless and the 10C flag would be inert.
+    _write_settings(
+        tmp_path,
+        "providers:\n"
+        "  enabled: [deepseek, gemini]\n"
+        "  base_urls:\n"
+        "    deepseek: https://example.test/anthropic\n",
+    )
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.providers.enabled == ["deepseek", "gemini"]
+    assert cfg.providers.base_urls == {"deepseek": "https://example.test/anthropic"}
+
+
+def test_provider_secrets_read_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.secrets.deepseek_api_key == ""  # default empty
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-qw")
+    monkeypatch.setenv("ZAI_API_KEY", "sk-zai")
+    monkeypatch.setenv("GEMINI_API_KEY", "sk-gm")
+    cfg2 = load_config(root=tmp_path, env_file=None)
+    assert cfg2.secrets.deepseek_api_key == "sk-ds"
+    assert cfg2.secrets.dashscope_api_key == "sk-qw"
+    cfg2.require("deepseek", "qwen", "zai", "gemini")  # all present ⇒ no raise
 
 
 def test_budgets_config_yaml_override(tmp_path: Path) -> None:
