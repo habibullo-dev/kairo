@@ -51,12 +51,13 @@ function renderZones(container, api) {
       </div>
       <button class="btn btn-amber" id="daily-review">Review</button></div>`;
   }
-  // 2) NOW — current activity (secondary to a pending approval).
+  // 2) NOW — current activity. Stable IDs so app.js renderRunnerState() can write this card
+  // from the SAME settled state.runner as the status bar (never diverge after a turn ends).
   html += `<div class="card rise"><div class="zone-now">
-      <span class="runner-dot${busy ? " busy" : ""}"></span>
+      <span class="runner-dot${busy ? " busy" : ""}" id="daily-now-dot"></span>
       <div class="body">
-        <div class="lead${busy ? "" : " idle"}">${busy ? "Kairo is working" : "Kairo is idle"}</div>
-        <div class="desc">${busy ? "Working on your request." : "Nothing running. Send a message to begin."}</div>
+        <div class="lead${busy ? "" : " idle"}" id="daily-now-lead">${busy ? "Kairo is working" : "Kairo is idle"}</div>
+        <div class="desc" id="daily-now-desc">${busy ? "Working on your request." : "Nothing running. Send a message to begin."}</div>
       </div></div></div>`;
   // 3) TODAY — populated from /api/tasks if the scheduler is on (hidden otherwise).
   html += `<div class="card rise" id="daily-today" style="display:none">

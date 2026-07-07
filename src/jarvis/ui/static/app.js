@@ -72,8 +72,13 @@ function handleMessage(msg) {
   if (msg.kind === "event") { onEvent(msg); return; }
   if (msg.kind === "voice") { onVoice(msg); return; }
   if (msg.kind === "voice_state") { onVoiceState(msg.state); return; }
-  if (msg.kind === "turn_cancelled") { state.chat.push({ role: "assistant", text: "— turn cancelled —" }); refreshIfActive("daily"); }
-  if (msg.kind === "turn_error") { state.chat.push({ role: "assistant", text: `— error: ${msg.error} —` }); refreshIfActive("daily"); }
+  if (msg.kind === "turn_cancelled" || msg.kind === "turn_error") {
+    if (state.runner) state.runner.turn_busy = false;  // settle: the turn ended
+    const text = msg.kind === "turn_cancelled" ? "— turn cancelled —" : `— error: ${msg.error} —`;
+    state.chat.push({ role: "assistant", text });
+    refreshIfActive("daily");
+    renderRunnerState();
+  }
 }
 
 // Voice round-trip, made visible in Daily (one heard bubble + one safe caption). The reply
@@ -99,9 +104,13 @@ function onVoiceState(s) {
 function onEvent(evt) {
   state.trace.push(evt);
   if (state.trace.length > 500) state.trace.shift();
+  // A completed turn settles the runner state immediately — don't wait for the next poll,
+  // or the Daily card lingers on "working" after the turn (incl. a denied one) ends.
+  if (evt.type === "turn_completed" && state.runner) state.runner.turn_busy = false;
   dailyOnEvent(state, evt);
   refreshIfActive("daily");
   refreshIfActive("trace");
+  if (evt.type === "turn_completed") { renderRunnerState(); pollStatus(); }
 }
 
 // --- approvals: the priority attention surface ---
@@ -203,18 +212,33 @@ function navigate() {
 function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
 // --- status bar ---
+// Write BOTH the status bar and the Daily current-activity card from the same settled
+// state.runner — so they can never diverge (the "still working after deny" bug). Idempotent;
+// safe to call whether or not the Daily card is mounted.
+function renderRunnerState() {
+  const s = state.runner || {};
+  const busy = !!s.turn_busy;
+  const setText = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
+  const setClass = (id, c) => { const el = document.getElementById(id); if (el) el.className = c; };
+  const dotClass = "runner-dot" + (busy ? " busy" : "");
+  // status bar
+  setText("st-runner", busy ? "Kairo is working" : (s.runner_running ? "Kairo is idle" : "Kairo is paused"));
+  setClass("runner-dot", dotClass);
+  setText("st-turn", busy ? "working" : "ready");
+  const stop = document.getElementById("st-stop"); if (stop) stop.style.display = s.runner_running ? "" : "none";
+  const resume = document.getElementById("st-resume"); if (resume) resume.style.display = s.runner_running ? "none" : "";
+  // Daily current-activity card (if mounted) — same source, same result
+  if (document.getElementById("daily-now-lead")) {
+    setClass("daily-now-dot", dotClass);
+    setText("daily-now-lead", busy ? "Kairo is working" : "Kairo is idle");
+    setClass("daily-now-lead", "lead" + (busy ? "" : " idle"));
+    setText("daily-now-desc", busy ? "Working on your request." : "Nothing running. Send a message to begin.");
+  }
+}
+
 async function pollStatus() {
   const s = await api.get("/api/runner");
-  if (s) {
-    state.runner = s;
-    const busy = s.turn_busy;
-    document.getElementById("st-runner").textContent =
-      busy ? "Kairo is working" : (s.runner_running ? "Kairo is idle" : "Kairo is paused");
-    document.getElementById("runner-dot").className = "runner-dot" + (busy ? " busy" : "");
-    document.getElementById("st-turn").textContent = busy ? "working" : "ready";
-    document.getElementById("st-stop").style.display = s.runner_running ? "" : "none";
-    document.getElementById("st-resume").style.display = s.runner_running ? "none" : "";
-  }
+  if (s) { state.runner = s; renderRunnerState(); }
   const v = await api.get("/api/voice/status");
   if (v) {
     document.getElementById("st-voice").textContent = v.enabled ? (v.listening || "ready") : "off";
