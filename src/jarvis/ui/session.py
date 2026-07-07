@@ -215,6 +215,14 @@ class UiSession:
             self.log.warning("ui_turn_error", error=repr(exc))
             await self.connections.broadcast({"kind": "turn_error", "error": str(exc)})
 
+    def start_new_session(self, project_id: int | None) -> None:
+        """Begin a fresh conversation under a (possibly new) project scope. A session is
+        bound to one project for its life (reflection/promotion attribute to it), so a
+        project switch starts over rather than re-tagging the current transcript."""
+        self.messages = []
+        self.session_id = None
+        self.project_id = project_id
+
     def cancel(self) -> bool:
         """Cancel the in-flight turn (Ctrl-C parity). Returns True if one was cancelled."""
         if self._current is not None and not self._current.done():

@@ -36,7 +36,7 @@ class _Output:
         self.results.append(result)
 
 
-def _loop(tmp_path: Path, client, approver) -> AgentLoop:
+def _loop(tmp_path: Path, client, approver, project=None) -> AgentLoop:
     cfg = load_config(root=tmp_path, env_file=None)
     reg = ToolRegistry()
     reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
@@ -48,6 +48,7 @@ def _loop(tmp_path: Path, client, approver) -> AgentLoop:
         config=cfg,
         approver=approver,
         system=build_system(voice=True),
+        project=project,
     )
 
 
@@ -167,3 +168,67 @@ async def test_cancel_resets_state_and_reraises(tmp_path: Path) -> None:
     except asyncio.CancelledError:
         pass
     assert session.state == "idle"  # state reset even on barge-in
+
+
+# --- project binding (Phase 10 A3) ------------------------------------------
+
+
+async def test_voice_announces_active_project_at_turn_start(tmp_path: Path) -> None:
+    # A3: a voice turn announces its scope (project name, or None for global) before acting,
+    # carrying ONLY the name — never content.
+    from jarvis.projects import GLOBAL, ProjectContext
+
+    announced: list = []
+    ctx = ProjectContext(project_id=5, name="Beacon", repos=(), system_extra="x")
+    session = VoiceSession(
+        loop=_loop(
+            tmp_path, FakeClient([text_message("done"), text_message("done")]), VoiceApprover(None)
+        ),
+        stt=FakeTranscriber(scripted=["do the thing", "do more"]),
+        output=_Output(),
+        project=lambda: ctx,
+        on_project=announced.append,
+    )
+    await session.handle_audio(b"audio")
+    assert announced == ["Beacon"]  # name only
+
+    # Global fallback: no project set ⇒ announce None (never crashes, never leaks).
+    session.project = lambda: GLOBAL
+    await session.handle_audio(b"audio")
+    assert announced == ["Beacon", None]
+
+
+async def test_voice_writes_bind_to_turn_project_not_post_switch(tmp_path: Path) -> None:
+    # A3: the loop snapshots the active project per turn, so a switch between turns applies
+    # to the NEXT turn — a memory/tool write can't land in a project selected after the turn
+    # it ran in. We assert via the system prompt the loop actually used each turn.
+    from jarvis.projects import ProjectContext
+
+    systems: list[str] = []
+
+    class _Recording(FakeClient):
+        async def create(self, *, system: str, **kw):
+            systems.append(system)
+            return await super().create(system=system, **kw)
+
+    scope = {"ctx": ProjectContext(project_id=1, name="First", repos=(), system_extra="proj:First")}
+    provider = lambda: scope["ctx"]  # noqa: E731 - the shared provider (loop + session), as in prod
+    session = VoiceSession(
+        loop=_loop(
+            tmp_path,
+            _Recording([text_message("a"), text_message("b")]),
+            VoiceApprover(None),
+            project=provider,
+        ),
+        stt=FakeTranscriber(scripted=["turn one", "turn two"]),
+        output=_Output(),
+        project=provider,
+    )
+    await session.handle_audio(b"a")
+    assert "proj:First" in systems[-1]
+    # Switch AFTER the first turn — the second turn must reflect the new scope, the first
+    # turn's write stays attributed to First.
+    scope["ctx"] = ProjectContext(project_id=2, name="Second", repos=(), system_extra="proj:Second")
+    await session.handle_audio(b"b")
+    assert "proj:Second" in systems[-1]
+    assert "proj:First" in systems[0]  # first turn was First, unchanged

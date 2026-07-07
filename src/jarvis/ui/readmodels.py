@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from jarvis.memory.service import MemoryService
     from jarvis.memory.store import Memory
     from jarvis.persistence.sessions import SessionMeta, SessionStore
+    from jarvis.projects import Project, ProjectService
     from jarvis.scheduler.service import TaskService
     from jarvis.scheduler.store import Task, TaskRun
 
@@ -44,8 +45,10 @@ class UiServices:
     # Phase 9: the connector registry and the digest store back the Daily/Hub read models.
     connectors: Any = None
     digests: DigestStore | None = None
-    # Phase 10: the session store backs the chats list / search / pin / resume.
+    # Phase 10: the session store backs the chats list / search / pin / resume; the project
+    # service backs the Projects screen + the active-project switcher.
     sessions: SessionStore | None = None
+    projects: ProjectService | None = None
 
 
 # --- memory ----------------------------------------------------------------
@@ -70,6 +73,37 @@ async def list_memories(memory: MemoryService, *, type_filter: str | None = None
     if type_filter:
         rows = [m for m in rows if m.type == type_filter]
     return [serialize_memory(m) for m in rows]
+
+
+# --- projects --------------------------------------------------------------
+
+
+def serialize_project(project: Project) -> dict:
+    """A project row for the Projects screen / switcher. Settings are surfaced as-is
+    (overrides only — model routes/budgets/roster; never keys, enforced at write time)."""
+    return {
+        "id": project.id,
+        "name": project.name,
+        "slug": project.slug,
+        "description": project.description,
+        "status": project.status,
+        "color": project.color,
+        "icon": project.icon,
+        "repos": list(project.repos),
+        "settings": project.settings,
+        "created_at": project.created_at,
+        "updated_at": project.updated_at,
+    }
+
+
+async def projects_view(service: ProjectService) -> dict:
+    """The Projects screen: active projects + the currently-active scope (id, or None for
+    global) so the UI can badge the switcher."""
+    rows = await service.store.list(status="active")
+    return {
+        "projects": [serialize_project(p) for p in rows],
+        "active_project_id": service.current().project_id,
+    }
 
 
 # --- sessions (chats) ------------------------------------------------------

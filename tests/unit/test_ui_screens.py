@@ -128,5 +128,16 @@ def test_debug_css_only_toggles_visibility() -> None:
 
 def test_all_nav_screens_have_a_module() -> None:
     # Every nav entry in the shell has a screen module (no dead links / silent stubs).
-    for name in ("daily", "gate", "vault", "tasks", "memory", "meetings", "hub", "trace", "lab"):
+    for name in (
+        "daily",
+        "projects",
+        "gate",
+        "vault",
+        "tasks",
+        "memory",
+        "meetings",
+        "hub",
+        "trace",
+        "lab",
+    ):
         assert (STATIC / "screens" / f"{name}.js").is_file(), name

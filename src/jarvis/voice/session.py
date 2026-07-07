@@ -33,6 +33,7 @@ from jarvis.voice.framing import frame_transcript
 if TYPE_CHECKING:
     from jarvis.core.agent import AgentLoop, TurnResult
     from jarvis.core.events import Event
+    from jarvis.projects.context import ProjectContext
     from jarvis.voice.protocols import STTProvider
 
 # The one-utterance state machine. Wake/capture (LISTENING/CAPTURING) is the listening
@@ -69,6 +70,8 @@ class VoiceSession:
         output: VoiceOutput,
         turn_lock: asyncio.Lock | None = None,
         on_state: Callable[[str], None] | None = None,
+        project: Callable[[], ProjectContext] | None = None,
+        on_project: Callable[[str | None], None] | None = None,
         log=None,
     ) -> None:
         self.loop = loop
@@ -80,6 +83,12 @@ class VoiceSession:
         # Observes turn-lifecycle state (transcribing/thinking/speaking/idle) — a read-only
         # signal for the UI status pill. Carries ONLY the state name, never any content.
         self.on_state = on_state
+        # Phase 10 (A3): the active project provider (inherited from the process; GLOBAL when
+        # none) and an announce callback fired at turn start. ``on_project`` carries ONLY the
+        # project name (or None for global) — never content — so the surface can display
+        # "working in <project>" before the turn runs. Voice never *sets* a project.
+        self.project = project
+        self.on_project = on_project
         self.log = log or get_logger("jarvis.voice")
         self.messages: list[dict] = []  # the voice conversation (accumulates across turns)
         self.state = IDLE
@@ -88,6 +97,14 @@ class VoiceSession:
         self.state = state
         if self.on_state is not None:
             self.on_state(state)  # observable; a fixed state string, never transcript/answer
+
+    def _announce_project(self) -> None:
+        """A3: announce the active project (name, or None for global) at turn start, so a
+        voice turn always makes its scope visible. Carries only the name — never content."""
+        name = self.project().name if self.project is not None else None
+        self.log.info("voice_active_project", project=name)
+        if self.on_project is not None:
+            self.on_project(name)
 
     async def handle_audio(self, audio: bytes) -> TurnResult | None:
         """Process one utterance's audio as one voice turn. Returns the ``TurnResult``, or
@@ -104,6 +121,7 @@ class VoiceSession:
             maybe = self.output.on_heard(transcript.text)
             if inspect.isawaitable(maybe):
                 await maybe
+            self._announce_project()  # A3: say which project this turn works in, before acting
             self.messages.append({"role": "user", "content": frame_transcript(transcript.text)})
             self._set(THINKING)
             async with self.turn_lock:

@@ -35,6 +35,7 @@ from jarvis.ui.readmodels import (
     list_memories,
     list_sessions_view,
     list_tasks,
+    projects_view,
     session_transcript,
     task_runs,
     vault_lint,
@@ -137,6 +138,7 @@ def create_app(
     app.state.voice = voice
     app.state.notices = None  # a NoticeBoard, set by the CLI host (run_ui); None ⇒ empty tail
     app.state.run_digest_now = None  # async () -> DigestOutcome, set by run_ui; None ⇒ 503
+    app.state.projects = None  # a ProjectService, set by build_ui_app; None ⇒ projects 503
     # The UI is voice's fail-closed "screen": a VoiceApprover wired to this UIScreenApprover
     # resolves risky voice actions on the authenticated, live, watching Gate surface — or
     # denies. Composed here so the CLI host (Task 9) injects it into the voice VoiceApprover.
@@ -351,6 +353,13 @@ def create_app(
             return _unavailable("sessions")
         return JSONResponse(await session_transcript(svc, session_id))
 
+    @app.get("/api/projects")
+    async def projects_list() -> JSONResponse:
+        svc = app.state.projects
+        if svc is None:
+            return _unavailable("projects")
+        return JSONResponse(await projects_view(svc))
+
     # --- mutations: the enumerated human-authority set (D5, route-closed-set pin) ------
 
     @app.post("/api/vault/sources/{source_id}/approve")
@@ -442,6 +451,70 @@ def create_app(
             return _unavailable("sessions")
         resumed = await app.state.session.resume(session_id)
         return JSONResponse({"ok": resumed}, status_code=200 if resumed else 409)
+
+    @app.post("/api/projects")
+    async def projects_create(request: Request) -> JSONResponse:
+        svc = app.state.projects
+        if svc is None:
+            return _unavailable("projects")
+        body = await request.json()
+        name = str(body.get("name", "")).strip()
+        if not name:
+            return JSONResponse({"ok": False, "message": "name required"}, status_code=400)
+        pid = await svc.store.create(
+            name=name,
+            description=body.get("description"),
+            color=body.get("color"),
+            icon=body.get("icon"),
+            repos=body.get("repos"),
+        )
+        return JSONResponse({"ok": True, "id": pid})
+
+    @app.post("/api/projects/{project_id}/update")
+    async def projects_update(project_id: int, request: Request) -> JSONResponse:
+        svc = app.state.projects
+        if svc is None:
+            return _unavailable("projects")
+        body = await request.json()
+        fields = {k: body[k] for k in ("name", "description", "color", "icon") if k in body}
+        try:
+            ok = await svc.store.update(
+                project_id, repos=body.get("repos"), settings=body.get("settings"), **fields
+            )
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
+        return JSONResponse({"ok": ok})
+
+    @app.post("/api/projects/{project_id}/archive")
+    async def projects_archive(project_id: int) -> JSONResponse:
+        svc = app.state.projects
+        if svc is None:
+            return _unavailable("projects")
+        archived = await svc.store.archive(project_id)
+        # If the active project was archived, drop back to global scope + fresh chat.
+        if archived and svc.current().project_id == project_id:
+            await svc.activate(None)
+            if app.state.session is not None:
+                app.state.session.start_new_session(None)
+        return JSONResponse({"ok": archived})
+
+    @app.post("/api/projects/select")
+    async def projects_select(request: Request) -> JSONResponse:
+        # Set the active project (body {"project_id": id|null}). Starts a FRESH conversation —
+        # a session is bound to one project for life, so switching never re-tags the current
+        # transcript. The loop reads the new scope on its next turn (shared provider).
+        svc = app.state.projects
+        if svc is None:
+            return _unavailable("projects")
+        body = await request.json()
+        pid = body.get("project_id")
+        try:
+            ctx = await svc.activate(pid)
+        except KeyError as exc:
+            return JSONResponse({"ok": False, "message": str(exc)}, status_code=404)
+        if app.state.session is not None:
+            app.state.session.start_new_session(ctx.project_id)
+        return JSONResponse({"ok": True, "active_project_id": ctx.project_id})
 
     # --- voice: status + push-to-talk + meeting capture (unreviewed source) ------------
 

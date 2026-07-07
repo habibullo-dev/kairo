@@ -4,6 +4,7 @@
 // resolve). Per-screen rendering lives in ./screens/*.js.
 
 import { render as renderDaily, onEvent as dailyOnEvent } from "./screens/daily.js";
+import { render as renderProjects } from "./screens/projects.js";
 import { render as renderGate } from "./screens/gate.js";
 import { render as renderVault } from "./screens/vault.js";
 import { render as renderTasks } from "./screens/tasks.js";
@@ -199,9 +200,9 @@ function updateGateBadge() {
 
 // --- router ---
 const screens = {
-  daily: renderDaily, gate: renderGate, vault: renderVault, tasks: renderTasks,
-  memory: renderMemory, hub: renderHub, lab: renderLab, meetings: renderMeetings,
-  trace: renderTrace,
+  daily: renderDaily, projects: renderProjects, gate: renderGate, vault: renderVault,
+  tasks: renderTasks, memory: renderMemory, hub: renderHub, lab: renderLab,
+  meetings: renderMeetings, trace: renderTrace,
 };
 
 function refreshIfActive(name) { if (state.route === name) renderRoute(); }

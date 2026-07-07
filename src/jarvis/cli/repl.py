@@ -45,6 +45,7 @@ from jarvis.permissions import (
 from jarvis.permissions.gate import Decision
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
+from jarvis.projects import ProjectService, ProjectStore
 from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
 from jarvis.scheduler.service import TaskService
 from jarvis.scheduler.store import Task, TaskStore
@@ -308,6 +309,13 @@ class Repl:
         # discovery so the connector tools register (and gate on) the specific pieces present.
         self.connectors = build_connectors(config)
 
+        # Project workspaces (Phase 10): the active-project scope, injected into the loop as
+        # a callable so switching applies next turn. Needs a store (bare test Repls have none
+        # ⇒ no projects ⇒ global scope, byte-identical to Phase 9).
+        self.projects: ProjectService | None = None
+        if store is not None:
+            self.projects = ProjectService(ProjectStore(store.db, store.lock))
+
         self.registry = ToolRegistry()
         self.registry.discover(
             "jarvis.tools.builtin",
@@ -339,6 +347,7 @@ class Repl:
             ),
             context_manager=context_manager,
             memory=memory,
+            project=self.projects.current if self.projects is not None else None,
             # With scheduling on, the model needs the current date to resolve
             # relative times ("tomorrow 9am") — it has no clock otherwise.
             add_time_context=tasks is not None,
@@ -479,11 +488,83 @@ class Repl:
                 if user_input.lower() == "agents" or user_input.lower().startswith("agents "):
                     await self._show_agents(user_input[len("agents") :].strip())
                     continue
+                if user_input.lower() == "project" or user_input.lower().startswith("project "):
+                    await self._project_command(user_input[len("project") :].strip())
+                    continue
                 self.messages.append({"role": "user", "content": user_input})
                 await self.run_turn()
                 # A just-scheduled task should fire promptly, not wait out the cap.
                 if self.runner is not None:
                     self.runner.kick()
+
+    async def _project_command(self, arg: str) -> None:
+        """`project` shows the active project; `project list` lists projects; `project use
+        <slug|id>` activates one (starting a fresh conversation, so the session stays bound
+        to one project); `project none` returns to global scope; `project new <name>` creates
+        one. Switching resets the conversation — a session belongs to one project for life."""
+        if self.projects is None:
+            self.console.print("[dim]Projects are not enabled.[/]\n")
+            return
+        store = self.projects.store
+        parts = arg.split(maxsplit=1)
+        sub = parts[0].lower() if parts else ""
+        rest = parts[1].strip() if len(parts) > 1 else ""
+
+        if sub in ("", "current", "status"):
+            cur = self.projects.current()
+            where = f"[bold]{cur.name}[/]" if cur.project_id is not None else "[dim]global[/]"
+            self.console.print(f"Active project: {where}\n")
+            return
+        if sub == "list":
+            projects = await store.list(status="active")
+            if not projects:
+                self.console.print("[dim]No projects yet. Create one: project new <name>[/]\n")
+                return
+            for p in projects:
+                marker = "→" if p.id == self.projects.current().project_id else " "
+                self.console.print(f"{marker} [bold]{p.slug}[/] #{p.id} — {p.name}")
+            self.console.print()
+            return
+        if sub == "new":
+            if not rest:
+                self.console.print("[dim]Usage: project new <name>[/]\n")
+                return
+            pid = await store.create(name=rest)
+            await self._switch_project(pid)
+            self.console.print(f"Created and switched to [bold]{rest}[/].\n")
+            return
+        if sub == "none":
+            await self._switch_project(None)
+            self.console.print("Switched to [dim]global[/] scope.\n")
+            return
+        if sub == "use":
+            target = rest or ""
+            project = None
+            if target.isdigit():
+                project = await store.get(int(target))
+            if project is None:
+                project = await store.get_by_slug(target)
+            if project is None:
+                self.console.print(f"[red]No such project:[/] {target}\n")
+                return
+            await self._switch_project(project.id)
+            self.console.print(f"Switched to [bold]{project.name}[/].\n")
+            return
+        self.console.print(
+            "[dim]Usage: project [list | use <slug|id> | new <name> | none][/]\n"
+        )
+
+    async def _switch_project(self, project_id: int | None) -> None:
+        """Activate a project and start a fresh conversation — a session is bound to one
+        project for its life, so a switch never re-tags the current transcript."""
+        await self.projects.activate(project_id)
+        if self.messages:
+            await self._persist()  # save the outgoing conversation before clearing
+        self.messages = []
+        if self.store is not None:
+            self.session_id = await self.store.create_session(project_id=project_id)
+            if self.agents is not None:
+                self.agents.bound_session_id = self.session_id
 
     async def _show_tasks(self, arg: str) -> None:
         """`tasks` lists active tasks; `tasks all` includes finished; `tasks <id>`
@@ -1007,9 +1088,19 @@ def build_voice_session(
         ),
         context_manager=repl.context_manager,
         memory=repl.memory,
+        project=repl.projects.current if repl.projects is not None else None,
         add_time_context=repl.tasks is not None,
     )
-    session = VoiceSession(loop=loop, stt=stt, output=renderer, turn_lock=repl.turn_lock)
+    session = VoiceSession(
+        loop=loop,
+        stt=stt,
+        output=renderer,
+        turn_lock=repl.turn_lock,
+        # A3: voice announces the active project at turn start and inherits the process's
+        # last-activated project (GLOBAL when none). It never *sets* a project — project
+        # writes need on-screen selection first (voice prepares, screen commits).
+        project=repl.projects.current if repl.projects is not None else None,
+    )
     listener = PushToTalkListener(build_capture(config.voice), session)
     return session, listener
 
@@ -1090,6 +1181,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
         approver=app.state.ui_approver,
         context_manager=repl.context_manager,
         memory=repl.memory,
+        project=repl.projects.current if repl.projects is not None else None,
         add_time_context=repl.tasks is not None,
         system=build_system(
             memory_enabled=repl.memory is not None,
@@ -1098,16 +1190,20 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
             delegation_enabled=repl.agents is not None,
         ),
     )
+    active_pid = repl.projects.current().project_id if repl.projects is not None else None
     app.state.session = UiSession(
         loop=loop,
         connections=app.state.connections,
         turn_lock=repl.turn_lock,
         ring_buffer_events=config.ui.ring_buffer_events,
         # Phase 10: the UI conversation persists as a real interactive session (its own row,
-        # distinct from the REPL's), reusing the REPL's store + shared context manager.
+        # distinct from the REPL's), reusing the REPL's store + shared context manager, and
+        # is tagged with the active project so it stays scoped for its life.
         sessions=repl.store,
         context_manager=repl.context_manager,
+        project_id=active_pid,
     )
+    app.state.projects = repl.projects
     run_store = repl.agents.run_store if repl.agents is not None else None
     app.state.services = UiServices(
         memory=repl.memory,
@@ -1116,6 +1212,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
         run_store=run_store,
         connectors=repl.connectors,  # Phase 9: Hub + Daily connector status
         sessions=repl.store,  # Phase 10: chats list / search / pin / resume
+        projects=repl.projects,  # Phase 10: Projects screen read model
     )
     if config.voice.enabled:
         app.state.voice = _build_ui_voice(config, repl=repl, app=app)

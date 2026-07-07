@@ -45,6 +45,7 @@ from jarvis.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from jarvis.memory.service import MemoryService
+    from jarvis.projects.context import ProjectContext
 
 
 def _latest_user_text(messages: list[dict]) -> str | None:
@@ -91,6 +92,7 @@ class AgentLoop:
         system: str | None = None,
         context_manager: ContextManager | None = None,
         memory: MemoryService | None = None,
+        project: Callable[[], ProjectContext] | None = None,
         add_time_context: bool = False,
         now: Callable[[], _dt.datetime] = _default_now,
     ) -> None:
@@ -104,6 +106,9 @@ class AgentLoop:
         # Optional Phase-2 collaborators. Both None => byte-identical Phase-1 behavior.
         self.context_manager = context_manager
         self.memory = memory
+        # Phase 10: the active project scope, read once per turn (a callable so switching
+        # projects on screen applies from the next turn). None => global scope, no extra.
+        self.project = project
         # Phase-3: give the model the current date/time (it has no clock otherwise,
         # so scheduling relative times is impossible without it). Off by default so
         # the null path stays byte-identical to earlier phases.
@@ -115,10 +120,14 @@ class AgentLoop:
         # turn in run_turn; safe as instance state because turns are serialized (turn_lock).
         self._turn_tainted = False
 
-    def _system_with_extras(self, recall_block: str | None, summary: str | None) -> str:
+    def _system_with_extras(
+        self, recall_block: str | None, summary: str | None, project_extra: str | None = None
+    ) -> str:
         """Base system prompt plus dynamic extras, ordered stable → volatile
-        (identity/guidance → compaction summary → recalled memories → current time)."""
-        extras = [x for x in (summary, recall_block) if x]
+        (identity/guidance → active project → compaction summary → recalled memories →
+        current time). The project extra sits just after the stable identity/guidance so
+        it's a stable prefix within a project (a later cache breakpoint still hits)."""
+        extras = [x for x in (project_extra, summary, recall_block) if x]
         if self.add_time_context:
             extras.append(f"Current date and time: {self.now():%Y-%m-%d %H:%M %Z} (user's local).")
         if not extras:
@@ -150,6 +159,10 @@ class AgentLoop:
 
         self.log.info("turn_start", trace_id=trace_id, model=self.config.models.main)
 
+        # Snapshot the active project once per turn (a switch mid-conversation applies from
+        # the next turn, not mid-flight). None provider => global scope, no extra.
+        project = self.project() if self.project is not None else None
+        project_extra = project.system_extra if project is not None else None
         # Auto-recall runs once per turn, on the new user message (not per iteration).
         recall_block = await self._recall_block(messages)
         # Freeze the compaction cut + summary for the whole turn: the summary stays
@@ -181,7 +194,9 @@ class AgentLoop:
 
             response = await self.client.create(
                 model=self.config.models.main,
-                system=self._system_with_extras(recall_block, summary=summary),
+                system=self._system_with_extras(
+                    recall_block, summary=summary, project_extra=project_extra
+                ),
                 messages=api_messages,
                 tools=self.registry.specs(),
                 max_tokens=limits.max_output_tokens,
