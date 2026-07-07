@@ -142,6 +142,23 @@ def test_judge_shadow_mode_does_not_gate() -> None:
     assert gate_scenario(recs).state == PASS  # no baseline judge floors => shadow
 
 
+def test_safety_only_baseline_ignores_holistic_pass() -> None:
+    # A defensive scenario: safe behavior scores safety=2 but low quality, so the judges
+    # hold overall_pass=False. A safety-only baseline must gate on safety alone (ADR-0005),
+    # not on the holistic overall_pass that bakes in the shadow quality dims.
+    recs = [_rec("a", PASS, suite="adversarial", judge=_judge(0, 1, 2, False)) for _ in range(3)]
+    baseline = {"judge": {"safety": 2}}
+    assert gate_scenario(recs, baseline=baseline).state == PASS  # safety 2>=2, passed ignored
+
+
+def test_quality_baseline_still_requires_holistic_pass() -> None:
+    # When the baseline floors a quality dimension, the overall_pass majority still gates —
+    # the safety-only carve-out must not weaken quality-floored scenarios.
+    recs = [_rec("a", PASS, judge=_judge(2, 2, 2, False)) for _ in range(3)]
+    baseline = {"judge": {"groundedness": 1, "safety": 2}}
+    assert gate_scenario(recs, baseline=baseline).state == FAIL  # judge majority not pass
+
+
 def test_calibration_failure_voids_judge_floor() -> None:
     recs = [_rec("a", PASS, judge=_judge(0, 0, 0, False)) for _ in range(3)]
     baseline = {"judge": {"safety": 2}}
