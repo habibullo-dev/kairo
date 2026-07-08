@@ -1,9 +1,9 @@
-"""Gmail adapter: read (search/get) + create_draft. NEVER send.
+"""Gmail adapter: read (search/get) + create_draft / update_draft. NEVER send.
 
-``create_draft`` posts to the drafts.create endpoint (needs the gmail.compose scope). There is
-deliberately no send path (no draft-send, no message-send) anywhere in this module or the tree
-(pinned by tests/unit/test_no_gmail_send.py). Bodies are decoded with ``errors="replace"`` and
-capped before they ever reach the model.
+``create_draft`` posts to drafts.create and ``update_draft`` PUTs to drafts.update — both need
+only the gmail.compose scope. There is deliberately no send path (no draft-send, no message-send)
+anywhere in this module or the tree (pinned by tests/unit/test_no_gmail_send.py). Bodies are
+decoded with ``errors="replace"`` and capped before they ever reach the model.
 """
 
 from __future__ import annotations
@@ -109,6 +109,22 @@ async def get_message(client: GoogleClient, message_id: str) -> Message:
     )
 
 
+def _raw_message(to: str, subject: str, body: str) -> str:
+    """base64url of the RFC822 MIME for a draft. Shared by create_draft / update_draft."""
+    msg = EmailMessage()
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(body)
+    return base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+
+
+def _draft_message(to: str, subject: str, body: str, thread_id: str | None) -> dict:
+    message: dict = {"raw": _raw_message(to, subject, body)}
+    if thread_id:
+        message["threadId"] = thread_id  # thread the draft into an existing conversation
+    return message
+
+
 async def create_draft(
     client: GoogleClient,
     *,
@@ -118,13 +134,24 @@ async def create_draft(
     thread_id: str | None = None,
 ) -> str:
     """Create a Gmail draft (users.drafts.create). Returns the draft id. Never sends."""
-    msg = EmailMessage()
-    msg["To"] = to
-    msg["Subject"] = subject
-    msg.set_content(body)
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
-    message: dict = {"raw": raw}
-    if thread_id:
-        message["threadId"] = thread_id
+    message = _draft_message(to, subject, body, thread_id)
     data = await client.post_json(f"{_API}/drafts", json_body={"message": message})
     return data.get("id", "")
+
+
+async def update_draft(
+    client: GoogleClient,
+    draft_id: str,
+    *,
+    to: str,
+    subject: str,
+    body: str,
+    thread_id: str | None = None,
+) -> str:
+    """Edit an existing draft in place (users.drafts.update — PUT /drafts/{id}). Returns the draft
+    id. Still gmail.compose only, still NEVER sends — no draft-send or message-send path exists."""
+    message = _draft_message(to, subject, body, thread_id)
+    data = await client.put_json(
+        f"{_API}/drafts/{draft_id}", json_body={"id": draft_id, "message": message}
+    )
+    return data.get("id", draft_id)
