@@ -44,6 +44,8 @@ from unittest import mock
 import yaml
 from tests.evals import judge as judge_mod
 from tests.evals import recorder, report
+from tests.evals.cassette import CassetteConfig
+from tests.evals.cassette import wrap as cassette_wrap
 from tests.evals.recorder import ERROR, FAIL, INVALID, PASS, ScenarioRunRecord
 
 from jarvis.agents import AgentRunStore, SubAgentService
@@ -81,6 +83,7 @@ DATA_EVALS = REPO_ROOT / "data" / "evals"
 HISTORY_PATH = DATA_EVALS / "history.jsonl"
 BASELINES_PATH = Path(__file__).parent / "baselines.yaml"
 FIXTURES_PATH = Path(__file__).parent / "judge_fixtures.yaml"
+CASSETTES_PATH = Path(__file__).parent / "cassettes"  # committed model-call cassettes (replay)
 CROSS_JUDGE_MODEL = "claude-sonnet-5"  # uncounted cross-family check (see judge.py)
 
 
@@ -532,6 +535,67 @@ def _default_client_factory(cfg: Config) -> LLMClient:
     return AnthropicClient.from_config(cfg)
 
 
+def _cassette_config_from_args(args: object) -> CassetteConfig:
+    """Mode precedence: --live > --record > replay (the keyless default)."""
+    mode = (
+        "live"
+        if getattr(args, "live", False)
+        else ("record" if getattr(args, "record", False) else "replay")
+    )
+    return CassetteConfig(
+        mode=mode, store_dir=CASSETTES_PATH, max_cost_usd=getattr(args, "max_cost_usd", None)
+    )
+
+
+def _apply_cassette(
+    config: Config, cassette_cfg: CassetteConfig, judge_client: LLMClient | None
+) -> tuple[Callable[[Config], LLMClient], LLMClient | None]:
+    """Wrap the scenario/loop factory + judge client in the cassette layer, sharing ONE cost cap
+    across the whole run. In replay mode the inner (live) client is never built (``inner=None``),
+    so a keyless replay needs no API key. Returns (client_factory, judge_client)."""
+    from jarvis.observability.cost import load_pricing
+
+    pricing = load_pricing(config.root / "config" / "pricing.yaml")
+    cap = cassette_cfg.cost_cap(pricing)
+    replay = cassette_cfg.mode == "replay"
+
+    def factory(cfg: Config) -> LLMClient:
+        inner = None if replay else _default_client_factory(cfg)
+        sig = {"effort": cfg.limits.effort, "thinking": True, "compat": False}
+        return cassette_wrap(
+            inner, provider="anthropic", cfg=cassette_cfg, pricing=pricing,
+            signature=sig, cost_cap=cap,
+        )
+
+    wrapped_judge = judge_client
+    if judge_client is not None:
+        judge_inner = None if replay else judge_client
+        wrapped_judge = cassette_wrap(
+            judge_inner, provider="anthropic", cfg=cassette_cfg, pricing=pricing,
+            signature={"effort": config.limits.effort, "thinking": False, "compat": False},
+            cost_cap=cap, scenario="judge",
+        )
+    cap_note = f", max_cost=${cassette_cfg.max_cost_usd}" if cassette_cfg.max_cost_usd else ""
+    print(f"[cassette] mode={cassette_cfg.mode} store={CASSETTES_PATH}{cap_note}")
+    return factory, wrapped_judge
+
+
+def _add_cassette_args(p: object) -> None:
+    """Cost-control flags shared by `gate` and `run`. Default (no flag) = keyless replay."""
+    p.add_argument(
+        "--live", action="store_true",
+        help="Call the real API and record cassettes (default: keyless replay).",
+    )
+    p.add_argument(
+        "--record", action="store_true",
+        help="Fill MISSING cassettes via live calls, reuse existing ones (cheap top-up).",
+    )
+    p.add_argument(
+        "--max-cost-usd", type=float, default=None, metavar="USD",
+        help="Hard cap on live spend for this run (aborts when exceeded).",
+    )
+
+
 def _tracked_signals(scenario: dict, attempts: list[dict]) -> dict:
     """The model-level half of the dual adversarial metric: did the model *attempt* the
     injected action (whatever the gate then did about it)? Declared per-scenario as
@@ -930,6 +994,7 @@ async def run_scenario(
     results: Path,
     judge_client: LLMClient | None = None,
     no_judge: bool = False,
+    client_factory: Callable[[Config], LLMClient] | None = None,
 ) -> list[ScenarioRunRecord]:
     """Run one scenario N times, managing each workdir (delete on PASS, save otherwise)."""
     print(f"\n=== {loaded.name} [{loaded.suite}] ===  {loaded.data.get('description', '')}")
@@ -943,6 +1008,7 @@ async def run_scenario(
             scenario_hash=loaded.hash,
             judge_client=judge_client,
             no_judge=no_judge,
+            client_factory=client_factory,
         )
         if record.state == PASS:
             shutil.rmtree(workdir, ignore_errors=True)
@@ -997,6 +1063,7 @@ async def run_all(
     compare_rev: str | None = None,
     propose: bool = False,
     only_prefix: str | None = None,
+    client_factory: Callable[[Config], LLMClient] | None = None,
 ) -> int:
     scenarios = load_scenarios(suite)
     if only:
@@ -1025,6 +1092,7 @@ async def run_all(
             results=results,
             judge_client=judge_client,
             no_judge=effective_no_judge,
+            client_factory=client_factory,
         )
         all_records.extend(recs)
 
@@ -1348,6 +1416,7 @@ async def run_chunk(
     no_judge: bool,
     judge_client: LLMClient | None,
     stage: Path,
+    client_factory: Callable[[Config], LLMClient] | None = None,
 ) -> int:
     """Run ONE suite as a sub-run and stage its records (no gate, no history append),
     RESUMABLE per scenario. Each scenario's N runs are appended as it finishes and its name
@@ -1378,6 +1447,7 @@ async def run_chunk(
             results=stage,
             judge_client=judge_client,
             no_judge=effective_no_judge,
+            client_factory=client_factory,
         )
         _append_chunk_records(stage, suite, recs)
         done.add(loaded.name)
@@ -1441,6 +1511,7 @@ async def run_profile_chunked(
     report_md: bool = False,
     compare_rev: str | None = None,
     propose: bool = False,
+    client_factory: Callable[[Config], LLMClient] | None = None,
 ) -> int:
     """Orchestrate the chunked live gate: run each not-yet-staged suite as a sub-run,
     then aggregate once ALL chunks are present. Resumable — a re-invocation at the same
@@ -1459,6 +1530,7 @@ async def run_profile_chunked(
             no_judge=no_judge,
             judge_client=judge_client,
             stage=stage,
+            client_factory=client_factory,
         )
     if not all(chunk_staged(stage, s) for s in chunks):
         pending = [s for s in chunks if not chunk_staged(stage, s)]
@@ -1550,12 +1622,14 @@ def cli(argv: list[str] | None = None) -> int:
         "(fits the ~14-min background cap; resumable).",
     )
     g.add_argument("--stage", metavar="DIR", help="Staging dir for --profile (default per-rev).")
+    _add_cassette_args(g)
 
     r = sub.add_parser("run", help="Stage ONE suite as a chunk (no gate, no history).")
     r.add_argument("--suite", required=True, choices=["core", "adversarial", "all"])
     r.add_argument("--stage", required=True, metavar="DIR")
     r.add_argument("--runs", type=int, default=3)
     r.add_argument("--no-judge", action="store_true")
+    _add_cassette_args(r)
 
     a = sub.add_parser("aggregate", help="Merge staged chunks into ONE gate + ONE history line.")
     a.add_argument("--stage", required=True, metavar="DIR")
@@ -1583,6 +1657,9 @@ def cli(argv: list[str] | None = None) -> int:
         scenarios = load_scenarios(args.suite)
         config = _load_for_suites(scenarios)
         judge_client = _build_judge_client(config, no_judge=args.no_judge, scenarios=scenarios)
+        client_factory, judge_client = _apply_cassette(
+            config, _cassette_config_from_args(args), judge_client
+        )
         return asyncio.run(
             run_chunk(
                 config,
@@ -1591,6 +1668,7 @@ def cli(argv: list[str] | None = None) -> int:
                 no_judge=args.no_judge,
                 judge_client=judge_client,
                 stage=Path(args.stage),
+                client_factory=client_factory,
             )
         )
 
@@ -1599,6 +1677,9 @@ def cli(argv: list[str] | None = None) -> int:
         scenarios = load_scenarios("all")
         config = _load_for_suites(scenarios)
         judge_client = _build_judge_client(config, no_judge=args.no_judge, scenarios=scenarios)
+        client_factory, judge_client = _apply_cassette(
+            config, _cassette_config_from_args(args), judge_client
+        )
         stage = Path(args.stage) if args.stage else staging_dir(recorder.git_rev())
         return asyncio.run(
             run_profile_chunked(
@@ -1610,6 +1691,7 @@ def cli(argv: list[str] | None = None) -> int:
                 report_md=args.report,
                 compare_rev=args.compare,
                 propose=args.propose,
+                client_factory=client_factory,
             )
         )
 
@@ -1618,6 +1700,9 @@ def cli(argv: list[str] | None = None) -> int:
         scenarios = [s for s in scenarios if s.name.startswith(args.only)]
     config = _load_for_suites(scenarios)
     judge_client = _build_judge_client(config, no_judge=args.no_judge, scenarios=scenarios)
+    client_factory, judge_client = _apply_cassette(
+        config, _cassette_config_from_args(args), judge_client
+    )
     return asyncio.run(
         run_all(
             config,
@@ -1629,6 +1714,7 @@ def cli(argv: list[str] | None = None) -> int:
             report_md=args.report,
             compare_rev=args.compare,
             propose=args.propose,
+            client_factory=client_factory,
             only_prefix=args.only,
         )
     )
