@@ -304,6 +304,35 @@ async def workspace_overview(services: UiServices, project_id: int) -> dict:
     return out
 
 
+async def activity_feed(services: UiServices, project_id: int, *, limit: int = 30) -> dict:
+    """The Workspace Activity tab: a derived, METADATA-ONLY, time-ordered feed of what happened in
+    this project — artifacts filed, orchestration runs, and chats. Titles only (never bodies or
+    secrets); this is the replayable substrate the Phase-14 office view will render. Each source
+    degrades independently."""
+    events: list[dict] = []
+    with contextlib.suppress(Exception):
+        if services.artifacts is not None:
+            for a in await services.artifacts.list(
+                project_id=project_id, include_global=False, limit=limit
+            ):
+                events.append({"type": "artifact", "title": a.title, "kind": a.kind,
+                               "ts": a.created_at, "ref_id": a.id})
+    with contextlib.suppress(Exception):
+        if services.orchestration is not None:
+            for r in await services.orchestration.list(project_id=project_id, limit=limit):
+                events.append({"type": "run", "title": r.title or r.workflow, "status": r.status,
+                               "ts": r.finished_at or r.started_at, "ref_id": r.id})
+    with contextlib.suppress(Exception):
+        if services.sessions is not None:
+            for m in await services.sessions.list_sessions(project_id=project_id, limit=limit):
+                events.append(
+                    {"type": "chat", "title": m.title, "ts": m.updated_at, "ref_id": m.id}
+                )
+    events = [e for e in events if e.get("ts")]
+    events.sort(key=lambda e: e["ts"], reverse=True)
+    return {"events": events[:limit], "project_id": project_id}
+
+
 async def orchestration_roi(
     store: Any, budgets: Any, *, project_id: int | None = None, limit: int = 20
 ) -> list[dict]:
@@ -361,13 +390,18 @@ async def list_sessions_view(
     *,
     query: str | None = None,
     pinned: bool | None = None,
+    project_id: int | None = None,
     limit: int = 50,
 ) -> dict:
-    """The chats list (or a search over titles + message text). Interactive sessions only."""
+    """The chats list (or a search over titles + message text). Interactive sessions only.
+    ``project_id`` scopes to one project's chats (the Workspace Chats tab); absent ⇒ every chat
+    (the global list). Passing None as a value would mean 'global-only', so it is only forwarded
+    when a concrete id is given."""
+    scope = {} if project_id is None else {"project_id": project_id}
     if query:
-        rows = await sessions.search_sessions(query, limit=limit)
+        rows = await sessions.search_sessions(query, limit=limit, **scope)
     else:
-        rows = await sessions.list_sessions(pinned=pinned, limit=limit)
+        rows = await sessions.list_sessions(pinned=pinned, limit=limit, **scope)
     return {"sessions": [serialize_session_meta(m) for m in rows]}
 
 
@@ -449,16 +483,20 @@ def serialize_source(source) -> dict:
     }
 
 
-async def vault_overview(knowledge: KnowledgeService) -> dict:
+async def vault_overview(knowledge: KnowledgeService, *, project_id: int | None = None) -> dict:
     stats = await knowledge.stats()
     unreviewed = await knowledge.unreviewed_sources()
     items = []
     for s in unreviewed:
+        # Workspace Vault tab: scope the review queue to this project's sources (a Source carries
+        # project_id; None == global). The global Vault screen passes no project_id (all sources).
+        if project_id is not None and s.project_id != project_id:
+            continue
         entry = serialize_source(s)
         # A capped markdown preview so approving a quarantined source is INFORMED, not blind.
         entry["preview"] = await knowledge.source_markdown(s.id, max_chars=1200)
         items.append(entry)
-    return {"stats": stats, "unreviewed": items}
+    return {"stats": stats, "unreviewed": items, "project_id": project_id}
 
 
 async def vault_lint(knowledge: KnowledgeService) -> dict:

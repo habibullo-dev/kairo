@@ -16,6 +16,7 @@ import { render as renderLab } from "./screens/lab.js";
 import { render as renderMeetings } from "./screens/meetings.js";
 import { render as renderTrace } from "./screens/trace.js";
 import { render as renderSettings } from "./screens/settings.js";
+import { render as renderWorkspace } from "./screens/workspace.js";
 import { get as getTheme, initTheme, setTheme } from "./ui/theme.js";
 import { initKeys, clearScope, pushEscape } from "./ui/keys.js";
 import { emit as busEmit, on as busOn } from "./ui/bus.js";
@@ -225,7 +226,7 @@ const screens = {
   daily: renderDaily, projects: renderProjects, studio: renderStudio, gate: renderGate,
   vault: renderVault, tasks: renderTasks, memory: renderMemory, hub: renderHub,
   costs: renderCosts, lab: renderLab, meetings: renderMeetings, trace: renderTrace,
-  settings: renderSettings,
+  settings: renderSettings, workspace: renderWorkspace,
 };
 
 function refreshIfActive(name) { if (state.route === name) renderRoute(); }

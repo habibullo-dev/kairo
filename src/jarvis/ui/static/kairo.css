@@ -443,6 +443,22 @@ tr.clickable:hover td { color: var(--cyan); }
 .pj-new input { min-height: 34px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--panel-soft); color: var(--ink); font: inherit; }
 .archived summary { cursor: pointer; color: var(--muted); font-weight: 600; font-size: 13px; }
+/* project workspace (T10) */
+.ws-header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px;
+  align-items: center; margin-bottom: 16px; }
+.ws-tile { width: 46px; height: 46px; font-size: 18px; }
+.ws-head-text { min-width: 0; }
+.ws-head-text h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-tabs { margin-bottom: 16px; }
+.ws-panel { display: grid; gap: 14px; }
+.ws-rowmid { min-width: 0; }
+.ws-rowacts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ws-list { display: grid; gap: 8px; }
+.ws-search { width: 100%; min-height: 36px; padding: 9px 12px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel-soft); color: var(--ink); font: inherit; margin-bottom: 12px; }
+.ws-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.action-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.cost-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
 
 /* segmented / filter / tab buttons */
 .seg, .filter, .tabbar { display: inline-flex; gap: 7px; flex-wrap: wrap; }

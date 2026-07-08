@@ -31,6 +31,7 @@ from jarvis.ui.connections import Connection, ConnectionManager
 from jarvis.ui.gate_api import policy_snapshot, read_today_audit
 from jarvis.ui.readmodels import (
     UiServices,
+    activity_feed,
     artifacts_list,
     costs_overview,
     daily_overview,
@@ -426,11 +427,11 @@ def create_app(
         return JSONResponse(await task_runs(svc, task_id))
 
     @app.get("/api/vault")
-    async def vault() -> JSONResponse:
+    async def vault(project_id: int | None = None) -> JSONResponse:
         svc = app.state.services.knowledge
         if svc is None:
             return _unavailable("knowledge")
-        return JSONResponse(await vault_overview(svc))
+        return JSONResponse(await vault_overview(svc, project_id=project_id))
 
     @app.get("/api/vault/lint")
     async def vault_lint_route() -> JSONResponse:
@@ -447,11 +448,15 @@ def create_app(
         return JSONResponse(await list_agent_runs(svc))
 
     @app.get("/api/sessions")
-    async def sessions_list(query: str | None = None, pinned: bool | None = None) -> JSONResponse:
+    async def sessions_list(
+        query: str | None = None, pinned: bool | None = None, project_id: int | None = None
+    ) -> JSONResponse:
         svc = app.state.services.sessions
         if svc is None:
             return _unavailable("sessions")
-        return JSONResponse(await list_sessions_view(svc, query=query, pinned=pinned))
+        return JSONResponse(
+            await list_sessions_view(svc, query=query, pinned=pinned, project_id=project_id)
+        )
 
     @app.get("/api/sessions/{session_id}")
     async def sessions_get(session_id: int) -> JSONResponse:
@@ -904,6 +909,11 @@ def create_app(
     async def workspace(project_id: int) -> JSONResponse:
         # Aggregate Overview for one project (metadata only; degrades if a service is absent).
         return JSONResponse(await workspace_overview(app.state.services, project_id))
+
+    @app.get("/api/workspace/{project_id}/activity")
+    async def workspace_activity(project_id: int) -> JSONResponse:
+        # Derived, metadata-only project activity feed (artifacts/runs/chats). Read-only.
+        return JSONResponse(await activity_feed(app.state.services, project_id))
 
     @app.post("/api/orchestration/run")
     async def orchestration_run(request: Request) -> JSONResponse:
