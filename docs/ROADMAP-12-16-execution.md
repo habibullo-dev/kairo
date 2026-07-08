@@ -80,6 +80,12 @@ surfaces + 16's scheduler-liveness signals. Nothing in 12–16 may assume 17 exi
 Swap rule (pre-authorized): if daily-driver utility is starving, 14 may slide after 15 — 14
 has no dependents. No other reordering without a new plan review.
 
+**Substrate first.** Before the arc's first *live* run, build the Context Reuse substrate
+(§4A, S7). It is keyless and adds no authority, so it slots in as the next implementation unit
+after Phase 12 Milestone 1 (or as parallel-prep), and it makes every subsequent orchestration
+fan-out, planner/judge/review agent, and long project session cheaper and faster on every
+provider — so it must land before the Phase-12 live canary and any Phase-13 live run.
+
 ## 3. What can be prepared in parallel (safely)
 
 Parallel here means: while phase N sits at a checkpoint or awaits a live ritual on Habib's
@@ -93,6 +99,9 @@ separate branch/session. Never two live-flag flips in flight at once.
   read models; a UI branch can mature while 12/13 checkpoints wait.
 - 15's migration design + graph read models + suggestion-queue state machine with fixture
   data (no extraction job scheduled).
+- The **Context Reuse substrate (§4A, S7)** — capability metadata, the stable-first prompt
+  assembler + prefix hashes, the `ContextReusePolicy` adapters, and the normalized cache ledger
+  are all keyless / no-authority; build them here, before any live run makes tokens expensive.
 - Shared test helpers (§13) — write once, early.
 - Docs/ADR drafts for the next phase.
 
@@ -118,14 +127,117 @@ checkpoint; only the plumbing is shared.
 |---|---|---|---|---|
 | S1 | **WriteIntent two-phase state machine** (`src/jarvis/actions/intents.py`): draft → previewed(diff) → approved → executed / failed → undone; idempotency key; per-intent preview renderer | **12** | 16 routes intent approvals into attention items; 15's export "apply" reuses the preview→approve shape | migration v10 `write_intents` table |
 | S2 | **Write journal / outbox** (`connector_writes`): metadata-only row per executed write — remote id, verb, scope, rollback info, egress-log link | **12** | 16's briefings/ROI read it; 17 (noted only) diagnostics read it | same v10 migration |
-| S3 | **Pending-decision read model** (approval-queue MVP in the Gate screen): kind, project, source, preview pointer, state, priority | **12** (MVP) | **16 absorbs it** into `attention_items` — evolve the one-attention-surface pin, never duplicate it | GET read model now; table in 16 (v12) |
-| S4 | **Proposal/review queue** (`proposals` table: payload, evidence links, state accept/reject/bulk-reject, provenance) | **15** | 16's dreaming writes ONLY proposals; graph suggestions and dreaming proposals are the same row kind with different `source` | migration v11 |
+| S3 | **Pending-decision read model** (approval-queue MVP in the Gate screen): kind, project, source, preview pointer, state, priority | **12** (MVP) | **16 absorbs it** into `attention_items` — evolve the one-attention-surface pin, never duplicate it | GET read model now; table in 16 (v13) |
+| S4 | **Proposal/review queue** (`proposals` table: payload, evidence links, state accept/reject/bulk-reject, provenance) | **15** | 16's dreaming writes ONLY proposals; graph suggestions and dreaming proposals are the same row kind with different `source` | migration v12 |
 | S5 | **Settings maturity panels** (models/providers, services enable + credential presence-booleans, budgets, connectors, per-project narrowing) | **13** | 12 adds its connector-scope panel into the same screen; 15/16 add export/automation toggles as rows, not new screens | extends Phase 11 `settings.js` |
 | S6 | **Untrusted-framing + provenance plumbing** (B1 context_policy, B2 output_trust, taint demotion, egress log) | shipped (9/10B) | ALL — no phase adds a second framing mechanism | reuse, never fork |
+| S7 | **ContextReusePolicy** (provider-agnostic prompt/context caching: capability metadata in the ModelRegistry + client-layer adapters + stable-first prompt ordering + normalized cache ledger — see §4A) | **early substrate** (before Phase-12 live) | ALL — every provider / route / orchestration fan-out / long session | migration v11 (normalized cache columns on `model_calls`) |
 
 Design rule for S1–S4: fields that 16 will need (priority, source, project_id, state
 timestamps) are in the schema from day one, so 16 is a read-model + routing phase, not a
 migration-churn phase.
+
+## 4A. Cross-cutting substrate — Context Reuse (provider-agnostic prompt/context caching)
+
+**What & why.** One small, foundational layer that makes Kairo's prompts *reusable* across every
+provider behind a single `ContextReusePolicy` in the model-registry / client layer. It is
+explicitly **not** "Anthropic prompt caching with a coat of paint": Anthropic (`cache_control`,
+5m/1h TTL, cache read/write usage), OpenAI (automatic prefix caching, `prompt_cache_key`,
+`cached_tokens`), Gemini (implicit caching by default + explicit `CachedContent` resources),
+DeepSeek (automatic on-disk prefix caching), and Qwen/DashScope (`cache_control` blocks) all differ
+— so **capability is data and behavior is derived**. It lands **early** (the next keyless unit,
+before Phase-12's live canary and Phase-13's live research) because it cuts cost + latency for
+exactly the 12–16 workloads: orchestration fan-outs, planner/judge/review agents, and long project
+sessions. It is keyless-testable end to end (fake clients + cassettes assert the emitted controls,
+the ordering, the hashes, and the normalized ledger) — no live key to build or verify it.
+
+**Not a phase.** One shared-substrate task (S7), ~6 keyless sub-steps, one additive migration. It
+reduces the cost of everything after it and changes **no authority**.
+
+**The five `ContextReusePolicy` modes** (resolved per (provider, model) from capability metadata;
+an unknown/unverified provider resolves to `off`):
+1. `off` — emit no cache controls (still benefits from stable ordering).
+2. `automatic_prefix` — the provider caches long repeated prefixes itself (OpenAI, DeepSeek);
+   Kairo only orders the prompt + optionally sets a cache key.
+3. `explicit_breakpoint` — Kairo marks cache breakpoints in-request (Anthropic `cache_control`;
+   Qwen/DashScope `cache_control`).
+4. `explicit_resource` — Kairo creates/reuses a provider-side cached resource (Gemini
+   `CachedContent`), for large stable docs/media, **privacy-reviewed** first.
+5. `provider_default` — defer entirely to the provider's own default (Gemini implicit caching);
+   no Kairo action beyond ordering.
+
+**Capability metadata** (on `ProviderSpec` / model in the ModelRegistry; fail-closed — absent ⇒
+conservative `off`): `supports_context_reuse`, `context_reuse_mode` (one of the five),
+`supports_cache_key`, `supports_cache_ttl`, `reports_cached_tokens`, `cache_min_tokens`,
+`cache_ttl_options`, `cache_private_allowed`. **Z.ai and any unverified provider = `false` until
+confirmed against live docs.**
+
+**Prompt assembly — stable first, volatile last** (the ordering IS the portable win; it helps even
+`off`/unknown providers, and it is what every explicit/automatic scheme keys off):
+- **STABLE prefix (cacheable):** system safety contract → Kairo playbooks/skills → tool schemas →
+  team profiles → service-catalog summaries → stable per-project instructions.
+- **VOLATILE tail (never a cache anchor):** latest user turn, current time, pending approvals,
+  memory recall, search snippets, connector data, web/email/calendar content.
+
+**Stable-prefix hashes** (the identity of what's cached; recorded in the ledger; any change busts
+the cache deliberately): `system_contract_hash`, `tool_schema_hash`, `team_profile_hash`,
+`service_catalog_hash`, `project_policy_hash`, and their composite `stable_prefix_hash`.
+
+**Per-provider behavior** (derived from capability metadata, never hardcoded per call site):
+- **Anthropic / Qwen(DashScope):** `explicit_breakpoint` — set `cache_control` at the
+  stable/volatile seam (1h TTL only where the workload is long-lived AND allowed).
+- **OpenAI:** `automatic_prefix` — rely on prefix caching; set `prompt_cache_key` per stable-prefix
+  identity where it helps route to a warm cache.
+- **Gemini:** `provider_default` (implicit) to start; `explicit_resource` (`CachedContent`) ONLY
+  for large stable docs/media and ONLY after a privacy review.
+- **DeepSeek:** `automatic_prefix` — rely on the stable ordering (disk prefix cache); no per-request
+  control.
+- **Z.ai / unknown:** `off` — no cache-specific behavior, but still gets the stable ordering.
+
+**Cost ledger — normalized across providers** (additive migration on `model_calls`; a field a
+provider does not report is NULL, never a fabricated 0): `input_tokens`, `output_tokens`,
+`cached_input_tokens`, `cache_creation_tokens`, `cache_read_tokens`, `provider_cache_mode`,
+`provider_cache_hit_tokens`, `estimated_cache_savings_usd`, `stable_prefix_hash` (plus the existing
+route / team / role / stage / project / model). Each provider's client maps its own usage fields
+(Anthropic cache_creation/cache_read; OpenAI cached_tokens; Gemini cachedContentTokenCount;
+DeepSeek prompt_cache_hit/miss) onto these normalized columns. Metadata-only — token counts + a
+hash, never prompt text (§7.8 still holds).
+
+**Cost Center surfaces** (extend Phase 11's Cost screen + Phase 13's settings/cost work): cache-hit
+tokens, cache write/read tokens, estimated savings, cache-hit-rate by provider / model / project /
+team, and "which routes benefit most" (biggest savings first). All presence/aggregate — never
+prompt content.
+
+**Safety (non-negotiable — pinned; see §7.13):** caching NEVER weakens `context_policy`,
+private-data routing, taint/egress, project scoping, or retention. DEFAULT caches only the
+**stable, non-sensitive prefix**. Private/project content is cacheable ONLY when ALL hold: (1) the
+provider is allowed for private context (`private_ok`), (2) the model route permits it,
+(3) `cache_private_allowed` is true, (4) TTL/storage behavior is documented, (5) the audit ledger
+records it. **Cache is NOT memory** — never persistent storage, never a retrieval path. **No
+prewarming with private connector data** by default. Replay/cassette evals stay deterministic and
+keyless (cache controls are asserted, not exercised live).
+
+**Tasks (S7 — keyless, no new authority):**
+1. Capability metadata on `ProviderSpec` / ModelRegistry (the 8 fields) + fail-closed resolver
+   (unknown ⇒ `off`) + per-provider defaults verified against live docs; Z.ai/unknown = false. Pins.
+2. Prompt assembler: stable-first / volatile-last section ordering + the five stable-prefix hashes
+   + composite `stable_prefix_hash`. Pure, golden-tested.
+3. `ContextReusePolicy` + per-provider adapters in the client layer (emit the correct control per
+   mode; `off` for unknown). Fake-client tests assert the EXACT emitted controls per provider.
+4. Additive migration (**v11**): the normalized cache columns on `model_calls`; the LedgeredClient
+   maps each provider's usage → the normalized fields + `estimated_cache_savings_usd`.
+5. Cost Center read models + surfaces (hit tokens, read/write, savings, hit-rate by dimension,
+   top-benefit routes).
+6. Safety pins + docs: the private-content-caching 5-condition gate (adversarially pinned), the
+   "cache-is-not-memory" pin, the no-private-prewarm pin, an ADR (context reuse), and the
+   privacy-review note for Gemini `explicit_resource`.
+
+**Placement / boundary.** Build as the FIRST implementation unit after Phase 12 Milestone 1 (or as
+parallel-prep — keyless/no-authority), and it MUST precede the Phase-12 live canary and any
+Phase-13 live run. Migration **v11** (this) shifts the later data-phase migrations to **v12**
+(graph) / **v13** (attention). Fable owns the per-provider capability doc (verified against live
+provider docs) before any provider's non-`off` mode ships; Opus implements S7 in order, per-task
+commits.
 
 ## 5. Phase-by-phase execution plans
 
@@ -273,14 +385,14 @@ Studio remains.**
 
 **Deferred:** pathfinding/ambient wandering, pets/weather/day-night, voice presence.
 
-### Phase 15 — Memory Graph + Obsidian projection — ~9 tasks, migration v11
+### Phase 15 — Memory Graph + Obsidian projection — ~9 tasks, migration v12
 
 **Goal:** typed, evidence-linked, project-scoped graph over memories/chats/KB; extraction as
 reviewable proposals ONLY; Obsidian-compatible projection/export. **SQLite is canonical;
 Obsidian is a projection — never a write-back path.**
 
 **Tasks:**
-1. Plan-of-record + migration v11: `graph_nodes` (typed: entity/topic/decision/person/tool/
+1. Plan-of-record + migration v12: `graph_nodes` (typed: entity/topic/decision/person/tool/
    repo; project_id NOT NULL), `graph_edges` (typed, **evidence link to source rows
    mandatory — an edge without evidence is unrepresentable or rejected at the store layer**),
    `proposals` (S4 — generic shape with `source` so 16's dreaming reuses it verbatim).
@@ -311,14 +423,14 @@ Obsidian is a projection — never a write-back path.**
 **Deferred:** embedding-similarity edges; semantic search (post-15 decision); graph-driven
 retrieval into prompts (later, separately gated); cross-project graph (never).
 
-### Phase 16 — Attention + Automation (Notification Center + Dreaming) — ~10 tasks, migration v12
+### Phase 16 — Attention + Automation (Notification Center + Dreaming) — ~10 tasks, migration v13
 
 **Goal:** one attention system (approvals, reviews, proposals, alerts; priority; routing) +
 proposal-only automation (morning briefing, nightly review, bottleneck analysis, ROI
 summaries, self-improvement proposals) under UnattendedGate with hard budget caps.
 
 **Tasks:**
-1. Plan-of-record + migration v12: `attention_items` (kind approval/review/proposal/alert;
+1. Plan-of-record + migration v13: `attention_items` (kind approval/review/proposal/alert;
    priority; project; source; state; timestamps) — **absorbing** S3's pending-decision model
    and S4's proposal queue as sources, evolving the one-attention-surface pin (the Gate list
    becomes a view over attention_items; never two competing surfaces).
@@ -408,6 +520,13 @@ the previous phase's ritual.
 12. **Forbidden files stay untouched and uncommitted**: `docs/PLAN.md`,
     `docs/PLAN-7-voice-consent-checkpoint.md`, `mcp_sample.json`, `config/settings.yaml`,
     `config/permissions.yaml`, `design/`. `data/screenshots/` stays gitignored.
+13. **Context caching never weakens data-flow safety** (§4A): it never bypasses `context_policy`,
+    private-data routing, taint/egress, project scoping, or retention. DEFAULT caches only the
+    stable, NON-sensitive prefix. Private/project content is cacheable ONLY when all hold —
+    provider allowed for private context (`private_ok`), route permits, `cache_private_allowed`
+    true, TTL/storage documented, and the audit ledger records it. Cache is NOT memory (no
+    persistent store, no retrieval path) and is never prewarmed with private connector data by
+    default.
 
 ## 8. Live-verification rituals (exact; all capped; all on Habib's machine)
 
@@ -494,8 +613,14 @@ Search (FTS5) indexes it all as it lands (journal/attention/graph metadata ride 
 - `src/jarvis/actions/` — `intents.py` (S1), `journal.py` (S2), preview builders (12).
 - `src/jarvis/graph/` — store, extraction job, proposal store (S4) (15).
 - `src/jarvis/attention/` — store, routing, dreaming runner (16).
-- Migrations: **v10** (write_intents, connector_writes) → **v11** (graph_nodes, graph_edges,
-  proposals) → **v12** (attention_items). 13 and 14: none.
+- Context Reuse (S7, §4A): capability metadata on `ProviderSpec` / ModelRegistry; a client-layer
+  `ContextReusePolicy` + per-provider adapters; the stable-first prompt assembler + prefix hashes;
+  normalized cache columns on `model_calls`. Cross-cutting — touches the client / registry layer,
+  not the actions layer.
+- Migrations: **v10** (write_intents, connector_writes) → **v11** (Context-Reuse normalized cache
+  columns on `model_calls`) → **v12** (graph_nodes, graph_edges, proposals) → **v13**
+  (attention_items). 13 and 14: none. (Final numbers follow build order; this assumes S7 lands
+  before Phase 15, as recommended.)
 - Routes (each phase enumerates exactly): 12 intent lifecycle + journal GETs; 13 settings
   writes; 14 office-layout save (one); 15 proposal accept/reject + graph/export GETs;
   16 attention lifecycle + routing-rule writes.
@@ -527,6 +652,13 @@ Search (FTS5) indexes it all as it lands (journal/attention/graph metadata ride 
    16 dreaming).
 10. **Screenshot DoD harness** — exists (`tests/ui/capture.py`); each UI-bearing phase adds
     screens to the same pack.
+11. **Stable-prefix-hash determinism** (S7) — identical stable inputs ⇒ identical
+    `system_contract_hash` / `tool_schema_hash` / `team_profile_hash` / `service_catalog_hash` /
+    `project_policy_hash`; any change to that content busts the composite `stable_prefix_hash`.
+    Pure, golden.
+12. **Cache-ledger normalization** (S7) — each provider's usage fields map onto the same
+    normalized columns; a provider that does not report a field ⇒ NULL, never a fabricated 0;
+    `estimated_cache_savings_usd` is derived, and the row still carries NO prompt text.
 
 ## 14. Do NOT build yet (standing list; each needs its own decision/phase)
 
@@ -543,7 +675,7 @@ Search (FTS5) indexes it all as it lands (journal/attention/graph metadata ride 
 - **Life OS adapters** (Paperless-ngx, Actual, Mealie, Linkwarden, n8n) — post-13 deferred
   track, one adapter+flag at a time.
 - **Phase 17 items** (daemon/tray, full restore/migrate, onboarding, retention) — noted
-  dependencies only; nothing in 12–16 pre-builds them beyond keeping v10–v12 additive.
+  dependencies only; nothing in 12–16 pre-builds them beyond keeping v10–v13 additive.
 
 ## 15. Commit / checkpoint structure (anti-huge-commit rules)
 
