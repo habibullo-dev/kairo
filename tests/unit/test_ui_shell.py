@@ -87,10 +87,11 @@ def test_bus_is_a_ui_only_fanout() -> None:
 
 
 def test_settings_appearance_adds_no_authority() -> None:
-    # Settings only reads/writes appearance via theme.js (localStorage). It must not call the
-    # backend — there is deliberately no server theme route.
+    # Appearance is client-side via theme.js (localStorage) — no server theme route. T14 status
+    # sections READ existing endpoints (api.get) but Settings NEVER mutates: no api.post, no
+    # direct fetch.
+    assert "api.post" not in SETTINGS_JS
     assert "fetch(" not in SETTINGS_JS
-    assert "api.post" not in SETTINGS_JS and "api.get" not in SETTINGS_JS
     assert "theme.js" in SETTINGS_JS
 
 

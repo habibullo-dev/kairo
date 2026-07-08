@@ -597,6 +597,7 @@ tr.clickable:hover td { color: var(--cyan); }
 .set-row:first-of-type { border-top: none; padding-top: 2px; }
 .set-row .set-h { font-size: 13px; font-weight: 600; color: var(--ink); }
 .set-row .set-s { font-size: 12px; color: var(--muted); margin-top: -3px; }
+.set-status { display: grid; gap: 14px; margin-top: 14px; } /* space the T14 status sections */
 
 /* command overlay + palette (glass — backdrop-filter here + modal only) */
 .command-overlay, .modal-backdrop { position: fixed; inset: 0; display: none; z-index: 60;
