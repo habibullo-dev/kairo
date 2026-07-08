@@ -55,6 +55,11 @@ class ToolContext:
     # metadata-only row to on each invocation (attribution from the cost_context). None when
     # cost tracking isn't composed — recording is then a no-op.
     service_ledger: Any = None
+    # Outward-write intents (Phase 12): an IntentStore the connector WRITE tools use to PROPOSE
+    # a write (persist a previewed WriteIntent for human approval). None when the write substrate
+    # isn't composed — the write tools then report themselves unavailable. The tools never execute
+    # a write themselves; execution is a separate human-approved route.
+    intents: Any = None
 
 
 class Permission(StrEnum):

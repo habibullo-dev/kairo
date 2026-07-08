@@ -55,9 +55,24 @@ PLAN_SAFE: frozenset[str] = frozenset(
     }
 )
 
-#: Tools Auto mode may NEVER auto-approve, even if a user lists them in ``auto_allow_tools`` —
-#: the two highest-blast-radius local actions. Config cannot widen past this (pinned).
-AUTO_NEVER: frozenset[str] = frozenset({"run_shell", "write_file"})
+#: Tools Auto mode may NEVER auto-approve, even if a user lists them in ``auto_allow_tools``.
+#: The two highest-blast-radius local actions, plus (Phase 12) every connector WRITE — an
+#: outward write to a real account is never auto-approved, so the human always sees it. Config
+#: cannot widen past this (pinned; the connector-write half mirrors WRITE_TOOL_NAMES + the Gmail
+#: draft tools).
+AUTO_NEVER: frozenset[str] = frozenset(
+    {
+        "run_shell",
+        "write_file",
+        "calendar_create_event",
+        "calendar_update_event",
+        "calendar_cancel_event",
+        "drive_create_doc",
+        "drive_update_doc",
+        "gmail_create_draft",
+        "gmail_update_draft",
+    }
+)
 
 
 class ModeState:

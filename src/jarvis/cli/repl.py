@@ -18,6 +18,7 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 
+from jarvis.actions import IntentStore
 from jarvis.agents import AgentRunStore, SubAgentService
 from jarvis.cli.jobs import JobRunner
 from jarvis.cli.render import ConsoleRenderer
@@ -356,9 +357,12 @@ class Repl:
         self.budgets: BudgetService | None = None
         # Phase 10B: the service-call ledger the local adapters write to (metadata only).
         self.service_ledger: ServiceLedger | None = None
+        # Phase 12: the outward-write intent store the connector WRITE tools propose into.
+        self.intents: IntentStore | None = None
         if store is not None:
             self.budgets = BudgetService(store.db, store.lock, config.budgets)
             self.service_ledger = ServiceLedger(store.db, store.lock)
+            self.intents = IntentStore(store.db, store.lock)
 
         self.registry = ToolRegistry()
         tool_ctx = ToolContext(
@@ -370,6 +374,7 @@ class Repl:
             connectors=self.connectors,
             project=self.projects.current if self.projects is not None else None,
             service_ledger=self.service_ledger,
+            intents=self.intents,
         )
         self.registry.discover("jarvis.tools.builtin", tool_ctx)
         # Phase 10B: register the local service adapters (semgrep/gitleaks/playwright_inspect).
@@ -1316,6 +1321,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
         orchestration=orch_store,  # Phase 10B: Studio runs
         artifacts=artifacts,  # Phase 11: Artifacts Library + global search + content route
         views=views_store,  # Phase 11: saved views / smart collections
+        intents=repl.intents,  # Phase 12: the outward-write approval queue + journal
     )
     if repl.agents is not None and orch_store is not None:
         app.state.orchestrator = _build_orchestrator(

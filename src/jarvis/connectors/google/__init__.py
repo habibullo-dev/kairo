@@ -1,18 +1,24 @@
-"""Google Workspace connector (Phase 9): OAuth provider + scopes.
+"""Google Workspace connector: OAuth provider + scopes.
 
-Read-first and drafts-only. The scopes below are EXACTLY the set the shipped code implements
-— never over-scoped for future capability (2026-07-07 clarification). Each maps 1:1 to a tool:
+The scopes below are EXACTLY the set the shipped code implements — never over-scoped for future
+capability. Each maps to the tools that use it:
 
-* ``calendar.readonly`` → ``calendar_list_events``
-* ``gmail.readonly``    → ``gmail_search`` / ``gmail_read``
-* ``gmail.compose``     → ``gmail_create_draft`` (users.drafts.create ONLY — never send)
-* ``drive.readonly``    → ``drive_search`` / ``drive_fetch``
+* ``calendar.readonly`` → ``calendar_list_events`` (reads)
+* ``calendar.events``    → the Phase 12 write proposals: ``calendar_create_event`` /
+                           ``calendar_update_event`` / ``calendar_cancel_event`` (+ Google Meet)
+* ``gmail.readonly``     → ``gmail_search`` / ``gmail_read``
+* ``gmail.compose``      → ``gmail_create_draft`` / ``gmail_update_draft`` (drafts.create/update
+                           ONLY — NEVER send)
+* ``drive.readonly``     → ``drive_search`` / ``drive_fetch`` (reads)
+* ``drive.file``         → the Phase 12 Docs write proposals: ``drive_create_doc`` /
+                           ``drive_update_doc`` — the NARROW scope covering ONLY files Kairo
+                           itself created/opened (NOT full ``drive``)
 
-The Gmail *send* scope is deliberately absent, and no send method/tool/route exists anywhere
-in src/ (pinned by tests/unit/test_no_gmail_send.py). Calendar/Drive *write* actions are a
-separately planned Phase 9B (docs/PLAN-9-daily.md) requiring a later reconnect for their scopes.
-
-The REST adapters (calendar/gmail/drive) arrive in Task 4 and live in this package.
+Deliberately absent and pinned by tests/unit/test_no_gmail_send.py: the Gmail *send* scope (and
+any send method/tool/route). Also absent: the broad ``drive`` scope and the ``documents`` scope —
+the Docs API accepts ``drive.file`` for app-created docs. Adding the two Phase 12 write scopes
+requires a re-consent (``jarvis connect google``); until then the write adapters are exercised
+only with a fake transport.
 """
 
 from __future__ import annotations
@@ -21,12 +27,15 @@ from jarvis.connectors.oauth import OAuthProvider
 
 _BASE = "https://www.googleapis.com/auth"
 
-#: The complete, minimal scope set. Order is display order in the connect ritual.
+#: The complete, minimal scope set. Order is display order in the connect ritual. calendar.events
+#: and drive.file (Phase 12) are the ONLY write scopes; no Gmail send scope, no broad Drive scope.
 GOOGLE_SCOPES: tuple[str, ...] = (
     f"{_BASE}/calendar.readonly",
+    f"{_BASE}/calendar.events",
     f"{_BASE}/gmail.readonly",
     f"{_BASE}/gmail.compose",
     f"{_BASE}/drive.readonly",
+    f"{_BASE}/drive.file",
 )
 
 

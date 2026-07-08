@@ -149,8 +149,22 @@ def test_service_tools_are_delegatable_but_not_spawn() -> None:
     assert "spawn_agent" not in set(SERVICE_TOOLS.values())
 
 
-def test_auto_never_set_is_unchanged() -> None:
-    # The service tools did not sneak into AUTO_NEVER's complement in a way that matters: the
-    # never-auto floor still excludes shell/write, and service tools aren't auto-approvable
-    # (covered above). This guards the AUTO_NEVER constant itself.
-    assert frozenset({"run_shell", "write_file"}) == AUTO_NEVER
+def test_auto_never_set_floor() -> None:
+    # The never-auto floor: the two highest-blast-radius local actions PLUS (Phase 12) every
+    # connector write. Service tools (semgrep/gitleaks/playwright_inspect) are NOT here — they
+    # aren't auto-approvable for other reasons (covered above), and must not be added to this
+    # floor. This guards the AUTO_NEVER constant itself against drift in either direction.
+    assert frozenset(
+        {
+            "run_shell",
+            "write_file",
+            "calendar_create_event",
+            "calendar_update_event",
+            "calendar_cancel_event",
+            "drive_create_doc",
+            "drive_update_doc",
+            "gmail_create_draft",
+            "gmail_update_draft",
+        }
+    ) == AUTO_NEVER
+    assert not (AUTO_NEVER & set(SERVICE_TOOLS.values()))  # no service tool on the floor

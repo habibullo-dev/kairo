@@ -193,6 +193,53 @@ class GmailCreateDraftTool(Tool):
         )
 
 
+class GmailUpdateDraftParams(BaseModel):
+    draft_id: str = Field(description="The draft id to edit (from creating the draft).")
+    to: str = Field(description="Recipient email address.")
+    subject: str = Field(description="Draft subject.")
+    body: str = Field(description="Draft body text.")
+    reply_to_message_id: str | None = Field(
+        default=None, description="If set, thread the draft as a reply to this message."
+    )
+
+
+class GmailUpdateDraftTool(Tool):
+    name = "gmail_update_draft"
+    description = (
+        "Edit an existing Gmail DRAFT in place for the user to review and send themselves. "
+        "Never sends. Requires approval."
+    )
+    Params = GmailUpdateDraftParams
+    permission_default = Permission.ASK
+    egress = True
+
+    @classmethod
+    def is_available(cls, context: ToolContext) -> bool:
+        return _google_available(context)
+
+    async def run(self, params: GmailUpdateDraftParams) -> ToolResult | str:
+        client = self.context.connectors.google
+        thread_id = None
+        try:
+            if params.reply_to_message_id:
+                parent = await gmail.get_message(client, params.reply_to_message_id)
+                thread_id = parent.thread_id or None
+            draft_id = await gmail.update_draft(
+                client,
+                params.draft_id,
+                to=params.to,
+                subject=params.subject,
+                body=params.body,
+                thread_id=thread_id,
+            )
+        except ConnectorError as exc:
+            return ToolResult(content=exc.user_message, is_error=True)
+        log_egress(category="gmail_draft", destination_type="google_drafts")
+        return (
+            f"Draft {draft_id} updated. It was NOT sent — review and send it yourself from Gmail."
+        )
+
+
 class DriveSearchParams(BaseModel):
     query: str = Field(description="Drive query, e.g. \"name contains 'roadmap'\".")
     max_results: int = Field(default=10, ge=1, le=25)

@@ -16,6 +16,7 @@ exactly those two fields changing.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 from jarvis.actions.intents import IntentKind
@@ -153,6 +154,43 @@ WriteRequest = (
     | DraftUpdateRequest
 )
 
+_REQUEST_CLASSES: dict[IntentKind, type] = {
+    IntentKind.CALENDAR_CREATE: CalendarCreateRequest,
+    IntentKind.CALENDAR_UPDATE: CalendarUpdateRequest,
+    IntentKind.CALENDAR_CANCEL: CalendarCancelRequest,
+    IntentKind.DOC_CREATE: DocCreateRequest,
+    IntentKind.DOC_UPDATE: DocUpdateRequest,
+    IntentKind.GMAIL_DRAFT_CREATE: DraftCreateRequest,
+    IntentKind.GMAIL_DRAFT_UPDATE: DraftUpdateRequest,
+}
+_TUPLE_FIELDS = ("attendees", "recurrence", "operations")
+
+
+def request_to_dict(request: WriteRequest) -> dict:
+    """Serialize a request for storage on a WriteIntent. ``kind`` (a property) is added
+    explicitly; the rest is the dataclass field dict (tuples serialize as lists via JSON)."""
+    return {"kind": request.kind.value, **dataclasses.asdict(request)}
+
+
+def _op_from_dict(op: dict) -> DocOp:
+    return DocReplaceOp(**op) if "find" in op else DocAppendOp(**op)
+
+
+def request_from_dict(data: dict) -> WriteRequest:
+    """Reconstruct the exact request stored by :func:`request_to_dict` — the executor runs THIS,
+    so what executes equals what was previewed. Lists round-trip back to the tuple fields."""
+    cls = _REQUEST_CLASSES[IntentKind(data["kind"])]
+    fields = {k: v for k, v in data.items() if k != "kind"}
+    for name in _TUPLE_FIELDS:
+        value = fields.get(name)
+        if isinstance(value, list):
+            fields[name] = (
+                tuple(_op_from_dict(o) for o in value)
+                if name == "operations"
+                else tuple(value)
+            )
+    return cls(**fields)
+
 __all__ = [
     "CalendarCancelRequest",
     "CalendarCreateRequest",
@@ -166,4 +204,6 @@ __all__ = [
     "DraftUpdateRequest",
     "SendUpdates",
     "WriteRequest",
+    "request_from_dict",
+    "request_to_dict",
 ]

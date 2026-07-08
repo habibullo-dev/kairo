@@ -57,6 +57,15 @@ HARD_DENY: frozenset[str] = frozenset(
         "spawn_agent",
         "gmail_create_draft",
         "send_notification",
+        # Phase 12 connector writes: an unattended run may neither PROPOSE nor execute an
+        # outward write (calendar/Drive/Docs) or a draft edit. No opt-in reopens these — the
+        # write queue is interactive-human-only in Phase 12 (unattended-propose is Phase 16).
+        "calendar_create_event",
+        "calendar_update_event",
+        "calendar_cancel_event",
+        "drive_create_doc",
+        "drive_update_doc",
+        "gmail_update_draft",
     }
 )
 

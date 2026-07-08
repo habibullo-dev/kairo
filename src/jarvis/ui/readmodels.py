@@ -62,6 +62,8 @@ class UiServices:
     # the saved-view store backs smart collections on Projects/Artifacts/Search.
     artifacts: Any = None  # an ArtifactStore; None when artifacts aren't composed
     views: Any = None  # a SavedViewStore; None when the DB isn't composed
+    # Phase 12: the outward-write intent store backs the approval queue + journal read models.
+    intents: Any = None  # an IntentStore; None when the write substrate isn't composed
 
 
 # --- memory ----------------------------------------------------------------
