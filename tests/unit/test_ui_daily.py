@@ -39,12 +39,21 @@ def test_every_card_has_a_designed_empty_state() -> None:
 
 
 def test_daily_reads_and_navigates_only() -> None:
-    # Daily's only mutations are the gated turn and the (pre-existing) run-digest action — both
-    # existing server routes; T8 adds NO new mutation. Every new card reads or navigates.
+    # Daily's direct mutations are the gated turn + run-digest; resuming a recent chat goes through
+    # the shared api.resumeChat helper (which posts the existing /resume route). No new authority.
     assert DAILY_JS.count("api.post(") == 2
     assert "/api/turn" in DAILY_JS and "/api/digest/run" in DAILY_JS
+    assert "api.resumeChat(" in DAILY_JS  # T11 recent-chats resume via the shared helper
     # Artifacts open the hardened read-only content GET; runs navigate to Studio (hash).
     assert "/api/artifacts/" in DAILY_JS and "/content" in DAILY_JS and "noopener" in DAILY_JS
+
+
+def test_resume_helper_loads_transcript() -> None:
+    # api.resumeChat resumes the session AND loads its transcript into the conversation view, so
+    # resuming actually shows the chat — via existing routes only.
+    assert "async resumeChat(" in APP_JS
+    assert "/resume" in APP_JS and "/api/sessions/" in APP_JS
+    assert "state.chat =" in APP_JS
 
 
 def test_untrusted_content_is_never_linkified() -> None:
@@ -83,3 +92,9 @@ def test_artifact_icons_cover_the_common_kinds() -> None:
 def test_daily_overview_failure_shows_unavailable_not_loading() -> None:
     # A failed /api/daily must never leave cards stuck on "Loading…" forever.
     assert "Unavailable" in DAILY_JS
+
+
+def test_recent_chats_card_present() -> None:
+    # T11: a recent-chats card reads /api/sessions and resumes via the existing route.
+    assert "daily-chats" in DAILY_JS and "fillChats" in DAILY_JS
+    assert "/api/sessions?limit=" in DAILY_JS

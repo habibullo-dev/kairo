@@ -449,13 +449,17 @@ def create_app(
 
     @app.get("/api/sessions")
     async def sessions_list(
-        query: str | None = None, pinned: bool | None = None, project_id: int | None = None
+        query: str | None = None, pinned: bool | None = None,
+        project_id: int | None = None, limit: int = 50,
     ) -> JSONResponse:
         svc = app.state.services.sessions
         if svc is None:
             return _unavailable("sessions")
         return JSONResponse(
-            await list_sessions_view(svc, query=query, pinned=pinned, project_id=project_id)
+            await list_sessions_view(
+                svc, query=query, pinned=pinned, project_id=project_id,
+                limit=max(1, min(limit, 200)),
+            )
         )
 
     @app.get("/api/sessions/{session_id}")

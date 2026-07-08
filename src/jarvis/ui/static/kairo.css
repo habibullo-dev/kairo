@@ -473,6 +473,32 @@ tr.clickable:hover td { color: var(--cyan); }
 .action-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .cost-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); gap: 12px; }
 
+/* artifacts library (T11) */
+.artifacts-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .artifacts-layout { grid-template-columns: 1fr; } }
+.art-list-col { display: grid; gap: 12px; }
+.art-filters { display: grid; gap: 10px; }
+.art-kinds { display: flex; flex-wrap: wrap; gap: 7px; }
+.filter-chip { min-height: 30px; padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel-soft); color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.filter-chip:hover { color: var(--ink); border-color: var(--line-strong); }
+.filter-chip.active { color: var(--ink); border-color: rgba(var(--accent-rgb), .45); background: rgba(var(--accent-rgb), .14); }
+.art-row { cursor: pointer; }
+.art-row.sel { border-color: rgba(var(--accent-rgb), .5); background: rgba(var(--accent-rgb), .12); }
+.art-preview { min-height: 240px; }
+.art-preview-inner { display: grid; gap: 14px; }
+.art-meta { display: grid; gap: 6px; }
+.art-meta-row { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 10px; font-size: 12.5px; }
+.art-meta-k { color: var(--muted); }
+.art-meta-v { color: var(--ink); word-break: break-word; }
+.art-label-edit { display: flex; gap: 8px; flex-wrap: wrap; }
+.art-label-input { flex: 1; min-width: 160px; min-height: 32px; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel-soft); color: var(--ink); font: inherit; font-size: 12.5px; }
+.art-body { border-top: 1px solid var(--line); padding-top: 12px; }
+.art-pre { max-height: 420px; overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-soft); color: var(--ink); font: 12px var(--mono); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.art-img { max-width: 100%; border-radius: 8px; border: 1px solid var(--line); }
+
 /* narrow / mobile (T10 responsive pass): collapse the rail to an icon strip so the content column
    gets real room, and let the screen padding tighten. The command palette (Ctrl/Cmd-K) stays the
    fast nav; a fuller mobile nav is later polish. */

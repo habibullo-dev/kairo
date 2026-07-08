@@ -42,8 +42,8 @@ export async function render(container, api, ctx) {
     for (const s of sessions) {
       const acts = el("div", { class: "ws-rowacts" }, [
         actionButton("Resume", async () => {
-          await api.post(`/api/sessions/${s.id}/resume`, {});
-          location.hash = "daily";
+          // Loads the chat + its transcript into the Daily view (via the shared helper).
+          if (await api.resumeChat(s.id)) location.hash = "daily";
         }),
         actionButton(s.pinned ? "Unpin" : "Pin", async () => {
           await api.post(`/api/sessions/${s.id}/pin`, { pinned: !s.pinned });

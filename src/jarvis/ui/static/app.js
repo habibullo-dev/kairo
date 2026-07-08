@@ -17,6 +17,7 @@ import { render as renderMeetings } from "./screens/meetings.js";
 import { render as renderTrace } from "./screens/trace.js";
 import { render as renderSettings } from "./screens/settings.js";
 import { render as renderWorkspace } from "./screens/workspace.js";
+import { render as renderArtifacts } from "./screens/artifacts.js";
 import { get as getTheme, initTheme, setTheme } from "./ui/theme.js";
 import { initKeys, clearScope, pushEscape } from "./ui/keys.js";
 import { emit as busEmit, on as busOn } from "./ui/bus.js";
@@ -53,6 +54,17 @@ export const api = {
   reviewPending() {
     const next = [...state.pending.values()][0];
     if (next) { next._shown = false; showTopApproval(); }
+  },
+  // Resume a past chat into the live session AND load its transcript into the Daily conversation
+  // view (so resuming actually shows the conversation). Returns false if a turn is in flight (409).
+  async resumeChat(sessionId) {
+    const res = await api.post(`/api/sessions/${sessionId}/resume`, {});
+    if (!res.ok) return false;
+    const t = await api.get(`/api/sessions/${sessionId}`);
+    if (t && Array.isArray(t.messages)) {
+      state.chat = t.messages.map((m) => ({ role: m.role, text: m.text }));
+    }
+    return true;
   },
 };
 
@@ -226,7 +238,7 @@ const screens = {
   daily: renderDaily, projects: renderProjects, studio: renderStudio, gate: renderGate,
   vault: renderVault, tasks: renderTasks, memory: renderMemory, hub: renderHub,
   costs: renderCosts, lab: renderLab, meetings: renderMeetings, trace: renderTrace,
-  settings: renderSettings, workspace: renderWorkspace,
+  settings: renderSettings, workspace: renderWorkspace, artifacts: renderArtifacts,
 };
 
 function refreshIfActive(name) { if (state.route === name) renderRoute(); }

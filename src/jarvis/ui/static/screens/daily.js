@@ -116,6 +116,10 @@ function renderZones(container, api) {
   html += `<div class="surface rise" id="daily-artifacts">
       <div class="panel-title"><h3>Recent artifacts</h3></div>
       <div id="daily-artifacts-body" class="daily-rows"><div class="dim">Loading…</div></div></div>`;
+  // 5b) RECENT CHATS (T11) — jump back into a recent conversation.
+  html += `<div class="surface rise" id="daily-chats">
+      <div class="panel-title"><h3>Recent chats</h3></div>
+      <div id="daily-chats-body" class="daily-rows"><div class="dim">Loading…</div></div></div>`;
   // 6) LATEST RUN (new) — the most recent orchestration run; links into Studio.
   html += `<div class="surface rise" id="daily-run">
       <div class="panel-title"><h3>Latest run</h3><a href="#studio">Studio →</a></div>
@@ -164,6 +168,7 @@ function scheduleFills(container, api) {
   _fillTimer = setTimeout(() => {
     _fillTimer = null;
     fillToday(container, api);
+    fillChats(container, api);
     fillDaily(container, api);
   }, 200);
 }
@@ -503,6 +508,47 @@ async function fillToday(container, api) {
     row.innerHTML = `<span class="time">${esc(shortTime(t.next_run_at))}</span>
       <span class="rdot"></span><span class="title">${esc(t.title)}</span>
       <span class="kind">${esc(t.kind)}</span>`;
+    body.appendChild(row);
+  }
+}
+
+async function fillChats(container, api) {
+  const body = container.querySelector("#daily-chats-body");
+  if (!body) return;
+  const data = await api.get("/api/sessions?limit=6");
+  body.textContent = "";
+  const chats = (data && data.sessions) || [];
+  if (!chats.length) {
+    body.appendChild(emptyState("No chats yet", "Your recent conversations will appear here."));
+    return;
+  }
+  for (const s of chats.slice(0, 5)) {
+    const row = document.createElement("div");
+    row.className = "list-row";
+    const icon = document.createElement("span");
+    icon.className = "list-icon";
+    icon.textContent = "💬";
+    const mid = document.createElement("div");
+    mid.style.minWidth = "0";
+    const t = document.createElement("div");
+    t.className = "lr-t";
+    t.textContent = s.title || "(untitled)";
+    const sub = document.createElement("div");
+    sub.className = "lr-s";
+    sub.textContent = s.updated_at ? relTime(s.updated_at) : "";
+    mid.append(t, sub);
+    const resume = document.createElement("button");
+    resume.className = "plain-button ghost";
+    resume.textContent = "Resume";
+    resume.addEventListener("click", async () => {
+      // Resume loads the chat into the live session AND its transcript into this view; we're
+      // already on Daily so re-render to show the loaded conversation.
+      if (await api.resumeChat(s.id)) {
+        location.hash = "daily";
+        render(container, api);
+      }
+    });
+    row.append(icon, mid, resume);
     body.appendChild(row);
   }
 }
