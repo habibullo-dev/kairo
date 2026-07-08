@@ -2303,3 +2303,25 @@ locally (`auto` hard-errors with the hardened `--metrics=off`; `p/ci` runs clean
 built but its console was down at ship time, so its live check is pending — and its
 missing-key/disabled path is written into the adversarial suite as part of the fail-closed proof,
 not hand-waved as "will work".
+
+## Eval cost-control layer (E1–E5)
+
+The cheapest place to make evals free was the LLMClient boundary — the same seam LedgeredClient
+already decorates. A CassetteClient records/replays every create() call keyed by the full request
+hash, so the default gate replays committed cassettes at $0/keyless and a miss fails CLOSED (never
+a silent live call). The one non-obvious correctness bug: the cassette key includes a client
+"signature" (effort/thinking/compat), and I first introspected it from the inner client — which
+is None on replay, so the key diverged and every replay missed. The fix is that the signature
+must be computed from the intended config and passed explicitly, identical across record and
+replay. A second subtlety: replay must build no live client at all (inner=None), because
+AnthropicClient.from_config calls config.require("anthropic") — otherwise "keyless replay" would
+still demand a key.
+
+Making replay the DEFAULT changes what `jarvis eval gate` means: with no cassettes it fails closed
+telling you to --record. That's the intended cost ladder (record once → replay free forever), but
+it's a real behavior change, so the fail-closed message prints the exact record command and the
+Daily screen shows a projected-cost note ($0 replay by default). The cost cap guards before each
+live call (bounding overshoot to one call) and fails closed on an unpriced model — an unmeasurable
+spend under a cap is not allowed. The provider smoke bench reuses all of this: live mode skips a
+provider that isn't fail-closed-available with a printed reason, which is exactly the "Z.ai console
+down, no key" case — a clean skip, not a crash.
