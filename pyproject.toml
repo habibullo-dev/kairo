@@ -40,6 +40,12 @@ ui = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]
+# Inspect-only browser QA + the screenshot definition-of-done harness. Optional: without it,
+# the playwright_inspect tool keeps a degrading stub and the capture harness is unavailable.
+# After `uv sync --extra browser`, run `uv run playwright install chromium` once.
+browser = [
+    "playwright>=1.4",
+]
 
 [build-system]
 requires = ["hatchling"]

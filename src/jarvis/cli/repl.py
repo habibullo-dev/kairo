@@ -1461,6 +1461,14 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
         auth = AuthManager()
         app = build_ui_app(config, repl=repl, auth=auth)
 
+        # Wire the real Playwright driver for the inspect-only browser-QA tool + the screenshot
+        # harness, if the `browser` extra is installed. Absent ⇒ the tool keeps its degrading
+        # stub (cleanly errors when invoked); never a startup crash.
+        from jarvis.services.playwright_driver import install_if_available
+
+        if install_if_available(screenshot_dir=config.data_dir / "screenshots"):
+            console.print("[dim]playwright: inspect-only browser QA enabled[/]")
+
         # Recover any orchestration runs a crash left 'running' (backstop; mirrors the sub-agent
         # / scheduler sweeps). Orchestration runs are only created here in the UI path.
         if app.state.services.orchestration is not None:
