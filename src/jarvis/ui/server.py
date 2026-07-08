@@ -50,6 +50,7 @@ from jarvis.ui.readmodels import (
     providers_status,
     services_status,
     session_transcript,
+    settings_overview,
     task_runs,
     teams_catalog,
     vault_lint,
@@ -373,6 +374,19 @@ def create_app(
         connectors = app.state.services.connectors
         ledger = app.state.services.ledger
         return hub_status(
+            config,
+            connectors=connectors.status() if connectors is not None else None,
+            ledger_status=ledger.status() if ledger is not None else None,
+        )
+
+    @app.get("/api/settings")
+    async def settings_status() -> dict:
+        # Read-only settings policy surface (Phase 13). Presence/state/env-NAMES only — never a
+        # key value or a token (covered by the secret-absence sweep). Mutates nothing; global
+        # service flags stay YAML-only.
+        connectors = app.state.services.connectors
+        ledger = app.state.services.ledger
+        return settings_overview(
             config,
             connectors=connectors.status() if connectors is not None else None,
             ledger_status=ledger.status() if ledger is not None else None,

@@ -800,6 +800,42 @@ def providers_status(config: Config) -> list[dict]:
     return ProviderRegistry.from_config(config).availability()
 
 
+def settings_overview(
+    config: Config, *, connectors: dict | None = None, ledger_status: dict | None = None
+) -> dict:
+    """The Settings screen's read-only policy surface (Phase 13). Aggregates the provider /
+    service / route / budget / connector / context-reuse state so a human can review what is
+    enabled and WHY — presence booleans, states, and env-var NAMES ONLY, never a key value or a
+    token (the secret-absence sweep covers this route). It grants NO authority and mutates
+    nothing: global service flags stay YAML-only, so ``enable_hint`` shows the exact settings.yaml
+    line to add. ``connectors`` (scopes + expiry, never a token) and ``ledger_status`` are the
+    stateful bits the route passes in, mirroring :func:`hub_status`."""
+    b = config.budgets
+    return {
+        "providers": providers_status(config),  # 10C: state / authority / private_ok + env names
+        "model_routes": model_routes_status(config),
+        "services": services_status(config),  # availability + egress/policy/trust + env names
+        "services_enabled": list(config.services.enabled),
+        "enable_hint": (
+            "Global service flags are file-only. To enable one, add it to settings.yaml:\n"
+            "services:\n  enabled: [firecrawl, exa, searxng, openai_image]"
+        ),
+        "context_reuse": {"enabled": config.context_reuse.enabled},
+        "budgets": {
+            "soft_warn_usd_per_run": b.soft_warn_usd_per_run,
+            "hard_stop_usd_per_run": b.hard_stop_usd_per_run,
+            "project_monthly_usd": b.project_monthly_usd,
+            "confirm_above_usd": b.confirm_above_usd,
+            "per_role_max_usd": b.per_role_max_usd,
+            # Per-service cost caps live on ServicesConfig (Task 8); None until that task adds them.
+            "service_max_usd_per_run": getattr(config.services, "max_usd_per_run", None),
+            "service_max_usd_per_day": getattr(config.services, "max_usd_per_day", None),
+        },
+        "connectors": connectors or _empty_connectors(),
+        "cost_ledger": ledger_status or {"degraded": False, "unrecorded": 0},
+    }
+
+
 # --- daily: the bootstrap read model (Phase 9) ------------------------------
 
 

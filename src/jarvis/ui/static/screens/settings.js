@@ -1,8 +1,11 @@
-// Settings (Phase 11 T6 + T14). Appearance controls (client-side only, via ui/theme.js —
-// localStorage, NO server route) + a debug/trace toggle (presentation-only body class) + READ-ONLY
-// status sections (providers/routes, services, connectors, budgets, privacy/safety) sourced from
-// the existing /api/hub, /api/costs and /api/runner reads. Presence booleans only — never a key
-// value. Nothing here grants authority or mutates.
+// Settings (Phase 11 T6 + T14; Phase 13 T7 maturity). Appearance controls (client-side only, via
+// ui/theme.js — localStorage, NO server route) + a debug/trace toggle (presentation-only body
+// class) + READ-ONLY policy surfaces (providers w/ authority/private-ok, services w/ availability
+// + egress/context-policy/output-trust badges + credential env NAMES, connectors w/ granted scope
+// names + expiry, budgets + per-service caps) sourced from /api/settings (Phase 13) plus the
+// /api/hub, /api/costs, /api/runner reads. Presence/state/NAMES only — never a key value or a
+// token. Global service flags stay YAML-only (the panel shows the exact line). Nothing here
+// grants authority or mutates.
 import { el } from "../ui/dom.js";
 import { money } from "../ui/format.js";
 import { get, set, THEMES } from "../ui/theme.js";
@@ -96,6 +99,27 @@ function metaRow(k, v) {
   ]);
 }
 
+function badge(text) {
+  return el("span", { class: "chip", style: "font-size:11px;margin:0 4px 4px 0" }, [text]);
+}
+
+// One service row: name + state pill + policy badges (egress / context-policy / output-trust) +
+// the credential env-var NAMES (never a value). Read-only.
+function serviceRow(x) {
+  const ok = x.state === "available";
+  const head = el("div", { style: "display:flex;align-items:center;gap:8px;flex-wrap:wrap" }, [
+    el("span", { class: "status-pill" + (ok ? " good" : "") }, [
+      el("span", { class: "dot" + (ok ? "" : " off") }, []), el("span", {}, [`${x.name} · ${x.state}`]),
+    ]),
+    x.egress ? badge("egress") : null,
+    badge(x.context_policy),
+    badge(x.output_trust),
+    (x.credential_env || []).length ? badge("key: " + x.credential_env.join(", ")) : null,
+  ].filter(Boolean));
+  const note = x.note ? el("div", { class: "set-s", style: "margin:2px 0 8px" }, [x.note]) : null;
+  return el("div", { style: "margin-bottom:6px" }, [head, note].filter(Boolean));
+}
+
 function renderStatus(region) {
   region.textContent = "";
   const s = _status;
@@ -103,43 +127,64 @@ function renderStatus(region) {
   const hub = s.hub || {};
   const costs = s.costs || {};
   const runner = s.runner || {};
+  const set = s.settings || {};
 
-  // Providers & model routes
-  const provChips = el("div", { class: "conn-strip" },
-    Object.entries(hub.providers || {}).map(([name, on]) => presencePill(name, !!on)));
-  const routeRows = (hub.model_routes || []).slice(0, 8).map((r) =>
+  // Providers (10C availability: state + authority + private_ok) & model routes
+  const provRows = (set.providers || []).map((p) => {
+    const tags = [p.trusted_authority ? "authority" : null, p.private_ok ? "private-ok" : null,
+      p.tool_capable ? "tools" : null].filter(Boolean).join(" · ");
+    return metaRow(p.name, `${p.state}${tags ? " · " + tags : ""}`);
+  });
+  const routeRows = (set.model_routes || hub.model_routes || []).slice(0, 8).map((r) =>
     metaRow(r.role, `${r.model || "?"}${r.provider ? " · " + r.provider : ""}${r.configured ? "" : " · no key"}`));
-  region.appendChild(statusSection("Providers & model routes", [provChips, el("div", { class: "art-meta", style: "margin-top:10px" }, routeRows)], "hub"));
+  region.appendChild(statusSection("Providers & model routes", [
+    el("div", { class: "art-meta" }, provRows.length ? provRows : [el("div", { class: "dim" }, ["No providers."])]),
+    el("div", { class: "set-s", style: "margin:8px 0 4px" }, ["Model routes"]),
+    el("div", { class: "art-meta" }, routeRows),
+  ], "hub"));
 
-  // Services catalog
-  const svc = el("div", { class: "conn-strip" },
-    (hub.services || []).map((x) => {
-      const okState = x.state === "available";
-      const pill = el("span", { class: "status-pill" + (okState ? " good" : "") }, []);
-      pill.append(el("span", { class: "dot" + (okState ? "" : " off") }, []), el("span", {}, [`${x.name} · ${x.state}`]));
-      return pill;
-    }));
-  region.appendChild(statusSection("Services", [(hub.services || []).length ? svc : el("div", { class: "dim" }, ["No services in the catalog."])]));
+  // Services catalog — availability + policy badges + credential NAMES + how to enable
+  const services = set.services || hub.services || [];
+  const svcNodes = services.length
+    ? services.map(serviceRow)
+    : [el("div", { class: "dim" }, ["No services in the catalog."])];
+  if (set.enable_hint) {
+    svcNodes.push(el("pre", { class: "set-s", style: "white-space:pre-wrap;margin-top:8px;opacity:.8" }, [set.enable_hint]));
+  }
+  region.appendChild(statusSection("Services", svcNodes));
 
-  // Connectors
-  const c = hub.connectors || {};
+  // Connectors — presence + granted scope NAMES + expiry (never a token)
+  const c = set.connectors || hub.connectors || {};
+  const connNodes = [];
   const connChips = [];
   if (hub.demo || c.demo) connChips.push(presencePill("Demo mode", true));
-  connChips.push(presencePill("Google", c.google != null));
+  const g = c.google;
+  connChips.push(presencePill("Google", g != null && g.connected));
   for (const [name, cfg] of Object.entries(c.notifiers || {})) {
     const on = !!(cfg && (cfg.connected ?? cfg.configured) && !cfg.needs_reconnect);
     connChips.push(presencePill(name, on));
   }
-  region.appendChild(statusSection("Connectors", [el("div", { class: "conn-strip" }, connChips)], "hub"));
+  connNodes.push(el("div", { class: "conn-strip" }, connChips));
+  if (g && g.connected && (g.scopes || g.expires_at)) {
+    connNodes.push(el("div", { class: "art-meta", style: "margin-top:8px" }, [
+      g.scopes ? metaRow("Google scopes", g.scopes.map((x) => x.split("/").pop()).join(", ")) : null,
+      g.expires_at ? metaRow("Token expires", g.expires_at) : null,
+    ].filter(Boolean)));
+  }
+  region.appendChild(statusSection("Connectors", connNodes, "hub"));
 
-  // Budgets & cost ledger
+  // Budgets & cost ledger (limits + per-service caps)
   const lim = costs.limits || {};
-  const ledger = hub.cost_ledger || {};
+  const bud = set.budgets || {};
+  const ledger = hub.cost_ledger || set.cost_ledger || {};
+  const cap = (v) => (v == null ? "not set" : money(v));
   region.appendChild(statusSection("Budgets & cost ledger", [
     el("div", { class: "art-meta" }, [
       metaRow("Project / month", lim.project_monthly_usd == null ? "no cap" : money(lim.project_monthly_usd)),
       metaRow("Confirm above", money(lim.confirm_above_usd)),
       metaRow("Soft / hard per run", `${money(lim.soft_warn_usd_per_run)} · ${money(lim.hard_stop_usd_per_run)}`),
+      metaRow("Service cap / run · day", `${cap(bud.service_max_usd_per_run)} · ${cap(bud.service_max_usd_per_day)}`),
+      metaRow("Context reuse", (set.context_reuse && set.context_reuse.enabled) ? "on" : "off"),
       metaRow("Cost tracking", ledger.degraded ? `degraded (${ledger.unrecorded || 0} unrecorded)` : "healthy"),
     ]),
   ], "costs"));
@@ -157,10 +202,10 @@ function renderStatus(region) {
 }
 
 async function fetchStatus(api) {
-  const [hub, costs, runner] = await Promise.all([
-    api.get("/api/hub"), api.get("/api/costs"), api.get("/api/runner"),
+  const [hub, costs, runner, settings] = await Promise.all([
+    api.get("/api/hub"), api.get("/api/costs"), api.get("/api/runner"), api.get("/api/settings"),
   ]);
-  _status = { hub, costs, runner };
+  _status = { hub, costs, runner, settings };
 }
 
 export function render(container, api) {

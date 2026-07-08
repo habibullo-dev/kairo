@@ -201,6 +201,8 @@ def test_no_secret_crosses_the_wire_on_any_get(tmp_path: Path) -> None:
             "telegram_chat_id": "SECRET-CANARY-CHATID",
             "kakao_rest_api_key": "SECRET-CANARY-KAKAO",
             "kakao_client_secret": "SECRET-CANARY-KAKAO-SECRET",
+            "firecrawl_api_key": "SECRET-CANARY-FIRECRAWL",  # Phase 13 research-service keys
+            "exa_api_key": "SECRET-CANARY-EXA",
         }
     )
     auth = AuthManager(token="SECRET-CANARY-TOKEN")
@@ -247,6 +249,8 @@ def test_no_secret_crosses_the_wire_on_any_get(tmp_path: Path) -> None:
         "SECRET-CANARY-ACCESS",  # the token file's access token — never on the wire
         "SECRET-CANARY-REFRESH",  # the refresh token — never on the wire
         "SECRET-CANARY-TOKEN",
+        "SECRET-CANARY-FIRECRAWL",  # Phase 13: research-service keys never on the wire
+        "SECRET-CANARY-EXA",
         sid,
     ]
     # Walk every registered GET route (skip parameterized ones needing an id) + the core set.
