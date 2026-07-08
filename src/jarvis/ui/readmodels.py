@@ -182,6 +182,63 @@ async def projects_overview(services: UiServices) -> dict:
 # --- costs -----------------------------------------------------------------
 
 
+# S7 Context Reuse: the aggregate cache columns summed over model_calls. Metadata only — token
+# counts + estimated savings, never prompt content. NULL cache fields sum as 0 (an aggregate over
+# calls, most of which had no cache), which is honest here (unlike a per-call fabricated 0).
+_CACHE_SUMS = (
+    "COALESCE(SUM(input_tokens),0), COALESCE(SUM(provider_cache_hit_tokens),0), "
+    "COALESCE(SUM(cache_write_tokens),0), COALESCE(SUM(cached_input_tokens),0), "
+    "COALESCE(SUM(estimated_cache_savings_usd),0.0), COUNT(*)"
+)
+
+
+def _cache_rec(vals: tuple) -> dict:
+    inp, hit, write, cached, savings, calls = vals
+    return {
+        "input_tokens": inp,
+        "hit_tokens": hit,
+        "cache_write_tokens": write,
+        "cached_input_tokens": cached,
+        "estimated_savings_usd": savings,
+        "calls": calls,
+        "hit_rate": round(hit / inp, 4) if inp else 0.0,
+    }
+
+
+async def cache_reuse_overview(
+    db: Any, *, project_id: int | None = None, since: str | None = None
+) -> dict:
+    """Context-reuse rollup over model_calls: aggregate cache-hit / write / cached tokens +
+    estimated savings + hit-rate, overall and by provider/model, plus the routes that benefit
+    most. Metadata only (token counts + a mode label) — never prompt content."""
+    clauses: list[str] = []
+    params: list[object] = []
+    if project_id is not None:
+        clauses.append("project_id = ?")
+        params.append(project_id)
+    if since is not None:
+        clauses.append("ts >= ?")
+        params.append(since)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    tot = await db.execute(f"SELECT {_CACHE_SUMS} FROM model_calls {where}", tuple(params))
+    totals = _cache_rec(await tot.fetchone())
+
+    async def grouped(col: str) -> list[dict]:  # col is a trusted constant, never caller input
+        cur = await db.execute(
+            f"SELECT {col}, {_CACHE_SUMS} FROM model_calls {where} GROUP BY {col}", tuple(params)
+        )
+        return [{col: r[0], **_cache_rec(r[1:])} for r in await cur.fetchall() if r[0] is not None]
+
+    by_provider = await grouped("provider")
+    top = sorted(by_provider, key=lambda x: x["estimated_savings_usd"], reverse=True)
+    return {
+        "totals": totals,
+        "by_provider": by_provider,
+        "by_model": await grouped("model"),
+        "top_routes": top[:5],
+    }
+
+
 async def costs_overview(
     budgets: Any, *, project_id: int | None = None, projects: Any = None
 ) -> dict:
@@ -201,6 +258,10 @@ async def costs_overview(
         "by_team": await budgets.grouped("team", project_id=project_id, since=month_start),
         "by_service": await budgets.grouped_services(
             "service", project_id=project_id, since=month_start
+        ),
+        # S7: prompt/context-cache reuse this month (aggregate; empty until caching is enabled).
+        "context_reuse": await cache_reuse_overview(
+            budgets.db, project_id=project_id, since=month_start
         ),
     }
     if project_id is None:  # the global cost center also attributes spend by project

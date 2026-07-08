@@ -71,6 +71,31 @@ function roiBlock(roi, hourly) {
       <tbody>${rows}</tbody></table></details>` : ""}</div>`;
 }
 
+// Context reuse (S7): prompt/context caching savings. Aggregate token counts + estimated savings
+// only — never prompt content. Empty until caching is enabled (all providers default off).
+function contextReuseCard(cr) {
+  if (!cr) return "";
+  const t = cr.totals || {};
+  const active = (t.hit_tokens || 0) + (t.cache_write_tokens || 0) + (t.cached_input_tokens || 0) > 0;
+  const rows = (cr.by_provider || [])
+    .filter((r) => r.hit_tokens || r.cache_write_tokens || r.cached_input_tokens)
+    .map((r) => `<tr><td>${esc(String(r.provider))}</td>
+      <td style="text-align:right">${(r.hit_tokens || 0).toLocaleString()}</td>
+      <td style="text-align:right">${money(r.estimated_savings_usd)}</td>
+      <td style="text-align:right" class="dim">${Math.round((r.hit_rate || 0) * 100)}%</td></tr>`)
+    .join("");
+  const body = active
+    ? `<div class="cost-row" style="margin-bottom:10px">
+        <div class="metric"><div class="n">${(t.hit_tokens || 0).toLocaleString()}</div><div class="l">cache-hit tokens</div></div>
+        <div class="metric"><div class="n">${(t.cache_write_tokens || 0).toLocaleString()}</div><div class="l">cache writes</div></div>
+        <div class="metric"><div class="n">${money(t.estimated_savings_usd)}</div><div class="l">est. savings</div></div>
+        <div class="metric"><div class="n">${Math.round((t.hit_rate || 0) * 100)}%</div><div class="l">hit rate</div></div></div>
+      <table class="dim-table"><tr><th style="text-align:left">Provider</th><th style="text-align:right">Hit tokens</th>
+        <th style="text-align:right">Est. savings</th><th style="text-align:right">Hit rate</th></tr>${rows}</table>`
+    : `<div class="dim">No prompt/context cache reuse recorded yet (caching is off until enabled).</div>`;
+  return `<details class="surface rise dim-section"><summary>Context reuse · prompt caching</summary>${body}</details>`;
+}
+
 export async function render(container, api) {
   container.textContent = "";
   const [c, roi] = await Promise.all([api.get("/api/costs"), api.get("/api/roi")]);
@@ -99,6 +124,7 @@ export async function render(container, api) {
     ${dimSection(c.by_stage, "stage", "By stage")}
     ${dimSection(c.by_purpose, "purpose", "By purpose")}
     ${dimSection(c.by_service, "service", "By service (local tools)")}
+    ${contextReuseCard(c.context_reuse)}
     <div class="surface rise"><div class="panel-title"><h3>Limits</h3></div>
       <div class="mono dim">soft/run ${money(lim.soft_warn_usd_per_run)} · hard/run ${money(lim.hard_stop_usd_per_run)}
         · confirm above ${money(lim.confirm_above_usd)}
