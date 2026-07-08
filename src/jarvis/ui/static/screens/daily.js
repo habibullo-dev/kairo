@@ -220,6 +220,14 @@ function fillChanged(container, data) {
   copy.addEventListener("click", () => navigator.clipboard && navigator.clipboard.writeText(cmd.textContent));
   chip.append(cmd, copy);
   body.appendChild(chip);
+  // Projected eval cost (cost-control layer): default replay = $0; live gate cost estimated
+  // from the last run. Informational — the eval is a CLI ritual, never run from the UI.
+  if (evals.cost_note) {
+    const cost = document.createElement("div");
+    cost.className = "eval-cost-note";
+    cost.textContent = "💲 " + evals.cost_note.replace(/`/g, "");
+    body.appendChild(cost);
+  }
   // KB review queue → link to the Vault.
   if (data.kb_review_count) {
     const kb = document.createElement("a");

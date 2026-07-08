@@ -44,7 +44,7 @@ from unittest import mock
 import yaml
 from tests.evals import judge as judge_mod
 from tests.evals import recorder, report
-from tests.evals.cassette import CassetteConfig, CostCapExceeded
+from tests.evals.cassette import CassetteConfig, CassetteStore, CostCapExceeded
 from tests.evals.cassette import wrap as cassette_wrap
 from tests.evals.recorder import ERROR, FAIL, INVALID, PASS, ScenarioRunRecord
 
@@ -664,6 +664,42 @@ async def run_smoke(
                     print(f"[smoke] {provider}/{model} {sc['name']} run{i + 1}: ERROR {exc}")
     print(f"[smoke] attempted={attempted} failures={failures}")
     return 1 if failures else 0
+
+
+def project_cost(suite: str, runs: int, mode: str) -> dict:
+    """Projected LIVE spend for an eval run, computed BEFORE running (no API calls). ``replay``
+    ⇒ $0 (no live calls at all). ``record``/``live`` ⇒ the last live gate's total cost from
+    history as the best real estimate (None if never run live), plus cassette coverage so the
+    human sees how much of the suite is already cached (free to replay)."""
+    scenarios = load_scenarios(suite)
+    cached = CassetteStore(CASSETTES_PATH).count()
+    cached += CassetteStore(CASSETTES_PATH / "smoke").count()
+    history = recorder.read_history(HISTORY_PATH)
+    last = history[-1] if history else None
+    last_cost = (last.get("totals") or {}).get("cost_usd") if isinstance(last, dict) else None
+    return {
+        "mode": mode,
+        "suite": suite,
+        "scenarios": len(scenarios),
+        "runs": runs,
+        "cassettes_cached": cached,
+        "last_gate_cost_usd": last_cost,
+        "projected_live_usd": 0.0 if mode == "replay" else last_cost,
+    }
+
+
+def _print_plan(p: dict) -> None:
+    print(f"[plan] suite={p['suite']} runs={p['runs']} mode={p['mode']}")
+    print(f"[plan] scenarios={p['scenarios']}  cassettes_cached={p['cassettes_cached']}")
+    lc = p["last_gate_cost_usd"]
+    lc_s = f"${lc:.4f}" if lc is not None else "never run live"
+    print(f"[plan] last live gate cost: {lc_s}")
+    if p["mode"] == "replay":
+        print("[plan] projected live cost: $0.00 (keyless replay — no API calls)")
+    else:
+        pj = p["projected_live_usd"]
+        est = f"${pj:.4f}" if pj is not None else "unknown (no prior live gate to estimate from)"
+        print(f"[plan] projected live cost (~{p['mode']}): {est}")
 
 
 def _add_cassette_args(p: object) -> None:
@@ -1674,7 +1710,7 @@ def cli(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         argv = ["gate"]  # bare invocation = full gate (documented default)
-    elif argv[0] not in {"gate", "run", "aggregate", "smoke", "-h", "--help"}:
+    elif argv[0] not in {"gate", "run", "aggregate", "smoke", "plan", "-h", "--help"}:
         argv = ["gate", *argv]  # `runner.py --suite core` still means `gate --suite core`
 
     parser = argparse.ArgumentParser(
@@ -1732,7 +1768,17 @@ def cli(argv: list[str] | None = None) -> int:
     sm.add_argument("--runs", type=int, default=1, help="Runs per smoke scenario (default 1).")
     _add_cassette_args(sm)
 
+    pl = sub.add_parser("plan", help="Show projected eval cost BEFORE running (no API calls).")
+    pl.add_argument("--suite", default="all", choices=["core", "adversarial", "all"])
+    pl.add_argument("--runs", type=int, default=3)
+    _add_cassette_args(pl)
+
     args = parser.parse_args(argv)
+
+    if args.cmd == "plan":
+        mode = "live" if args.live else ("record" if args.record else "replay")
+        _print_plan(project_cost(args.suite, args.runs, mode))
+        return 0
 
     if args.cmd == "smoke":
         config = load_config()  # models/providers come from the catalog; replay needs no key
