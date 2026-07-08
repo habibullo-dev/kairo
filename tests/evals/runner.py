@@ -44,7 +44,13 @@ from unittest import mock
 import yaml
 from tests.evals import judge as judge_mod
 from tests.evals import recorder, report
-from tests.evals.cassette import CassetteConfig, CassetteStore, CostCapExceeded
+from tests.evals.cassette import (
+    CassetteConfig,
+    CassetteEmbedder,
+    CassetteStore,
+    CostCapExceeded,
+    wrap_web_tool,
+)
 from tests.evals.cassette import wrap as cassette_wrap
 from tests.evals.recorder import ERROR, FAIL, INVALID, PASS, ScenarioRunRecord
 
@@ -84,6 +90,14 @@ HISTORY_PATH = DATA_EVALS / "history.jsonl"
 BASELINES_PATH = Path(__file__).parent / "baselines.yaml"
 FIXTURES_PATH = Path(__file__).parent / "judge_fixtures.yaml"
 CASSETTES_PATH = Path(__file__).parent / "cassettes"  # committed model-call cassettes (replay)
+#: E6b: the fixed clock every eval agent loop reports as "now" (via _default_now), so the
+#: time-context line in the system prompt is identical across record and replay → same key.
+EVAL_CLOCK = "2026-01-01T12:00:00+00:00"
+#: The active cassette config for the current CLI run (set by _apply_cassette). run_once reads
+#: it to wrap embedders + web tools (E6a) without threading it through every runner function.
+#: A dict holder avoids a module-global statement; unit tests that call run_once directly leave
+#: it None (no external wrapping).
+_EVAL_CASSETTE: dict = {"cfg": None}
 CROSS_JUDGE_MODEL = "claude-sonnet-5"  # uncounted cross-family check (see judge.py)
 
 
@@ -535,6 +549,34 @@ def _default_client_factory(cfg: Config) -> LLMClient:
     return AnthropicClient.from_config(cfg)
 
 
+def _eval_embedder(run_config: Config, cassette: CassetteConfig | None):
+    """The embedder for an eval run. With a cassette, wrap it (E6a): replay builds NO live
+    Voyage client (keyless) and fails closed on a missing embedding cassette; record/live calls
+    Voyage and records the vectors. Without a cassette (direct callers), the live embedder."""
+    if cassette is None:
+        return VoyageEmbedder.from_config(run_config)
+    inner = None if cassette.mode == "replay" else VoyageEmbedder.from_config(run_config)
+    return CassetteEmbedder(
+        inner,
+        store=CassetteStore(cassette.store_dir / "embeddings"),
+        mode=cassette.mode,
+        model=run_config.models.embedding,
+    )
+
+
+def _wrap_web_tools(registry: object, cassette: CassetteConfig | None) -> None:
+    """Cassette-wrap web_search / web_fetch in an eval run (E6a): replay fails closed on a
+    missing web cassette (no live Tavily/web call); record/live calls + records. No-op without
+    a cassette."""
+    if cassette is None:
+        return
+    store = CassetteStore(cassette.store_dir / "web")
+    for name in ("web_search", "web_fetch"):
+        tool = registry.get(name) if hasattr(registry, "get") else None
+        if tool is not None:
+            wrap_web_tool(tool, store=store, mode=cassette.mode)
+
+
 def _cassette_config_from_args(args: object) -> CassetteConfig:
     """Mode precedence: --live > --record > replay (the keyless default)."""
     mode = (
@@ -575,6 +617,7 @@ def _apply_cassette(
             signature={"effort": config.limits.effort, "thinking": False, "compat": False},
             cost_cap=cap, scenario="judge",
         )
+    _EVAL_CASSETTE["cfg"] = cassette_cfg  # run_once reads this to wrap embedders + web (E6a)
     cap_note = f", max_cost=${cassette_cfg.max_cost_usd}" if cassette_cfg.max_cost_usd else ""
     print(f"[cassette] mode={cassette_cfg.mode} store={CASSETTES_PATH}{cap_note}")
     return factory, wrapped_judge
@@ -760,6 +803,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
     client_factory: Callable[[Config], LLMClient] | None = None,
     judge_client: LLMClient | None = None,
     no_judge: bool = False,
+    cassette: CassetteConfig | None = None,
 ) -> tuple[ScenarioRunRecord, Path]:
     """Execute one scenario once and return its record plus the temp workdir (the
     caller owns the workdir's lifecycle: delete on PASS, save on anything else).
@@ -768,6 +812,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
     live Anthropic client; tests inject a FakeClient dispenser). Any exception during
     the run becomes an ERROR record rather than crashing the whole gate."""
     factory = client_factory or _default_client_factory
+    cassette = cassette if cassette is not None else _EVAL_CASSETTE["cfg"]
     workdir = Path(tempfile.mkdtemp(prefix="jarvis-eval-"))
     for name, content in scenario.get("setup", {}).get("files", {}).items():
         (workdir / name).write_text(content, encoding="utf-8")
@@ -856,7 +901,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
         if scenario.get("needs_memory"):
             memory = MemoryService(
                 store=MemoryStore(await connect(workdir / "memory.db")),
-                embedder=VoyageEmbedder.from_config(run_config),
+                embedder=_eval_embedder(run_config, cassette),
                 config=run_config.memory,
                 utility_client=utility,
                 utility_model=run_config.models.utility,
@@ -878,7 +923,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
             )
             await _seed_tasks(tasks.store, scenario.get("background_tasks", []))
         if scenario.get("needs_knowledge"):
-            embedder = memory.embedder if memory else VoyageEmbedder.from_config(run_config)
+            embedder = memory.embedder if memory else _eval_embedder(run_config, cassette)
             knowledge = KnowledgeService(
                 KnowledgeStore(session_store.db, session_store.lock),
                 embedder,
@@ -933,6 +978,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
                 connectors=connectors,
             ),
         )
+        _wrap_web_tools(registry, cassette)  # E6a: web_search/web_fetch fail closed on replay
         if agents is not None:
             agents.bind(registry=registry)
 
@@ -1774,6 +1820,11 @@ def cli(argv: list[str] | None = None) -> int:
     _add_cassette_args(pl)
 
     args = parser.parse_args(argv)
+
+    # E6b: pin a deterministic eval clock for every agent loop (main / sub-agent / unattended
+    # job) so the system-prompt time context is stable across record and replay (same cassette
+    # key). Harmless for live/record runs — the model just sees a fixed date.
+    os.environ["JARVIS_EVAL_CLOCK"] = EVAL_CLOCK
 
     if args.cmd == "plan":
         mode = "live" if args.live else ("record" if args.record else "replay")

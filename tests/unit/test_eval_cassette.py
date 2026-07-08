@@ -268,3 +268,95 @@ async def test_no_cap_does_not_track(tmp_path: Path) -> None:
     )
     await client.create(**_REQ)  # no cap ⇒ no CostCapExceeded regardless
     assert inner.calls == 1
+
+
+# --- E6a: external-service cassettes (embeddings + web) ---------------------
+
+
+async def test_embedder_replay_fails_closed(tmp_path: Path) -> None:
+    from tests.evals.cassette import CassetteEmbedder
+
+    emb = CassetteEmbedder(None, store=CassetteStore(tmp_path / "e"), mode="replay", model="m")
+    with pytest.raises(CassetteMissError):
+        await emb.embed_query("hello")  # no cassette + no live client ⇒ fail closed
+
+
+async def test_embedder_record_then_replay(tmp_path: Path) -> None:
+    from tests.evals.cassette import CassetteEmbedder
+
+    class _FakeEmb:
+        calls = 0
+
+        async def embed_query(self, t: str):
+            _FakeEmb.calls += 1
+            return [0.1, 0.2]
+
+        async def embed_documents(self, ts):
+            return [[0.3]] * len(ts)
+
+    d = tmp_path / "e"
+    rec = CassetteEmbedder(_FakeEmb(), store=CassetteStore(d), mode="record", model="m")
+    assert await rec.embed_query("hi") == [0.1, 0.2] and _FakeEmb.calls == 1
+    rep = CassetteEmbedder(None, store=CassetteStore(d), mode="replay", model="m")
+    assert await rep.embed_query("hi") == [0.1, 0.2]  # replay hit; no live embedder needed
+    assert _FakeEmb.calls == 1  # replay made no live call
+
+
+async def test_web_tool_replay_fails_closed(tmp_path: Path) -> None:
+    from tests.evals.cassette import wrap_web_tool
+
+    class _P:
+        def model_dump(self):
+            return {"query": "x"}
+
+    class _T:
+        name = "web_search"
+
+        async def run(self, params):
+            raise AssertionError("live web call must not happen on replay")
+
+    t = _T()
+    wrap_web_tool(t, store=CassetteStore(tmp_path / "w"), mode="replay")
+    with pytest.raises(CassetteMissError):
+        await t.run(_P())
+
+
+async def test_web_tool_record_then_replay(tmp_path: Path) -> None:
+    from tests.evals.cassette import wrap_web_tool
+
+    from jarvis.tools.base import ToolResult
+
+    calls = {"n": 0}
+
+    class _P:
+        def model_dump(self):
+            return {"query": "x"}
+
+    class _T:
+        name = "web_search"
+
+        async def run(self, params):
+            calls["n"] += 1
+            return ToolResult(content="live results")
+
+    d = tmp_path / "w"
+    rec = _T()
+    wrap_web_tool(rec, store=CassetteStore(d), mode="record")
+    assert (await rec.run(_P())).content == "live results" and calls["n"] == 1
+    rep = _T()
+    wrap_web_tool(rep, store=CassetteStore(d), mode="replay")
+    assert (await rep.run(_P())).content == "live results"  # replay hit
+    assert calls["n"] == 1  # replay made no live call
+
+
+# --- E6b: frozen eval clock -------------------------------------------------
+
+
+def test_eval_clock_is_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jarvis.core.agent import _default_now
+
+    monkeypatch.setenv("JARVIS_EVAL_CLOCK", "2026-01-01T12:00:00+00:00")
+    a, b = _default_now(), _default_now()
+    assert a == b and a.year == 2026 and a.hour == 12
+    monkeypatch.delenv("JARVIS_EVAL_CLOCK")
+    assert _default_now().year >= 2026  # unset ⇒ real wall clock

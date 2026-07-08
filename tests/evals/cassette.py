@@ -158,6 +158,85 @@ class CassetteStore:
     def count(self) -> int:
         return len(list(self.dir.glob("*.json"))) if self.dir.is_dir() else 0
 
+    # --- generic value cassettes (E6a: embeddings, web) ---
+    def has_ext(self, key: str) -> bool:
+        return self._path(key).is_file()
+
+    def get_ext(self, key: str) -> object:
+        return json.loads(self._path(key).read_text(encoding="utf-8"))["value"]
+
+    def put_ext(self, key: str, value: object, *, meta: dict) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._path(key).write_text(_canonical({"meta": meta, "value": value}), encoding="utf-8")
+
+
+def external_key(service: str, payload: dict) -> str:
+    """Cassette key for a non-LLM external call (embeddings / web). Temp-workdir paths in the
+    payload are redacted (E6b) so the key reproduces across runs."""
+    blob = _canonical({"service": service, "payload": _redact_paths(payload)})
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+class CassetteEmbedder:
+    """Wraps an ``Embedder`` (Voyage) with the cassette policy (E6a). replay: hit → cached
+    vectors, MISS → fail closed (no live Voyage call); record/live: call + record."""
+
+    def __init__(self, inner: object, *, store: CassetteStore, mode: Mode, model: str) -> None:
+        self.inner = inner
+        self.store = store
+        self.mode = mode
+        self.model = model
+
+    async def _cached(self, input_type: str, texts: list[str], live) -> object:
+        payload = {"model": self.model, "type": input_type, "texts": texts}
+        key = external_key("voyage-embed", payload)
+        if self.mode != "live" and self.store.has_ext(key):
+            return self.store.get_ext(key)
+        if self.mode == "replay":
+            raise CassetteMissError(
+                f"no Voyage embedding cassette ({input_type}, {len(texts)} text(s)); run with "
+                f"--record (or --live) to record it. key={key[:12]}"
+            )
+        val = await live()
+        self.store.put_ext(key, val, meta={"service": "voyage-embed", "type": input_type,
+                                           "n": len(texts), "model": self.model})
+        return val
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        return await self._cached("document", texts, lambda: self.inner.embed_documents(texts))
+
+    async def embed_query(self, text: str) -> list[float]:
+        return await self._cached("query", [text], lambda: self.inner.embed_query(text))
+
+
+def wrap_web_tool(tool: object, *, store: CassetteStore, mode: Mode) -> None:
+    """Replace a web tool's ``run`` with a cassette-cached version (E6a). replay: hit → cached
+    ToolResult, MISS → fail closed (no live Tavily/web call); record/live: call + record the
+    result content. Mutates the tool instance in place (eval-only)."""
+    from jarvis.tools.base import ToolResult
+
+    inner_run = tool.run
+    name = tool.name
+
+    async def cached_run(params: object):
+        payload = params.model_dump() if hasattr(params, "model_dump") else dict(params)
+        key = external_key(f"webtool:{name}", payload)
+        if mode != "live" and store.has_ext(key):
+            return ToolResult(content=str(store.get_ext(key)))
+        if mode == "replay":
+            raise CassetteMissError(
+                f"no web cassette for {name}({payload}); run with --record (or --live). "
+                f"key={key[:12]}"
+            )
+        result = await inner_run(params)
+        content = result.content if hasattr(result, "content") else str(result)
+        store.put_ext(key, content, meta={"service": f"webtool:{name}"})
+        return result
+
+    tool.run = cached_run
+
 
 class CostCap:
     """Tracks cumulative LIVE spend against a hard cap. Inactive when ``max_usd`` is None."""

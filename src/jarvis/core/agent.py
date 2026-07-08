@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from dataclasses import replace as _dc_replace
@@ -59,8 +60,18 @@ def _latest_user_text(messages: list[dict]) -> str | None:
     return None
 
 
+#: Eval determinism hook: when this env var holds an ISO timestamp, EVERY agent loop (main,
+#: sub-agent, unattended job) reports it as "now" instead of the wall clock. This makes the
+#: time-context line in the system prompt stable, so a recorded eval cassette key reproduces on
+#: replay. Set ONLY by the eval harness (E6b); unset in production, where the wall clock is used.
+_EVAL_CLOCK_ENV = "JARVIS_EVAL_CLOCK"
+
+
 def _default_now() -> _dt.datetime:
-    """Current time as an aware datetime in the machine's local zone."""
+    """Current time as an aware datetime in the machine's local zone (or a fixed eval clock)."""
+    fixed = os.environ.get(_EVAL_CLOCK_ENV)
+    if fixed:
+        return _dt.datetime.fromisoformat(fixed)
     return _dt.datetime.now().astimezone()
 
 
