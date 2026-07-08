@@ -84,6 +84,21 @@ def test_key_is_stable_and_sensitive_to_inputs() -> None:
     assert k1 != cassette_key(**{**base, "signature": {"compat": False}})  # config affects output
 
 
+def test_key_normalizes_random_temp_workdir() -> None:
+    # Eval scenarios run in a random temp workdir; that path leaks into tool results. The key
+    # must normalize it out so replay is deterministic across runs (same machine).
+    def _k(wd: str) -> str:
+        return cassette_key(
+            provider="anthropic", signature={}, model="m", system="s",
+            messages=[{"role": "user", "content": f"wrote 91 bytes to {wd}\\summary.md"}],
+            tools=[], max_tokens=10, tool_choice=None, temperature=None,
+        )
+
+    a = _k("C:\\Users\\h\\AppData\\Local\\Temp\\jarvis-eval-aaaa111")
+    b = _k("C:\\Users\\h\\AppData\\Local\\Temp\\jarvis-eval-bbbb222")
+    assert a == b  # random workdir normalized ⇒ deterministic replay key
+
+
 # --- replay fails closed on a miss ------------------------------------------
 
 

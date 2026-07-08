@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +44,25 @@ def _canonical(obj: object) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=True, default=str)
 
 
+# Eval scenarios run in a random temp workdir (tempfile.mkdtemp(prefix="jarvis-eval-")). That
+# absolute path leaks into the message stream (e.g. a write_file confirmation), which would make
+# the cassette key differ every run — and every machine. Normalize the whole temp-workdir prefix
+# (drive/root … up to and including `jarvis-eval-<random>`) to a stable token BEFORE hashing, so
+# replay is deterministic across runs and across machines (CI). The relative sub-path is kept.
+_WORKDIR_RE = re.compile(r'(?:[A-Za-z]:)?[\\/](?:[^\\/\n"]+[\\/])*?jarvis-eval-[A-Za-z0-9_]+')
+
+
+def _redact_paths(value: object) -> object:
+    """Recursively replace random eval temp-workdir paths with ``<WORKDIR>`` in any string."""
+    if isinstance(value, str):
+        return _WORKDIR_RE.sub("<WORKDIR>", value)
+    if isinstance(value, list):
+        return [_redact_paths(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _redact_paths(v) for k, v in value.items()}
+    return value
+
+
 def cassette_key(
     *,
     provider: str,
@@ -62,8 +82,8 @@ def cassette_key(
             "provider": provider,
             "signature": signature,
             "model": model,
-            "system": system,
-            "messages": messages,
+            "system": _redact_paths(system),
+            "messages": _redact_paths(messages),
             "tools": tools,
             "max_tokens": max_tokens,
             "tool_choice": tool_choice,
