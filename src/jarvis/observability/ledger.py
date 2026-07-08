@@ -33,7 +33,10 @@ _COLUMNS = (
     "id, ts, trace_id, session_id, project_id, orchestration_run_id, agent_role, purpose, "
     "provider, model, effort, input_tokens, output_tokens, cache_write_tokens, "
     "cache_read_tokens, tool_call_count, latency_ms, cost_usd, pricing_version, created_at, "
-    "team, stage"
+    "team, stage, "
+    # S7 Context Reuse (normalized, cross-provider; NULL = not reported / not cached):
+    "cached_input_tokens, provider_cache_mode, provider_cache_hit_tokens, "
+    "estimated_cache_savings_usd, stable_prefix_hash"
 )
 
 
@@ -100,9 +103,18 @@ class CostLedger:
         latency_ms: float | None,
         tool_call_count: int,
         ctx: CostContext,
+        cached_input_tokens: int | None = None,
+        provider_cache_mode: str | None = None,
+        provider_cache_hit_tokens: int | None = None,
+        estimated_cache_savings_usd: float | None = None,
+        stable_prefix_hash: str | None = None,
     ) -> None:
         """Insert one call's metadata. Unpriced ⇒ cost_usd NULL + a warning (never 0.0). A DB
-        failure flips ``ledger_degraded`` and is swallowed — the model call must never break."""
+        failure flips ``ledger_degraded`` and is swallowed — the model call must never break.
+
+        The S7 cache fields are normalized + optional (NULL when caching is off or a provider does
+        not report them — never a fabricated 0): the caller fills them from the context-reuse
+        policy at the enable-step. Metadata only — token counts + a mode label + a prefix hash."""
         cost = self.pricing.cost(provider, model, usage)
         if cost is None:
             self.log.warning("pricing_unknown", provider=provider, model=model)
@@ -110,7 +122,8 @@ class CostLedger:
             async with self.lock:
                 await self.db.execute(
                     f"INSERT INTO model_calls ({_COLUMNS}) VALUES "
-                    "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "?, ?, ?, ?, ?)",
                     (
                         _now(),
                         ctx.trace_id,
@@ -133,6 +146,11 @@ class CostLedger:
                         _now(),
                         ctx.team,
                         ctx.stage,
+                        cached_input_tokens,
+                        provider_cache_mode,
+                        provider_cache_hit_tokens,
+                        estimated_cache_savings_usd,
+                        stable_prefix_hash,
                     ),
                 )
                 await self.db.commit()

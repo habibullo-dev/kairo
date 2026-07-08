@@ -785,6 +785,27 @@ CREATE INDEX IF NOT EXISTS idx_connector_writes_project_ts ON connector_writes(p
 """
 
 
+#: S7 Context Reuse: normalized cross-provider cache columns on model_calls (metadata only —
+#: token counts + a mode label + a stable-prefix hash, never prompt text). Additive + guarded so
+#: a partial-failure re-run is a clean no-op (ALTER ADD COLUMN has no IF NOT EXISTS). NULL is the
+#: honest "not reported / not cached" — never a fabricated 0.
+_V11_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("cached_input_tokens", "INTEGER"),  # OpenAI cached_tokens / DeepSeek hit / Gemini cached
+    ("provider_cache_mode", "TEXT"),  # off|automatic_prefix|explicit_breakpoint|... (the mode used)
+    ("provider_cache_hit_tokens", "INTEGER"),  # normalized "served from cache" count
+    ("estimated_cache_savings_usd", "REAL"),  # derived; NULL when unpriced/unknown
+    ("stable_prefix_hash", "TEXT"),  # the cached prefix's identity (from the assembler)
+)
+
+
+async def _migrate_v11(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(model_calls)")
+    existing = {row[1] for row in await cursor.fetchall()}
+    for name, sql_type in _V11_COLUMNS:  # name/type are trusted constants, never caller input
+        if name not in existing:
+            await db.execute(f"ALTER TABLE model_calls ADD COLUMN {name} {sql_type}")
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -801,6 +822,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (8, _SCHEMA_V8),
     (9, _migrate_v9),
     (10, _SCHEMA_V10),
+    (11, _migrate_v11),
 ]
 
 

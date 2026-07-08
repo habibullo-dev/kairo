@@ -161,3 +161,58 @@ def anthropic_cache_control(directive: CacheDirective) -> dict | None:
 def openai_prompt_cache_key(directive: CacheDirective) -> str | None:
     """The ``prompt_cache_key`` for the OpenAI request (routes to a warm prefix cache), or None."""
     return directive.cache_key if directive.emit else None
+
+
+# --- normalized cross-provider cache usage (for the ledger) ----------------------------------
+
+#: Approximate saving of a cache-served token vs a full input token, per provider. A cache read
+#: costs a fraction of input; saving ≈ hit_tokens × input_price × fraction. These are ESTIMATES
+#: (the exact discount varies and changes) — the ledger stores them as such, never as truth.
+_SAVINGS_FRACTION: dict[str, float] = {
+    "anthropic": 0.9,  # cache reads ~0.1× input
+    "openai": 0.5,  # cached input ~0.5× input
+    "deepseek": 0.9,  # cache hits ~0.1× input
+    "gemini": 0.75,
+}
+
+
+def normalize_cache_usage(provider: str, raw: dict) -> dict:
+    """Map a provider's RAW usage payload to the normalized cache fields. An absent field ⇒ None
+    (never a fabricated 0). Keys: cache_creation_tokens, cache_read_tokens, cached_input_tokens,
+    provider_cache_hit_tokens. An unknown provider yields all-None (fail closed)."""
+    out: dict[str, int | None] = {
+        "cache_creation_tokens": None,
+        "cache_read_tokens": None,
+        "cached_input_tokens": None,
+        "provider_cache_hit_tokens": None,
+    }
+    if provider == "anthropic":
+        out["cache_creation_tokens"] = raw.get("cache_creation_input_tokens")
+        out["cache_read_tokens"] = raw.get("cache_read_input_tokens")
+        out["provider_cache_hit_tokens"] = raw.get("cache_read_input_tokens")
+    elif provider == "openai":
+        cached = (raw.get("prompt_tokens_details") or {}).get("cached_tokens")
+        out["cached_input_tokens"] = cached
+        out["provider_cache_hit_tokens"] = cached
+    elif provider == "deepseek":
+        hit = raw.get("prompt_cache_hit_tokens")
+        out["cached_input_tokens"] = hit
+        out["provider_cache_hit_tokens"] = hit
+    elif provider == "gemini":
+        cc = raw.get("cachedContentTokenCount")
+        if cc is None:
+            cc = (raw.get("usageMetadata") or {}).get("cachedContentTokenCount")
+        out["cached_input_tokens"] = cc
+        out["provider_cache_hit_tokens"] = cc
+    return out
+
+
+def estimated_cache_savings(
+    provider: str, hit_tokens: int | None, input_price_per_token: float | None
+) -> float | None:
+    """A rough USD saving from serving ``hit_tokens`` from cache vs full input. None when the
+    provider/pricing is unknown or nothing hit (never a fabricated 0)."""
+    frac = _SAVINGS_FRACTION.get(provider)
+    if not hit_tokens or input_price_per_token is None or frac is None:
+        return None
+    return hit_tokens * input_price_per_token * frac
