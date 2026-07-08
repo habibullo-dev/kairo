@@ -78,7 +78,7 @@ from jarvis.permissions.gate import Decision
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
 from jarvis.scheduler.runner import BackgroundRunner
-from jarvis.scheduler.service import TaskService
+from jarvis.scheduler.service import TaskService, utc_now
 from jarvis.scheduler.store import TaskStore
 from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
 from jarvis.voice import ScriptedScreenApprover, VoiceApprover, frame_transcript
@@ -141,8 +141,11 @@ def load_scenarios(suite: str = "all") -> list[LoadedScenario]:
 
 async def _seed_tasks(store: TaskStore, specs: list[dict]) -> None:
     """Insert scenario ``background_tasks`` directly (bypassing the past-time guard),
-    defaulting to a fire time 30s ago so they're due-within-grace on ``check_due``."""
-    due = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=30)).isoformat()
+    defaulting to a fire time 30s ago so they're due-within-grace on ``check_due``. Uses the
+    eval clock (``utc_now``, frozen under JARVIS_EVAL_CLOCK) so the seed is due relative to the
+    SAME clock the scheduler checks — otherwise a real-time seed never fires at the frozen clock
+    (E6b) and unattended scenarios silently stop firing."""
+    due = (utc_now() - dt.timedelta(seconds=30)).isoformat()
     for spec in specs:
         await store.add(
             kind=spec["kind"],
