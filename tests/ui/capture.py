@@ -31,9 +31,10 @@ from jarvis.ui.screenshots import (
     screenshot_name,
 )
 
-# localStorage key the appearance layer (theme.js, Phase 11 T5) reads on load. Kept here so the
-# harness can force a theme before first paint; align this with theme.js when T5 lands.
-_THEME_STORAGE_KEY = "kairo:theme"
+# localStorage key the appearance layer (theme.js, Phase 11 T5) reads on load — a JSON blob
+# {theme, density, layout, motion, accent}. The harness writes {"theme": <name>} before first
+# paint so initTheme() applies the requested theme (merged over the defaults).
+_THEME_STORAGE_KEY = "kairo:appearance"
 
 
 def _parse_screens(specs: list[str]) -> list[tuple[str, str, str]]:
@@ -67,11 +68,17 @@ async def _run(base: str, token: str, out_dir: Path, screens: list[tuple[str, st
                     await page.set_viewport_size({"width": width, "height": height})
                     # Force the theme before first paint (theme.js reads this on load).
                     await page.add_init_script(
-                        f"try{{localStorage.setItem('{_THEME_STORAGE_KEY}','{theme}');}}catch(e){{}}"
+                        f"try{{localStorage.setItem('{_THEME_STORAGE_KEY}',"
+                        f"JSON.stringify({{theme:'{theme}'}}));}}catch(e){{}}"
                     )
                     for hash_, screen, state in screens:
-                        await page.goto(f"{base}/#{hash_}" if hash_ else f"{base}/",
-                                        wait_until="networkidle")
+                        target = f"{base}/#{hash_}" if hash_ else f"{base}/"
+                        # A fragment change alone is JS-driven and networkidle won't wait for the
+                        # render it triggers; reload for a FRESH load at this hash so app init ->
+                        # navigate -> render runs and networkidle waits for its fetches.
+                        await page.goto(target, wait_until="load")
+                        await page.reload(wait_until="networkidle")
+                        await page.wait_for_timeout(500)  # let debounced/async fills settle
                         name = screenshot_name(screen, state, theme, width)
                         await page.screenshot(path=str(out_dir / name), full_page=True)
                         metrics = await page.evaluate(OVERLAP_PROBE_JS)

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Kairo mark">
+  <path d="M10 8 24 3v25L10 38Z" fill="#E8EDF3"/>
+  <path d="M24 3v25l9-11L43 4Z" fill="#FFFFFF"/>
+  <path d="M10 38 24 28l12 9-22 19Z" fill="#5C6672"/>
+  <path d="M24 28 43 4h15L36 31Z" fill="#CDD3DA"/>
+  <path d="M36 31 58 8 48 25 38 38Z" fill="#F7FAFC"/>
+  <path d="M36 31 56 56H40L24 39Z" fill="#B7BEC7"/>
+  <path d="M24 39 40 56H24l-9-13Z" fill="#E7EBF0"/>
+  <path d="M38 38 48 25l10 31Z" fill="#68717C"/>
+  <path d="M24 28 36 31 24 39 10 38Z" fill="#8E96A0"/>
+</svg>

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Kairo mark">
+  <defs>
+    <linearGradient id="facetLight" x1="6" y1="5" x2="56" y2="59" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F8FAFC"/>
+      <stop offset=".45" stop-color="#C9CED4"/>
+      <stop offset="1" stop-color="#59616B"/>
+    </linearGradient>
+    <linearGradient id="facetMid" x1="7" y1="8" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D9DDE2"/>
+      <stop offset=".52" stop-color="#858C95"/>
+      <stop offset="1" stop-color="#303640"/>
+    </linearGradient>
+    <linearGradient id="facetDark" x1="8" y1="7" x2="56" y2="55" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#AAB0B8"/>
+      <stop offset=".55" stop-color="#59616A"/>
+      <stop offset="1" stop-color="#161B22"/>
+    </linearGradient>
+  </defs>
+  <path d="M10 8 24 3v25L10 38Z" fill="url(#facetMid)"/>
+  <path d="M24 3v25l9-11L43 4Z" fill="url(#facetLight)"/>
+  <path d="M10 38 24 28l12 9-22 19Z" fill="url(#facetDark)"/>
+  <path d="M24 28 43 4h15L36 31Z" fill="url(#facetMid)"/>
+  <path d="M36 31 58 8 48 25 38 38Z" fill="url(#facetLight)"/>
+  <path d="M36 31 56 56H40L24 39Z" fill="url(#facetMid)"/>
+  <path d="M24 39 40 56H24l-9-13Z" fill="url(#facetLight)"/>
+  <path d="M38 38 48 25l10 31Z" fill="url(#facetDark)"/>
+  <path d="M24 28 36 31 24 39 10 38Z" fill="#6D747D"/>
+</svg>

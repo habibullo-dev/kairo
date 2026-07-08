@@ -112,5 +112,6 @@ def test_unknown_route_uses_own_property_lookup() -> None:
 def test_layout_knob_widens_the_reading_column() -> None:
     # The Settings "Layout" control promises a wider reading column; the shell grid reads the
     # --nav knob and the expanded layout widens .screen, so the control is not inert.
-    assert "grid-template-columns: var(--nav) 1fr;" in CSS
+    # minmax(0, 1fr) lets the main column shrink so a wide status bar can't force page overflow.
+    assert "grid-template-columns: var(--nav) minmax(0, 1fr);" in CSS
     assert ':root[data-layout="expanded"] .screen { max-width:' in CSS
