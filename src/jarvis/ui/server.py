@@ -42,6 +42,7 @@ from jarvis.ui.readmodels import (
     list_sessions_view,
     list_tasks,
     model_routes_status,
+    orchestration_roi,
     orchestration_run_detail,
     orchestration_runs_view,
     projects_overview,
@@ -483,6 +484,18 @@ def create_app(
             return _unavailable("costs")
         return JSONResponse(
             await costs_overview(budgets, project_id=project_id, projects=app.state.projects)
+        )
+
+    @app.get("/api/roi")
+    async def roi(project_id: int | None = None) -> JSONResponse:
+        # Per-run ROI (time-saved value − actual cost) for the Cost Center. Read-only, metadata
+        # only (run id / team / workflow / status / costs); net is None when a cost is unpriced.
+        store = app.state.services.orchestration
+        budgets = app.state.services.budgets
+        if store is None or budgets is None:
+            return _unavailable("roi")
+        return JSONResponse(
+            {"roi": await orchestration_roi(store, budgets, project_id=project_id)}
         )
 
     # --- Studio (orchestration): catalog + runs + estimate (all read-only) -------------
