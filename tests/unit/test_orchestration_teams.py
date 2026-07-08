@@ -137,6 +137,43 @@ def test_read_only_member_with_egress_service_is_rejected() -> None:
         validate_team(bad)
 
 
+def test_google_stitch_service_classification() -> None:
+    from jarvis.orchestration.teams import TEAM_PROFILES
+    from jarvis.services.catalog import SERVICE_CATALOG, ContextPolicy, OutputTrust
+
+    s = SERVICE_CATALOG["google_stitch"]
+    assert s.kind == "mcp"  # official Stitch MCP; wired when Kairo's MCP-client layer exists
+    assert s.priority == "later"  # disabled by default (no MCP client yet)
+    assert s.hosted is True and s.egress is True  # prompts/design context go to Google
+    assert s.write is False and s.dangerous is False
+    assert s.credential_env == ("GOOGLE_STITCH_API_KEY",)  # documented key
+    assert s.context_policy is ContextPolicy.PROJECT_NON_PRIVATE
+    assert s.output_trust is OutputTrust.UNTRUSTED_MODEL_GENERATED
+    assert s.permission_default == "ask"  # Plan/Approval only; never Auto-approved
+    assert s.pricing == "unknown"  # fail-closed if a metered API appears
+    assert "council" not in s.stages  # egress ⇒ excluded from the read-only council floor
+    assert set(s.teams) == {"frontend", "pm"}
+    # Disabled/deferred: not wired onto any team roster yet (no member holds it).
+    for team in TEAM_PROFILES.values():
+        for m in team.members:
+            assert "google_stitch" not in m.services
+
+
+def test_google_stitch_key_never_exposed_in_availability_view() -> None:
+    # The Stitch API key must never appear as a VALUE in the services read model — only its
+    # env-var NAME + a presence boolean (the 10B secret-sweep discipline, extended to Stitch).
+    from jarvis.services.registry import ServiceRegistry
+
+    reg = ServiceRegistry(enabled=[], env={"GOOGLE_STITCH_API_KEY": "SECRET-STITCH-KEY"})
+    view = reg.availability()
+    blob = repr(view)
+    assert "SECRET-STITCH-KEY" not in blob  # never the value
+    row = next(r for r in view if r["name"] == "google_stitch")
+    assert row["credential_env"] == ["GOOGLE_STITCH_API_KEY"]  # name only
+    assert row["credentials_present"] is True  # presence boolean, not the value
+    assert row["state"] == "deferred"  # priority later ⇒ deferred (disabled by default)
+
+
 def test_resolve_team_applies_budget_override() -> None:
     t = resolve_team("security", {"team_budget_usd": 3.0})
     assert t.team_budget_usd == 3.0

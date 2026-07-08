@@ -273,6 +273,41 @@ SERVICE_CATALOG: dict[str, ServiceSpec] = {
             priority="avoid",
             note="B5: generic browser — avoid until an MCP layer + gating exist",
         ),
+        _s(
+            name="google_stitch",
+            teams=("frontend", "pm"),
+            kind="mcp",  # official Stitch MCP integration (wired when Kairo's MCP client lands)
+            hosted=True,
+            # Documented key: GOOGLE_STITCH_API_KEY (namespaced to the Google product). Presence-
+            # checked by the ServiceRegistry via env; NEVER surfaced as a value (name-only in UI).
+            credential_env=("GOOGLE_STITCH_API_KEY",),
+            pricing="unknown",  # fail closed until real pricing is known (a metered API ⇒ blocked)
+            sensitivity="med",
+            egress=True,  # prompts + design context go to Google
+            write=False,
+            dangerous=False,
+            # Requested design/council/review; council is EXCLUDED because Stitch is egress and the
+            # read-only council/review floor admits no egress tool (10B non-negotiable). Available
+            # at review (design critique) + execution (variant generation).
+            stages=_RE,
+            permission_default="ask",  # Plan/Approval only — service tools are never Auto-approved
+            context_policy=ContextPolicy.PROJECT_NON_PRIVATE,
+            output_trust=OutputTrust.UNTRUSTED_MODEL_GENERATED,
+            priority="later",
+            note=(
+                "Google Stitch — hosted design-GENERATION service (official MCP). A REAL "
+                "Frontend/Product service, DISABLED by default: it needs Kairo's MCP-client "
+                "layer (not built yet, ADR-0015) + a review of the official Stitch MCP package "
+                "before enablement — no unofficial wrappers. Frontend may ask it for design "
+                "variants, DESIGN.md, design tokens, layout references, and screen flows. Output "
+                "imports as Kairo artifacts (produced_by=google_stitch, "
+                "trust=untrusted_model_generated) — NEVER executed or committed directly; "
+                "Claude/Opus adapts the design into Kairo's frontend. NEVER send private project "
+                "data, secrets, customer data, source code, or internal screenshots without "
+                "explicit Gate approval. Key GOOGLE_STITCH_API_KEY is presence-checked only, "
+                "never exposed in the UI/read models."
+            ),
+        ),
         # --- Backend / Data ---
         _s(
             name="github_mcp",

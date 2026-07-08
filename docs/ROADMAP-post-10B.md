@@ -185,8 +185,13 @@ deliberately comes late: it should land on mature surfaces, not create them.
   (instructions inert); unpriced-metered blocks; taint private-read→egress demoted.
 - **Live verification:** keyed research workflow runs; Costs attribution matches SQL; canary
   proof that private content cannot reach a public_only service; chunked gate + ratchet.
-- **Deferred:** Figma/GitHub/Docker/Supabase/Neon MCP (no MCP client yet — deliberate),
-  CodeQL, Promptfoo, Browserbase.
+- **Deferred:** Figma / GitHub / Docker / Supabase/Neon / **Google Stitch** MCP (no MCP client
+  yet — deliberate), CodeQL, Promptfoo, Browserbase. **Google Stitch** is a cataloged
+  Frontend/Product design-**generation** service (`google_stitch`, egress, `project_non_private`,
+  `untrusted_model_generated`, key `GOOGLE_STITCH_API_KEY`, disabled-by-default): it needs the MCP
+  client layer + a review of the official Stitch MCP package before enablement. Its output
+  imports as artifacts (`produced_by=google_stitch`) — never executed/committed; Claude/Opus
+  adapts the design into Kairo's frontend. The MCP client layer is the gating decision (~13–15).
 - **Effort:** Medium. **Fable boundary:** yes — checkpoint before the egress flags flip;
   the plan itself can be lean (ADR-0015 did the heavy lifting).
 
