@@ -109,7 +109,7 @@ body {
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   display: grid;
-  grid-template-columns: 224px 1fr;
+  grid-template-columns: var(--nav) 1fr; /* --nav = 224px default; data-layout=expanded -> 240px */
   grid-template-rows: 56px 1fr;
   grid-template-areas: "nav status" "nav main";
   height: 100vh;
@@ -154,6 +154,8 @@ nav.rail {
 .rail .rec-dot.show { display: block; }
 .rail .spacer { flex: 1; }
 .rail .foot { color: var(--dim); font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase; font-weight: 600; padding: 8px; }
+.rail .rail-cap { color: var(--dim); font-size: 9.5px; letter-spacing: 1.6px; text-transform: uppercase;
+  font-weight: 700; padding: 6px 12px 4px; }
 
 /* --- status bar --- */
 .status { grid-area: status; border-bottom: 1px solid var(--nav-line); display: flex; align-items: center; gap: 14px; padding: 0 18px; background: var(--bg); }
@@ -187,6 +189,7 @@ body.debug .dbg-only-inline { display: flex; }
 /* --- main --- */
 main { grid-area: main; overflow-y: auto; overflow-x: hidden; position: relative; }
 .screen { max-width: 900px; margin: 0 auto; padding: 34px 32px 0; }
+:root[data-layout="expanded"] .screen { max-width: 1180px; } /* wider reading column (Settings knob) */
 .screen.pad { padding-bottom: 60px; }
 h1 { font-size: 23px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 5px; }
 .sub { color: var(--dim); font-size: 13.5px; margin-bottom: 26px; }
@@ -465,6 +468,12 @@ tr.clickable:hover td { color: var(--cyan); }
 .metric { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
 .metric .n { font-size: 22px; font-weight: 600; color: var(--ink); }
 .metric .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+
+/* settings rows (T6 appearance; T14 adds status sections) */
+.set-row { display: grid; gap: 8px; padding: 13px 0; border-top: 1px solid var(--line); }
+.set-row:first-of-type { border-top: none; padding-top: 2px; }
+.set-row .set-h { font-size: 13px; font-weight: 600; color: var(--ink); }
+.set-row .set-s { font-size: 12px; color: var(--muted); margin-top: -3px; }
 
 /* command overlay + palette (glass — backdrop-filter here + modal only) */
 .command-overlay, .modal-backdrop { position: fixed; inset: 0; display: none; z-index: 60;

@@ -15,7 +15,10 @@ import { render as renderCosts } from "./screens/costs.js";
 import { render as renderLab } from "./screens/lab.js";
 import { render as renderMeetings } from "./screens/meetings.js";
 import { render as renderTrace } from "./screens/trace.js";
+import { render as renderSettings } from "./screens/settings.js";
 import { get as getTheme, initTheme, setTheme } from "./ui/theme.js";
+import { initKeys, clearScope, pushEscape } from "./ui/keys.js";
+import { emit as busEmit, on as busOn } from "./ui/bus.js";
 
 const state = {
   chat: [],            // Daily conversation items {role, text} | {tool, resolution}
@@ -25,6 +28,7 @@ const state = {
   trace: [],           // raw events (Debug/Trace)
   notices: [],         // background job/reminder/digest notices (Phase 9)
   route: "daily",
+  routeArgs: [],       // positional hash args after the screen name (#workspace/{id})
 };
 
 // --- tiny API helper (same-origin; cookie carried automatically) ---
@@ -75,6 +79,7 @@ function handleMessage(msg) {
   if (msg.type === "approval") { onApproval(msg); return; }
   if (msg.type === "approval_nonce") { onNonce(msg); return; }
   if (msg.kind && msg.kind.startsWith("orchestration_")) {
+    busEmit("orchestration", msg);
     studioOnEvent(state, msg);        // update the in-flight run panel
     refreshIfActive("studio");
     if (msg.kind === "orchestration_completed") pollStatus();  // refresh spend/busy chips
@@ -99,6 +104,7 @@ function onNotice(notice) {
   if (!notice) return;
   state.notices.unshift(notice);
   if (state.notices.length > 50) state.notices.pop();
+  busEmit("notice", notice);
   if (notice.kind === "digest") refreshIfActive("daily");
 }
 
@@ -125,6 +131,7 @@ function onVoiceState(s) {
 function onEvent(evt) {
   state.trace.push(evt);
   if (state.trace.length > 500) state.trace.shift();
+  busEmit("event", evt);
   // A completed turn settles the runner state immediately — don't wait for the next poll,
   // or the Daily card lingers on "working" after the turn (incl. a denied one) ends.
   if (evt.type === "turn_completed" && state.runner) state.runner.turn_busy = false;
@@ -135,6 +142,7 @@ function onEvent(evt) {
 }
 
 // --- approvals: the priority attention surface ---
+let _approvalEsc = null; // unregister fn for the Escape-closes-modal binding (keys.js)
 function onApproval(msg) {
   state.pending.set(msg.decision_id, { ...msg, nonce: null });
   updateGateBadge();
@@ -162,6 +170,8 @@ function showTopApproval() {
   document.getElementById("ap-always").style.display = noAlways ? "none" : "";
   overlay.dataset.decision = next.decision_id;
   overlay.classList.add("show");
+  if (_approvalEsc) _approvalEsc();
+  _approvalEsc = pushEscape(hideApproval);           // Escape dismisses (leaves the item pending)
   setSurface("gate", true);                          // the screen is now watching
   wsSend({ type: "approval_shown", decision_id: next.decision_id }); // prove visibility ⇒ mint nonce
 }
@@ -194,6 +204,7 @@ async function resolveApproval(action) {
 }
 
 function hideApproval() {
+  if (_approvalEsc) { _approvalEsc(); _approvalEsc = null; }
   const overlay = document.getElementById("overlay");
   overlay.classList.remove("show");
   overlay.dataset.decision = "";
@@ -212,24 +223,48 @@ const screens = {
   daily: renderDaily, projects: renderProjects, studio: renderStudio, gate: renderGate,
   vault: renderVault, tasks: renderTasks, memory: renderMemory, hub: renderHub,
   costs: renderCosts, lab: renderLab, meetings: renderMeetings, trace: renderTrace,
+  settings: renderSettings,
 };
 
 function refreshIfActive(name) { if (state.route === name) renderRoute(); }
 
 function renderRoute() {
   const container = document.getElementById("screen");
-  const fn = screens[state.route];
-  if (fn) { fn(container, api); }
-  else { container.innerHTML = `<h1>${cap(state.route)}</h1><div class="sub">Unknown screen.</div>`; }
+  // Own-property lookup only: state.route is hash-derived, so "#__proto__" etc. must fall
+  // through to the safe unknown-route branch, never resolve an inherited Object member.
+  const fn = Object.hasOwn(screens, state.route) ? screens[state.route] : null;
+  if (fn) {
+    fn(container, api, state.routeArgs || []);
+    return;
+  }
+  // Unknown route — build with textContent, never interpolate the (hash-derived, so
+  // attacker-influenceable) route name into innerHTML. CSP already blocks inline handlers;
+  // this closes the injection smell outright.
+  container.textContent = "";
+  const h = document.createElement("h1");
+  h.textContent = cap(state.route);
+  const sub = document.createElement("div");
+  sub.className = "sub";
+  sub.textContent = "Unknown screen.";
+  container.append(h, sub);
+}
+
+// Parse the hash into a screen name + positional args: "#workspace/12" -> {name:"workspace",
+// args:["12"]}. Args let a screen deep-link (the project Workspace, T10) with no new route.
+function parseHash() {
+  const parts = location.hash.replace(/^#/, "").split("/").filter((s) => s !== "");
+  return { name: parts[0] || "daily", args: parts.slice(1) };
 }
 
 function navigate() {
-  const next = (location.hash.replace("#", "") || "daily");
-  if (state.route && state.route !== next) setSurface(state.route, false);
-  state.route = next;
-  setSurface(next, true);
-  if (next === "gate") setSurface("gate", true);
-  for (const a of document.querySelectorAll(".rail a")) a.classList.toggle("active", a.dataset.screen === next);
+  const { name, args } = parseHash();
+  if (state.route && state.route !== name) setSurface(state.route, false);
+  state.route = name;
+  state.routeArgs = args;
+  clearScope();                                      // a screen's local keys never leak forward
+  setSurface(name, true);
+  if (name === "gate") setSurface("gate", true);
+  for (const a of document.querySelectorAll(".rail a")) a.classList.toggle("active", a.dataset.screen === name);
   renderRoute();
 }
 
@@ -322,9 +357,13 @@ function init() {
   };
   document
     .querySelectorAll("#theme-toggle button")
-    .forEach((b) => b.addEventListener("click", () => { setTheme(b.dataset.themeChoice); syncTheme(); }));
+    .forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.themeChoice)));
+  // One sync path: any appearance change (this toggle OR the Settings screen) re-syncs the
+  // toggle's active pill and re-renders Settings if it's open, so the two controls never disagree.
+  busOn("appearance", () => { syncTheme(); refreshIfActive("settings"); });
   initTheme();
   syncTheme();
+  initKeys();                                        // single keydown dispatcher (palette hotkey wired in T7)
   window.addEventListener("hashchange", navigate);
   connect();
   navigate();

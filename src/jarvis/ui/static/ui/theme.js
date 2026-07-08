@@ -1,6 +1,7 @@
 // Appearance layer (Phase 11 T5). Client-side ONLY — persisted to localStorage, applied to
 // <html> (documentElement) so <body> stays plain. There is deliberately NO server theme route
 // (that would be new authority). Themes: noir (default, dark), light, neon.
+import { emit as busEmit } from "./bus.js";
 
 const KEY = "kairo:appearance";
 export const THEMES = ["noir", "light", "neon"];
@@ -56,6 +57,10 @@ export function set(patch) {
   state = { ...state, ...patch };
   save();
   apply();
+  // Notify any appearance indicator (the status-bar toggle AND the Settings screen) so two
+  // controls for the same state never disagree about the active theme. initTheme() applies
+  // without emitting — this fires only on a user-driven change.
+  busEmit("appearance", { ...state });
 }
 
 export function setTheme(theme) {

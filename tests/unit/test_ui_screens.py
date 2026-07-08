@@ -127,18 +127,22 @@ def test_debug_css_only_toggles_visibility() -> None:
 
 
 def test_all_nav_screens_have_a_module() -> None:
-    # Every nav entry in the shell has a screen module (no dead links / silent stubs).
+    # Every routable screen has a module (no dead links / silent stubs). The primary rail is
+    # daily/projects/studio/costs/settings; the utility area is gate/trace/hub/lab/meetings;
+    # vault/tasks/memory stay routable by hash (they become Workspace tabs in T10).
     for name in (
         "daily",
         "projects",
+        "studio",
+        "costs",
+        "settings",
         "gate",
+        "trace",
+        "hub",
+        "lab",
+        "meetings",
         "vault",
         "tasks",
         "memory",
-        "meetings",
-        "hub",
-        "costs",
-        "trace",
-        "lab",
     ):
         assert (STATIC / "screens" / f"{name}.js").is_file(), name
