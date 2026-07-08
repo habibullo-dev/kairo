@@ -44,7 +44,7 @@ from unittest import mock
 import yaml
 from tests.evals import judge as judge_mod
 from tests.evals import recorder, report
-from tests.evals.cassette import CassetteConfig
+from tests.evals.cassette import CassetteConfig, CostCapExceeded
 from tests.evals.cassette import wrap as cassette_wrap
 from tests.evals.recorder import ERROR, FAIL, INVALID, PASS, ScenarioRunRecord
 
@@ -578,6 +578,92 @@ def _apply_cassette(
     cap_note = f", max_cost=${cassette_cfg.max_cost_usd}" if cassette_cfg.max_cost_usd else ""
     print(f"[cassette] mode={cassette_cfg.mode} store={CASSETTES_PATH}{cap_note}")
     return factory, wrapped_judge
+
+
+_SMOKE_PROVIDERS: tuple[str, ...] = ("anthropic", "deepseek", "gemini", "qwen", "zai")
+
+#: Tiny, deterministic-ish prompts — enough to prove a provider's client + auth + parsing work,
+#: at a few tokens each. NOT quality scenarios (that's the gate); a smoke just answers "does the
+#: adapter round-trip a real response".
+_SMOKE_SCENARIOS: tuple[dict, ...] = (
+    {"name": "arithmetic", "system": "You answer with only a number, no words.",
+     "prompt": "What is 2 + 2?"},
+    {"name": "echo", "system": "Reply with exactly one word: OK", "prompt": "Acknowledge."},
+)
+
+
+def _smoke_signature(spec: object, route: object) -> dict:
+    """The cassette client signature for a smoke provider — computed from the spec/route so it is
+    identical across record and replay (matches what the factory-built client would use)."""
+    if getattr(spec, "api_style", "") in ("anthropic", "anthropic_compat"):
+        compat = spec.api_style == "anthropic_compat"
+        return {"effort": route.effort, "thinking": not route.text_only and not compat,
+                "compat": compat}
+    return {}  # openai_compat (text-only): no effort/thinking/compat on the wire
+
+
+async def run_smoke(
+    config: Config, *, providers: list[str], cassette_cfg: CassetteConfig, runs: int = 1
+) -> int:
+    """A tiny per-provider smoke bench. Replay by default (cached, keyless, $0); ``--live``/
+    ``--record`` make real calls under the shared cost cap. Live mode skips a provider that is
+    not fail-closed-available (missing key / disabled / unpriced) with a printed reason — which
+    is exactly the Z.ai 'console down, no key' proof. Returns 0 iff every attempted call passed."""
+    from jarvis.models.factory import ClientFactory
+    from jarvis.models.providers import PROVIDER_CATALOG, ProviderRegistry
+    from jarvis.models.roles import ModelRoute
+    from jarvis.observability.cost import load_pricing
+
+    pricing = load_pricing(config.root / "config" / "pricing.yaml")
+    preg = ProviderRegistry.from_config(config, pricing)
+    factory = ClientFactory(config)
+    cap = cassette_cfg.cost_cap(pricing)
+    live = cassette_cfg.mode != "replay"
+    attempted = failures = 0
+    cap_usd = cassette_cfg.max_cost_usd
+    print(f"[smoke] mode={cassette_cfg.mode} providers={providers} cap=${cap_usd}")
+    for provider in providers:
+        spec = PROVIDER_CATALOG.get(provider)
+        if spec is None:
+            print(f"[smoke] {provider}: unknown — skip")
+            continue
+        model = spec.default_models[0] if spec.default_models else config.models.main
+        route = ModelRoute(provider, model, text_only=not spec.tool_capable)
+        inner = None
+        if live:
+            if not preg.route_allowed(provider):
+                print(f"[smoke] {provider}: {preg.state(provider).value} — skip (fail-closed)")
+                continue
+            try:
+                inner = factory.for_route(route)
+            except Exception as exc:  # noqa: BLE001 - a build failure is a skip, not a crash
+                print(f"[smoke] {provider}: cannot build client ({exc}) — skip")
+                continue
+        client = cassette_wrap(
+            inner, provider=provider, cfg=cassette_cfg, pricing=pricing,
+            signature=_smoke_signature(spec, route), cost_cap=cap, scenario=f"smoke:{provider}",
+        )
+        for sc in _SMOKE_SCENARIOS:
+            for i in range(runs):
+                attempted += 1
+                try:
+                    resp = await client.create(
+                        model=model, system=sc["system"],
+                        messages=[{"role": "user", "content": sc["prompt"]}],
+                        tools=[], max_tokens=64,
+                    )
+                    ok = bool(resp.text.strip())
+                    failures += 0 if ok else 1
+                    print(f"[smoke] {provider}/{model} {sc['name']} run{i + 1}: "
+                          f"{'PASS' if ok else 'FAIL'}  {resp.text.strip()[:40]!r}")
+                except CostCapExceeded as exc:
+                    print(f"[smoke] cost cap hit: {exc}")
+                    return 2
+                except Exception as exc:  # noqa: BLE001 - a provider error is a smoke failure
+                    failures += 1
+                    print(f"[smoke] {provider}/{model} {sc['name']} run{i + 1}: ERROR {exc}")
+    print(f"[smoke] attempted={attempted} failures={failures}")
+    return 1 if failures else 0
 
 
 def _add_cassette_args(p: object) -> None:
@@ -1588,7 +1674,7 @@ def cli(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         argv = ["gate"]  # bare invocation = full gate (documented default)
-    elif argv[0] not in {"gate", "run", "aggregate", "-h", "--help"}:
+    elif argv[0] not in {"gate", "run", "aggregate", "smoke", "-h", "--help"}:
         argv = ["gate", *argv]  # `runner.py --suite core` still means `gate --suite core`
 
     parser = argparse.ArgumentParser(
@@ -1638,7 +1724,31 @@ def cli(argv: list[str] | None = None) -> int:
     a.add_argument("--propose-baselines", action="store_true", dest="propose")
     a.add_argument("--chunks", nargs="*", default=list(CHUNK_SUITES), help="Chunk suites to merge.")
 
+    sm = sub.add_parser("smoke", help="Tiny per-provider smoke bench (1 run, replay default).")
+    sm.add_argument(
+        "--provider", action="append", choices=list(_SMOKE_PROVIDERS),
+        help="Provider(s) to smoke (repeatable; default: all catalog providers).",
+    )
+    sm.add_argument("--runs", type=int, default=1, help="Runs per smoke scenario (default 1).")
+    _add_cassette_args(sm)
+
     args = parser.parse_args(argv)
+
+    if args.cmd == "smoke":
+        config = load_config()  # models/providers come from the catalog; replay needs no key
+        max_cost = args.max_cost_usd if args.max_cost_usd is not None else 3.0
+        mode = "live" if args.live else ("record" if args.record else "replay")
+        cassette_cfg = CassetteConfig(
+            mode=mode, store_dir=CASSETTES_PATH / "smoke", max_cost_usd=max_cost
+        )
+        return asyncio.run(
+            run_smoke(
+                config,
+                providers=args.provider or list(_SMOKE_PROVIDERS),
+                cassette_cfg=cassette_cfg,
+                runs=args.runs,
+            )
+        )
 
     if args.cmd == "aggregate":
         config = load_config()  # offline: aggregation makes no API calls
