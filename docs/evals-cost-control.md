@@ -62,3 +62,23 @@ cassettes miss and the run fails closed (a signal to re-record, never a silent l
 - The **full judged live gate stays the phase-closeout ritual** (ADR-0005) — it is no longer the
   default invocation, only the deliberate one.
 - Cassettes are committed; recording is a dedicated, reviewed commit like a baseline ratchet.
+
+## Core replay coverage — verified keyless (2026-07-08)
+
+After E6a (external-service cassettes) + E6b (frozen eval clock + scheduler clock + seeded-task
+clock), a bare `uv run jarvis eval gate --suite core` replays **19/19 scenarios keyless/$0**.
+
+Proof: replay run with **invalid** `ANTHROPIC_API_KEY` / `VOYAGE_API_KEY` / `TAVILY_API_KEY`
+(any live LLM/Voyage/Tavily/web call would auth-fail) → **GATE PASS, 19/19**. Every model,
+embedding, and web call is served from a committed cassette; a cassette miss fails closed.
+
+| External call type | cached by | replays keyless? |
+|---|---|---|
+| LLM (main loop, sub-agents, judge, unattended jobs) | CassetteClient | ✅ all |
+| Voyage embeddings (kb_*, memory_*, underquery_*) | CassetteEmbedder | ✅ all |
+| Tavily / web (web_research, delegate_*, kb_web_ingest) | wrap_web_tool | ✅ all |
+| Scheduler timing (schedule_via_tool, unattended_*) | frozen `utc_now` + seed clock | ✅ all |
+
+Estimated replay cost: **$0** (no live calls). A `--record`/`--live` refresh of the full core
+suite costs a few $ (LLM-dominated), one-time, under the `--max-cost-usd` cap. The full judged
+**live** gate remains the phase-closeout ritual.
