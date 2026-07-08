@@ -1,8 +1,12 @@
-// Daily Mode — the calm default. Zones in priority order (one primary attention surface):
-// pending approval (amber) → current activity → Briefing (digest) → Today → What changed →
-// Workflows → Conversation → sticky composer. Everything from the digest/repo/email is
-// UNTRUSTED content, so it is rendered with textContent only — never innerHTML, never
-// linkified (a digest link would be a phishing/exfil surface). Detail lives in Trace/Debug.
+// Daily — the command center (Phase 11 T8). Calm, priority-ordered, one primary attention
+// surface. Zones top→down: pending approval (amber) → Now (+ cost today) → Briefing → Today →
+// recent artifacts → latest run → notices → connector health → what changed → workflows →
+// Conversation → sticky composer. Everything from the digest/repo/email/artifacts/notices is
+// UNTRUSTED content, rendered with textContent only — never innerHTML, never linkified (a digest
+// link would be a phishing/exfil surface). The ONLY action path is the gated POST /api/turn; every
+// other card reads or navigates. Detail lives in Trace/Debug.
+import { esc } from "../ui/dom.js";
+import { money, relTime } from "../ui/format.js";
 
 // Workflow chips are prepared prompts submitted through the SAME gated POST /api/turn — the
 // single action path (no new authority). Two are navigation only.
@@ -14,6 +18,13 @@ const WORKFLOWS = [
   { label: "Ingest a file", nav: "vault" },
   { label: "Review KB queue", nav: "vault" },
 ];
+
+// Keys are the real artifact `kind` values the producers emit (wiki_page, digest, eval_report,
+// orchestration, meeting_note); anything else falls back to ◆.
+const ARTIFACT_ICONS = {
+  wiki_page: "📝", digest: "🗞", eval_report: "🧪",
+  orchestration: "🧩", meeting_note: "🎙",
+};
 
 export function render(container, api) {
   if (!container.querySelector("#composer-input")) {
@@ -49,49 +60,83 @@ async function submitText(container, api, text, input) {
   }
 }
 
+// A designed empty state: heading + a line that teaches the next action.
+function emptyState(heading, hint) {
+  const box = document.createElement("div");
+  box.className = "empty-state";
+  const h = document.createElement("h4");
+  h.textContent = heading;
+  const p = document.createElement("div");
+  p.textContent = hint;
+  box.append(h, p);
+  return box;
+}
+
 function renderZones(container, api) {
   const s = api.state;
   const zones = container.querySelector("#daily-zones");
   const busy = s.runner && s.runner.turn_busy;
   const pend = [...s.pending.values()];
+  const spend = s.runner && typeof s.runner.today_spend_usd === "number" ? s.runner.today_spend_usd : null;
 
   let html = "";
   // 1) PENDING APPROVAL — the one primary attention surface (amber), when present.
   if (pend.length) {
     const p = pend[0];
+    const more = pend.length > 1 ? ` <span class="dim">+${pend.length - 1} more</span>` : "";
     html += `<div class="zone-pending rise"><div class="ico">⚠</div>
       <div class="body">
         <div class="card-label amber" style="margin-bottom:3px">Waiting on you</div>
-        <div class="lead">Kairo wants to <b>${esc(p.tool)}</b>${p.title ? " — " + esc(p.title) : ""}</div>
+        <div class="lead">Kairo wants to <b>${esc(p.tool)}</b>${p.title ? " — " + esc(p.title) : ""}${more}</div>
       </div>
       <button class="btn btn-amber" id="daily-review">Review</button></div>`;
   }
-  // 2) NOW — current activity. Stable IDs so app.js renderRunnerState() writes this card from
-  // the SAME settled state.runner as the status bar (never diverge after a turn ends).
-  html += `<div class="card rise"><div class="zone-now">
+  // 2) NOW — current activity + cost today. Stable IDs so app.js renderRunnerState() writes this
+  // card (lead/dot/desc AND the cost metric) from the SAME settled state.runner as the status bar.
+  html += `<div class="surface rise"><div class="zone-now">
       <span class="runner-dot${busy ? " busy" : ""}" id="daily-now-dot"></span>
       <div class="body">
         <div class="lead${busy ? "" : " idle"}" id="daily-now-lead">${busy ? "Kairo is working" : "Kairo is idle"}</div>
         <div class="desc" id="daily-now-desc">${busy ? "Working on your request." : "Nothing running. Send a message to begin."}</div>
+      </div>
+      <div class="metric cost-metric">
+        <div class="n" id="daily-cost-today">${spend == null ? "—" : money(spend)}</div>
+        <div class="l">spent today</div>
       </div></div></div>`;
   // 3) BRIEFING — the latest digest (filled from /api/daily). Quiet card, no toast.
-  html += `<div class="card rise" id="daily-briefing">
-      <div class="card-head"><div class="t">Briefing</div>
+  html += `<div class="surface rise" id="daily-briefing">
+      <div class="panel-title"><h3>Briefing</h3>
         <button class="rowbtn" id="daily-digest-run">Run digest now</button></div>
       <div id="daily-briefing-body" class="dim">Loading…</div></div>`;
   // 4) TODAY — populated from /api/tasks if the scheduler is on (hidden otherwise).
-  html += `<div class="card rise" id="daily-today" style="display:none">
-      <div class="card-head"><div class="t">Today</div><a href="#tasks">All tasks →</a></div>
-      <div id="daily-today-rows"></div></div>`;
-  // 5) WHAT CHANGED — repo state + eval freshness + KB review (filled from /api/daily).
-  html += `<div class="card rise" id="daily-changed">
-      <div class="card-head"><div class="t">What changed</div></div>
+  html += `<div class="surface rise" id="daily-today" style="display:none">
+      <div class="panel-title"><h3>Today</h3><a href="#tasks">All tasks →</a></div>
+      <div id="daily-today-rows" class="daily-rows"></div></div>`;
+  // 5) RECENT ARTIFACTS (new) — newest across projects; a servable one opens its read-only content.
+  html += `<div class="surface rise" id="daily-artifacts">
+      <div class="panel-title"><h3>Recent artifacts</h3></div>
+      <div id="daily-artifacts-body" class="daily-rows"><div class="dim">Loading…</div></div></div>`;
+  // 6) LATEST RUN (new) — the most recent orchestration run; links into Studio.
+  html += `<div class="surface rise" id="daily-run">
+      <div class="panel-title"><h3>Latest run</h3><a href="#studio">Studio →</a></div>
+      <div id="daily-run-body" class="daily-rows"><div class="dim">Loading…</div></div></div>`;
+  // 7) NOTICES (new) — background job/reminder/digest notices; hidden when there are none (calm).
+  html += `<div class="surface rise" id="daily-notices" style="display:none">
+      <div class="panel-title"><h3>Notices</h3></div>
+      <div id="daily-notices-body" class="daily-rows"></div></div>`;
+  // 8) CONNECTOR HEALTH (new) — presence booleans from the hub read model (never a key value).
+  html += `<div class="surface rise" id="daily-connectors">
+      <div class="panel-title"><h3>Connectors</h3><a href="#hub">Hub →</a></div>
+      <div id="daily-connectors-body"><div class="dim">Loading…</div></div></div>`;
+  // 9) WHAT CHANGED — repo state + eval freshness + KB review (filled from /api/daily).
+  html += `<div class="surface rise" id="daily-changed">
+      <div class="panel-title"><h3>What changed</h3></div>
       <div id="daily-changed-body" class="dim">Loading…</div></div>`;
-  // 6) WORKFLOWS — prepared prompts (through /api/turn) + navigation shortcuts.
-  html += `<div class="card rise"><div class="card-head"><div class="t">Workflows</div></div>
+  // 10) WORKFLOWS — prepared prompts (through /api/turn) + navigation shortcuts.
+  html += `<div class="surface rise"><div class="panel-title"><h3>Workflows</h3></div>
       <div class="chip-row" id="daily-workflows"></div></div>`;
-  // 7) CONVERSATION
-  html += `<div class="rise"><div class="card-head" style="margin-bottom:14px"><div class="t">Conversation</div></div>
+  // 11) CONVERSATION
+  html += `<div class="rise"><div class="panel-title" style="margin-bottom:14px"><h3>Conversation</h3></div>
       <div class="chat" id="daily-chat"></div></div>`;
   zones.innerHTML = html;
 
@@ -106,8 +151,21 @@ function renderZones(container, api) {
   });
   renderWorkflows(container, api);
   renderChat(container, api);
-  fillToday(container, api);
-  fillDaily(container, api);
+  fillNotices(container, api);   // client-side (state.notices) — instant
+  scheduleFills(container, api); // coalesce the read-only GETs (see below)
+}
+
+// renderZones re-runs on every WS event, including each streaming text_delta. Coalesce the
+// read-only data fetches (/api/daily, /api/tasks) so a streaming turn can't fire two GETs per
+// token — the chat itself still updates immediately (renderChat, above).
+let _fillTimer = null;
+function scheduleFills(container, api) {
+  if (_fillTimer) clearTimeout(_fillTimer);
+  _fillTimer = setTimeout(() => {
+    _fillTimer = null;
+    fillToday(container, api);
+    fillDaily(container, api);
+  }, 200);
 }
 
 function renderWorkflows(container, api) {
@@ -132,8 +190,23 @@ function renderWorkflows(container, api) {
 
 async function fillDaily(container, api) {
   const data = await api.get("/api/daily");
-  if (!data) return;
+  if (!data) {
+    // The overview didn't load — never leave the cards stuck on "Loading…".
+    for (const id of ["daily-briefing-body", "daily-artifacts-body", "daily-run-body",
+      "daily-connectors-body", "daily-changed-body"]) {
+      const b = container.querySelector(`#${id}`);
+      if (b) {
+        b.textContent = "";
+        b.className = "";
+        b.appendChild(emptyState("Unavailable", "Couldn't load your daily overview — it'll refresh shortly."));
+      }
+    }
+    return;
+  }
   fillBriefing(container, data);
+  fillArtifacts(container, data);
+  fillRun(container, data);
+  fillConnectors(container, data);
   fillChanged(container, data);
 }
 
@@ -150,10 +223,7 @@ function fillBriefing(container, data) {
   }
   const d = data.digest;
   if (!d) {
-    const none = document.createElement("div");
-    none.className = "dim";
-    none.textContent = "No digest yet. Run one to see your morning briefing.";
-    body.appendChild(none);
+    body.appendChild(emptyState("No briefing yet", "Run a digest to see your morning summary of schedule, email and tasks."));
     return;
   }
   const summary = document.createElement("div");
@@ -175,6 +245,165 @@ function fillBriefing(container, data) {
     chip.textContent = action;
     body.appendChild(chip);
   }
+}
+
+function fillArtifacts(container, data) {
+  const body = container.querySelector("#daily-artifacts-body");
+  if (!body) return;
+  body.textContent = "";
+  const arts = data.recent_artifacts || [];
+  if (!arts.length) {
+    body.appendChild(emptyState("No artifacts yet", "Reports, drafts and outputs Kairo produces are filed here."));
+    return;
+  }
+  for (const a of arts.slice(0, 5)) {
+    const row = document.createElement("div");
+    row.className = "list-row";
+    const icon = document.createElement("span");
+    icon.className = "list-icon";
+    icon.textContent = ARTIFACT_ICONS[a.kind] || "◆";
+    const mid = document.createElement("div");
+    mid.style.minWidth = "0";
+    const t = document.createElement("div");
+    t.className = "lr-t";
+    t.textContent = a.title || "(untitled)";
+    const sub = document.createElement("div");
+    sub.className = "lr-s";
+    sub.textContent = `${a.kind}${a.pinned ? " · pinned" : ""}${a.created_at ? " · " + relTime(a.created_at) : ""}`;
+    mid.append(t, sub);
+    const chip = document.createElement("span");
+    chip.className = "p-chip";
+    chip.textContent = a.has_content ? "open" : "";
+    row.append(icon, mid, chip);
+    // Only a locally-stored artifact opens (its hardened, read-only /content GET, same-origin).
+    // external_uri artifacts (digest/orchestration deep-links) are display-only — never auto-open
+    // an arbitrary URI (a linkified digest would be a phishing/exfil surface).
+    if (a.has_content) {
+      row.style.cursor = "pointer";
+      row.addEventListener("click", () =>
+        window.open(`/api/artifacts/${encodeURIComponent(a.id)}/content`, "_blank", "noopener"),
+      );
+    }
+    body.appendChild(row);
+  }
+}
+
+function fillRun(container, data) {
+  const body = container.querySelector("#daily-run-body");
+  if (!body) return;
+  body.textContent = "";
+  const run = data.latest_run;
+  if (!run) {
+    body.appendChild(emptyState("No runs yet", "Assemble a team in Studio to run a multi-agent workflow."));
+    return;
+  }
+  const row = document.createElement("div");
+  row.className = "list-row";
+  const pill = document.createElement("span");
+  pill.className = "status-pill " + runTone(run.status);
+  pill.textContent = run.status || "—";
+  const mid = document.createElement("div");
+  mid.style.minWidth = "0";
+  const t = document.createElement("div");
+  t.className = "lr-t";
+  t.textContent = run.title || run.workflow || "Run";
+  const sub = document.createElement("div");
+  sub.className = "lr-s";
+  const team = run.team ? `${run.team} · ` : "";
+  sub.textContent = `${team}${run.workflow || ""}${run.finished_at ? " · " + relTime(run.finished_at) : ""}`;
+  mid.append(t, sub);
+  const cost = document.createElement("span");
+  cost.className = "p-chip";
+  cost.textContent = money(run.actual_cost_usd != null ? run.actual_cost_usd : run.estimated_cost_usd);
+  row.append(pill, mid, cost);
+  row.style.cursor = "pointer";
+  row.addEventListener("click", () => { location.hash = "studio"; });
+  body.appendChild(row);
+}
+
+// Map the real OrchestrationRun status vocabulary (running/ok/rejected/revise/error/cancelled/
+// aborted/budget_stopped) to a pill tone.
+function runTone(status) {
+  if (status === "ok") return "good";
+  if (status === "running" || status === "revise") return "busy";
+  if (status === "error" || status === "rejected" || status === "aborted" ||
+      status === "budget_stopped" || status === "cancelled") return "danger";
+  return "";
+}
+
+function fillNotices(container, api) {
+  const card = container.querySelector("#daily-notices");
+  const body = container.querySelector("#daily-notices-body");
+  if (!card || !body) return;
+  const notices = api.state.notices || [];
+  if (!notices.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  body.textContent = "";
+  for (const n of notices.slice(0, 5)) {
+    const row = document.createElement("div");
+    row.className = "list-row";
+    const chip = document.createElement("span");
+    chip.className = "p-chip";
+    chip.textContent = n.kind || "notice";
+    const mid = document.createElement("div");
+    mid.style.minWidth = "0";
+    const t = document.createElement("div");
+    t.className = "lr-t";
+    t.textContent = n.title || n.summary || n.message || n.text || n.kind || "Notice";
+    mid.appendChild(t);
+    const when = n.ts || n.created_at || n.at;
+    if (when) {
+      const sub = document.createElement("div");
+      sub.className = "lr-s";
+      sub.textContent = relTime(when);
+      mid.appendChild(sub);
+    }
+    row.append(chip, mid, document.createElement("span"));
+    body.appendChild(row);
+  }
+}
+
+// Connected-state from the registry's presence status (a dict, NOT a bool): honour
+// connected/configured and needs_reconnect. A present-but-unconfigured connector reads as NOT
+// connected (grey), never a false green. Presence-only — no key/token value is ever inspected.
+function connOn(status) {
+  if (status == null) return false;
+  if (typeof status === "boolean") return status;
+  const base = status.connected ?? status.configured ?? true; // a present dict w/o those = configured
+  return !!base && !status.needs_reconnect;
+}
+
+function fillConnectors(container, data) {
+  const body = container.querySelector("#daily-connectors-body");
+  if (!body) return;
+  body.textContent = "";
+  const c = data.connectors || {};
+  // Only pill connectors that are actually PRESENT, so a fresh machine reaches the empty state.
+  const pills = [];
+  if (data.demo) pills.push(connPill("Demo mode", true));
+  if (c.google != null) pills.push(connPill("Google", connOn(c.google)));
+  for (const [name, status] of Object.entries(c.notifiers || {})) {
+    pills.push(connPill(name, connOn(status)));
+  }
+  if (!pills.length) {
+    body.appendChild(emptyState("No connectors configured", "Connect accounts in the Hub to enrich your briefing."));
+    return;
+  }
+  const strip = document.createElement("div");
+  strip.className = "conn-strip";
+  for (const p of pills) strip.appendChild(p);
+  body.appendChild(strip);
+}
+
+function connPill(name, on) {
+  const pill = document.createElement("span");
+  pill.className = "status-pill " + (on ? "good" : "");
+  const dot = document.createElement("span");
+  dot.className = "dot" + (on ? "" : " off"); // grey, un-glowed when not connected — never a false green
+  const label = document.createElement("span");
+  label.textContent = name;
+  pill.append(dot, label);
+  return pill;
 }
 
 function fillChanged(container, data) {
@@ -243,7 +472,7 @@ function renderChat(container, api) {
   if (!chat) return;
   chat.innerHTML = "";
   if (!api.state.chat.length) {
-    chat.innerHTML = `<div class="dim" style="font-size:13px">No messages yet.</div>`;
+    chat.appendChild(emptyState("No messages yet", "Ask Kairo anything, or pick a workflow above to get started."));
     return;
   }
   for (const item of api.state.chat) {
@@ -283,8 +512,6 @@ function shortTime(iso) {
   const m = /T(\d{2}:\d{2})/.exec(iso);
   return m ? m[1] : iso.slice(0, 10);
 }
-
-function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 
 // Called by app.js for every streamed loop event; keeps Daily quiet (summary lines only).
 export function onEvent(state, evt) {

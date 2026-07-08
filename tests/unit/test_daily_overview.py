@@ -25,6 +25,9 @@ async def test_daily_overview_shape_with_no_services(tmp_path: Path) -> None:
     assert out["tasks_today"] == [] and out["kb_review_count"] == 0
     assert out["digest"] is None and out["notices"] == []
     assert out["demo"] is False
+    # Phase 11 Daily command-center reads: recent artifacts + latest run degrade to empty/None
+    # when their stores aren't composed (never an error).
+    assert out["recent_artifacts"] == [] and out["latest_run"] is None
     # tmp_path isn't a git repo ⇒ the "." repo state is None (never an error).
     assert out["repos"] == [{"path": ".", "state": None}]
     assert out["evals"]["ever_run"] is False

@@ -20,6 +20,7 @@ import { get as getTheme, initTheme, setTheme } from "./ui/theme.js";
 import { initKeys, clearScope, pushEscape } from "./ui/keys.js";
 import { emit as busEmit, on as busOn } from "./ui/bus.js";
 import { init as initPalette } from "./ui/palette.js";
+import { money } from "./ui/format.js";
 
 const state = {
   chat: [],            // Daily conversation items {role, text} | {tool, resolution}
@@ -298,6 +299,8 @@ function renderRunnerState() {
     setText("daily-now-lead", busy ? "Kairo is working" : "Kairo is idle");
     setClass("daily-now-lead", "lead" + (busy ? "" : " idle"));
     setText("daily-now-desc", busy ? "Working on your request." : "Nothing running. Send a message to begin.");
+    // Daily's "spent today" metric shares the same settled runner state as the status bar.
+    if (typeof s.today_spend_usd === "number") setText("daily-cost-today", money(s.today_spend_usd));
   }
 }
 

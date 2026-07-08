@@ -757,6 +757,12 @@ async def daily_overview(
     recent_artifacts: list[dict] = []
     if services.artifacts is not None:
         recent_artifacts = [serialize_artifact(a) for a in await services.artifacts.list(limit=6)]
+    # Phase 11: the latest orchestration run (status + cost) — a calm link into Studio.
+    latest_run: dict | None = None
+    if services.orchestration is not None:
+        runs = await services.orchestration.list(limit=1)
+        if runs:
+            latest_run = serialize_orchestration_run(runs[0])
     return {
         "repos": repos,
         "evals": _eval_freshness(config, repos),
@@ -771,6 +777,7 @@ async def daily_overview(
         "projects": projects,
         "active_project": active_project,
         "recent_artifacts": recent_artifacts,
+        "latest_run": latest_run,
     }
 
 

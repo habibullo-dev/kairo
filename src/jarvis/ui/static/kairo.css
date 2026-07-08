@@ -410,6 +410,16 @@ tr.clickable:hover td { color: var(--cyan); }
   box-shadow: 0 0 0 4px rgba(var(--good-rgb), .12); flex: none; }
 .badge { min-width: 20px; height: 20px; padding: 0 6px; display: inline-grid; place-items: center;
   border-radius: 999px; background: rgba(var(--accent-rgb), .14); color: var(--ink); font-size: 11px; }
+/* daily command-center (T8): status-pill tones, off dot, list-row text, connector strip */
+.status-pill.good { border-color: rgba(var(--good-rgb), .34); background: rgba(var(--good-rgb), .13); color: var(--ink); }
+.status-pill.busy { border-color: rgba(var(--accent-rgb), .42); background: rgba(var(--accent-rgb), .15); color: var(--ink); }
+.status-pill.danger { border-color: rgba(var(--danger-rgb), .42); background: rgba(var(--danger-rgb), .13); color: var(--ink); }
+.dot.off { background: var(--muted); box-shadow: none; }
+.lr-t { color: var(--ink); font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lr-s { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.daily-rows { display: grid; gap: 8px; }
+.conn-strip { display: flex; flex-wrap: wrap; gap: 8px; }
+.cost-metric { text-align: right; min-width: 116px; }
 
 /* segmented / filter / tab buttons */
 .seg, .filter, .tabbar { display: inline-flex; gap: 7px; flex-wrap: wrap; }
