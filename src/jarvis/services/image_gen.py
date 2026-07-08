@@ -71,6 +71,9 @@ class GenerateImageTool(HttpServiceTool):
             return ToolResult(
                 content="generate_image needs the artifact store (unavailable here).", is_error=True
             )
+        refusal = await self._preflight(1)  # project narrowing + hard cost cap, BEFORE any egress
+        if refusal:
+            return ToolResult(content=refusal, is_error=True)
         # Egress ledger: category only — never the prompt (it is the sensitive payload).
         log_egress(category="image_generation", destination_type="public_web")
         try:

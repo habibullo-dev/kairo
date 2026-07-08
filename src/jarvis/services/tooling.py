@@ -190,6 +190,37 @@ class ServiceTool(Tool):
             service=self.service_name, operation=operation, units=units, est_cost_usd=est_cost_usd
         )
 
+    def _narrowed_out(self) -> bool:
+        """Run-time per-project narrowing (Phase 13 Task 8): True iff the active project narrows
+        its services AND this one is not in that subset. Read live from the context's project
+        provider (a switch applies from the next turn), mirroring the KB tool's run-time scoping —
+        tool discovery runs once, so narrowing is enforced here, not at registration. No project
+        layer / no narrowing ⇒ False (available)."""
+        provider = getattr(self.context, "project", None)
+        if provider is None:
+            return False
+        narrowing = getattr(provider(), "services", None)
+        return narrowing is not None and self.service_name not in narrowing
+
+    async def _preflight(self, units: float) -> str | None:
+        """Pre-invocation guards for a service call (Phase 13 Task 8): per-project narrowing then
+        the hard cost cap. Returns a clear refusal reason (the caller returns it as an error and
+        does NOT send the request) or None to proceed. Call this at the top of ``run`` — before
+        any egress log or network request."""
+        if self._narrowed_out():
+            return f"{self.service_name} is not enabled for the active project."
+        ledger = getattr(self.context, "service_ledger", None)
+        cfg = getattr(self.context, "config", None)
+        if ledger is None or cfg is None:
+            return None
+        from jarvis.observability.ledger import ServiceBudget, cost_context
+
+        budget = ServiceBudget(
+            max_usd_per_run=getattr(cfg.services, "max_usd_per_run", None),
+            max_usd_per_day=getattr(cfg.services, "max_usd_per_day", None),
+        )
+        return await budget.refusal(ledger, cost_context.get(), self._service_cost(units))
+
 
 class ServiceHttpError(RuntimeError):
     """A hosted service returned an error status, non-JSON, or was unreachable. Carries a FRIENDLY

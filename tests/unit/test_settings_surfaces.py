@@ -64,11 +64,13 @@ def test_enable_hint_and_context_reuse_flag(tmp_path: Path) -> None:
     assert ov["context_reuse"]["enabled"] is False
 
 
-def test_budgets_include_service_caps_slot(tmp_path: Path) -> None:
-    # Task 7 exposes the per-service cap slots (None until Task 8 adds them to ServicesConfig).
-    b = settings_overview(_cfg(tmp_path))["budgets"]
-    assert "service_max_usd_per_run" in b and "service_max_usd_per_day" in b
-    assert b["service_max_usd_per_run"] is None and b["service_max_usd_per_day"] is None
+def test_budgets_include_service_caps(tmp_path: Path) -> None:
+    # The surface exposes the per-service cost caps (Task 8 defaults on ServicesConfig) alongside
+    # the existing per-run budget limits.
+    cfg = _cfg(tmp_path)
+    b = settings_overview(cfg)["budgets"]
+    assert b["service_max_usd_per_run"] == cfg.services.max_usd_per_run  # e.g. 1.0
+    assert b["service_max_usd_per_day"] == cfg.services.max_usd_per_day  # e.g. 5.0
     assert "hard_stop_usd_per_run" in b  # existing budget limits are surfaced too
 
 

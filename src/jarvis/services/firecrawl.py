@@ -51,6 +51,9 @@ class FirecrawlScrapeTool(HttpServiceTool):
             return ToolResult(
                 content="firecrawl is not configured (set FIRECRAWL_API_KEY).", is_error=True
             )
+        refusal = await self._preflight(1)  # project narrowing + hard cost cap, BEFORE any egress
+        if refusal:
+            return ToolResult(content=refusal, is_error=True)
         # Egress ledger: the bare hostname only — never the full URL (path/query carries payloads).
         log_egress(
             category="firecrawl",

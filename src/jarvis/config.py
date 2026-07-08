@@ -449,6 +449,12 @@ class ServicesConfig(BaseModel):
     #: non-loopback URL (a remote SearXNG would be an unvetted second egress hop). The instance
     #: itself still proxies queries to public engines, so searxng_search stays classified egress.
     searxng_base_url: str = "http://127.0.0.1:8888"
+    #: Hard cost caps for metered service calls (Phase 13). Checked BEFORE each metered invocation
+    #: against the summed est_cost_usd (per orchestration run / per UTC day) — a call that would
+    #: breach is refused with a reason, never truncated. The anti-runaway for crawl/search/image.
+    #: 0 / None = no cap.
+    max_usd_per_run: float | None = 1.0
+    max_usd_per_day: float | None = 5.0
 
 
 class ContextReuseConfig(BaseModel):

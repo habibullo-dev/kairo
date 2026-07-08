@@ -54,6 +54,9 @@ class SearxngSearchTool(HttpServiceTool):
                 is_error=True,
             )
         n = max(1, min(params.max_results, _MAX_RESULTS))  # HARD cap ≤ 10
+        refusal = await self._preflight(1)  # project narrowing (fixed-zero ⇒ no cap), pre-egress
+        if refusal:
+            return ToolResult(content=refusal, is_error=True)
         # Egress ledger: the local instance proxies OUT to public engines. Category only — never
         # the query (it is the sensitive payload).
         log_egress(category="searxng", destination_type="public_web")

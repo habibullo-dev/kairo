@@ -266,6 +266,65 @@ class ServiceLedger:
     def status(self) -> dict:
         return {"degraded": self._degraded_since is not None, "unrecorded": self._unrecorded}
 
+    async def spent(self, *, run_id: int | None = None, since: str | None = None) -> float:
+        """Summed ``est_cost_usd`` over service_calls, scoped by orchestration run and/or a start
+        timestamp (ISO, lexically comparable). NULL (unpriced) rows contribute 0 to the sum — the
+        cap is about known spend; unpriced services are already blocked at registration."""
+        clauses: list[str] = []
+        params: list[object] = []
+        if run_id is not None:
+            clauses.append("orchestration_run_id = ?")
+            params.append(run_id)
+        if since is not None:
+            clauses.append("ts >= ?")
+            params.append(since)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        cur = await self.db.execute(
+            f"SELECT COALESCE(SUM(est_cost_usd), 0.0) FROM service_calls {where}", tuple(params)
+        )
+        row = await cur.fetchone()
+        return float((row[0] if row else 0.0) or 0.0)
+
+
+def _day_start() -> str:
+    """Start of the current UTC day, ISO — the per-day cap window (lexically comparable to ts)."""
+    return _dt.datetime.now(_dt.UTC).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+
+@dataclass(frozen=True)
+class ServiceBudget:
+    """Pre-invocation service-cost caps (Phase 13). A metered call is refused BEFORE it is sent
+    when the run-to-date (in an orchestration run) or day-to-date service spend plus the next
+    call's cost would breach a cap — the anti-runaway for crawl/search/image. Caps come from
+    ``ServicesConfig``; 0/None disables a cap. The check reads the :class:`ServiceLedger`, so it
+    counts every prior metered call this run/day, not just the current tool's."""
+
+    max_usd_per_run: float | None = None
+    max_usd_per_day: float | None = None
+
+    async def refusal(
+        self, ledger: ServiceLedger, ctx: CostContext, next_cost: float | None
+    ) -> str | None:
+        """A clear refusal string if ``next_cost`` would breach a cap, else None. A fixed-zero /
+        unpriced (0.0 / None) next cost never breaches."""
+        if not next_cost:  # 0.0 or None ⇒ nothing to cap
+            return None
+        if self.max_usd_per_run and ctx.orchestration_run_id is not None:
+            spent = await ledger.spent(run_id=ctx.orchestration_run_id)
+            if spent + next_cost > self.max_usd_per_run:
+                return (
+                    f"service cost cap for this run reached (${spent:.4f} spent + ${next_cost:.4f} "
+                    f"next > ${self.max_usd_per_run:.2f} cap) — not sent."
+                )
+        if self.max_usd_per_day:
+            spent = await ledger.spent(since=_day_start())
+            if spent + next_cost > self.max_usd_per_day:
+                return (
+                    f"daily service cost cap reached (${spent:.4f} + ${next_cost:.4f} > "
+                    f"${self.max_usd_per_day:.2f}) — not sent."
+                )
+        return None
+
 
 class LedgeredClient:
     """Wraps an ``LLMClient`` and records each ``create`` to the ledger. Transparent — any

@@ -23,6 +23,11 @@ class ProjectContext:
     name: str | None
     repos: tuple[str, ...]
     system_extra: str
+    #: Per-project service narrowing (Phase 13): the subset of globally-enabled services this
+    #: project may use, or None = no narrowing (the full global set). A project can only NARROW,
+    #: never widen (the write route enforces the subset); service tools refuse at run time when
+    #: narrowed out. None (default) keeps every pre-Phase-13 context byte-identical.
+    services: tuple[str, ...] | None = None
 
 
 #: The global (no-project) scope: no id, no repos, no system extra. Used whenever no
@@ -48,9 +53,11 @@ def build_project_context(project: Project | None) -> ProjectContext:
         f"{body}\n"
         "--- end active project ---"
     )
+    narrowing = project.settings.get("services")
     return ProjectContext(
         project_id=project.id,
         name=project.name,
         repos=project.repos,
         system_extra=extra,
+        services=tuple(narrowing) if isinstance(narrowing, list) else None,
     )

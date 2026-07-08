@@ -220,6 +220,27 @@ class ProjectStore:
             await self.db.commit()
         return cursor.rowcount > 0
 
+    async def set_services(self, project_id: int, services: list[str] | None) -> bool:
+        """Set (or clear, when ``services`` is None) the project's service narrowing WITHIN
+        settings_json, without disturbing sibling overrides (model routes/budgets/roster/label).
+        The caller (the route) enforces the narrow-only subset invariant; this just persists the
+        list. Read-modify-write under the lock. Returns False if the project doesn't exist."""
+        async with self.lock:
+            p = await self.get(project_id)
+            if p is None:
+                return False
+            settings = dict(p.settings)
+            if services is None:
+                settings.pop("services", None)
+            else:
+                settings["services"] = list(services)
+            cursor = await self.db.execute(
+                "UPDATE projects SET settings_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(settings), _now(), project_id),
+            )
+            await self.db.commit()
+        return cursor.rowcount > 0
+
     async def set_status(self, project_id: int, status: str) -> bool:
         """Flip an existing project's lifecycle status. Returns False if unknown."""
         if status not in _STATUSES:

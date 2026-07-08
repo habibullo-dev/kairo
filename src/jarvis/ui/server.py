@@ -520,7 +520,12 @@ def create_app(
         # availability + model routes — all presence/metadata only, no key value ever. Always
         # available (pure over config + constants); the run mutations are gated separately.
         projects = app.state.projects
-        proj_services = None  # per-project narrowing could pass the project's enabled subset
+        active = projects.current() if projects is not None else None
+        # Per-project narrowing (Phase 13): show the project's subset when it narrows, else the
+        # full global availability. A project can only narrow (the write route enforces it).
+        proj_services = (
+            list(active.services) if (active is not None and active.services is not None) else None
+        )
         return JSONResponse(
             {
                 "teams": teams_catalog(),
@@ -804,6 +809,35 @@ def create_app(
             label = str(label).strip()[:40] or None
         ok = await svc.store.set_label(project_id, label)
         return JSONResponse({"ok": ok})
+
+    @app.post("/api/projects/{project_id}/services")
+    async def projects_services(project_id: int, request: Request) -> JSONResponse:
+        # Phase 13: NARROW-ONLY per-project service selection. Every name must be in the global
+        # services.enabled set — a project can only SUBSET it, never widen (fail-closed 400 on any
+        # non-enabled name). `services: null` clears the narrowing (project uses the full global
+        # set). Merge-safe write of settings_json; the tools enforce the narrowing at run time.
+        svc = app.state.projects
+        if svc is None:
+            return _unavailable("projects")
+        body = await request.json()
+        names = body.get("services")
+        if names is None:  # clear narrowing → full global set for this project
+            ok = await svc.store.set_services(project_id, None)
+            return JSONResponse({"ok": ok, "services": None})
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            return JSONResponse(
+                {"ok": False, "message": "services must be a list of names or null"},
+                status_code=400,
+            )
+        enabled = set(config.services.enabled)
+        invalid = sorted(n for n in names if n not in enabled)
+        if invalid:  # narrow-only: a project can never widen beyond the global set
+            return JSONResponse(
+                {"ok": False, "message": f"not globally enabled (cannot widen): {invalid}"},
+                status_code=400,
+            )
+        ok = await svc.store.set_services(project_id, sorted(set(names)))
+        return JSONResponse({"ok": ok, "services": sorted(set(names))})
 
     @app.get("/api/artifacts")
     async def artifacts_index(

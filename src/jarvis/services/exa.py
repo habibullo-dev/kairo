@@ -54,6 +54,9 @@ class ExaSearchTool(HttpServiceTool):
                 content="exa_search is not configured (set EXA_API_KEY).", is_error=True
             )
         n = max(1, min(params.max_results, _MAX_RESULTS))  # HARD cap ≤ 10
+        refusal = await self._preflight(1)  # project narrowing + hard cost cap, BEFORE any egress
+        if refusal:
+            return ToolResult(content=refusal, is_error=True)
         # Egress ledger: category only — never the query (it is the sensitive payload).
         log_egress(category="exa", destination_type="public_web")
         try:
