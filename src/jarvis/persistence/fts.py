@@ -137,7 +137,9 @@ DOMAINS: dict[str, Domain] = {
         fts="artifacts_fts",
         id_expr="a.id",
         join_sql="JOIN artifacts a ON a.id = artifacts_fts.rowid",
-        static_where="",
+        # Quarantined artifacts (e.g. an unreviewed meeting transcript) are never searchable —
+        # visibility lives in SQL, mirroring the kb review/status gate (defence in depth).
+        static_where="AND (a.sensitivity IS NULL OR a.sensitivity != 'quarantined')",
         project_col="a.project_id",
     ),
 }

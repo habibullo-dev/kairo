@@ -89,6 +89,7 @@ class DigestBuilder:
         eval_freshness: Callable[[], dict | None] | None = None,
         notices: Any = None,
         task_id: int | None = None,
+        artifacts: Any = None,
         now: Callable[[], _dt.datetime] | None = None,
     ) -> None:
         self.config = config
@@ -102,6 +103,7 @@ class DigestBuilder:
         self.eval_freshness = eval_freshness
         self.notices = notices
         self.task_id = task_id
+        self.artifacts = artifacts  # Phase 11: optional ArtifactStore (None ⇒ no indexing)
         self._now = now or (lambda: _dt.datetime.now().astimezone())
         self._cost: float | None = None
 
@@ -315,6 +317,21 @@ class DigestBuilder:
             delivered_to=delivered,
             cost_usd=self._cost,
         )
+        # Phase 11: index the digest as a DB-backed artifact (global, no file). Fail-soft — a
+        # broken artifact index must never break digest delivery (same contract as collectors).
+        if self.artifacts is not None:
+            try:
+                await self.artifacts.register(
+                    origin_type="digest",
+                    origin_id=str(digest_id),
+                    kind="digest",
+                    title=f"Daily digest — {date_local}",
+                    created_by="system",
+                    external_uri=f"kairo://digest/{digest_id}",
+                    model=self.config.models.utility,
+                )
+            except Exception:  # noqa: BLE001 - artifact bookkeeping must never fail a digest
+                _log.warning("digest_artifact_register_failed")
         # UI delivery FIRST — the DB row + a calm notice (no toast). Notifiers come after.
         if self.notices is not None:
             self.notices.post(f"Daily digest ready — {summary[:120]}", kind="digest")

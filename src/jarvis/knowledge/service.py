@@ -148,6 +148,7 @@ class KnowledgeService:
         *,
         knowledge_dir: Path,
         root: Path,
+        artifacts=None,
         now: Callable[[], _dt.datetime] = utc_now,
     ) -> None:
         self.store = store
@@ -164,6 +165,7 @@ class KnowledgeService:
         # by the turn lock (mirrors TaskService.bound_session_id).
         self.bound_unattended = False
         self.log = get_logger("jarvis.knowledge")
+        self.artifacts = artifacts  # Phase 11: optional ArtifactStore (None ⇒ no indexing)
 
     def ensure_dirs(self) -> None:
         for d in (self.wiki_dir, self.raw_dir, self.markdown_dir):
@@ -182,6 +184,10 @@ class KnowledgeService:
         """Write (or rewrite) a wiki page, jailed to the wiki dir, with Jarvis-owned
         front-matter and a rebuilt link + chunk index. Raises :class:`KnowledgeError`
         (jail violation or unknown/unreviewed source id) with a model-readable message."""
+        # Validate once here so the page front-matter and the artifact index can never disagree
+        # (the artifact layer enforces the same set; a mismatch would silently drop the artifact).
+        if created_by not in ("user", "agent", "system"):
+            raise KnowledgeError(f"unknown created_by: {created_by!r}")
         target = safe_wiki_path(self.wiki_dir, page)  # containment first
         ids = source_ids or []
         await self._validate_source_ids(ids)
@@ -211,6 +217,21 @@ class KnowledgeService:
         wiki_path = target.relative_to(self.wiki_dir.resolve()).as_posix()
         await self._reindex_page(wiki_path, body)
         self.log.info("kb_page_written", page=wiki_path, source_ids=ids, created_by=created_by)
+        # Phase 11: index the wiki page as a local-file artifact (global; identity = wiki_path,
+        # so a re-edit updates the same row). Fail-soft — never fail a page write.
+        if self.artifacts is not None:
+            try:
+                await self.artifacts.register(
+                    origin_type="wiki",
+                    origin_id=wiki_path,
+                    kind="wiki_page",
+                    title=title,
+                    created_by=created_by,
+                    local_path=target,
+                    project_id=None,
+                )
+            except Exception:  # noqa: BLE001 - artifact bookkeeping must never fail a page write
+                self.log.warning("wiki_artifact_register_failed", page=wiki_path)
         return target
 
     async def _validate_source_ids(self, source_ids: list[int]) -> None:

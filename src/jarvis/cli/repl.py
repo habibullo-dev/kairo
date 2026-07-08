@@ -919,7 +919,7 @@ def _build_scheduler(
 
 
 def _build_knowledge(
-    config: Config, db, lock, console: Console, memory: MemoryService | None
+    config: Config, db, lock, console: Console, memory: MemoryService | None, *, artifacts=None
 ) -> KnowledgeService | None:
     """Construct the KnowledgeService on the shared connection + lock, or None if the
     KB is disabled / has no embedder. Reuses the memory service's embedder when present
@@ -939,6 +939,7 @@ def _build_knowledge(
         config.knowledge,
         knowledge_dir=config.knowledge_dir,
         root=config.root,
+        artifacts=artifacts,  # Phase 11: index written wiki pages as artifacts
     )
     service.ensure_dirs()
     return service
@@ -1059,6 +1060,7 @@ def _build_runner(
     console: Console,
     board: object | None = None,
     digest_store: object | None = None,
+    artifacts: object | None = None,
 ) -> BackgroundRunner:
     """Wire the BackgroundRunner: it fires due tasks, and delegates job execution to
     a JobRunner built from the REPL's already-composed collaborators (same registry,
@@ -1097,6 +1099,7 @@ def _build_runner(
                 tasks=tasks,
                 knowledge=knowledge,
                 notices=board,
+                artifacts=artifacts,
                 task_id=task.id,
             )
             outcome = await builder.build_and_deliver()
@@ -1237,7 +1240,7 @@ async def run_voice(config: Config, *, console: Console | None = None) -> None:
 # --- workstation UI (Phase 8) ----------------------------------------------
 
 
-def build_ui_app(config: Config, *, repl: Repl, auth=None):
+def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
     """Compose the workstation app from the REPL's already-built collaborators, with the UI
     approver seams swapped in (ADR-0008): the turn loop's approver is the ``UIApprover`` (Gate
     queue), sub-agent ASKs escalate to the UI screen, and the shared turn lock serializes UI
@@ -1306,15 +1309,18 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None):
         ledger=repl.cost_ledger,  # Phase 10: Costs + A5 ledger-degraded status
         budgets=repl.budgets,  # Phase 10: Costs screen rollups + limits
         orchestration=orch_store,  # Phase 10B: Studio runs
+        artifacts=artifacts,  # Phase 11: Artifacts Library + global search + content route
     )
     if repl.agents is not None and orch_store is not None:
-        app.state.orchestrator = _build_orchestrator(config, repl=repl, app=app, store=orch_store)
+        app.state.orchestrator = _build_orchestrator(
+            config, repl=repl, app=app, store=orch_store, artifacts=artifacts
+        )
     if config.voice.enabled:
-        app.state.voice = _build_ui_voice(config, repl=repl, app=app)
+        app.state.voice = _build_ui_voice(config, repl=repl, app=app, artifacts=artifacts)
     return app
 
 
-def _build_orchestrator(config: Config, *, repl: Repl, app, store):
+def _build_orchestrator(config: Config, *, repl: Repl, app, store, artifacts=None):
     """Compose the OrchestrationEngine (Task 13/14) + its UI controller (Task 15). The head
     synthesis/verdict run on a thinking-off Fable client (forced-schema calls need thinking off,
     the utility-client precedent); members run on their per-role model via the shared client.
@@ -1344,13 +1350,14 @@ def _build_orchestrator(config: Config, *, repl: Repl, app, store):
         pricing=pricing,
         budgets=config.budgets,  # reservation caps + confirm threshold
         est_iterations=config.sub_agents.max_iterations,
+        artifacts=artifacts,  # Phase 11: index each finished run as a DB-backed artifact
     )
     return OrchestrationController(
         engine=engine, connections=app.state.connections, projects=repl.projects
     )
 
 
-def _build_ui_voice(config: Config, *, repl: Repl, app):
+def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None):
     """Wire the UI's voice surface: a push-to-talk listener whose risky actions escalate to
     the UI screen (``app.state.ui_screen``, fail-closed), and meeting capture → an unreviewed
     KB source. Reuses the Phase-7 pieces with the workstation as the screen."""
@@ -1407,7 +1414,9 @@ def _build_ui_voice(config: Config, *, repl: Repl, app):
     voice.listener = PushToTalkListener(capture, voice_session, on_state=voice.note_state)
     voice.capture = capture
     if repl.knowledge is not None:
-        voice.meeting = MeetingCapture(repl.knowledge, stt, on_state=voice.note_state)
+        voice.meeting = MeetingCapture(
+            repl.knowledge, stt, artifacts=artifacts, on_state=voice.note_state
+        )
     return voice
 
 
@@ -1435,13 +1444,29 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
     session_id: int | None = None
     utility = memory = None
     try:
+        from jarvis.persistence.artifacts import ArtifactStore
+
+        # Phase 11: one ArtifactStore on the shared connection feeds the producer hooks
+        # (digest/orchestration/wiki/meeting) + the Artifacts Library / search / content route.
+        # managed_roots confine local artifacts to data/artifacts + the wiki/eval subtrees.
+        artifacts = ArtifactStore(
+            db,
+            store.lock,
+            data_dir=config.data_dir,
+            managed_roots={
+                "artifacts": config.data_dir / "artifacts",
+                "wiki": config.knowledge_dir / "wiki",  # write_page pages
+                "markdown": config.knowledge_dir / "markdown",  # meeting-note markdown
+                "evals": config.data_dir / "evals",  # eval reports (T4 lazy hook)
+            },
+        )
         ledger = _build_cost_ledger(config, db, store.lock)
         utility = _utility_client(config, ledger=ledger)
         memory = _build_memory(config, db, console, utility, store.lock)
         context_manager = _build_context_manager(config, utility)
         session_id = await store.create_session()
         tasks = _build_scheduler(config, db, store, session_id)
-        knowledge = _build_knowledge(config, db, store.lock, console, memory)
+        knowledge = _build_knowledge(config, db, store.lock, console, memory, artifacts=artifacts)
         run_store = AgentRunStore(db, store.lock) if config.sub_agents.enabled else None
         repl = Repl(
             config,
@@ -1459,7 +1484,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
         from jarvis.ui import AuthManager
 
         auth = AuthManager()
-        app = build_ui_app(config, repl=repl, auth=auth)
+        app = build_ui_app(config, repl=repl, auth=auth, artifacts=artifacts)
 
         # Wire the real Playwright driver for the inspect-only browser-QA tool + the screenshot
         # harness, if the `browser` extra is installed. Absent ⇒ the tool keeps its degrading
@@ -1496,6 +1521,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
                     tasks=tasks,
                     knowledge=knowledge,
                     notices=board,
+                    artifacts=artifacts,
                 )
                 return await builder.build_and_deliver()
 
@@ -1511,6 +1537,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
                 console,
                 board=board,
                 digest_store=digest_store,
+                artifacts=artifacts,
             )
             app.state.runner = runner
             await ensure_digest_task(tasks, config)

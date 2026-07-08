@@ -39,6 +39,7 @@ class MeetingCapture:
         on_state=None,
         attended: bool = True,
         retain_audio: bool = False,
+        artifacts=None,
         log=None,
     ) -> None:
         self.knowledge = knowledge
@@ -47,6 +48,7 @@ class MeetingCapture:
         self.attended = attended
         self.retain_audio = retain_audio  # default: keep the transcript, discard raw audio
         self.log = log or get_logger("jarvis.voice.meeting")
+        self.artifacts = artifacts  # Phase 11: optional ArtifactStore (None ⇒ no indexing)
         self.state = IDLE
 
     def _set(self, state: str) -> None:
@@ -81,4 +83,25 @@ class MeetingCapture:
         self.log.info(
             "meeting_captured", review_status=result.review_status, source_id=result.source_id
         )
+        # Phase 11: index a meeting note as an artifact ONLY when its KB source is reviewed.
+        # Transcripts are quarantined (unreviewed) at capture per ADR-0004; registering one while
+        # unreviewed would make quarantined audio content discoverable in search + servable via
+        # the content route, defeating the quarantine. So this does not fire until a source is
+        # promoted (the review-promotion artifact hook is future work). Fail-soft.
+        if self.artifacts is not None and result.review_status == "reviewed":
+            try:
+                source = await self.knowledge.store.get_source(result.source_id)
+                if source is not None:
+                    await self.artifacts.register(
+                        origin_type="meeting",
+                        origin_id=str(result.source_id),
+                        kind="meeting_note",
+                        title=result.title or "Meeting transcript",
+                        created_by="user",
+                        local_path=self.knowledge.knowledge_dir / source.markdown_path,
+                        sensitivity="quarantined",
+                        project_id=None,
+                    )
+            except Exception:  # noqa: BLE001 - artifact bookkeeping must never fail a capture
+                self.log.warning("meeting_artifact_register_failed", source_id=result.source_id)
         return result

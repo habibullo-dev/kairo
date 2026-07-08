@@ -140,6 +140,7 @@ class OrchestrationEngine:
         est_iterations: int = 6,
         est_out_tokens: int = 2048,
         project_routes: dict | None = None,
+        artifacts: object | None = None,
     ) -> None:
         self.spawn = spawn
         self.store = store
@@ -155,6 +156,7 @@ class OrchestrationEngine:
         self.est_iterations = est_iterations
         self.est_out_tokens = est_out_tokens
         self.project_routes = project_routes
+        self.artifacts = artifacts  # Phase 11: optional ArtifactStore (None ⇒ no indexing)
         self._on_event: Callable[[dict], Awaitable[None]] | None = None  # set per run()
         self.log = get_logger("jarvis.orchestration")
 
@@ -387,6 +389,27 @@ class OrchestrationEngine:
         await self.store.complete_run(
             run_id, status=status, verdict=verdict, synthesis_summary=synthesis_summary
         )
+        # Phase 11: index the finished run as a DB-backed artifact. _finish is the single
+        # terminal choke point (every exit routes here), so this is exactly one artifact per
+        # run; the persisted row (complete_run ran above) supplies its metadata. Fail-soft, so
+        # a bookkeeping failure never fails a run (and never re-enters the except→_finish loop).
+        if self.artifacts is not None:
+            try:
+                run = await self.store.get(run_id)
+                if run is not None:
+                    await self.artifacts.register(
+                        origin_type="orchestration",
+                        origin_id=str(run_id),
+                        kind="orchestration",
+                        title=run.title,
+                        created_by="system",
+                        external_uri=f"kairo://run/{run_id}",
+                        project_id=run.project_id,
+                        team=run.config.get("team"),
+                        model=self.head_model,
+                    )
+            except Exception:  # noqa: BLE001 - artifact bookkeeping must never fail a run
+                self.log.warning("orchestration_artifact_register_failed", run_id=run_id)
         await self._emit(
             "orchestration_completed",
             run_id=run_id,
