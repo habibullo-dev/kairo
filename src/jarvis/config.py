@@ -445,6 +445,10 @@ class ServicesConfig(BaseModel):
     #: Optional loopback ports the ``playwright_inspect`` tool may target (B3). Empty ⇒ any
     #: loopback port (still non-egress — the host allowlist is the guarantee).
     playwright_allow_ports: list[int] = Field(default_factory=list)
+    #: Base URL of a LOCAL SearXNG instance (Phase 13). Must be loopback — the adapter refuses a
+    #: non-loopback URL (a remote SearXNG would be an unvetted second egress hop). The instance
+    #: itself still proxies queries to public engines, so searxng_search stays classified egress.
+    searxng_base_url: str = "http://127.0.0.1:8888"
 
 
 class ContextReuseConfig(BaseModel):

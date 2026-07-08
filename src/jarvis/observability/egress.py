@@ -34,6 +34,7 @@ EGRESS_CATEGORIES: frozenset[str] = frozenset(
         # Phase 13: hosted research services (a URL/query left the box to a third-party API).
         "firecrawl",
         "exa",
+        "searxng",  # the local instance proxies the query out to public engines
     }
 )
 

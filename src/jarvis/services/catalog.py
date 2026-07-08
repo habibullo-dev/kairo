@@ -128,11 +128,15 @@ SERVICE_CATALOG: dict[str, ServiceSpec] = {
             context_policy=ContextPolicy.PUBLIC_ONLY,
             output_trust=OutputTrust.UNTRUSTED_EXTERNAL_CONTENT,
             priority="later",
+            note="DEFERRED after the Phase 13 Task-5 value check: firecrawl_scrape already gives "
+            "hosted JS-rendered URL->markdown and web_fetch covers free extraction, so a third "
+            "URL-to-markdown tool clears no material value bar for Kairo. Ships only if that "
+            "changes.",
         ),
         _s(
             name="searxng",
             teams=("research",),
-            kind="cli",
+            kind="native",  # HTTP adapter to the local instance (not a subprocess)
             hosted=False,
             credential_env=(),
             pricing="fixed_zero",
@@ -144,7 +148,7 @@ SERVICE_CATALOG: dict[str, ServiceSpec] = {
             permission_default="ask",
             context_policy=ContextPolicy.PUBLIC_ONLY,
             output_trust=OutputTrust.UNTRUSTED_EXTERNAL_CONTENT,
-            priority="later",
+            priority="now",  # Phase 13 Task 5: searxng_search adapter shipped
             note="local install but proxies queries to public engines ⇒ egress",
         ),
         _s(
