@@ -112,6 +112,8 @@ def serialize_project(project: Project) -> dict:
         "icon": project.icon,
         "repos": list(project.repos),
         "settings": project.settings,
+        "pinned": project.pinned,
+        "label": project.settings.get("label"),  # Phase 11: user-editable category chip
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }
@@ -124,6 +126,52 @@ async def projects_view(service: ProjectService) -> dict:
     return {
         "projects": [serialize_project(p) for p in rows],
         "active_project_id": service.current().project_id,
+    }
+
+
+async def projects_overview(services: UiServices) -> dict:
+    """The Projects grid: active projects (pinned first, then most-recent) each with health chips
+    — open tasks, sessions this week, last run status/verdict, month spend — plus the archived
+    list (collapsed in the UI). Read-only; every chip degrades to None when its store is absent."""
+    if services.projects is None:
+        return {"projects": [], "archived": [], "active_project_id": None}
+    active = await services.projects.store.list(status="active")
+    archived = await services.projects.store.list(status="archived")
+    week_ago = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(days=7)).isoformat()
+    out: list[dict] = []
+    for p in active:
+        health: dict = {
+            "open_tasks": None, "sessions_week": None, "last_run": None, "month_spend_usd": None,
+        }
+        # Each chip degrades independently: an absent store leaves it None, and a composed store
+        # that errors leaves just that one chip None rather than failing the whole grid.
+        with contextlib.suppress(Exception):
+            if services.tasks is not None:
+                open_tasks = await services.tasks.store.list(project_id=p.id, include_global=False)
+                health["open_tasks"] = len(open_tasks)
+        with contextlib.suppress(Exception):
+            if services.sessions is not None:
+                health["sessions_week"] = await services.sessions.count_since(
+                    week_ago, project_id=p.id
+                )
+        with contextlib.suppress(Exception):
+            if services.orchestration is not None:
+                runs = await services.orchestration.list(project_id=p.id, limit=1)
+                if runs:
+                    health["last_run"] = {"status": runs[0].status, "verdict": runs[0].verdict}
+        with contextlib.suppress(Exception):
+            if services.budgets is not None:
+                st = await services.budgets.status(project_id=p.id)
+                health["month_spend_usd"] = (st.get("month") or {}).get("cost_usd")
+        row = serialize_project(p)
+        row["health"] = health
+        out.append(row)
+    out.sort(key=lambda r: r["updated_at"] or "", reverse=True)  # newest first…
+    out.sort(key=lambda r: not r["pinned"])  # …then stable pinned-first
+    return {
+        "projects": out,
+        "archived": [serialize_project(p) for p in archived],
+        "active_project_id": services.projects.current().project_id,
     }
 
 

@@ -239,6 +239,27 @@ class SessionStore:
         )
         return [self._row_to_meta(r) for r in await cursor.fetchall()]
 
+    async def count_since(
+        self, since_iso: str, *, kind: str | None = "interactive", project_id: object = _ANY_PROJECT
+    ) -> int:
+        """Count sessions (with >=1 message) updated at/after ``since_iso`` within the kind/
+        project scope — backs the Projects-grid 'sessions this week' health chip. ISO-8601 UTC
+        strings compare lexicographically, so a string ``>=`` is a correct time filter."""
+        where = (
+            "WHERE (SELECT count(*) FROM messages m WHERE m.session_id = s.id) > 0 "
+            "AND s.updated_at >= ?"
+        )
+        params: list[object] = [since_iso]
+        if kind is not None:
+            where += " AND s.kind = ?"
+            params.append(kind)
+        scope_sql, scope_params = self._scope_clause(project_id)
+        where += scope_sql
+        params += scope_params
+        cursor = await self.db.execute(f"SELECT count(*) FROM sessions s {where}", tuple(params))
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
     async def get_meta(self, session_id: int) -> SessionMeta | None:
         cursor = await self.db.execute(
             f"SELECT {self._META_COLS} FROM sessions s WHERE s.id = ?", (session_id,)

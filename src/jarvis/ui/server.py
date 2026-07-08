@@ -43,6 +43,7 @@ from jarvis.ui.readmodels import (
     model_routes_status,
     orchestration_run_detail,
     orchestration_runs_view,
+    projects_overview,
     projects_view,
     providers_status,
     services_status,
@@ -740,6 +741,11 @@ def create_app(
     # --- Phase 11: projects pin + artifacts + saved views + global search + workspace ---------
     # All reads are scoped in SQL (search/artifacts); the mutations are metadata-only (pin/label/
     # save/delete), mirroring sessions/pin — no new authority. The palette calls the GETs only.
+    @app.get("/api/projects/overview")
+    async def projects_overview_route() -> JSONResponse:
+        # The Projects grid: active projects + per-project health chips + archived list. Read-only.
+        return JSONResponse(await projects_overview(app.state.services))
+
     @app.post("/api/projects/{project_id}/pin")
     async def projects_pin(project_id: int, request: Request) -> JSONResponse:
         svc = app.state.projects
@@ -747,6 +753,20 @@ def create_app(
             return _unavailable("projects")
         body = await request.json()
         ok = await svc.store.set_pinned(project_id, bool(body.get("pinned", True)))
+        return JSONResponse({"ok": ok})
+
+    @app.post("/api/projects/{project_id}/label")
+    async def projects_label(project_id: int, request: Request) -> JSONResponse:
+        # Set/clear the project's category chip WITHIN settings_json (merge-safe — never clobbers
+        # model/budget/roster overrides). Metadata only; no new authority.
+        svc = app.state.projects
+        if svc is None:
+            return _unavailable("projects")
+        body = await request.json()
+        label = body.get("label")
+        if label is not None:
+            label = str(label).strip()[:40] or None
+        ok = await svc.store.set_label(project_id, label)
         return JSONResponse({"ok": ok})
 
     @app.get("/api/artifacts")

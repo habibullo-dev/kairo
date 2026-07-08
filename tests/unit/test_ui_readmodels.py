@@ -170,6 +170,7 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/voice/listen"),
         ("POST", "/api/voice/meeting"),
         ("POST", "/api/projects/{project_id}/pin"),  # Phase 11: pin/unpin a project card
+        ("POST", "/api/projects/{project_id}/label"),  # Phase 11: set a project's category label
         ("POST", "/api/artifacts/{artifact_id}/pin"),  # Phase 11: pin/unpin an artifact
         ("POST", "/api/artifacts/{artifact_id}/label"),  # Phase 11: set an artifact's labels
         ("POST", "/api/views/save"),  # Phase 11: create/update a saved view

@@ -420,6 +420,29 @@ tr.clickable:hover td { color: var(--cyan); }
 .daily-rows { display: grid; gap: 8px; }
 .conn-strip { display: flex; flex-wrap: wrap; gap: 8px; }
 .cost-metric { text-align: right; min-width: 116px; }
+/* projects grid (T9) */
+.projects-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.project-card { display: grid; gap: 11px; }
+.pc-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 11px; align-items: center; }
+.pc-title { min-width: 0; }
+.pc-name { color: var(--ink); font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-slug { font-size: 11.5px; }
+.pc-desc { font-size: 12.5px; line-height: 1.45; }
+.pc-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pc-health { display: flex; flex-wrap: wrap; gap: 6px; }
+.pc-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 2px; }
+.pin-star { border: none; background: none; cursor: pointer; font-size: 18px; line-height: 1; color: var(--muted); padding: 2px 4px; }
+.pin-star.on { color: var(--accent); }
+.label-select { min-height: 28px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-soft); color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.collections { display: flex; flex-wrap: wrap; gap: 8px; }
+.collection-chip { min-height: 30px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel-soft); color: var(--ink); font: inherit; font-size: 12.5px; cursor: pointer; }
+.collection-chip:hover { border-color: rgba(var(--accent-rgb), .5); background: rgba(var(--accent-rgb), .12); }
+.collection-chip.user { border-style: dashed; }
+.pj-new input { min-height: 34px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-soft); color: var(--ink); font: inherit; }
+.archived summary { cursor: pointer; color: var(--muted); font-weight: 600; font-size: 13px; }
 
 /* segmented / filter / tab buttons */
 .seg, .filter, .tabbar { display: inline-flex; gap: 7px; flex-wrap: wrap; }
