@@ -54,3 +54,7 @@ services:
   # Exa bills $5 / 1K searches = $0.005/search (verified: exa.ai/pricing, 2026-07; a March-2026
   # update cut deep-search 20% — confirm the current rate before the live ritual, plan §1).
   exa: {unit: search, usd_per_unit: 0.005}
+  # OpenAI gpt-image-1, 1024x1024 MEDIUM quality ≈ $0.07/image (token-priced: ~$0.02/$0.07/$0.19
+  # low/med/high; platform.openai.com/docs/pricing, 2026-07). The adapter pins size+quality, so a
+  # per-image rate is exact for that config — confirm before the live ritual (plan §1).
+  openai_image: {unit: image, usd_per_unit: 0.07}

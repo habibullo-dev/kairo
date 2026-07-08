@@ -35,6 +35,7 @@ EGRESS_CATEGORIES: frozenset[str] = frozenset(
         "firecrawl",
         "exa",
         "searxng",  # the local instance proxies the query out to public engines
+        "image_generation",  # a prompt left the box to the image-generation API
     }
 )
 

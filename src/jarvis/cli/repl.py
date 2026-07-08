@@ -290,6 +290,7 @@ class Repl:
         runner: BackgroundRunner | None = None,
         turn_lock: asyncio.Lock | None = None,
         cost_ledger: CostLedger | None = None,
+        artifacts: object | None = None,
     ) -> None:
         self.config = config
         self.console = console or Console()
@@ -362,6 +363,9 @@ class Repl:
         # the metadata-only journal the execute route writes on each executed write.
         self.intents: IntentStore | None = None
         self.write_journal: ConnectorWriteJournal | None = None
+        # Phase 13: the artifact store a producing tool (e.g. generate_image) registers into.
+        # Threaded in from the UI build (where the Library renders it); None in bare/terminal Repls.
+        self.artifacts = artifacts
         if store is not None:
             self.budgets = BudgetService(store.db, store.lock, config.budgets)
             self.service_ledger = ServiceLedger(store.db, store.lock)
@@ -379,6 +383,7 @@ class Repl:
             project=self.projects.current if self.projects is not None else None,
             service_ledger=self.service_ledger,
             intents=self.intents,
+            artifacts=self.artifacts,
         )
         self.registry.discover("jarvis.tools.builtin", tool_ctx)
         # Phase 10B: register the local service adapters (semgrep/gitleaks/playwright_inspect).
@@ -1497,6 +1502,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
             run_store=run_store,
             make_context_manager=lambda: _build_context_manager(config, utility),
             cost_ledger=ledger,
+            artifacts=artifacts,  # Phase 13: lets generate_image register its PNG as an artifact
         )
         from jarvis.ui import AuthManager
 

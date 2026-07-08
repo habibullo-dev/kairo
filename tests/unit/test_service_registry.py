@@ -22,6 +22,7 @@ _ADAPTERS_NOW = {
     "firecrawl",  # Phase 13 Task 3
     "exa",  # Phase 13 Task 4
     "searxng",  # Phase 13 Task 5 (jina_reader stays deferred — value bar not cleared)
+    "openai_image",  # Phase 13 Task 6
 }
 
 

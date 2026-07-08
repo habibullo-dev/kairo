@@ -60,6 +60,10 @@ class ToolContext:
     # isn't composed — the write tools then report themselves unavailable. The tools never execute
     # a write themselves; execution is a separate human-approved route.
     intents: Any = None
+    # Artifact store (Phase 11 / 13): where a tool records a produced artifact (e.g. a generated
+    # image PNG under the managed data/artifacts root). None when not composed — a tool that needs
+    # it reports itself unavailable. Registration path-confines + refuses sensitive paths.
+    artifacts: Any = None
 
 
 class Permission(StrEnum):

@@ -240,7 +240,7 @@ SERVICE_CATALOG: dict[str, ServiceSpec] = {
             permission_default="ask",
             context_policy=ContextPolicy.PUBLIC_ONLY,
             output_trust=OutputTrust.UNTRUSTED_MODEL_GENERATED,
-            priority="later",
+            priority="now",  # Phase 13 Task 6: generate_image adapter shipped
         ),
         _s(
             name="browserbase",
