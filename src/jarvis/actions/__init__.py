@@ -37,9 +37,17 @@ from jarvis.actions.requests import (
     DraftUpdateRequest,
     WriteRequest,
 )
+from jarvis.actions.resolve import (
+    AttendeeResolution,
+    AttendeesUnresolved,
+    require_resolved,
+    resolve_attendees,
+)
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
+    "AttendeeResolution",
+    "AttendeesUnresolved",
     "CalendarCancelRequest",
     "CalendarCreateRequest",
     "CalendarUpdateRequest",
@@ -59,4 +67,6 @@ __all__ = [
     "WriteIntent",
     "WriteRequest",
     "build_preview",
+    "require_resolved",
+    "resolve_attendees",
 ]
