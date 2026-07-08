@@ -865,6 +865,99 @@ def create_app(
         ok = await store.set_labels(artifact_id, [str(x) for x in labels])
         return JSONResponse({"ok": ok})
 
+    # --- Phase 12: the outward-write approval queue + journal + execute ----------------------
+    # The write tools only PROPOSE (persist a previewed intent). These human-only routes are the
+    # ONLY path that executes an outward write — reached from the authenticated, loopback, Origin-
+    # checked UI, never from a model tool / Auto / unattended run. Execute runs the STORED request.
+
+    @app.get("/api/intents")
+    async def intents_index(project_id: int | None = None, limit: int = 50) -> JSONResponse:
+        from jarvis.ui.readmodels import intents_queue
+
+        store = app.state.services.intents
+        if store is None:
+            return _unavailable("intents")
+        return JSONResponse(await intents_queue(store, project_id=project_id, limit=limit))
+
+    @app.get("/api/intents/{intent_id}")
+    async def intent_detail(intent_id: int) -> JSONResponse:
+        from jarvis.ui.readmodels import serialize_intent
+
+        store = app.state.services.intents
+        if store is None:
+            return _unavailable("intents")
+        intent = await store.get(intent_id)
+        if intent is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        return JSONResponse(serialize_intent(intent))
+
+    @app.post("/api/intents/{intent_id}/approve")
+    async def intent_approve(intent_id: int) -> JSONResponse:
+        from jarvis.actions.executor import WriteExecutor
+        from jarvis.actions.intents import IntentState
+
+        svc = app.state.services
+        if svc.intents is None or svc.write_journal is None:
+            return _unavailable("intents")
+        intent = await svc.intents.get(intent_id)
+        if intent is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        if intent.state is not IntentState.PREVIEWED:
+            return JSONResponse(
+                {"ok": False, "message": f"intent is {intent.state.value}, not pending"},
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        await svc.intents.approve(intent_id)
+        client = svc.connectors.google if svc.connectors is not None else None
+        executor = WriteExecutor(client, svc.intents, svc.write_journal, artifacts=svc.artifacts)
+        result = await executor.execute(intent_id)
+        return JSONResponse(
+            {
+                "ok": result.state.value == "executed",
+                "state": result.state.value,
+                "error": result.error,
+                "link": (result.result or {}).get("link"),
+            }
+        )
+
+    @app.post("/api/intents/{intent_id}/reject")
+    async def intent_reject(intent_id: int) -> JSONResponse:
+        from jarvis.actions.intents import IntentState
+
+        svc = app.state.services
+        if svc.intents is None:
+            return _unavailable("intents")
+        intent = await svc.intents.get(intent_id)
+        if intent is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        if intent.state not in (IntentState.DRAFT, IntentState.PREVIEWED):
+            return JSONResponse(
+                {"ok": False, "message": f"intent is {intent.state.value}"},
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        await svc.intents.reject(intent_id)
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/intents/{intent_id}/undo")
+    async def intent_undo(intent_id: int) -> JSONResponse:
+        from jarvis.actions.executor import WriteExecutor
+        from jarvis.connectors.base import ConnectorError
+
+        svc = app.state.services
+        if svc.intents is None or svc.write_journal is None:
+            return _unavailable("intents")
+        client = svc.connectors.google if svc.connectors is not None else None
+        executor = WriteExecutor(client, svc.intents, svc.write_journal, artifacts=svc.artifacts)
+        try:
+            result = await executor.undo(intent_id)
+        except KeyError:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        except (ValueError, ConnectorError) as exc:
+            return JSONResponse(
+                {"ok": False, "message": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST
+            )
+        return JSONResponse({"ok": True, "state": result.state.value})
+
     @app.get("/api/search")
     async def global_search(
         q: str = "", project_id: int | None = None, limit: int = 40

@@ -175,6 +175,11 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/artifacts/{artifact_id}/label"),  # Phase 11: set an artifact's labels
         ("POST", "/api/views/save"),  # Phase 11: create/update a saved view
         ("POST", "/api/views/{view_id}/delete"),  # Phase 11: delete a saved view (UI bookmark)
+        # Phase 12: the outward-write approval queue — human-only. approve EXECUTES the stored
+        # intent (the only path that performs a connector write); reject/undo close the loop.
+        ("POST", "/api/intents/{intent_id}/approve"),
+        ("POST", "/api/intents/{intent_id}/reject"),
+        ("POST", "/api/intents/{intent_id}/undo"),
     }
 
 

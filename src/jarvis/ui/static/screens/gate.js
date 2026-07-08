@@ -12,6 +12,10 @@ export async function render(container, api) {
       <div class="card-label amber">Pending</div>
       <div id="gate-pending"></div>
     </div>
+    <div class="card rise" id="gate-writes-card">
+      <div class="card-label amber">Pending writes · review &amp; approve to send</div>
+      <div id="gate-writes" class="dim">loading…</div>
+    </div>
     <div class="card rise">
       <div class="card-label">Earlier today · audit</div>
       <div id="gate-audit" class="dim">loading…</div>
@@ -43,6 +47,95 @@ export async function render(container, api) {
       pend.appendChild(row);
     }
   }
+
+  // Pending writes: outward connector-write proposals awaiting approval, plus recent writes with
+  // undo. Approve here EXECUTES the stored write (the only path that does); reject/undo close it.
+  const writes = container.querySelector("#gate-writes");
+  async function fillWrites() {
+    const q = await api.get("/api/intents");
+    writes.className = "";
+    writes.innerHTML = "";
+    const pending = (q && q.pending) || [];
+    const recent = (q && q.recent) || [];
+    if (!pending.length && !recent.length) {
+      writes.className = "dim";
+      writes.textContent = "No outward writes proposed.";
+      return;
+    }
+    for (const it of pending) writes.appendChild(writeRow(it, true));
+    if (recent.length) {
+      const h = document.createElement("div");
+      h.className = "card-label";
+      h.style.marginTop = "12px";
+      h.textContent = "Recent writes";
+      writes.appendChild(h);
+      for (const it of recent) writes.appendChild(writeRow(it, false));
+    }
+  }
+  function writeRow(it, pendingRow) {
+    const row = document.createElement("div");
+    row.className = "zone-now";
+    const body = document.createElement("div");
+    body.className = "body";
+    const lead = document.createElement("div");
+    lead.className = "lead";
+    lead.textContent = (it.preview && it.preview.title) || it.summary || it.kind;
+    body.appendChild(lead);
+    if (it.preview) body.appendChild(renderPreview(it.preview));
+    if (!pendingRow) {
+      const st = document.createElement("div");
+      st.className = "desc";
+      st.textContent = "state: " + it.state + (it.error ? " — " + it.error : "");
+      body.appendChild(st);
+    }
+    row.appendChild(body);
+    if (pendingRow) {
+      row.appendChild(actionBtn("Approve & send", "btn-amber", async () => {
+        await api.post(`/api/intents/${it.id}/approve`, {});
+        await fillWrites();
+      }));
+      row.appendChild(actionBtn("Reject", "btn", async () => {
+        await api.post(`/api/intents/${it.id}/reject`, {});
+        await fillWrites();
+      }));
+    } else if (it.state === "executed") {
+      row.appendChild(actionBtn("Undo", "btn", async () => {
+        await api.post(`/api/intents/${it.id}/undo`, {});
+        await fillWrites();
+      }));
+    }
+    return row;
+  }
+  function actionBtn(label, cls, onClick) {
+    const b = document.createElement("button");
+    b.className = "btn " + cls;
+    b.textContent = label;
+    b.addEventListener("click", onClick);
+    return b;
+  }
+  function renderPreview(p) {
+    const box = document.createElement("div");
+    box.className = "desc";
+    for (const f of p.fields || []) box.appendChild(kv(f.label + ": ", f.value));
+    for (const d of p.diff || []) box.appendChild(kv(d.field + ": ", d.old + " → " + d.new));
+    for (const n of p.notes || []) box.appendChild(line(n));
+    for (const w of p.warnings || []) box.appendChild(line("⚠ " + w));
+    return box;
+  }
+  function kv(k, v) {
+    const el = document.createElement("div");
+    const b = document.createElement("strong");
+    b.textContent = k;
+    el.appendChild(b);
+    el.appendChild(document.createTextNode(String(v ?? "")));
+    return el;
+  }
+  function line(t) {
+    const el = document.createElement("div");
+    el.textContent = t;
+    return el;
+  }
+  await fillWrites();
 
   const audit = await api.get("/api/audit/today");
   const at = container.querySelector("#gate-audit");

@@ -28,6 +28,9 @@ EGRESS_CATEGORIES: frozenset[str] = frozenset(
         "notify_telegram",
         "notify_kakao",
         "digest_delivery",
+        # Phase 12: an approved outward connector write left the box (calendar event / Drive Doc).
+        "calendar_write",
+        "drive_write",
     }
 )
 

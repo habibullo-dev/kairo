@@ -62,8 +62,10 @@ class UiServices:
     # the saved-view store backs smart collections on Projects/Artifacts/Search.
     artifacts: Any = None  # an ArtifactStore; None when artifacts aren't composed
     views: Any = None  # a SavedViewStore; None when the DB isn't composed
-    # Phase 12: the outward-write intent store backs the approval queue + journal read models.
-    intents: Any = None  # an IntentStore; None when the write substrate isn't composed
+    # Phase 12: the intent store backs the approval queue; the write journal backs the outbox
+    # read model + undo. Both None when the write substrate isn't composed.
+    intents: Any = None  # an IntentStore
+    write_journal: Any = None  # a ConnectorWriteJournal
 
 
 # --- memory ----------------------------------------------------------------
@@ -929,4 +931,50 @@ async def lab_overview(
         "baselines": baselines,
         "latest_report": report_text,
         "note": "Run evals from the terminal: `jarvis eval gate` (a deliberate, recorded ritual).",
+    }
+
+
+# --- write intents (Phase 12): the approval queue + write journal ----------
+
+
+def serialize_intent(intent: Any) -> dict:
+    """Metadata + the rendered preview for the approval queue. Ships NO secret and NO raw request:
+    the rendered preview (the user's own event/doc content, meant to be reviewed) plus a short
+    result handle only — never the stored ``prior`` event body kept server-side for undo, never a
+    token or scope value."""
+    result = intent.result or {}
+    return {
+        "id": intent.id,
+        "kind": intent.kind,
+        "state": intent.state.value,
+        "summary": intent.summary,
+        "project_id": intent.project_id,
+        "created_at": intent.created_at,
+        "updated_at": intent.updated_at,
+        "preview": intent.preview,
+        "link": result.get("link"),
+        "remote_id": result.get("remote_id"),
+        "error": intent.error,
+    }
+
+
+async def intents_queue(intents: Any, *, project_id: int | None = None, limit: int = 50) -> dict:
+    """The write approval queue: ``pending`` (previewed, awaiting approval) + ``recent`` (executed
+    / failed / undone / rejected) — the outbox view with undo affordances."""
+    from jarvis.actions.intents import IntentState
+
+    cap = max(1, min(limit, 200))
+    pending = await intents.list(state=IntentState.PREVIEWED, project_id=project_id, limit=cap)
+    settled = {
+        IntentState.EXECUTED,
+        IntentState.FAILED,
+        IntentState.UNDONE,
+        IntentState.REJECTED,
+    }
+    recent = [
+        i for i in await intents.list(project_id=project_id, limit=cap) if i.state in settled
+    ][:cap]
+    return {
+        "pending": [serialize_intent(i) for i in pending],
+        "recent": [serialize_intent(i) for i in recent],
     }
