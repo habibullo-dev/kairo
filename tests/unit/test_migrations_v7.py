@@ -76,7 +76,7 @@ async def _build_v6(path: Path) -> aiosqlite.Connection:
 async def test_v6_to_v7_preserves_rows_at_global_scope(tmp_path: Path) -> None:
     db = await _build_v6(tmp_path / "m.db")
     try:
-        assert await migrate(db) == 9
+        assert await migrate(db) == 10
 
         # Every pre-existing row survives and is global (project_id NULL).
         for table in ("sessions", "memories", "tasks", "kb_sources", "digests", "agent_runs"):
@@ -137,13 +137,13 @@ async def test_v7_project_link_and_fk(tmp_path: Path) -> None:
         await db.close()
 
 
-async def test_fresh_db_is_v9(tmp_path: Path) -> None:
+async def test_fresh_db_is_v10(tmp_path: Path) -> None:
     from jarvis.persistence.db import connect
 
     db = await connect(tmp_path / "fresh.db")
     try:
         cur = await db.execute("PRAGMA user_version")
-        assert (await cur.fetchone())[0] == 9
+        assert (await cur.fetchone())[0] == 10
     finally:
         await db.close()
 
@@ -153,7 +153,7 @@ async def test_v8_adds_team_stage_and_service_calls(tmp_path: Path) -> None:
     # metadata-only table (no body/secret columns). Additive over a populated v7 db.
     db = await _build_v6(tmp_path / "m.db")
     try:
-        assert await migrate(db) == 9
+        assert await migrate(db) == 10
         cur = await db.execute("PRAGMA table_info(model_calls)")
         mcols = {r[1] for r in await cur.fetchall()}
         assert {"team", "stage"} <= mcols

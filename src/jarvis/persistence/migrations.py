@@ -720,6 +720,71 @@ async def _migrate_v9(db: aiosqlite.Connection) -> None:
     await db.executescript(_SCHEMA_V9)
 
 
+# Phase 12 (Action Connectors): the two-phase outward-write substrate. Purely additive — two new
+# tables, no ADD COLUMN, no rebuild — so a plain idempotent script step is crash-safe: every
+# statement is CREATE ... IF NOT EXISTS, so a re-run after a partial failure is a clean no-op.
+#
+# write_intents is the OPERATIONAL record of a proposed outward write (calendar/drive/gmail). It
+# holds request_json — Kairo's resolved payload — so execution is byte-faithful to the approved
+# preview: the model approves/rejects a STORED intent and can never forge a different payload at
+# execute time, and there is deliberately no method to mutate request_json after the draft. The
+# UNIQUE idempotency_key makes one logical intent exactly one row, so a replayed execute cannot
+# double-write. The forward-looking columns (source, priority, project_id, the per-state
+# timestamps) let the Phase 16 attention model absorb this queue without a reshape.
+#
+# connector_writes is the JOURNAL / outbox: metadata-only, like model_calls / service_calls —
+# verb, scope, a remote handle, a rollback handle, status, timestamps. It carries NO title, body,
+# attendee, or secret: the content lives on write_intents (needed to execute faithfully); the
+# journal records only that a write happened and how to reverse it.
+_SCHEMA_V10 = """
+CREATE TABLE IF NOT EXISTS write_intents (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key TEXT NOT NULL UNIQUE,   -- one logical intent = one row (guards double-create)
+    provider        TEXT NOT NULL,          -- 'google'
+    kind            TEXT NOT NULL,          -- verb (see IntentKind: calendar_*/doc_*/gmail_draft_*)
+    state           TEXT NOT NULL,          -- see IntentState (draft…executed…undone)
+    project_id      INTEGER REFERENCES projects(id),   -- NULL == global
+    source          TEXT NOT NULL CHECK (source IN ('user','agent','system')),
+    priority        TEXT NOT NULL DEFAULT 'normal',     -- Phase-16 routing hint (vocabulary TBD)
+    session_id      INTEGER,                -- attribution (best-effort; no FK — sessions may prune)
+    trace_id        TEXT,
+    summary         TEXT NOT NULL,          -- short human label for the queue (metadata only)
+    request_json    TEXT NOT NULL,          -- resolved write payload — executed verbatim on approve
+    preview_json    TEXT,                   -- rendered preview shown to the human (at 'previewed')
+    result_json     TEXT,                   -- remote id + metadata after execute
+    error           TEXT,                   -- friendly failure text (never a provider body)
+    created_at      TEXT NOT NULL,
+    previewed_at    TEXT,
+    decided_at      TEXT,                   -- approved OR rejected timestamp
+    executed_at     TEXT,
+    undone_at       TEXT,
+    updated_at      TEXT NOT NULL,
+    CHECK (state IN ('draft','previewed','approved','executed','failed','rejected','undone'))
+);
+CREATE INDEX IF NOT EXISTS idx_write_intents_state   ON write_intents(state, id);
+CREATE INDEX IF NOT EXISTS idx_write_intents_project ON write_intents(project_id, id);
+
+CREATE TABLE IF NOT EXISTS connector_writes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts            TEXT NOT NULL,            -- UTC ISO of the write
+    intent_id     INTEGER REFERENCES write_intents(id),
+    provider      TEXT NOT NULL,
+    verb          TEXT NOT NULL,            -- same vocabulary as write_intents.kind
+    scope         TEXT,                     -- the OAuth scope exercised (e.g. calendar.events)
+    project_id    INTEGER REFERENCES projects(id),
+    remote_id     TEXT,                     -- created event/doc/draft id — a handle, never content
+    rollback_kind TEXT,                     -- delete|trash|restore_revision|reinsert|none
+    rollback_ref  TEXT,                     -- handle undo needs (revision/remote id); metadata
+    status        TEXT NOT NULL CHECK (status IN ('executed','failed','undone')),
+    egress_ref    TEXT,                     -- category/link into the egress log
+    trace_id      TEXT,
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_connector_writes_intent     ON connector_writes(intent_id);
+CREATE INDEX IF NOT EXISTS idx_connector_writes_project_ts ON connector_writes(project_id, ts);
+"""
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -735,6 +800,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (7, _SCHEMA_V7),
     (8, _SCHEMA_V8),
     (9, _migrate_v9),
+    (10, _SCHEMA_V10),
 ]
 
 
