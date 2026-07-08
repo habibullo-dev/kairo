@@ -36,9 +36,18 @@ class GoogleClient:
         resp = await self._request("GET", url, params=params)
         return resp.json()
 
-    async def post_json(self, url: str, *, json_body: dict) -> dict:
-        resp = await self._request("POST", url, json_body=json_body)
+    async def post_json(self, url: str, *, json_body: dict, params: dict | None = None) -> dict:
+        resp = await self._request("POST", url, params=params, json_body=json_body)
         return resp.json()
+
+    async def patch_json(self, url: str, *, json_body: dict, params: dict | None = None) -> dict:
+        resp = await self._request("PATCH", url, params=params, json_body=json_body)
+        return resp.json()
+
+    async def delete(self, url: str, *, params: dict | None = None) -> None:
+        """DELETE (e.g. cancel a calendar event). A 2xx/204 carries no body, so nothing is
+        parsed — the 401→refresh→retry-once and typed-4xx handling still apply via ``_request``."""
+        await self._request("DELETE", url, params=params)
 
     async def get_text(self, url: str, *, params: dict | None = None) -> str:
         resp = await self._request("GET", url, params=params)
