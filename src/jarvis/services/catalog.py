@@ -110,7 +110,7 @@ SERVICE_CATALOG: dict[str, ServiceSpec] = {
             permission_default="ask",
             context_policy=ContextPolicy.PUBLIC_ONLY,
             output_trust=OutputTrust.UNTRUSTED_EXTERNAL_CONTENT,
-            priority="later",
+            priority="now",  # Phase 13 Task 4: exa_search adapter shipped
         ),
         _s(
             name="jina_reader",

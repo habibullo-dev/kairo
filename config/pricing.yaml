@@ -51,4 +51,6 @@ services:
   # more on smaller tiers. 0.001 is a slightly conservative per-page estimate — CONFIRM the exact
   # plan rate before the live ritual (plan §1). Source: firecrawl.dev/pricing (2026-07).
   firecrawl: {unit: page, usd_per_unit: 0.001}
-  # exa:       {unit: search, usd_per_unit: 0.005}   # $5 / 1K searches — added with the Exa adapter (Task 4)
+  # Exa bills $5 / 1K searches = $0.005/search (verified: exa.ai/pricing, 2026-07; a March-2026
+  # update cut deep-search 20% — confirm the current rate before the live ritual, plan §1).
+  exa: {unit: search, usd_per_unit: 0.005}

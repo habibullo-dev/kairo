@@ -33,6 +33,7 @@ EGRESS_CATEGORIES: frozenset[str] = frozenset(
         "drive_write",
         # Phase 13: hosted research services (a URL/query left the box to a third-party API).
         "firecrawl",
+        "exa",
     }
 )
 

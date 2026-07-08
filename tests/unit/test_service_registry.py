@@ -20,6 +20,7 @@ _ADAPTERS_NOW = {
     "gitleaks",
     "playwright_local",  # the 10B-built adapters
     "firecrawl",  # Phase 13 Task 3
+    "exa",  # Phase 13 Task 4
 }
 
 
