@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
+from jarvis.models.prompt_layout import AssembledPrompt
 from jarvis.models.providers import provider_spec
 
 
@@ -79,3 +80,84 @@ def capability(provider_name: str) -> CacheCapability:
         cache_ttl_options=tuple(spec.cache_ttl_options),
         cache_private_allowed=spec.cache_private_allowed,
     )
+
+
+# --- policy: capability + assembled prompt -> a concrete cache directive ---------------------
+
+
+@dataclass(frozen=True)
+class CacheDirective:
+    """What the client should emit for one request. ``emit`` gates everything; ``cache_key`` is
+    the OpenAI ``prompt_cache_key`` (automatic_prefix); ``breakpoint`` marks that a cache_control
+    should be set at the stable/volatile seam (explicit_breakpoint); ``ttl`` is the chosen TTL."""
+
+    mode: ContextReuseMode
+    emit: bool
+    cache_key: str | None
+    breakpoint: bool
+    ttl: str | None
+    reason: str
+
+
+def plan(
+    cap: CacheCapability,
+    assembled: AssembledPrompt,
+    *,
+    route_allows_private: bool = False,
+    ttl: str | None = None,
+) -> CacheDirective:
+    """Decide the cache directive for one request. Fail-closed + the PRIVATE-CONTENT GATE:
+
+    * OFF / unsupported ⇒ emit nothing.
+    * A SENSITIVE stable prefix is cached ONLY if the provider permits private caching
+      (``cache_private_allowed``, i.e. private_ok) AND the route explicitly allows it. Otherwise
+      no cache — the default is stable, NON-sensitive prefix only.
+    * provider_default (implicit) and explicit_resource (deferred, privacy review) emit no control.
+    * automatic_prefix ⇒ a prompt_cache_key (= the stable-prefix hash) where the provider honors
+      one; explicit_breakpoint ⇒ a breakpoint at the seam (+ a supported TTL if requested).
+    """
+    off = CacheDirective(
+        cap.mode, emit=False, cache_key=None, breakpoint=False, ttl=None, reason=""
+    )
+    if not cap.supported or cap.mode is ContextReuseMode.OFF:
+        return replace(off, reason="provider caches nothing (off / unsupported)")
+    if assembled.stable_is_sensitive and not (cap.cache_private_allowed and route_allows_private):
+        return replace(off, reason="stable prefix is private; caching not permitted")
+    if cap.mode is ContextReuseMode.PROVIDER_DEFAULT:
+        return replace(off, reason="defer to the provider's implicit caching (no control emitted)")
+    if cap.mode is ContextReuseMode.EXPLICIT_RESOURCE:
+        return replace(off, reason="explicit_resource deferred (privacy review pending)")
+    if cap.mode is ContextReuseMode.AUTOMATIC_PREFIX:
+        key = assembled.stable_prefix_hash if cap.supports_cache_key else None
+        return CacheDirective(
+            cap.mode, emit=True, cache_key=key, breakpoint=False, ttl=None,
+            reason="automatic prefix caching" + (" + prompt_cache_key" if key else ""),
+        )
+    # EXPLICIT_BREAKPOINT
+    chosen = ttl if (cap.supports_cache_ttl and ttl in cap.cache_ttl_options) else None
+    return CacheDirective(
+        cap.mode, emit=True, cache_key=None, breakpoint=True, ttl=chosen,
+        reason="explicit cache breakpoint at the stable/volatile seam",
+    )
+
+
+# --- provider-specific emitters (what the enable-step attaches to the live request) ----------
+# These are the exact controls the client layer emits when caching is turned on. The live wiring
+# (passing the system prefix as a cached block / setting the SDK cache key) rides on top of these
+# in the enable-step; the substrate proves the controls are correct, keyless.
+
+
+def anthropic_cache_control(directive: CacheDirective) -> dict | None:
+    """The ``cache_control`` object to attach to the last stable block (Anthropic / Qwen), or
+    None when nothing should be emitted."""
+    if not (directive.emit and directive.breakpoint):
+        return None
+    control: dict = {"type": "ephemeral"}
+    if directive.ttl:
+        control["ttl"] = directive.ttl
+    return control
+
+
+def openai_prompt_cache_key(directive: CacheDirective) -> str | None:
+    """The ``prompt_cache_key`` for the OpenAI request (routes to a warm prefix cache), or None."""
+    return directive.cache_key if directive.emit else None
