@@ -117,13 +117,21 @@ def test_read_only_member_never_acquires_execution_service() -> None:
 # --- scanners are non-egress + confined to the repo -------------------------
 
 
-def test_now_services_are_non_egress() -> None:
-    # No enabled "now" service is an egress sink, so the taint pipe has nothing to demote; the
-    # egress flag is DERIVED from the spec (a future egress service would inherit egress=True and
-    # be demoted by the existing, tested taint logic).
+def test_scanner_and_inspect_services_are_non_egress() -> None:
+    # The local scanner/inspect "now" services are non-egress (repo/localhost only), so the taint
+    # pipe has nothing to demote for them. The egress flag is DERIVED from the spec.
     for name in ("semgrep", "gitleaks", "playwright_local"):
         assert SERVICE_CATALOG[name].egress is False
     assert SemgrepScanTool.egress is False
+
+
+def test_research_service_derives_egress_true() -> None:
+    # Phase 13: a hosted research "now" service (firecrawl) IS an egress sink — the derived
+    # egress=True is what makes the existing, tested taint logic demote it after a private read.
+    from jarvis.services.firecrawl import FirecrawlScrapeTool
+
+    assert SERVICE_CATALOG["firecrawl"].egress is True
+    assert FirecrawlScrapeTool.egress is True  # derived from the spec, not hand-set
 
 
 async def test_scanner_confined_to_project_root(tmp_path: Path) -> None:

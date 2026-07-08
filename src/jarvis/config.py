@@ -79,6 +79,10 @@ class Secrets(BaseSettings):
     dashscope_api_key: str = ""  # Qwen (Alibaba DashScope)
     zai_api_key: str = ""  # GLM / Z.ai
     gemini_api_key: str = ""
+    # Phase 13 research services (opt-in; a service only registers when its flag + key + pricing
+    # all check out). Field name = the credential env var lowercased (the convention the service
+    # registry + adapters rely on to read a key from either .env → Secrets or the environment).
+    firecrawl_api_key: str = ""
     # Connectors (Phase 9). Google OAuth client (Desktop app); Telegram bot token; Kakao
     # REST API key. All optional; the connect ritual + Config.require enforce presence.
     google_client_id: str = ""

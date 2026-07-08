@@ -93,7 +93,7 @@ SERVICE_CATALOG: dict[str, ServiceSpec] = {
             permission_default="ask",
             context_policy=ContextPolicy.PUBLIC_ONLY,
             output_trust=OutputTrust.UNTRUSTED_EXTERNAL_CONTENT,
-            priority="later",
+            priority="now",  # Phase 13 Task 3: firecrawl_scrape adapter shipped
         ),
         _s(
             name="exa",

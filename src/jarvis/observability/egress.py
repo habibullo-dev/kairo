@@ -31,6 +31,8 @@ EGRESS_CATEGORIES: frozenset[str] = frozenset(
         # Phase 12: an approved outward connector write left the box (calendar event / Drive Doc).
         "calendar_write",
         "drive_write",
+        # Phase 13: hosted research services (a URL/query left the box to a third-party API).
+        "firecrawl",
     }
 )
 

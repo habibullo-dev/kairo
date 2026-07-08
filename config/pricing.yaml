@@ -46,6 +46,9 @@ models:
 # (semgrep/gitleaks/playwright_local) are fixed_zero in the catalog and need NO entry here.
 # usd_per_unit is per the service's `unit` (a page crawled, a search, an image, …). Fill in
 # real numbers before enabling any metered service; none are enabled in 10B.
-services: {}
-  # firecrawl: {unit: page, usd_per_unit: 0.002}
-  # exa:       {unit: search, usd_per_unit: 0.005}
+services:
+  # Firecrawl bills 1 credit per page scraped; ~$0.00083/credit at the 100k-credit tier ($83/mo),
+  # more on smaller tiers. 0.001 is a slightly conservative per-page estimate — CONFIRM the exact
+  # plan rate before the live ritual (plan §1). Source: firecrawl.dev/pricing (2026-07).
+  firecrawl: {unit: page, usd_per_unit: 0.001}
+  # exa:       {unit: search, usd_per_unit: 0.005}   # $5 / 1K searches — added with the Exa adapter (Task 4)

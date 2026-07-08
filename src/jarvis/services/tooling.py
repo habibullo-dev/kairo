@@ -18,14 +18,36 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
+import httpx
 from pydantic import BaseModel
 
+from jarvis.observability import get_logger
 from jarvis.services.catalog import SERVICE_CATALOG, ContextPolicy, OutputTrust, ServiceSpec
 from jarvis.tools.base import DEFAULT_TIMEOUT, Permission, Tool, ToolContext, _DefaultTimeout
 
 _CLI_TIMEOUT = 120.0  # a scan is bounded; a hang must not wedge the turn
+_HTTP_TIMEOUT = 60.0  # a hosted research call is bounded; a hang must not wedge the turn
+_log = get_logger("jarvis.services")
+
+
+def effective_credentials(cfg: Any) -> dict[str, str]:
+    """The credential environment the registry checks + adapters read: ``os.environ`` overlaid
+    with the typed :class:`~jarvis.config.Secrets` (so a key placed in ``.env`` — loaded into
+    Secrets, not necessarily exported to the process env — is still seen). Keyed by ENV VAR NAME;
+    the Secrets attribute is the env-name lowercased (the project convention). Values never leave
+    this process — presence is all the registry needs, and the adapter reads the one key it uses.
+    """
+    env = dict(os.environ)
+    secrets = getattr(cfg, "secrets", None)
+    if secrets is not None:
+        for spec in SERVICE_CATALOG.values():
+            for var in spec.credential_env:
+                val = getattr(secrets, var.lower(), "")
+                if val:
+                    env[var] = val
+    return env
 
 
 @dataclass(frozen=True)
@@ -129,8 +151,30 @@ class ServiceTool(Tool):
         registry = ServiceRegistry(
             enabled=list(getattr(cfg.services, "enabled", []) or []),
             priced_services=pricing.priced_services(),
+            env=effective_credentials(cfg),  # os.environ overlaid with .env → Secrets keys
         )
         return registry.is_available(cls.service_name)
+
+    def _service_cost(self, units: float) -> float | None:
+        """The metered cost of ``units`` from pricing.yaml (``services`` section). A ``fixed_zero``
+        service records a known 0.0; a metered service reads its ``usd_per_unit`` — NULL (None) if
+        the entry is missing (fail-closed, never a fabricated 0.0; an unpriced metered service also
+        never registered). Metadata only — no body, no key."""
+        if self.spec is None:
+            return None
+        if self.spec.pricing == "fixed_zero":
+            return 0.0
+        cfg = getattr(self.context, "config", None)
+        if cfg is None:
+            return None
+        from jarvis.observability.cost import load_pricing
+
+        entry = (load_pricing(cfg.root / "config" / "pricing.yaml").services or {}).get(
+            self.service_name
+        )
+        if not entry or entry.get("usd_per_unit") is None:
+            return None
+        return units * float(entry["usd_per_unit"])
 
     async def _record_call(
         self, operation: str, *, units: float | None = None, est_cost_usd: float | None = 0.0
@@ -145,3 +189,71 @@ class ServiceTool(Tool):
         await ledger.record(
             service=self.service_name, operation=operation, units=units, est_cost_usd=est_cost_usd
         )
+
+
+class ServiceHttpError(RuntimeError):
+    """A hosted service returned an error status, non-JSON, or was unreachable. Carries a FRIENDLY
+    message only (service name + HTTP status) — NEVER the provider's response body, which can echo
+    the fetched/attacker-influenced content back at us."""
+
+
+class HttpServiceTool(ServiceTool):
+    """Base for the hosted-HTTP research adapters (Firecrawl/Exa/Jina/image-gen). Adds one
+    injectable-transport request helper + friendly error mapping + a key read consistent with the
+    registry's availability check. Tests set the class ``transport`` to an ``httpx.MockTransport``
+    (no network is touched and the request shape is asserted); production leaves it None (a real
+    ``httpx.AsyncClient``). Egress/ASK/framing are still DERIVED from the ServiceSpec via
+    :class:`ServiceTool`."""
+
+    transport: ClassVar[Any] = None  # httpx transport; None ⇒ the real network (production)
+    http_timeout: ClassVar[float] = _HTTP_TIMEOUT
+
+    def _api_key(self) -> str:
+        """The API key value for this service, from the SAME source the registry gates on:
+        the typed Secrets (``.env``) first, then the process environment. Returns "" if absent
+        (the tool would not have registered, but ``run`` re-checks and reports it cleanly)."""
+        if self.spec is None or not self.spec.credential_env:
+            return ""
+        var = self.spec.credential_env[0]
+        cfg = getattr(self.context, "config", None)
+        secrets = getattr(cfg, "secrets", None)
+        return (getattr(secrets, var.lower(), "") if secrets is not None else "") or os.environ.get(
+            var, ""
+        )
+
+    async def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict | None = None,
+        json_body: dict | None = None,
+        params: dict | None = None,
+    ) -> dict:
+        """One hosted request → parsed JSON. Fixed (adapter-built) URL, never a model-supplied one.
+        A >=400 status, a transport error, or non-JSON raises :class:`ServiceHttpError` with a
+        friendly message — the provider's body is NEVER surfaced (it can echo attacker content)."""
+        try:
+            async with httpx.AsyncClient(
+                transport=type(self).transport, timeout=self.http_timeout
+            ) as client:
+                resp = await client.request(
+                    method, url, headers=headers, json=json_body, params=params
+                )
+        except httpx.HTTPError as exc:
+            _log.warning(
+                "service_http_unreachable", service=self.service_name, error=type(exc).__name__
+            )
+            raise ServiceHttpError(f"{self.service_name} request failed (network error).") from exc
+        if resp.status_code >= 400:
+            # Log the status for diagnosis; never the body (it can echo fetched/attacker content).
+            _log.warning("service_http_error", service=self.service_name, status=resp.status_code)
+            raise ServiceHttpError(
+                f"{self.service_name} request failed (HTTP {resp.status_code})."
+            )
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise ServiceHttpError(
+                f"{self.service_name} returned an unexpected (non-JSON) response."
+            ) from exc

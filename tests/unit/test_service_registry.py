@@ -15,7 +15,12 @@ from jarvis.config import load_config
 from jarvis.services import SERVICE_CATALOG, ContextPolicy, OutputTrust, ServiceRegistry
 from jarvis.services.registry import ServiceState
 
-_ADAPTERS_NOW = {"semgrep", "gitleaks", "playwright_local"}  # the only 10B-built adapters
+_ADAPTERS_NOW = {
+    "semgrep",
+    "gitleaks",
+    "playwright_local",  # the 10B-built adapters
+    "firecrawl",  # Phase 13 Task 3
+}
 
 
 def test_catalog_rows_fully_classified() -> None:
@@ -79,11 +84,12 @@ def test_available_when_enabled_free_local() -> None:
 
 
 def test_deferred_even_when_flagged() -> None:
-    # A later/avoid service has no adapter — flagging it can't make it available.
+    # A later/avoid service has no adapter — flagging it can't make it available. (figma_mcp
+    # stays priority=later through Phase 13; firecrawl is now "now" — see the availability test.)
     r = ServiceRegistry(
-        enabled=["firecrawl"], priced_services=frozenset(), env={"FIRECRAWL_API_KEY": "k"}
+        enabled=["figma_mcp"], priced_services=frozenset(), env={"FIGMA_TOKEN": "k"}
     )
-    assert r.state("firecrawl") is ServiceState.DEFERRED
+    assert r.state("figma_mcp") is ServiceState.DEFERRED
 
 
 def test_missing_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
