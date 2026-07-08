@@ -40,6 +40,10 @@ class ModelResponse:
     # Wall-clock of the API call, populated by the live client; None = not measured
     # (default keeps the ~450 FakeClient-built responses byte-identical).
     latency_ms: float | None = None
+    # S7 context reuse (Phase 13): the stable-prefix hash a live client cached under, when
+    # caching was enabled AND a control was emitted; None otherwise (keeps FakeClient identical).
+    # The ledger records it so the Cost Center can group cache benefit by prefix.
+    stable_prefix_hash: str | None = None
 
     @property
     def text(self) -> str:
@@ -70,6 +74,7 @@ class LLMClient(Protocol):
         on_text_delta: Callable[[str], None] | None = None,
         tool_choice: dict | None = None,
         temperature: float | None = None,
+        stable_prefix: str | None = None,
     ) -> ModelResponse: ...
 
 
@@ -132,7 +137,11 @@ class FakeClient:
         on_text_delta: Callable[[str], None] | None = None,
         tool_choice: dict | None = None,
         temperature: float | None = None,
+        stable_prefix: str | None = None,
     ) -> ModelResponse:
+        # S7 (Phase 13): FakeClient accepts `stable_prefix` for protocol conformance but NEVER
+        # acts on it — it emits no cache control and does not record it, so the fake path (and
+        # every recorded cassette) stays byte-identical whether or not caching is enabled.
         self.calls.append(
             {
                 "model": model,

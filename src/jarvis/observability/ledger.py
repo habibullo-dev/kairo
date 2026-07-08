@@ -26,6 +26,7 @@ from dataclasses import dataclass, replace
 import aiosqlite
 
 from jarvis.core.client import ModelResponse
+from jarvis.models.context_reuse import ContextReuseMode, capability, estimated_cache_savings
 from jarvis.observability import get_logger
 from jarvis.observability.cost import PricingTable, Usage
 
@@ -285,6 +286,7 @@ class LedgeredClient:
     async def create(self, **kwargs: object) -> ModelResponse:
         resp = await self._inner.create(**kwargs)  # type: ignore[attr-defined]
         tool_calls = sum(1 for b in resp.content_blocks if b.get("type") == "tool_use")
+        cache = self._cache_fields(resp)
         await self._ledger.record(
             provider=self._provider,
             model=resp.model,
@@ -293,5 +295,34 @@ class LedgeredClient:
             latency_ms=resp.latency_ms,
             tool_call_count=tool_calls,
             ctx=cost_context.get(),
+            **cache,
         )
         return resp
+
+    def _cache_fields(self, resp: ModelResponse) -> dict:
+        """The S7 normalized context-reuse columns for one call, derived from the response usage +
+        the provider's capability. Every field is NULL when nothing was cached (fail-closed, never
+        a fabricated 0): both wired providers report cache HITS in ``usage.cache_read_input_tokens``
+        (Anthropic cache_read; OpenAI cached_tokens, mapped there by the adapter), so the hit count
+        is provider-normalized already. ``cached_input_tokens`` is the automatic-prefix providers'
+        (OpenAI) view of the same hit; ``provider_cache_mode`` is the provider's caching style,
+        recorded only when there was real cache activity."""
+        hit = resp.usage.cache_read_input_tokens or None
+        write = resp.usage.cache_creation_input_tokens or None
+        prefix_hash = getattr(resp, "stable_prefix_hash", None)
+        cap = capability(self._provider)
+        active = bool(hit or write or prefix_hash)
+        mode = cap.mode.value if (cap.supported and active) else None
+        cached_input = hit if cap.mode is ContextReuseMode.AUTOMATIC_PREFIX else None
+        savings = None
+        if hit:
+            price = self._ledger.pricing.price_for(self._provider, resp.model)
+            if price is not None:
+                savings = estimated_cache_savings(self._provider, hit, price.input / 1_000_000)
+        return {
+            "cached_input_tokens": cached_input,
+            "provider_cache_mode": mode,
+            "provider_cache_hit_tokens": hit,
+            "estimated_cache_savings_usd": savings,
+            "stable_prefix_hash": prefix_hash,
+        }

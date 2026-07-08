@@ -23,6 +23,7 @@ from time import perf_counter
 from typing import TYPE_CHECKING
 
 from jarvis.core.client import ModelResponse
+from jarvis.models.context_reuse import anthropic_cache_control, plan_for_prefix
 from jarvis.observability.cost import Usage
 
 if TYPE_CHECKING:
@@ -105,6 +106,7 @@ class AnthropicClient:
         base_url: str | None = None,
         compat: bool = False,
         auth_style: str = "x-api-key",
+        context_reuse: bool = False,
     ) -> None:
         if client is None:
             from anthropic import AsyncAnthropic
@@ -119,6 +121,10 @@ class AnthropicClient:
         self.effort = effort
         self.thinking = thinking
         self.compat = compat
+        # S7 enable-step (Phase 13): attach a cache_control breakpoint to the stable system
+        # prefix when on. NATIVE Anthropic only — compat providers (DeepSeek/Qwen/GLM/Z.ai) get
+        # NO control this phase (their capability is deferred/off), so the guard is `not compat`.
+        self.context_reuse = context_reuse
 
     @classmethod
     def from_config(cls, config: Config) -> AnthropicClient:
@@ -127,12 +133,41 @@ class AnthropicClient:
             api_key=config.secrets.anthropic_api_key,
             effort=config.limits.effort,
             max_retries=config.limits.max_retries,
+            context_reuse=config.context_reuse.enabled,
         )
+
+    def _cache_system(
+        self, system: str, stable_prefix: str | None
+    ) -> tuple[str | list[dict], str | None]:
+        """S7 enable-step: when context reuse is on (NATIVE Anthropic only), split ``system``
+        into a cached stable block + an uncached volatile block at the stable/volatile seam,
+        marking the stable block with a ``cache_control`` breakpoint. Returns the payload to send
+        as ``system`` — a plain string, UNCHANGED, whenever nothing is cached (flag off / compat /
+        no prefix / policy declines), so the request stays byte-identical to a no-caching build —
+        and the stable-prefix hash to record (None when no control was emitted).
+
+        Only a genuine prefix is ever cached, and only the caller's stable prefix (the volatile,
+        possibly-private tail is excluded by construction), so the cached block is
+        stable + non-sensitive by default — the private-content gate (in :func:`plan_for_prefix`)
+        is the belt-and-suspenders."""
+        if not (self.context_reuse and not self.compat and stable_prefix):
+            return system, None
+        if not system.startswith(stable_prefix):
+            return system, None  # defensive: cache a real prefix or nothing
+        directive, assembled = plan_for_prefix("anthropic", stable_prefix)
+        control = anthropic_cache_control(directive)
+        if control is None:
+            return system, None
+        blocks: list[dict] = [{"type": "text", "text": stable_prefix, "cache_control": control}]
+        remainder = system[len(stable_prefix) :]
+        if remainder.strip():  # the uncached volatile tail (never marked for caching)
+            blocks.append({"type": "text", "text": remainder})
+        return blocks, assembled.stable_prefix_hash
 
     def _build_kwargs(
         self,
         model: str,
-        system: str,
+        system: str | list[dict],
         messages: list[dict],
         tools: list[dict],
         max_tokens: int,
@@ -175,9 +210,11 @@ class AnthropicClient:
         on_text_delta: Callable[[str], None] | None = None,
         tool_choice: dict | None = None,
         temperature: float | None = None,
+        stable_prefix: str | None = None,
     ) -> ModelResponse:
+        system_payload, cr_hash = self._cache_system(system, stable_prefix)
         kwargs = self._build_kwargs(
-            model, system, messages, tools, max_tokens, tool_choice, temperature
+            model, system_payload, messages, tools, max_tokens, tool_choice, temperature
         )
         start = perf_counter()
         async with self._client.messages.stream(**kwargs) as stream:  # type: ignore[attr-defined]
@@ -187,6 +224,7 @@ class AnthropicClient:
             message = await stream.get_final_message()
         response = to_model_response(message, fallback_model=model)
         response.latency_ms = (perf_counter() - start) * 1000.0
+        response.stable_prefix_hash = cr_hash  # None unless a cache control was emitted
         if self.compat:
             _guard_compat_response(response, model)  # fail loud on empty content / zero usage
         return response

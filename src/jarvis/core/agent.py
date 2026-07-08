@@ -248,16 +248,24 @@ class AgentLoop:
                     full_messages=len(messages),
                 )
 
-            response = await self.client.create(
-                model=self.config.models.main,
-                system=self._system_with_extras(
+            create_kwargs: dict = {
+                "model": self.config.models.main,
+                "system": self._system_with_extras(
                     recall_block, summary=summary, project_extra=project_extra
                 ),
-                messages=api_messages,
-                tools=self.registry.specs(),
-                max_tokens=limits.max_output_tokens,
-                on_text_delta=lambda t: emit(TextDelta(t)),
-            )
+                "messages": api_messages,
+                "tools": self.registry.specs(),
+                "max_tokens": limits.max_output_tokens,
+                "on_text_delta": lambda t: emit(TextDelta(t)),
+            }
+            if self.config.context_reuse.enabled:
+                # S7 (Phase 13): hand the live client the stable/volatile seam — the stable
+                # framing (self.system) only, so only it is cached; the volatile, possibly-private
+                # tail (project extra, compaction summary, memory recall, time) sits after the
+                # breakpoint and is never cached. Passed ONLY when caching is on ⇒ a flag-off
+                # turn's request is byte-identical to before the enable-step.
+                create_kwargs["stable_prefix"] = self.system
+            response = await self.client.create(**create_kwargs)
             total = total + response.usage
             total_latency_ms += response.latency_ms or 0.0
             if self.context_manager is not None:

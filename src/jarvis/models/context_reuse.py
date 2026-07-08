@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
-from jarvis.models.prompt_layout import AssembledPrompt
+from jarvis.models.prompt_layout import AssembledPrompt, PromptSection, SectionKind, assemble
 from jarvis.models.providers import provider_spec
 
 
@@ -139,6 +139,29 @@ def plan(
         cap.mode, emit=True, cache_key=None, breakpoint=True, ttl=chosen,
         reason="explicit cache breakpoint at the stable/volatile seam",
     )
+
+
+def plan_for_prefix(
+    provider: str,
+    stable_prefix: str,
+    *,
+    sensitive: bool = False,
+    route_allows_private: bool = False,
+    ttl: str | None = None,
+) -> tuple[CacheDirective, AssembledPrompt]:
+    """The live clients' entry point (Phase 13 enable-step). Treat ``stable_prefix`` as the one
+    stable SYSTEM_CONTRACT section, assemble it (for its hash + sensitivity), and resolve the
+    cache directive for ``provider``. The caller passes ONLY the stable, non-sensitive framing —
+    the volatile/private tail is deliberately excluded, so the private-content gate in
+    :func:`plan` is the belt-and-suspenders (``sensitive=True`` here still refuses to cache
+    unless the provider + route permit private caching). Pure: no I/O, caches nothing itself."""
+    assembled = assemble(
+        [PromptSection(SectionKind.SYSTEM_CONTRACT, stable_prefix, sensitive=sensitive)]
+    )
+    directive = plan(
+        capability(provider), assembled, route_allows_private=route_allows_private, ttl=ttl
+    )
+    return directive, assembled
 
 
 # --- provider-specific emitters (what the enable-step attaches to the live request) ----------

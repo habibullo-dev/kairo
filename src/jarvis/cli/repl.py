@@ -182,6 +182,7 @@ def _utility_client(config: Config, *, ledger: CostLedger | None = None) -> LLMC
         effort=config.limits.effort,
         max_retries=config.limits.max_retries,
         thinking=False,
+        context_reuse=config.context_reuse.enabled,
     )
     if ledger is not None:
         client = LedgeredClient(

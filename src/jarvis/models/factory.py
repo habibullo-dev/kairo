@@ -61,6 +61,7 @@ class ClientFactory:
                     base_url=base_url,
                     compat=compat,
                     auth_style=spec.auth_style,
+                    context_reuse=self.config.context_reuse.enabled,
                 )
             return self._cache[cache_key]
 

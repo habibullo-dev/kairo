@@ -442,6 +442,18 @@ class ServicesConfig(BaseModel):
     playwright_allow_ports: list[int] = Field(default_factory=list)
 
 
+class ContextReuseConfig(BaseModel):
+    """Provider-agnostic prompt/context caching enable-step (Phase 13, S7). OFF by default:
+    with the flag off, every model request is byte-identical to a no-caching build (so replay
+    cassettes stay deterministic and recordings never embed a cache control). When on, the LIVE
+    Anthropic/OpenAI clients attach the S7-derived control (a ``cache_control`` breakpoint at the
+    stable/volatile seam for Anthropic; a ``prompt_cache_key`` for OpenAI) to the STABLE,
+    NON-SENSITIVE system prefix only — never the volatile/private tail (memory recall, connector
+    data). Caching never widens data-flow (ADR-0018): it is an orthogonal, opt-in add-on."""
+
+    enabled: bool = False
+
+
 class BudgetsConfig(BaseModel):
     """Cost budgets + ROI inputs (Phase 10). 0 / None means "no limit". Per-run limits gate
     an orchestration run's accumulated spend; project_monthly caps month-to-date per project;
@@ -476,6 +488,7 @@ class Config(BaseModel):
     budgets: BudgetsConfig = Field(default_factory=BudgetsConfig)  # Phase 10
     services: ServicesConfig = Field(default_factory=ServicesConfig)  # Phase 10B
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)  # Phase 10C
+    context_reuse: ContextReuseConfig = Field(default_factory=ContextReuseConfig)  # Phase 13 (S7)
     paths: PathsConfig
     secrets: Secrets
 
@@ -565,6 +578,7 @@ def load_config(
             budgets=BudgetsConfig(**data.get("budgets", {})),
             services=ServicesConfig(**data.get("services", {})),
             providers=ProvidersConfig(**data.get("providers", {})),
+            context_reuse=ContextReuseConfig(**data.get("context_reuse", {})),
             secrets=secrets,
         )
     except ValidationError as e:
