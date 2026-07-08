@@ -121,11 +121,32 @@ def test_kakao_redirect_env_agreeing_ok(tmp_path: Path, monkeypatch: pytest.Monk
     assert resolve_kakao_redirect_uri(cfg) == "http://127.0.0.1:8788"
 
 
-def test_kakao_redirect_env_disagreeing_fails_closed(
+def test_kakao_redirect_env_port_mismatch_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = load_config(root=tmp_path, env_file=None)
     cfg.connectors.kakao.redirect_port = 8788
     monkeypatch.setenv("KAKAO_REDIRECT_URI", "http://127.0.0.1:9999")
-    with pytest.raises(ConfigError, match="disagrees"):
+    with pytest.raises(ConfigError, match="does not match"):
+        resolve_kakao_redirect_uri(cfg)
+
+
+def test_kakao_redirect_env_with_path_is_used_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A path-bearing URI whose PORT matches is honored exactly (this is what gets registered in
+    # the Kakao console and sent as redirect_uri).
+    cfg = load_config(root=tmp_path, env_file=None)
+    cfg.connectors.kakao.redirect_port = 8788
+    monkeypatch.setenv("KAKAO_REDIRECT_URI", "http://127.0.0.1:8788/oauth/kakao/callback")
+    assert resolve_kakao_redirect_uri(cfg) == "http://127.0.0.1:8788/oauth/kakao/callback"
+
+
+def test_kakao_redirect_non_loopback_host_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    cfg.connectors.kakao.redirect_port = 8788
+    monkeypatch.setenv("KAKAO_REDIRECT_URI", "http://evil.example.com:8788/oauth/kakao/callback")
+    with pytest.raises(ConfigError, match="loopback"):
         resolve_kakao_redirect_uri(cfg)

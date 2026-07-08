@@ -42,9 +42,11 @@ KAKAO_REDIRECT_URI=...        # optional — must match http://127.0.0.1:<redire
 
 `TELEGRAM_CHAT_ID` in `.env` overrides `connectors.telegram.chat_id` in `settings.yaml`
 (either works; the env var wins). `KAKAO_CLIENT_SECRET` is optional — leave it blank for a
-PKCE-only Kakao app. If you set `KAKAO_REDIRECT_URI`, it must equal
-`http://127.0.0.1:<connectors.kakao.redirect_port>` exactly (the value registered in the Kakao
-Developers console) — a mismatch fails closed with a message telling you to align them.
+PKCE-only Kakao app. If you set `KAKAO_REDIRECT_URI`, it is used verbatim as the registered
+redirect (a path is allowed, e.g. `http://127.0.0.1:8788/oauth/kakao/callback`); its **port must
+equal** `connectors.kakao.redirect_port`, or `jarvis connect kakao` fails closed with a message
+naming the exact URI to register. Leave it unset to use the bare
+`http://127.0.0.1:<connectors.kakao.redirect_port>`.
 
 ## 3. `config/` — review before copying
 
@@ -83,9 +85,11 @@ jarvis connect status      # shows presence + scopes + expiry (never a token val
 - **Google**: create an OAuth client of type **Desktop app** in the Google Cloud console; in
   "testing" mode add your own account as a test user. The loopback flow uses an ephemeral port
   (no redirect-URI registration needed for Desktop clients).
-- **Kakao**: create an app, enable the `talk_message` scope, and register the redirect URI
-  `http://127.0.0.1:<connectors.kakao.redirect_port>` exactly. Kakao refresh tokens expire
-  (~2 months) — reconnecting is routine and the Hub flags `needs_reconnect`.
+- **Kakao**: create an app, enable the `talk_message` scope, and register the redirect URI that
+  `jarvis connect kakao` prints — either the bare `http://127.0.0.1:<connectors.kakao.redirect_port>`
+  or, if you set `KAKAO_REDIRECT_URI`, that exact URI (a path like `/oauth/kakao/callback` is
+  fine as long as its port matches `redirect_port`). Kakao refresh tokens expire (~2 months) —
+  reconnecting is routine and the Hub flags `needs_reconnect`.
 
 ## 6. Try it without live accounts first (demo mode)
 

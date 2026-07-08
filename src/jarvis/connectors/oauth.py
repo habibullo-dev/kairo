@@ -225,16 +225,25 @@ async def authorize(
     timeout_seconds: float = 300.0,
     now: Callable[[], _dt.datetime] | None = None,
     emit: Callable[[str], None] = print,
+    redirect_uri: str | None = None,
 ) -> TokenState:
-    """Run the installed-app flow to completion and return the granted :class:`TokenState`."""
+    """Run the installed-app flow to completion and return the granted :class:`TokenState`.
+
+    ``redirect_uri`` pins the EXACT redirect used in the auth URL + token exchange (Kakao, whose
+    registered URI may carry a path like ``/oauth/kakao/callback``); its port must equal
+    ``provider.redirect_port`` (the caller validates this via ``resolve_kakao_redirect_uri``). When
+    None, the URI is derived from the loopback listener's bound port (Google's ephemeral port).
+    Either way the one-shot listener binds ``provider.redirect_port`` and captures the code off any
+    path."""
     verifier, challenge = generate_pkce()
     state = random_state()
     try:
-        with loopback_server(provider.redirect_port) as (server, redirect_uri):
+        with loopback_server(provider.redirect_port) as (server, derived_uri):
+            effective_uri = redirect_uri or derived_uri
             url = build_auth_url(
                 provider,
                 client_id=client_id,
-                redirect_uri=redirect_uri,
+                redirect_uri=effective_uri,
                 state=state,
                 challenge=challenge,
             )
@@ -266,7 +275,7 @@ async def authorize(
         client_secret=client_secret,
         code=code,
         verifier=verifier,
-        redirect_uri=redirect_uri,
+        redirect_uri=effective_uri,
         http=http,
         now=now,
     )

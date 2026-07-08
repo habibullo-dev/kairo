@@ -321,23 +321,37 @@ def resolve_telegram_chat_id(config: Config) -> str:
 
 
 def resolve_kakao_redirect_uri(config: Config) -> str:
-    """The effective Kakao redirect URI, which MUST match the Kakao Developers registration.
+    """The effective Kakao redirect URI — the EXACT loopback URI to register in the Kakao
+    developer console. Loaded only from env/config (never hardcoded, never a secret).
 
-    Derived from ``connectors.kakao.redirect_port`` as ``http://127.0.0.1:<port>``. If
-    ``KAKAO_REDIRECT_URI`` is set in the env, it must AGREE with the derived value — a
-    disagreement fails closed (a mismatched redirect silently breaks OAuth), raising
-    :class:`ConfigError` with both values so the user can align the port or the env var."""
+    Unset ``KAKAO_REDIRECT_URI`` ⇒ the port-derived ``http://127.0.0.1:<redirect_port>``. If set,
+    it is used VERBATIM — a path is allowed (e.g. ``/oauth/kakao/callback``) — after validating
+    that it is a loopback ``http://`` URI whose PORT equals ``connectors.kakao.redirect_port``. A
+    port mismatch or a non-loopback host fails closed (:class:`ConfigError`) naming the exact URI
+    to register, because a wrong redirect silently breaks OAuth (``redirect_uri_mismatch``). A bare
+    ``http://127.0.0.1:<port>/`` (path just ``/``) collapses to the derived form."""
     import os
+    from urllib.parse import urlsplit
 
-    derived = f"http://127.0.0.1:{config.connectors.kakao.redirect_port}"
-    env_uri = (os.getenv("KAKAO_REDIRECT_URI") or "").strip().rstrip("/")
-    if env_uri and env_uri != derived:
+    port = config.connectors.kakao.redirect_port
+    derived = f"http://127.0.0.1:{port}"
+    env_uri = (os.getenv("KAKAO_REDIRECT_URI") or "").strip()
+    if not env_uri:
+        return derived
+    parsed = urlsplit(env_uri)
+    if parsed.scheme != "http" or (parsed.hostname or "") not in {"127.0.0.1", "localhost"}:
         raise ConfigError(
-            f"KAKAO_REDIRECT_URI ({env_uri}) disagrees with the port-derived redirect "
-            f"({derived}). Set connectors.kakao.redirect_port to match your Kakao console "
-            "registration, or unset KAKAO_REDIRECT_URI."
+            f"KAKAO_REDIRECT_URI ({env_uri}) must be a loopback http:// URI (host 127.0.0.1) — "
+            "Kakao redirects to a local one-shot listener."
         )
-    return derived
+    if parsed.port != port:
+        raise ConfigError(
+            f"KAKAO_REDIRECT_URI port ({parsed.port}) does not match "
+            f"connectors.kakao.redirect_port ({port}). Register '{env_uri}' in the Kakao developer "
+            f"console AND set connectors.kakao.redirect_port to {parsed.port}, or unset "
+            f"KAKAO_REDIRECT_URI to use {derived}."
+        )
+    return derived if parsed.path in {"", "/"} else env_uri
 
 
 class DigestConfig(BaseModel):

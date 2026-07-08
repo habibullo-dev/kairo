@@ -67,6 +67,30 @@ async def test_connect_google_missing_keys_returns_1(
     assert any("GOOGLE_CLIENT_ID" in ln for ln in lines)
 
 
+async def test_connect_kakao_threads_configured_redirect_uri(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The EXACT path-bearing redirect URI (loaded from env) is passed to authorize AND surfaced
+    # for the user to register — so the console registration and the OAuth request agree.
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "kkey")
+    monkeypatch.setenv("KAKAO_REDIRECT_URI", "http://127.0.0.1:8788/oauth/kakao/callback")
+    cfg = load_config(root=tmp_path, env_file=None)
+    cfg.connectors.kakao.redirect_port = 8788
+    captured: dict = {}
+
+    async def fake_authorize(provider, **kw):
+        captured.update(kw)
+        return _FAKE
+
+    monkeypatch.setattr(connect, "authorize", fake_authorize)
+    lines: list[str] = []
+    rc = await connect.connect_kakao(cfg, emit=lines.append)
+
+    assert rc == 0
+    assert captured["redirect_uri"] == "http://127.0.0.1:8788/oauth/kakao/callback"
+    assert any("oauth/kakao/callback" in ln for ln in lines)  # register-this-URI hint printed
+
+
 def test_status_reports_presence_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = load_config(root=tmp_path, env_file=None)
     lines: list[str] = []

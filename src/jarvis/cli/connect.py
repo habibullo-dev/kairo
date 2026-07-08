@@ -97,16 +97,18 @@ async def connect_kakao(
         return await _kakao_test(config, http=http, now=now, emit=emit)
     # Validate the redirect URI (KAKAO_REDIRECT_URI, if set, must match the port-derived one) —
     # a mismatch would silently break OAuth, so fail closed with a clear message.
-    redirect_uri = resolve_kakao_redirect_uri(config)
+    redirect_uri = resolve_kakao_redirect_uri(config)  # fails closed on a port/host mismatch
     provider = kakao_provider(config.connectors.kakao.redirect_port)
     emit(f"Kakao redirect must be registered as {redirect_uri} in the Kakao developer console.")
     # Kakao uses the REST API key as the client id; the client secret is optional (PKCE covers
-    # the flow) — pass it when the app enabled one, else "".
+    # the flow) — pass it when the app enabled one, else "". redirect_uri pins the exact URI
+    # (which may carry a path) so it matches the console registration.
     state = await authorize(
         provider,
         client_id=sec.kakao_rest_api_key,
         client_secret=sec.kakao_client_secret,
         emit=emit,
+        redirect_uri=redirect_uri,
     )
     _kakao_store(config).save(state)
     emit("Kakao connected.")
