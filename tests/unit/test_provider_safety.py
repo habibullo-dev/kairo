@@ -154,3 +154,90 @@ def test_engine_allows_private_bundle_to_all_anthropic_team() -> None:
 def test_engine_allows_cheap_provider_for_nonprivate_bundle() -> None:
     reg = ModelRegistry({"researcher": {"provider": "deepseek", "model": "deepseek-v4-flash"}})
     _engine(reg).check_provider_context(resolve_team("research"), _REPO)  # no PRIVATE ⇒ no raise
+
+
+# --- T7: consolidated adversarial routing matrix ----------------------------
+
+
+@pytest.mark.parametrize("provider", ["deepseek", "qwen", "zai", "gemini"])
+@pytest.mark.parametrize("role", ["planner", "judge", "utility"])
+@pytest.mark.parametrize("layer", ["settings", "project", "run"])
+def test_every_worker_provider_rejected_on_every_authority_role_and_layer(
+    provider: str, role: str, layer: str
+) -> None:
+    override = {role: {"provider": provider, "model": "m"}}
+    reg = ModelRegistry(override if layer == "settings" else None)
+    kwargs: dict = {}
+    if layer == "project":
+        kwargs["project_routes"] = override
+    elif layer == "run":
+        kwargs["run_routes"] = override
+    with pytest.raises(RouteError):
+        reg.route(role, **kwargs)
+
+
+def test_head_synthesizer_stays_anthropic_with_cheap_workers() -> None:
+    # Even with cheap providers configured on worker roles, the head (planner) + judge — the
+    # synthesis/verdict/eval-judge authority — stay anthropic. There is no override that moves it.
+    reg = ModelRegistry(
+        {
+            "coder": {"provider": "deepseek", "model": "deepseek-v4-pro"},
+            "researcher": {"provider": "gemini", "model": "gemini-2.5-flash"},
+            "reviewer": {"provider": "zai", "model": "glm-4.7"},
+        }
+    )
+    assert reg.route("planner").provider == "anthropic"
+    assert reg.route("judge").provider == "anthropic"
+
+
+def test_opt_in_providers_disabled_by_default_even_with_keys_and_pricing() -> None:
+    # providers.enabled=[]: the four workers are NOT routable even with keys + pricing present;
+    # the two core providers stay routable. This is the byte-identical / fail-closed default.
+    allkeys = {v: "k" for v in ("DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "ZAI_API_KEY",
+                                "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY")}
+    preg = _preg([], ["deepseek", "qwen", "zai", "gemini", "anthropic", "openai"], allkeys)
+    for p in ("deepseek", "qwen", "zai", "gemini"):
+        assert not preg.route_allowed(p)
+    for p in ("anthropic", "openai"):
+        assert preg.route_allowed(p)
+
+
+def test_availability_gate_is_independent_of_authority() -> None:
+    # A worker role clears the authority pin but a disabled provider still fails closed — the
+    # two gates compose (authority is not a bypass of availability).
+    reg = _worker_reg("gemini", "gemini-2.5-flash", _preg([], ["gemini"], {"GEMINI_API_KEY": "k"}))
+    with pytest.raises(RouteError):
+        reg.route("researcher")
+
+
+# --- T7: Z.ai fail-closed proof (live console unavailable — kept in catalog) -------
+
+
+def test_zai_missing_key_fails_closed() -> None:
+    # Z.ai is enabled + priced but its key is absent (console unavailable). A worker route to it
+    # fails closed at resolution, and the reason names the missing-credentials state.
+    reg = _worker_reg("zai", "glm-4.7", _preg(["zai"], ["zai"], {}))
+    with pytest.raises(RouteError, match="missing_credentials"):
+        reg.route("researcher")
+
+
+def test_zai_disabled_fails_closed() -> None:
+    reg = _worker_reg("zai", "glm-4.7", _preg([], ["zai"], {"ZAI_API_KEY": "k"}))
+    with pytest.raises(RouteError, match="disabled"):
+        reg.route("researcher")
+
+
+def test_zai_state_matrix() -> None:
+    # The presence-only state the Studio renders for Z.ai across the fail-closed conditions.
+    assert _preg([], ["zai"], {"ZAI_API_KEY": "k"}).state("zai").value == "disabled"
+    assert _preg(["zai"], ["zai"], {}).state("zai").value == "missing_credentials"
+    assert _preg(["zai"], [], {"ZAI_API_KEY": "k"}).state("zai").value == "unpriced"
+    assert _preg(["zai"], ["zai"], {"ZAI_API_KEY": "k"}).state("zai").value == "available"
+
+
+def test_zai_stays_in_catalog_and_is_authority_pinned() -> None:
+    from jarvis.models.providers import PROVIDER_CATALOG
+
+    assert "zai" in PROVIDER_CATALOG  # kept in the catalog despite no live access
+    assert not PROVIDER_CATALOG["zai"].trusted_authority  # worker only
+    assert not PROVIDER_CATALOG["zai"].private_ok
