@@ -14,6 +14,26 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 11 (Kairo Workstation — product surface) — complete; adds zero new authority.** The
+workstation is now premium, project-first, and searchable: a **Daily command center** (priority
+cards + designed empty states), a **Projects grid** (labels/pins/health chips + smart collections),
+a per-project **Workspace** (Overview · Chats · Artifacts · Memory · Tasks · Vault · Studio · Costs
+· Activity tabs over scoped read models), a global **Artifacts Library** (filterable list + a
+preview that renders text as `textContent` and images from a hardened content route), a **Cost
+Center** (periods × dimensions, budget-warning banner, ROI/time-saved), a polished **Studio**
+(roster cards, run timeline, head-reviewer badge), **Settings** (appearance + read-only status),
+and a Ctrl/Cmd-K **command palette** (federated FTS5 search, GET/navigate-only). Three themes
+(noir/light/neon) + density/layout/motion knobs, all client-side (no server theme route). The
+load-bearing decision ([ADR-0017](docs/decisions/0017-workstation-ui.md)): the UI **reads and
+navigates only** — every write goes through the existing gated routes (the mutation-route set is a
+closed, test-pinned set), untrusted content is rendered as text (never `innerHTML`/linkified),
+artifact bytes are served only through a registered-id-only, quarantine-refusing, media-allowlisted,
+size-capped route, and status/cost surfaces expose presence booleans, never a key value. Vanilla ES
+modules (no framework/build/CDN); the desktop-first shell is responsive with a pinned no-overlap
+assertion across 1440/1024/390 × three themes, captured by Kairo's own Playwright harness. Design
+in [`docs/PLAN-11-workstation.md`](docs/PLAN-11-workstation.md); closeout checklist in
+[`docs/verification-11.md`](docs/verification-11.md).
+
 **Phase 10 (project workspaces + Orchestration Studio) — framework complete; local adapters
 built, live scans/eval-gate pending your machine.** Phase 10A adds **projects** (project-scoped
 memory/KB/tasks via a nullable `project_id`, enforced in SQL), **run modes** (Plan / Approval /

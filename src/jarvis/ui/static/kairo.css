@@ -402,6 +402,12 @@ body.debug .debug-banner { display: flex; }
 .head-badge .hb-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
   box-shadow: 0 0 0 4px rgba(var(--accent-rgb), .16); }
 .head-badge .dim { font-weight: 400; }
+/* studio responsive (T15): fit the dense studio at narrow widths (no horizontal overflow) */
+.studio-grid select, .studio-grid textarea, .studio-run-row input { width: 100%; max-width: 100%; box-sizing: border-box; }
+.studio-run-row { flex-wrap: wrap; }
+.studio-run-row #st-budget { flex: 1 1 130px; width: auto; }
+.studio-grid table, .est-panel table, #st-live table, #st-detail table { width: 100%; table-layout: fixed; }
+.studio-grid td, .studio-grid th, .est-panel td, #st-live td, #st-detail td, #st-runs td { word-break: break-word; }
 /* cost center (T13): budget banner (cost=teal monitoring, hard=danger, never amber) + collapsible dims */
 .budget-banner { padding: 11px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; border: 1px solid var(--line); }
 .budget-banner.ok { border-color: rgba(var(--cost-rgb), .30); background: rgba(var(--cost-rgb), .08); color: var(--ink); }
@@ -409,8 +415,8 @@ body.debug .debug-banner { display: flex; }
 .budget-banner.danger { border-color: rgba(var(--danger-rgb), .50); background: rgba(var(--danger-rgb), .13); color: var(--ink); }
 .dim-section { padding: 12px 16px; }
 .dim-section > summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--ink); list-style: revert; }
-.dim-table { width: 100%; margin-top: 10px; }
-.dim-table td, .dim-table th { padding: 4px 6px; font-size: 12.5px; }
+.dim-table { width: 100%; margin-top: 10px; table-layout: fixed; }
+.dim-table td, .dim-table th { padding: 4px 6px; font-size: 12.5px; word-break: break-word; }
 .dim-table th { color: var(--muted); font-weight: 500; text-align: left; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { color: var(--cyan); }
