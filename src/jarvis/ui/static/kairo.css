@@ -136,13 +136,17 @@ nav.rail {
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 23px; }
 .brand .brand-mark {
   width: 34px; height: 34px; flex: none; display: block;
+  background: center / contain no-repeat url("/static/assets/kairo-mark-dark.svg");
   filter: drop-shadow(0 10px 22px rgba(0, 0, 0, .28));
 }
 .brand .name {
   font-weight: 800; letter-spacing: 2.2px; font-size: 15px; color: var(--ink);
   text-shadow: 0 8px 22px rgba(0, 0, 0, .20);
 }
-:root[data-theme="light"] .brand .brand-mark { filter: drop-shadow(0 8px 18px rgba(24, 38, 61, .12)); }
+:root[data-theme="light"] .brand .brand-mark {
+  background-image: url("/static/assets/kairo-mark-light.svg");
+  filter: drop-shadow(0 8px 18px rgba(24, 38, 61, .12));
+}
 :root[data-theme="neon"] .brand .brand-mark { filter: drop-shadow(0 0 16px rgba(var(--accent-rgb), .18)); }
 .rail a {
   position: relative; display: flex; align-items: center; gap: 11px; padding: 9px 12px;

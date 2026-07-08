@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 579 625" role="img" aria-labelledby="title desc">
-  <title id="title">Kairo K Character Logo</title>
-  <desc id="desc">Standalone vector SVG of the Kairo K character logo mark.</desc>
-  <g id="kairo-k-mark" fill="#333333">
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Kairo Favicon</title>
+  <desc id="desc">Centered square favicon SVG of the Kairo K character logo mark.</desc>
+  <g id="kairo-k-mark" fill="#333333" transform="translate(178.496 152) scale(1.152)">
     <polygon points="12,3 90,81 168,5 167,1"/>
     <polygon points="372,2 410,79 561,4"/>
     <polygon points="356,10 110,305 216,305 393,94"/>
