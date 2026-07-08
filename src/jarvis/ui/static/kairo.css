@@ -393,6 +393,15 @@ body.debug .debug-banner { display: flex; }
 .timeline .stage.past { color: var(--ink-3); }
 .timeline .arr { color: var(--dimmer); }
 .synth { margin-top: 8px; padding: 8px 10px; border-left: 2px solid var(--line-2); color: var(--ink-3); font-size: 13px; white-space: pre-wrap; }
+/* head reviewer (Fable) badge — accent (identity), never amber (amber is approval-only) */
+.head-line { margin-top: 10px; font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.synth-head { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+.head-badge { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; color: var(--ink);
+  border: 1px solid rgba(var(--accent-rgb), .5); background: rgba(var(--accent-rgb), .14); }
+.head-badge .hb-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(var(--accent-rgb), .16); }
+.head-badge .dim { font-weight: 400; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { color: var(--cyan); }
 

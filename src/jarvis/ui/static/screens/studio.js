@@ -1,8 +1,9 @@
-// Studio — the AI Orchestration Studio (Phase 10B). Pick a team + workflow, describe the task,
-// preview the worst-case cost, and launch a run. Everything here is a VIEW + a click: the
+// Studio — the AI Orchestration Studio (Phase 10B; polished T12). Pick a team + workflow, describe
+// the task, preview the worst-case cost, and launch a run. Everything here is a VIEW + a click: the
 // engine enforces the read-only council/review floor, the single writer under the turn lock,
 // the budget reservation, and the two-step confirm server-side. No key, prompt, or report body
 // ever reaches this screen — only metadata, summaries, and manifests.
+import { esc } from "../ui/dom.js";
 
 const S = {
   catalog: null,     // { teams, workflows, services, model_routes, active_project_id, busy }
@@ -12,7 +13,15 @@ const S = {
   estimate: null,    // last previewed estimate
   live: null,        // { run_id, team, workflow, title, stage, agents:[], status, verdict }
   detail: null,      // an expanded run detail { run, members }
+  head: null,        // the planner route {model, provider} (Fable) — synthesis + final verdict
 };
+
+// The head reviewer/synthesizer is an ENGINE STAGE (Fable on the planner route), not a team
+// member — badged visibly on the roster, the live verdict, and a run's synthesis.
+function headBadge(route) {
+  return `<span class="head-badge" title="Head synthesizer + final verdict — an engine stage, not a team member">
+    <span class="hb-dot"></span>Fable <span class="dim mono">${esc(routeLabel(route, "planner"))}</span></span>`;
+}
 
 export async function render(container, api) {
   _api = api;
@@ -30,6 +39,7 @@ export async function render(container, api) {
   const routeModel = mapRoutes(cat.model_routes);
   const svcState = mapServices(cat.services);
   const team = cat.teams.find((t) => t.id === S.team) || cat.teams[0];
+  S.head = routeModel["planner"] || null;
 
   container.innerHTML = `
     <div class="rise studio-head">
@@ -61,8 +71,7 @@ export async function render(container, api) {
       <div class="card rise">
         <div class="card-label">Roster · ${esc(team ? team.name : "")}</div>
         ${team ? team.members.map((m) => memberCard(m, routeModel, svcState)).join("") : ""}
-        <div class="dim mono" style="margin-top:.5rem">Head synthesis + verdict:
-          ${esc(routeModel["planner"] || "planner")} (Fable)</div>
+        <div class="head-line">Synthesis + final verdict ${headBadge(S.head)}</div>
       </div>
     </div>
     <div id="st-live"></div>
@@ -185,9 +194,11 @@ function renderLive(container) {
   }).join("<span class='arr'>→</span>");
   const agents = (L.agents || []).map((a) =>
     `<span class="chip ${a.ok ? "" : "warn"}">${esc(a.role)}·${esc(a.stage)}${a.ok ? "" : " ✗"}</span>`).join(" ");
+  const atHead = ["synthesis", "verdict", "done"].some((s) => String(L.stage).startsWith(s));
   el.innerHTML = `<div class="card rise live">
     <div class="card-label">Live · ${esc(L.title || "run")} ${statusPill(L.status, L.verdict)}</div>
     <div class="timeline">${timeline}</div>
+    ${atHead ? `<div class="head-line">Head reviewer ${headBadge(S.head)}</div>` : ""}
     <div style="margin-top:.5rem">${agents}</div></div>`;
 }
 
@@ -219,7 +230,7 @@ function renderDetail(container) {
     <div class="dim">est ${money(r.estimated_cost_usd)} · actual ${money(r.actual_cost_usd)}
       ${r.budget_usd != null ? ` · cap ${money(r.budget_usd)}` : ""}</div>
     ${roiLine}${bdLine}
-    ${r.synthesis_summary ? `<div class="synth">${esc(r.synthesis_summary)}</div>` : ""}
+    ${r.synthesis_summary ? `<div class="synth"><div class="synth-head">Synthesis ${headBadge(S.head)}</div>${esc(r.synthesis_summary)}</div>` : ""}
     <table style="margin-top:.4rem">${members || '<tr><td class="dim">no members</td></tr>'}</table>
     <div class="dim" style="margin-top:.4rem">context: ${manifest || "—"}</div></div>`;
 }
@@ -236,7 +247,7 @@ function memberCard(m, routeModel, svcState) {
   return `<div class="member">
     <div class="member-head"><b>${esc(m.title)}</b>
       <span class="chip ${capCls}">${esc(m.capability.replace("_", " "))}</span></div>
-    <div class="dim mono">${esc(m.route_role)} → ${esc(routeModel[m.route_role] || "?")}</div>
+    <div class="dim mono">${esc(m.route_role)} → ${esc(routeLabel(routeModel[m.route_role]))}</div>
     <div class="chips">${tools} ${services}</div></div>`;
 }
 
@@ -272,16 +283,17 @@ function defaultWorkflow(cat, teamId) {
 
 function mapRoutes(routes) {
   const m = {};
-  for (const r of routes || []) m[r.role] = r.model;
+  for (const r of routes || []) m[r.role] = r; // keep the whole route (model + provider + …)
   return m;
+}
+function routeLabel(rt, fb = "?") {
+  return rt && rt.model ? `${rt.model}${rt.provider ? " · " + rt.provider : ""}` : fb;
 }
 function mapServices(services) {
   const m = {};
   for (const s of services || []) m[s.name] = s.state;
   return m;
 }
-function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
-
 // render() stashes the `api` handle so the confirm button (re-rendered after a needs_confirmation
 // response) can re-POST with confirmed=true without threading `api` through every helper.
 let _api = null;
