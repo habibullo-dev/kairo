@@ -71,7 +71,9 @@ class BudgetService:
         return await self._sum(where, tuple(params))
 
     #: Columns a caller may GROUP BY on model_calls — an allowlist (never interpolate raw input).
-    _MODEL_GROUP_COLS = frozenset({"purpose", "agent_role", "model", "provider", "team", "stage"})
+    _MODEL_GROUP_COLS = frozenset(
+        {"purpose", "agent_role", "model", "provider", "team", "stage", "project_id"}
+    )
     #: Columns a caller may GROUP BY on service_calls (Task 17).
     _SERVICE_GROUP_COLS = frozenset({"service", "team", "agent_role", "stage"})
 

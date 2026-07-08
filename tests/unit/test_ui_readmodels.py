@@ -53,7 +53,7 @@ def test_hub_reports_presence_booleans_only(tmp_path: Path) -> None:
 # --- Lab: view over history + baselines (keyless, seeded files) --------------
 
 
-def test_lab_overview_reads_history_and_baselines(tmp_path: Path) -> None:
+async def test_lab_overview_reads_history_and_baselines(tmp_path: Path) -> None:
     cfg = load_config(root=tmp_path, env_file=None)
     evals = cfg.data_dir / "evals"
     evals.mkdir(parents=True)
@@ -63,7 +63,7 @@ def test_lab_overview_reads_history_and_baselines(tmp_path: Path) -> None:
     )
     baselines = tmp_path / "b.yaml"
     baselines.write_text("schema_version: 1\n", encoding="utf-8")
-    lab = lab_overview(cfg, baselines_path=baselines)
+    lab = await lab_overview(cfg, baselines_path=baselines)
     assert lab["gate_runs"] == 2 and lab["history"][-1]["git_rev"] == "def"
     assert "schema_version" in lab["baselines"]
 
@@ -169,6 +169,11 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/orchestration/{run_id}/cancel"),  # Phase 10B: cancel the in-flight run
         ("POST", "/api/voice/listen"),
         ("POST", "/api/voice/meeting"),
+        ("POST", "/api/projects/{project_id}/pin"),  # Phase 11: pin/unpin a project card
+        ("POST", "/api/artifacts/{artifact_id}/pin"),  # Phase 11: pin/unpin an artifact
+        ("POST", "/api/artifacts/{artifact_id}/label"),  # Phase 11: set an artifact's labels
+        ("POST", "/api/views/save"),  # Phase 11: create/update a saved view
+        ("POST", "/api/views/{view_id}/delete"),  # Phase 11: delete a saved view (UI bookmark)
     }
 
 

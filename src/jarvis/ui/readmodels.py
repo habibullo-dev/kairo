@@ -11,6 +11,7 @@ The service-backed models take a service/store and are tested against a temp DB 
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime as _dt
 import json
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarvis.memory.store import ANY_PROJECT as _MEM_ANY_PROJECT
+from jarvis.persistence.fts import ANY_PROJECT as _ANY_PROJECT
 from jarvis.reporting.repo import RepoReader
 from jarvis.scheduler.store import ANY_PROJECT as _TASK_ANY_PROJECT
 
@@ -56,8 +58,10 @@ class UiServices:
     budgets: Any = None  # a BudgetService; None when cost tracking isn't composed
     # Phase 10B: the orchestration run store backs the Studio history + run detail read models.
     orchestration: Any = None  # an OrchestrationStore; None when orchestration isn't composed
-    # Phase 11: the artifact store backs the Artifacts Library + global search + content route.
+    # Phase 11: the artifact store backs the Artifacts Library + global search + content route;
+    # the saved-view store backs smart collections on Projects/Artifacts/Search.
     artifacts: Any = None  # an ArtifactStore; None when artifacts aren't composed
+    views: Any = None  # a SavedViewStore; None when the DB isn't composed
 
 
 # --- memory ----------------------------------------------------------------
@@ -126,22 +130,130 @@ async def projects_view(service: ProjectService) -> dict:
 # --- costs -----------------------------------------------------------------
 
 
-async def costs_overview(budgets: Any, *, project_id: int | None = None) -> dict:
+async def costs_overview(
+    budgets: Any, *, project_id: int | None = None, projects: Any = None
+) -> dict:
     """The Costs screen: today/week/month spend + limits + the 'why this cost' breakdown (by
-    purpose, role, model, team, and service). Unpriced calls/services are surfaced separately,
-    never summed as $0."""
+    purpose, role, model, provider, stage, team, service). Unpriced calls/services are surfaced
+    separately, never summed as $0. A global view (project_id None) also attributes spend BY
+    project (ids resolved to names) and computes a monthly-cap warning level (ok/soft/hard)."""
     status = await budgets.status(project_id=project_id)
     month_start = _period_start_iso("month")
-    return {
+    overview: dict = {
         **status,
         "by_purpose": await budgets.grouped("purpose", project_id=project_id, since=month_start),
         "by_role": await budgets.grouped("agent_role", project_id=project_id, since=month_start),
         "by_model": await budgets.grouped("model", project_id=project_id, since=month_start),
+        "by_provider": await budgets.grouped("provider", project_id=project_id, since=month_start),
+        "by_stage": await budgets.grouped("stage", project_id=project_id, since=month_start),
         "by_team": await budgets.grouped("team", project_id=project_id, since=month_start),
         "by_service": await budgets.grouped_services(
             "service", project_id=project_id, since=month_start
         ),
     }
+    if project_id is None:  # the global cost center also attributes spend by project
+        rows = await budgets.grouped("project_id", since=month_start)
+        names = {p.id: p.name for p in await projects.store.list()} if projects is not None else {}
+        for row in rows:
+            pid = row.get("project_id")
+            row["project"] = names.get(pid) or ("Global" if pid is None else f"#{pid}")
+        overview["by_project"] = rows
+    month_spend = (status.get("month") or {}).get("cost_usd") or 0.0
+    cap = (status.get("limits") or {}).get("project_monthly_usd")
+    level = "ok"
+    if cap:
+        level = "hard" if month_spend >= cap else "soft" if month_spend >= 0.8 * cap else "ok"
+    overview["budget_warning"] = {"level": level, "month_spend_usd": month_spend, "cap_usd": cap}
+    return overview
+
+
+def serialize_artifact(a) -> dict:
+    """An artifact row for the Library / search / workspace — metadata only. The raw local_path
+    is deliberately NOT shipped (an internal path); `has_content` tells the UI whether the
+    /content route will serve a file."""
+    return {
+        "id": a.id,
+        "project_id": a.project_id,
+        "kind": a.kind,
+        "title": a.title,
+        "origin_type": a.origin_type,
+        "origin_id": a.origin_id,
+        "external_uri": a.external_uri,
+        "has_content": a.local_path is not None,
+        "created_by": a.created_by,
+        "team": a.team,
+        "role": a.role,
+        "model": a.model,
+        "sensitivity": a.sensitivity,
+        "provenance_class": a.provenance_class,
+        "content_hash": a.content_hash,
+        "labels": list(a.labels),
+        "pinned": a.pinned,
+        "created_at": a.created_at,
+        "updated_at": a.updated_at,
+    }
+
+
+async def artifacts_list(
+    store: Any,
+    *,
+    project_id: int | None = None,
+    include_global: bool = True,
+    kind: str | None = None,
+    pinned: bool | None = None,
+    limit: int = 50,
+) -> dict:
+    """The Artifacts Library: newest-first, pinned surfaced first. A None project_id means the
+    global library (all projects); a concrete id scopes to that project (+ global)."""
+    scope: object = _ANY_PROJECT if project_id is None else project_id
+    rows = await store.list(
+        project_id=scope, include_global=include_global, kind=kind, pinned=pinned, limit=limit
+    )
+    return {"artifacts": [serialize_artifact(a) for a in rows]}
+
+
+def serialize_view(v) -> dict:
+    return {
+        "id": v.id,
+        "name": v.name,
+        "scope": v.scope,
+        "query": v.query,
+        "project_id": v.project_id,
+        "created_by": v.created_by,
+        "created_at": v.created_at,
+        "updated_at": v.updated_at,
+    }
+
+
+async def views_list(
+    store: Any, *, scope: str | None = None, project_id: int | None = None
+) -> dict:
+    """Saved views / smart collections. A None project_id lists every view; a concrete id lists
+    that project's views + global ones."""
+    p: object = _ANY_PROJECT if project_id is None else project_id
+    return {"views": [serialize_view(v) for v in await store.list(scope=scope, project_id=p)]}
+
+
+async def workspace_overview(services: UiServices, project_id: int) -> dict:
+    """The Project Workspace Overview tab: the project + a few health chips + recent artifacts +
+    recent runs, scoped to the project. Read-only; each piece degrades if its service is off."""
+    out: dict = {
+        "project_id": project_id, "project": None,
+        "recent_artifacts": [], "recent_runs": [], "health": {},
+    }
+    if services.projects is not None:
+        p = await services.projects.store.get(project_id)
+        out["project"] = serialize_project(p) if p is not None else None
+    if services.artifacts is not None:
+        arts = await services.artifacts.list(project_id=project_id, include_global=False, limit=10)
+        out["recent_artifacts"] = [serialize_artifact(a) for a in arts]
+    if services.orchestration is not None:
+        runs = await services.orchestration.list(project_id=project_id, limit=5)
+        out["recent_runs"] = [serialize_orchestration_run(r) for r in runs]
+    if services.budgets is not None:
+        st = await services.budgets.status(project_id=project_id)
+        out["health"]["month_spend_usd"] = (st.get("month") or {}).get("cost_usd")
+    return out
 
 
 async def orchestration_roi(
@@ -641,6 +753,10 @@ async def daily_overview(
             for p in await services.projects.store.list(status="active")
         ]
         active_project = services.projects.current().project_id
+    # Phase 11: a calm "recent artifacts" strip (newest across projects, pinned first).
+    recent_artifacts: list[dict] = []
+    if services.artifacts is not None:
+        recent_artifacts = [serialize_artifact(a) for a in await services.artifacts.list(limit=6)]
     return {
         "repos": repos,
         "evals": _eval_freshness(config, repos),
@@ -654,6 +770,7 @@ async def daily_overview(
         "what_changed": {"repos": len(repos), "dirty_files": total_dirty},
         "projects": projects,
         "active_project": active_project,
+        "recent_artifacts": recent_artifacts,
     }
 
 
@@ -675,24 +792,46 @@ def _read_history(history_path: Path) -> list[dict]:
     return out
 
 
-def _latest_report(evals_dir: Path) -> str | None:
+def _latest_report_path(evals_dir: Path) -> Path | None:
     if not evals_dir.exists():
         return None
     reports = sorted(evals_dir.glob("*/report.md"))
-    return reports[-1].read_text(encoding="utf-8") if reports else None
+    return reports[-1] if reports else None
 
 
-def lab_overview(config: Config, *, baselines_path: Path | None = None) -> dict:
+def _latest_report(evals_dir: Path) -> str | None:
+    path = _latest_report_path(evals_dir)
+    return path.read_text(encoding="utf-8") if path is not None else None
+
+
+async def lab_overview(
+    config: Config, *, baselines_path: Path | None = None, artifacts: Any = None
+) -> dict:
     """Eval history (one gate per line), the committed baselines contract, and the latest
-    rendered report — all file reads, view-only. Running evals stays a terminal ritual."""
+    rendered report — all file reads, view-only. Running evals stays a terminal ritual. The
+    single latest report is registered (idempotently, by its run-dir name) as an artifact so it
+    surfaces in the Library — forward-only: the current latest only, never a backfill of history."""
     evals_dir = config.data_dir / "evals"
     history = _read_history(evals_dir / "history.jsonl")
     bpath = baselines_path or (config.root / "tests" / "evals" / "baselines.yaml")
     baselines = bpath.read_text(encoding="utf-8") if bpath.exists() else None
+    latest_path = _latest_report_path(evals_dir)
+    if artifacts is not None and latest_path is not None:
+        # Fail-soft: artifact bookkeeping must never break the (read-only) Lab view.
+        with contextlib.suppress(Exception):
+            await artifacts.register(
+                origin_type="eval_report",
+                origin_id=latest_path.parent.name,  # "<ts>-<rev>" — stable identity
+                kind="eval_report",
+                title=f"Eval gate {latest_path.parent.name}",
+                created_by="system",
+                local_path=latest_path,
+            )
+    report_text = latest_path.read_text(encoding="utf-8") if latest_path is not None else None
     return {
         "history": history[-50:],
         "gate_runs": len(history),
         "baselines": baselines,
-        "latest_report": _latest_report(evals_dir),
+        "latest_report": report_text,
         "note": "Run evals from the terminal: `jarvis eval gate` (a deliberate, recorded ritual).",
     }

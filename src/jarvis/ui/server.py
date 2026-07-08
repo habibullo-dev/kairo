@@ -22,6 +22,8 @@ from starlette.websockets import WebSocketDisconnect
 from jarvis.observability import get_logger
 from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.modes import Mode
+from jarvis.persistence.artifacts import ArtifactPathError
+from jarvis.search import search as _federated_search
 from jarvis.tools import Permission
 from jarvis.ui.approver import ApprovalManager, UIApprover, UIScreenApprover
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager, host_allowed, origin_allowed
@@ -29,6 +31,7 @@ from jarvis.ui.connections import Connection, ConnectionManager
 from jarvis.ui.gate_api import policy_snapshot, read_today_audit
 from jarvis.ui.readmodels import (
     UiServices,
+    artifacts_list,
     costs_overview,
     daily_overview,
     hub_status,
@@ -48,7 +51,9 @@ from jarvis.ui.readmodels import (
     teams_catalog,
     vault_lint,
     vault_overview,
+    views_list,
     workflows_catalog,
+    workspace_overview,
 )
 
 if TYPE_CHECKING:
@@ -67,6 +72,21 @@ _OPEN_PATHS = frozenset({"/api/health"})
 
 #: Hand-written frontend assets (no build step, no CDN) served from here.
 STATIC_DIR = Path(__file__).parent / "static"
+
+#: Media types the artifact content route will serve — TEXT + IMAGES ONLY. No html/svg/js
+#: (script-injection surface); anything else is refused (415). nosniff + CSP are applied on the
+#: way out, so a served body can never be sniffed into an executable type.
+_ARTIFACT_MEDIA: dict[str, str] = {
+    ".md": "text/markdown; charset=utf-8",
+    ".markdown": "text/markdown; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 
 def _security_headers() -> dict[str, str]:
@@ -367,7 +387,7 @@ def create_app(
 
     @app.get("/api/lab")
     async def lab() -> dict:
-        return lab_overview(config)
+        return await lab_overview(config, artifacts=app.state.services.artifacts)
 
     # --- read models: Memory / Tasks / Vault / Agents (need host services) ------------
     # These return JSONResponse uniformly (data or a 503) so FastAPI treats them as a
@@ -451,7 +471,9 @@ def create_app(
         budgets = app.state.services.budgets
         if budgets is None:
             return _unavailable("costs")
-        return JSONResponse(await costs_overview(budgets, project_id=project_id))
+        return JSONResponse(
+            await costs_overview(budgets, project_id=project_id, projects=app.state.projects)
+        )
 
     # --- Studio (orchestration): catalog + runs + estimate (all read-only) -------------
 
@@ -714,6 +736,154 @@ def create_app(
             {"kind": "project_changed", "project_id": ctx.project_id, "name": ctx.name}
         )
         return JSONResponse({"ok": True, "active_project_id": ctx.project_id})
+
+    # --- Phase 11: projects pin + artifacts + saved views + global search + workspace ---------
+    # All reads are scoped in SQL (search/artifacts); the mutations are metadata-only (pin/label/
+    # save/delete), mirroring sessions/pin — no new authority. The palette calls the GETs only.
+    @app.post("/api/projects/{project_id}/pin")
+    async def projects_pin(project_id: int, request: Request) -> JSONResponse:
+        svc = app.state.projects
+        if svc is None:
+            return _unavailable("projects")
+        body = await request.json()
+        ok = await svc.store.set_pinned(project_id, bool(body.get("pinned", True)))
+        return JSONResponse({"ok": ok})
+
+    @app.get("/api/artifacts")
+    async def artifacts_index(
+        project_id: int | None = None,
+        kind: str | None = None,
+        pinned: bool | None = None,
+        limit: int = 50,
+    ) -> JSONResponse:
+        store = app.state.services.artifacts
+        if store is None:
+            return _unavailable("artifacts")
+        return JSONResponse(
+            await artifacts_list(
+                store, project_id=project_id, kind=kind, pinned=pinned,
+                limit=max(1, min(limit, 200)),  # floored: LIMIT -1 in SQLite means "no limit"
+            )
+        )
+
+    @app.get("/api/artifacts/{artifact_id}")
+    async def artifact_detail(artifact_id: int) -> JSONResponse:
+        from jarvis.ui.readmodels import serialize_artifact
+
+        store = app.state.services.artifacts
+        if store is None:
+            return _unavailable("artifacts")
+        art = await store.get(artifact_id)
+        if art is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        return JSONResponse(serialize_artifact(art))
+
+    @app.get("/api/artifacts/{artifact_id}/content")
+    async def artifact_content(artifact_id: int) -> Response:
+        # STRICT: registered id only; ArtifactStore.content_path re-confines to a managed root +
+        # refuses sensitive paths; quarantined artifacts + non-local (external-uri) artifacts are
+        # never served; text/image allowlist only; size-capped. (Adversarially tested.)
+        store = app.state.services.artifacts
+        if store is None:
+            return _unavailable("artifacts")
+        art = await store.get(artifact_id)
+        if art is None or art.sensitivity == "quarantined":
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        try:
+            path = store.content_path(art)
+        except ArtifactPathError:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        if path is None or not path.is_file():
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        media_type = _ARTIFACT_MEDIA.get(path.suffix.lower())
+        if media_type is None:
+            return _deny(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "unsupported type")
+        if path.stat().st_size > config.limits.max_read_bytes:
+            return _deny(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "too large")
+        return FileResponse(path, media_type=media_type)
+
+    @app.post("/api/artifacts/{artifact_id}/pin")
+    async def artifacts_pin(artifact_id: int, request: Request) -> JSONResponse:
+        store = app.state.services.artifacts
+        if store is None:
+            return _unavailable("artifacts")
+        body = await request.json()
+        ok = await store.set_pinned(artifact_id, bool(body.get("pinned", True)))
+        return JSONResponse({"ok": ok})
+
+    @app.post("/api/artifacts/{artifact_id}/label")
+    async def artifacts_label(artifact_id: int, request: Request) -> JSONResponse:
+        store = app.state.services.artifacts
+        if store is None:
+            return _unavailable("artifacts")
+        body = await request.json()
+        labels = body.get("labels", [])
+        if not isinstance(labels, list):
+            return JSONResponse({"ok": False, "message": "labels must be a list"}, status_code=400)
+        ok = await store.set_labels(artifact_id, [str(x) for x in labels])
+        return JSONResponse({"ok": ok})
+
+    @app.get("/api/search")
+    async def global_search(
+        q: str = "", project_id: int | None = None, limit: int = 40
+    ) -> JSONResponse:
+        store = app.state.services.artifacts  # shares the app's single connection
+        if store is None:
+            return _unavailable("search")
+        capped = max(1, min(limit, 100))
+        if project_id is None:
+            results = await _federated_search(store.db, q, limit=capped)
+        else:
+            results = await _federated_search(store.db, q, project_id=project_id, limit=capped)
+        return JSONResponse({"results": results})
+
+    @app.get("/api/views")
+    async def views_index(scope: str | None = None, project_id: int | None = None) -> JSONResponse:
+        store = app.state.services.views
+        if store is None:
+            return _unavailable("views")
+        return JSONResponse(await views_list(store, scope=scope, project_id=project_id))
+
+    @app.post("/api/views/save")
+    async def views_save(request: Request) -> JSONResponse:
+        store = app.state.services.views
+        if store is None:
+            return _unavailable("views")
+        body = await request.json()
+        query = body.get("query") or {}
+        project_id = body.get("project_id")
+        if not isinstance(query, dict):
+            return JSONResponse(
+                {"ok": False, "message": "query must be an object"}, status_code=400
+            )
+        if project_id is not None and not isinstance(project_id, int):
+            return JSONResponse(
+                {"ok": False, "message": "project_id must be an int"}, status_code=400
+            )
+        try:
+            vid = await store.save(
+                name=str(body.get("name", "")).strip() or "Untitled",
+                scope=str(body.get("scope", "")),
+                query=query,
+                project_id=project_id,
+                view_id=body.get("id"),
+            )
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True, "id": vid})
+
+    @app.post("/api/views/{view_id}/delete")
+    async def views_delete(view_id: int) -> JSONResponse:
+        store = app.state.services.views
+        if store is None:
+            return _unavailable("views")
+        ok = await store.delete(view_id)
+        return JSONResponse({"ok": ok})
+
+    @app.get("/api/workspace/{project_id}")
+    async def workspace(project_id: int) -> JSONResponse:
+        # Aggregate Overview for one project (metadata only; degrades if a service is absent).
+        return JSONResponse(await workspace_overview(app.state.services, project_id))
 
     @app.post("/api/orchestration/run")
     async def orchestration_run(request: Request) -> JSONResponse:
