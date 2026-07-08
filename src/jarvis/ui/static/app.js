@@ -19,6 +19,7 @@ import { render as renderSettings } from "./screens/settings.js";
 import { get as getTheme, initTheme, setTheme } from "./ui/theme.js";
 import { initKeys, clearScope, pushEscape } from "./ui/keys.js";
 import { emit as busEmit, on as busOn } from "./ui/bus.js";
+import { init as initPalette } from "./ui/palette.js";
 
 const state = {
   chat: [],            // Daily conversation items {role, text} | {tool, resolution}
@@ -363,7 +364,8 @@ function init() {
   busOn("appearance", () => { syncTheme(); refreshIfActive("settings"); });
   initTheme();
   syncTheme();
-  initKeys();                                        // single keydown dispatcher (palette hotkey wired in T7)
+  initKeys();                                        // single keydown dispatcher
+  initPalette(api);                                  // Ctrl/Cmd-K command palette (search + navigate, GET-only)
   window.addEventListener("hashchange", navigate);
   connect();
   navigate();
