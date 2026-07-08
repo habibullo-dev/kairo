@@ -45,6 +45,20 @@ class ProviderSpec:
     auth_style: str = "x-api-key"  # anthropic_compat only: "x-api-key" | "bearer"
     default_models: tuple[str, ...] = ()  # documented model ids (routing pins the exact one)
     note: str = ""
+    # --- Context reuse capability (S7): provider-agnostic prompt/context caching. Defaults are
+    # fail-closed (off), so a new/unverified provider caches nothing until its behavior is
+    # confirmed against live docs. See jarvis.models.context_reuse for the resolver + policy.
+    supports_context_reuse: bool = False
+    #: off | automatic_prefix | explicit_breakpoint | explicit_resource | provider_default
+    context_reuse_mode: str = "off"
+    supports_cache_key: bool = False  # provider honors a caller cache key (OpenAI prompt_cache_key)
+    supports_cache_ttl: bool = False  # caller may choose a TTL (Anthropic 5m/1h)
+    reports_cached_tokens: bool = False  # usage reports cached/hit tokens we can ledger
+    cache_min_tokens: int = 0  # provider's minimum cacheable prefix (0 = unknown/none)
+    cache_ttl_options: tuple[str, ...] = ()  # selectable TTLs, if any
+    #: May PRIVATE/project content be cached here (only ever true when private_ok); even then a
+    #: write is gated by route + audit. Default False ⇒ stable non-sensitive prefix only.
+    cache_private_allowed: bool = False
 
 
 #: The provider catalog. Endpoints/model ids verified against official provider docs
@@ -61,6 +75,13 @@ PROVIDER_CATALOG: dict[str, ProviderSpec] = {
         trusted_authority=True,
         core=True,
         note="head planner / architect / synthesizer / final reviewer / judge (Fable/Opus).",
+        supports_context_reuse=True,
+        context_reuse_mode="explicit_breakpoint",  # cache_control at the stable/volatile seam
+        supports_cache_ttl=True,
+        reports_cached_tokens=True,  # usage.cache_creation_input_tokens / cache_read_input_tokens
+        cache_min_tokens=1024,
+        cache_ttl_options=("5m", "1h"),
+        cache_private_allowed=True,  # the only private_ok provider; still gated by route + audit
     ),
     "openai": ProviderSpec(
         name="openai",
@@ -73,6 +94,11 @@ PROVIDER_CATALOG: dict[str, ProviderSpec] = {
         core=True,
         default_models=("gpt-5.2", "gpt-5.2-mini"),
         note="text-only analysis/synthesis; existing adapter.",
+        supports_context_reuse=True,
+        context_reuse_mode="automatic_prefix",  # automatic prefix caching + prompt_cache_key
+        supports_cache_key=True,
+        reports_cached_tokens=True,  # usage.prompt_tokens_details.cached_tokens
+        cache_min_tokens=1024,
     ),
     # --- Phase 10C opt-in workers (gated by providers.enabled) ---
     "deepseek": ProviderSpec(
@@ -88,6 +114,9 @@ PROVIDER_CATALOG: dict[str, ProviderSpec] = {
         auth_style="x-api-key",
         default_models=("deepseek-v4-pro", "deepseek-v4-flash"),
         note="cheap coding / debugging / test-fix worker; strong price-performance.",
+        supports_context_reuse=True,
+        context_reuse_mode="automatic_prefix",  # automatic on-disk prefix caching (no control)
+        reports_cached_tokens=True,  # usage prompt_cache_hit_tokens / prompt_cache_miss_tokens
     ),
     "qwen": ProviderSpec(
         name="qwen",
@@ -105,6 +134,9 @@ PROVIDER_CATALOG: dict[str, ProviderSpec] = {
         default_models=("qwen3-coder-plus", "qwen3-coder-next"),
         note="cheap coding / summarization / multilingual / long-context worker. "
         "UNPRICED until real DashScope pricing is added (fail-closed: blocked until then).",
+        supports_context_reuse=True,
+        context_reuse_mode="explicit_breakpoint",  # DashScope cache_control blocks
+        reports_cached_tokens=True,
     ),
     "zai": ProviderSpec(
         name="zai",
@@ -119,6 +151,8 @@ PROVIDER_CATALOG: dict[str, ProviderSpec] = {
         auth_style="bearer",  # Z.ai uses ANTHROPIC_AUTH_TOKEN (Authorization: Bearer)
         default_models=("glm-4.7", "glm-4-air", "glm-5.1"),
         note="GLM agentic coding / long-horizon sub-agent worker; senior-worker under review.",
+        supports_context_reuse=False,  # OFF until Z.ai cache behavior is verified against docs
+        context_reuse_mode="off",
     ),
     "gemini": ProviderSpec(
         name="gemini",
@@ -132,6 +166,11 @@ PROVIDER_CATALOG: dict[str, ProviderSpec] = {
         default_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         default_models=("gemini-3.5-flash", "gemini-2.5-flash"),
         note="text-only long-context / research / context-synthesis; multimodal deferred.",
+        supports_context_reuse=True,
+        # Implicit caching by default; explicit CachedContent resources DEFERRED (needs a privacy
+        # review — see the S7 ADR) so private/large-doc caching is not enabled here.
+        context_reuse_mode="provider_default",
+        reports_cached_tokens=True,  # usage cachedContentTokenCount (when the model caches)
     ),
 }
 
