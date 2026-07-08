@@ -22,6 +22,7 @@ The store is mechanism; this is policy — and all of it is driven by an injecte
 from __future__ import annotations
 
 import datetime as _dt
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
@@ -42,6 +43,12 @@ PAST_TOLERANCE = _dt.timedelta(minutes=2)
 
 
 def utc_now() -> _dt.datetime:
+    # Eval determinism hook (E6b): honor a fixed JARVIS_EVAL_CLOCK so scheduler timing
+    # (next_run_at, due classification) is stable across record and replay. Set only by the eval
+    # harness; unset in production, where the real wall clock is used.
+    fixed = os.environ.get("JARVIS_EVAL_CLOCK")
+    if fixed:
+        return _dt.datetime.fromisoformat(fixed).astimezone(_dt.UTC)
     return _dt.datetime.now(_dt.UTC)
 
 

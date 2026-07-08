@@ -360,3 +360,13 @@ def test_eval_clock_is_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
     assert a == b and a.year == 2026 and a.hour == 12
     monkeypatch.delenv("JARVIS_EVAL_CLOCK")
     assert _default_now().year >= 2026  # unset ⇒ real wall clock
+
+
+def test_scheduler_clock_respects_eval_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jarvis.scheduler.service import utc_now
+
+    monkeypatch.setenv("JARVIS_EVAL_CLOCK", "2026-01-01T12:00:00+00:00")
+    t = utc_now()
+    assert (t.year, t.month, t.day, t.hour) == (2026, 1, 1, 12) and t.tzinfo is not None
+    monkeypatch.delenv("JARVIS_EVAL_CLOCK")
+    assert utc_now().year >= 2026  # unset ⇒ real wall clock
