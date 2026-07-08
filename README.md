@@ -40,6 +40,21 @@ Playwright binaries), real orchestration runs, and the judged eval gate (need an
 **not yet run** — the checklist + commands are in [`docs/verification-10B.md`](docs/verification-10B.md).
 Design in [`docs/PLAN-10B-teams.md`](docs/PLAN-10B-teams.md).
 
+**Phase 10C (direct provider workers) — framework complete; live provider checks pending your
+keys.** Adds Qwen / DeepSeek / GLM(Z.ai) / Gemini as cheap, scalable **worker** models via a
+`PROVIDER_CATALOG` whose enforcement is *derived* per row
+([ADR-0016](docs/decisions/0016-provider-integration.md)). DeepSeek/Qwen/GLM reuse the native
+client through their **Anthropic-compatible** endpoints (a capability-degradation profile: no
+effort/thinking; per-provider auth header); Gemini rides the **text-only** OpenAI-compatible
+client. **Fable/Opus stay the deciding layer**: planner/judge (final authority) and utility
+(private content) are code-pinned to anthropic at every routing layer — a cheap worker can never
+become the head synthesizer, final reviewer, judge, or a private-content processor. Availability
+is fail-closed (`providers.enabled` ∧ key ∧ priced); a PRIVATE-provenance bundle is refused before
+fan-out for any non-trusted provider; `providers.enabled` is empty by default (byte-identical to
+pre-10C). Keys load from `.env` only. Live provider checks (DeepSeek/Gemini; Qwen once priced;
+Z.ai pending its console) are in [`docs/verification-10C.md`](docs/verification-10C.md); design in
+[`docs/PLAN-10C-providers.md`](docs/PLAN-10C-providers.md).
+
 **Phase 9 (make Kairo useful daily) — complete.** Kairo now flows real daily context in and
 real workflows out, all behind the existing PermissionGate. **Connectors** are narrow, audited
 httpx REST adapters (not a library, not MCP): Google Calendar/Gmail/Drive (read-first) plus
@@ -195,6 +210,10 @@ TAVILY_API_KEY=...       # for web_search
 VOYAGE_API_KEY=...        # for long-term memory (embeddings)
 OPENAI_API_KEY=...        # optional: cloud STT (voice.cloud_providers only)
 ELEVENLABS_API_KEY=...    # optional: cloud TTS (voice.cloud_providers only)
+DEEPSEEK_API_KEY=...      # optional: Phase 10C worker (providers.enabled)
+DASHSCOPE_API_KEY=...     # optional: Qwen worker (needs pricing filled)
+ZAI_API_KEY=...           # optional: GLM / Z.ai worker
+GEMINI_API_KEY=...        # optional: Gemini text-only worker (NOT GOOGLE_CLIENT_ID/SECRET)
 ```
 
 ## Usage

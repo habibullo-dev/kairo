@@ -2269,3 +2269,37 @@ URLs refused). The line between "verified here" and "requires your machine" is w
 `docs/verification-10B.md` with exact commands, and the new eval scenarios carry no baseline yet
 (so they run as measurement, not a floor) until a real green run ratchets them in a dedicated
 commit. Claiming a gate pass you didn't run is the one thing the A6 rule exists to prevent.
+
+## Phase 10C — direct provider workers (T1–T8)
+
+The catalog-as-safety-model pattern (ADR-0015) ported cleanly from services to model providers:
+one `PROVIDER_CATALOG` row per provider, and the client factory + route registry *derive* trust
+from it — there is no per-provider trust decision to mis-wire. The load-bearing move was ordering
+the tasks **pins before clients** (T2 before T3): the authority pin (planner/judge/utility →
+anthropic only, at every override layer) and the private-context refusal landed in a pure
+`validate_route` + the engine *before any new client class existed*, so at no commit in history
+could a cheap worker reach the deciding layer.
+
+Compat-first beat a bespoke SDK per provider: DeepSeek/Qwen/GLM publish Anthropic-Messages
+endpoints, so `AnthropicClient` + `base_url` + a `compat` degradation profile (drop
+effort/thinking; no `cache_control` is sent anywhere, so none to strip) reuses the one protocol
+path the loop already round-trips. The real-world friction was per-provider *auth headers* —
+Z.ai wants `Authorization: Bearer` (`auth_token`), DeepSeek/Qwen want `x-api-key` — so the spec
+carries an `auth_style`. Verifying endpoints/models/pricing against official docs (not training
+memory) mattered: the model ids had all moved (DeepSeek → v4-pro/flash, Gemini → 3.5-flash), and
+Qwen's price was console-gated, so Qwen ships **UNPRICED on purpose** — a catalog entry that stays
+fail-closed/blocked until a human fills real numbers. That's the fail-closed contract doing its
+job rather than a guess baked into pricing.yaml.
+
+Two smaller lessons. (1) The provider-context refusal had to fire **before `begin_run`** (like
+`ConfirmationRequired`), because the `orchestration_runs.status` CHECK constraint enumerates
+statuses — a new "refused" status would have needed a migration, and 10C's contract was no
+migration. Raising pre-row (no status) is also more honest: it's a roster/context *validation*
+error, not a run outcome. (2) `ProviderRegistry.from_config` must check presence against the
+loaded `config.secrets` (what the factory uses), not raw `os.environ` — otherwise a config built
+from a specific env_file disagrees with what would actually build the client, and model_copy-based
+tests flake. T6 folded in the 10B follow-up: `semgrep_config` default `auto` → `p/ci`, verified
+locally (`auto` hard-errors with the hardened `--metrics=off`; `p/ci` runs clean). Z.ai is fully
+built but its console was down at ship time, so its live check is pending — and its
+missing-key/disabled path is written into the adversarial suite as part of the fail-closed proof,
+not hand-waved as "will work".
