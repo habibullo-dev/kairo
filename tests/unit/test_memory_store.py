@@ -49,7 +49,7 @@ async def test_v1_to_v2_migration_preserves_sessions_and_messages(tmp_path: Path
         )
         await db.commit()
 
-        assert await migrate(db) == 8  # migrate() applies ALL pending onto a populated v1 db
+        assert await migrate(db) == 9  # migrate() applies ALL pending onto a populated v1 db
 
         cur = await db.execute("SELECT title FROM sessions WHERE id=1")
         assert (await cur.fetchone())[0] == "kept"

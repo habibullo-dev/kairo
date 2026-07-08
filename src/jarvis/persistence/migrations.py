@@ -495,6 +495,231 @@ CREATE INDEX idx_service_calls_run        ON service_calls(orchestration_run_id)
 """
 
 
+# Phase 11 (Workstation): artifacts, saved views, project pinning, and the first full-text
+# search layer. Purely additive (new tables, one NOT-NULL-with-default ADD COLUMN, FTS5
+# virtual tables + triggers + indexes; no CHECK widened, no table rebuilt). Run as an
+# imperative step (_migrate_v9) whose statements are ALL idempotent: every CREATE uses
+# IF NOT EXISTS and the one ADD COLUMN is guarded by a PRAGMA check. So a crash or partial
+# failure before the user_version bump is fully recoverable — a re-run is a clean no-op —
+# unlike a bare executescript string step (which auto-commits statement-by-statement).
+#
+# The FTS5 tables are EXTERNAL CONTENT (content='<base>', content_rowid='id'): they keep no
+# copy of the text — they index the base table and read it back by rowid. Sync is by AFTER
+# INSERT/DELETE/UPDATE triggers (uniform per domain; the UPDATE trigger is load-bearing for
+# orchestration_runs, whose synthesis_summary is filled by a later UPDATE, and harmless where
+# a table is only ever delete+reinserted). Backfill of pre-existing rows AND the maintenance
+# re-sync both use FTS5's built-in 'rebuild' command (idempotent by construction — see
+# persistence/fts.py). Scope / status / visibility filters live in the query JOIN
+# (persistence/fts.py), never inside MATCH. This is the first virtual table and the first
+# triggers in the schema.
+_SCHEMA_V9 = """
+-- --- Artifacts: a first-class, searchable record of things Kairo produced ---------------
+-- Identity + dedupe is (origin_type, origin_id); content_hash is a NON-UNIQUE version
+-- fingerprint (NULL for DB-backed artifacts with no file). Deliberately not unique: identical
+-- content legitimately recurs across artifacts (boilerplate/empty docs, duplicated reports).
+-- local_path XOR external_uri: a servable managed file, OR a reference (web URL /
+-- app-internal handle). local_path is stored relative to the data dir and is confined to a
+-- managed subtree + refused if sensitive, at registration time (ArtifactStore.register).
+CREATE TABLE IF NOT EXISTS artifacts (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id       INTEGER REFERENCES projects(id),   -- NULL == global
+    kind             TEXT NOT NULL,                      -- digest|eval_report|wiki|meeting|design
+    title            TEXT NOT NULL,
+    local_path       TEXT,                               -- rel. to data dir; XOR external_uri
+    external_uri     TEXT,                               -- web URL or app-internal handle (kairo://…)
+    content_hash     TEXT,                               -- sha256 version fp (non-unique)
+    origin_type      TEXT NOT NULL,                      -- producer system
+    origin_id        TEXT,                               -- stable handle within that system
+    created_by       TEXT NOT NULL CHECK (created_by IN ('user','agent','system')),
+    team             TEXT,
+    role             TEXT,
+    model            TEXT,
+    sensitivity      TEXT,                               -- low|medium|high|quarantined (advisory)
+    provenance_class TEXT,                               -- e.g. trusted_local (advisory)
+    labels_json      TEXT NOT NULL DEFAULT '[]',
+    pinned           INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    CHECK ((local_path IS NULL) <> (external_uri IS NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_origin ON artifacts(origin_type, origin_id)
+    WHERE origin_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_artifacts_project ON artifacts(project_id, id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_pinned  ON artifacts(pinned) WHERE pinned = 1;
+CREATE INDEX IF NOT EXISTS idx_artifacts_kind    ON artifacts(kind);
+
+-- --- Saved views / smart collections (Projects + Artifacts + Search surfaces) -----------
+CREATE TABLE IF NOT EXISTS saved_views (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    scope       TEXT NOT NULL,                    -- projects|artifacts|search
+    query_json  TEXT NOT NULL DEFAULT '{}',       -- opaque filter/query spec
+    project_id  INTEGER REFERENCES projects(id),  -- NULL == global / all-projects
+    created_by  TEXT NOT NULL CHECK (created_by IN ('user','agent','system')),
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_saved_views_scope ON saved_views(scope, id);
+
+-- --- Project pinning (labels ride settings_json; archive stays status/archived_at) ------
+-- projects.pinned is added by _migrate_v9's guarded ADD COLUMN (below), NOT here: ALTER TABLE
+-- ADD COLUMN has no IF NOT EXISTS form, so it cannot live in this re-runnable script body.
+
+-- --- Full-text search: external-content FTS5 tables + insert/delete/update sync triggers -
+-- messages: content only (the session title lives on `sessions`; the search service joins it).
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    content,
+    content='messages', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+END;
+
+-- memories: content (the status='live' filter is applied in the query, not the index).
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    content,
+    content='memories', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+    INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.id, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.id, old.content);
+    INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+END;
+
+-- kb_chunks: text (wiki chunks are global; source status/review filtered in the query).
+CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
+    text,
+    content='kb_chunks', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ai AFTER INSERT ON kb_chunks BEGIN
+    INSERT INTO kb_chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ad AFTER DELETE ON kb_chunks BEGIN
+    INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_au AFTER UPDATE ON kb_chunks BEGIN
+    INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    INSERT INTO kb_chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+-- tasks: title + payload.
+CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
+    title, payload,
+    content='tasks', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS tasks_fts_ai AFTER INSERT ON tasks BEGIN
+    INSERT INTO tasks_fts(rowid, title, payload) VALUES (new.id, new.title, new.payload);
+END;
+CREATE TRIGGER IF NOT EXISTS tasks_fts_ad AFTER DELETE ON tasks BEGIN
+    INSERT INTO tasks_fts(tasks_fts, rowid, title, payload)
+        VALUES ('delete', old.id, old.title, old.payload);
+END;
+CREATE TRIGGER IF NOT EXISTS tasks_fts_au AFTER UPDATE ON tasks BEGIN
+    INSERT INTO tasks_fts(tasks_fts, rowid, title, payload)
+        VALUES ('delete', old.id, old.title, old.payload);
+    INSERT INTO tasks_fts(rowid, title, payload) VALUES (new.id, new.title, new.payload);
+END;
+
+-- orchestration_runs: title + synthesis_summary (the summary is filled by a LATER update, so
+-- the AFTER UPDATE trigger is required — an insert-only index would never see the summary).
+CREATE VIRTUAL TABLE IF NOT EXISTS orchestration_runs_fts USING fts5(
+    title, synthesis_summary,
+    content='orchestration_runs', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS orch_runs_fts_ai AFTER INSERT ON orchestration_runs BEGIN
+    INSERT INTO orchestration_runs_fts(rowid, title, synthesis_summary)
+        VALUES (new.id, new.title, new.synthesis_summary);
+END;
+CREATE TRIGGER IF NOT EXISTS orch_runs_fts_ad AFTER DELETE ON orchestration_runs BEGIN
+    INSERT INTO orchestration_runs_fts(orchestration_runs_fts, rowid, title, synthesis_summary)
+        VALUES ('delete', old.id, old.title, old.synthesis_summary);
+END;
+CREATE TRIGGER IF NOT EXISTS orch_runs_fts_au AFTER UPDATE ON orchestration_runs BEGIN
+    INSERT INTO orchestration_runs_fts(orchestration_runs_fts, rowid, title, synthesis_summary)
+        VALUES ('delete', old.id, old.title, old.synthesis_summary);
+    INSERT INTO orchestration_runs_fts(rowid, title, synthesis_summary)
+        VALUES (new.id, new.title, new.synthesis_summary);
+END;
+
+-- digests: summary (always global — digests.project_id is never written).
+CREATE VIRTUAL TABLE IF NOT EXISTS digests_fts USING fts5(
+    summary,
+    content='digests', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS digests_fts_ai AFTER INSERT ON digests BEGIN
+    INSERT INTO digests_fts(rowid, summary) VALUES (new.id, new.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS digests_fts_ad AFTER DELETE ON digests BEGIN
+    INSERT INTO digests_fts(digests_fts, rowid, summary) VALUES ('delete', old.id, old.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS digests_fts_au AFTER UPDATE ON digests BEGIN
+    INSERT INTO digests_fts(digests_fts, rowid, summary) VALUES ('delete', old.id, old.summary);
+    INSERT INTO digests_fts(rowid, summary) VALUES (new.id, new.summary);
+END;
+
+-- artifacts: title + labels (pin/label/version updates re-sync via the AFTER UPDATE trigger).
+CREATE VIRTUAL TABLE IF NOT EXISTS artifacts_fts USING fts5(
+    title, labels_json,
+    content='artifacts', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS artifacts_fts_ai AFTER INSERT ON artifacts BEGIN
+    INSERT INTO artifacts_fts(rowid, title, labels_json)
+        VALUES (new.id, new.title, new.labels_json);
+END;
+CREATE TRIGGER IF NOT EXISTS artifacts_fts_ad AFTER DELETE ON artifacts BEGIN
+    INSERT INTO artifacts_fts(artifacts_fts, rowid, title, labels_json)
+        VALUES ('delete', old.id, old.title, old.labels_json);
+END;
+CREATE TRIGGER IF NOT EXISTS artifacts_fts_au AFTER UPDATE ON artifacts BEGIN
+    INSERT INTO artifacts_fts(artifacts_fts, rowid, title, labels_json)
+        VALUES ('delete', old.id, old.title, old.labels_json);
+    INSERT INTO artifacts_fts(rowid, title, labels_json)
+        VALUES (new.id, new.title, new.labels_json);
+END;
+
+-- Backfill pre-existing rows into every FTS index (idempotent 'rebuild'; empty tables no-op).
+INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');
+INSERT INTO memories_fts(memories_fts) VALUES ('rebuild');
+INSERT INTO kb_chunks_fts(kb_chunks_fts) VALUES ('rebuild');
+INSERT INTO tasks_fts(tasks_fts) VALUES ('rebuild');
+INSERT INTO orchestration_runs_fts(orchestration_runs_fts) VALUES ('rebuild');
+INSERT INTO digests_fts(digests_fts) VALUES ('rebuild');
+INSERT INTO artifacts_fts(artifacts_fts) VALUES ('rebuild');
+"""
+
+
+async def _migrate_v9(db: aiosqlite.Connection) -> None:
+    """Phase 11 schema (additive), made crash-safe. Every statement is idempotent so a partial
+    failure or a crash before the user_version bump is recoverable — a re-run is a clean no-op:
+    the one ADD COLUMN is guarded by a table_info check, and the _SCHEMA_V9 body uses
+    ``CREATE ... IF NOT EXISTS`` throughout (the 'rebuild' backfills are idempotent by
+    construction). foreign_keys stays ON — nothing is rebuilt (contrast _migrate_v5/_v6)."""
+    cursor = await db.execute("PRAGMA table_info(projects)")
+    has_pinned = any(row[1] == "pinned" for row in await cursor.fetchall())
+    if not has_pinned:
+        await db.execute("ALTER TABLE projects ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+    await db.executescript(_SCHEMA_V9)
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -509,6 +734,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (6, _migrate_v6),
     (7, _SCHEMA_V7),
     (8, _SCHEMA_V8),
+    (9, _migrate_v9),
 ]
 
 

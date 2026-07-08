@@ -23,7 +23,7 @@ import aiosqlite
 
 _COLUMNS = (
     "id, name, slug, description, status, color, icon, repos_json, settings_json, "
-    "created_at, updated_at, archived_at"
+    "created_at, updated_at, archived_at, pinned"
 )
 
 _STATUSES = ("active", "paused", "archived")
@@ -62,6 +62,7 @@ class Project:
     created_at: str
     updated_at: str
     archived_at: str | None
+    pinned: bool = False  # Phase 11: surfaced-first in the Projects grid (default last)
 
 
 def _row_to_project(row: tuple) -> Project:
@@ -78,6 +79,7 @@ def _row_to_project(row: tuple) -> Project:
         created_at=row[9],
         updated_at=row[10],
         archived_at=row[11],
+        pinned=bool(row[12]),
     )
 
 
@@ -214,3 +216,14 @@ class ProjectStore:
         """Archive a project (status flip + archived_at) — the row is kept, never DELETEd.
         Scoped rows keep their ``project_id``; archiving hides, it does not erase."""
         return await self.set_status(project_id, "archived")
+
+    async def set_pinned(self, project_id: int, pinned: bool) -> bool:
+        """Pin/unpin a project for the Projects grid — a display preference, no new authority.
+        Returns False if the project doesn't exist."""
+        async with self.lock:
+            cursor = await self.db.execute(
+                "UPDATE projects SET pinned = ?, updated_at = ? WHERE id = ?",
+                (1 if pinned else 0, _now(), project_id),
+            )
+            await self.db.commit()
+        return cursor.rowcount > 0
