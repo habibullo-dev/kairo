@@ -19,6 +19,7 @@ from collections.abc import Callable
 from time import perf_counter
 
 from jarvis.core.client import ModelResponse
+from jarvis.models.context_reuse import openai_prompt_cache_key, plan_for_prefix
 from jarvis.observability.cost import Usage
 
 
@@ -62,6 +63,8 @@ class OpenAIChatClient:
         api_key: str | None = None,
         client: object | None = None,
         base_url: str | None = None,
+        provider: str = "openai",
+        context_reuse: bool = False,
     ) -> None:
         if client is None:
             from openai import AsyncOpenAI
@@ -71,6 +74,11 @@ class OpenAIChatClient:
                 kwargs["base_url"] = base_url
             client = AsyncOpenAI(**kwargs)
         self._client = client
+        # S7 enable-step (Phase 13): set a `prompt_cache_key` to route to a warm prefix cache when
+        # on. The key is derived from `provider`'s capability, so OpenAI (automatic_prefix +
+        # cache_key) gets a key while Gemini (provider_default / implicit) naturally gets NONE.
+        self._provider = provider
+        self.context_reuse = context_reuse
 
     async def create(
         self,
@@ -83,6 +91,7 @@ class OpenAIChatClient:
         on_text_delta: Callable[[str], None] | None = None,
         tool_choice: dict | None = None,
         temperature: float | None = None,
+        stable_prefix: str | None = None,
     ) -> ModelResponse:
         if tools:
             raise UnsupportedToolUseError(
@@ -97,6 +106,15 @@ class OpenAIChatClient:
         }
         if temperature is not None:
             kwargs["temperature"] = temperature
+        # S7 enable-step: attach a prompt_cache_key when caching is on (nothing added otherwise, so
+        # the request stays byte-identical to a no-caching build). None for Gemini (implicit).
+        cr_hash: str | None = None
+        if self.context_reuse and stable_prefix:
+            directive, assembled = plan_for_prefix(self._provider, stable_prefix)
+            key = openai_prompt_cache_key(directive)
+            if key is not None:
+                kwargs["prompt_cache_key"] = key
+                cr_hash = assembled.stable_prefix_hash
         start = perf_counter()
         completion = await self._client.chat.completions.create(**kwargs)  # type: ignore[attr-defined]
         latency_ms = (perf_counter() - start) * 1000.0
@@ -115,6 +133,7 @@ class OpenAIChatClient:
             usage=_usage_from_openai(getattr(completion, "usage", None)),
             model=getattr(completion, "model", None) or model,
             latency_ms=latency_ms,
+            stable_prefix_hash=cr_hash,  # None unless a prompt_cache_key was set
         )
 
 

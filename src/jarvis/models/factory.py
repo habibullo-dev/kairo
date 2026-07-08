@@ -68,7 +68,12 @@ class ClientFactory:
         # openai_compat — text-only (OpenAI + Gemini)
         cache_key = (route.provider,)
         if cache_key not in self._cache:
-            self._cache[cache_key] = OpenAIChatClient(api_key=key, base_url=base_url)
+            self._cache[cache_key] = OpenAIChatClient(
+                api_key=key,
+                base_url=base_url,
+                provider=route.provider,
+                context_reuse=self.config.context_reuse.enabled,
+            )
         return self._cache[cache_key]
 
     def _key_value(self, spec: ProviderSpec) -> str:
