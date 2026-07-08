@@ -187,3 +187,14 @@ a11y_check / visual_diff), calling `set_driver()` at UI startup behind the exist
 localhost/verb guards. This is a prerequisite for Phase 11's UI-screenshot definition of done
 (R4: empty / populated / narrow / project / search / artifact-preview captures via
 `playwright_local`). Until then, the guards are verified (step 3) but no page is rendered.
+
+## Resolved follow-up (Phase 10C T6): Semgrep default config
+
+The 10B closeout found the shipped default `services.semgrep_config: auto` incompatible with the
+adapter's hardened `--metrics=off` (`semgrep scan --config auto --metrics=off` → rc=2 "Cannot
+create auto config when metrics are off"). Phase 10C T6 changes the **code default** to `p/ci`
+(a curated registry pack that runs cleanly with `--metrics=off` — verified locally on
+semgrep 1.168.0, rc=0). `config/settings.yaml` is unchanged (the default lives in
+`config.py`); a `security_review` on a machine with the scanners now runs a real Semgrep pass
+out of the box. A fully offline scan still uses a local rules directory
+(`services.semgrep_config: ./path/to/rules`).

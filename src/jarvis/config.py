@@ -416,10 +416,13 @@ class ServicesConfig(BaseModel):
     lists it. Per-project narrowing lives in the project's settings_json["services"]."""
 
     enabled: list[str] = Field(default_factory=list)
-    #: Semgrep ruleset passed to ``--config`` (Task 16). Point at a LOCAL rules dir for a fully
-    #: offline scan; "auto" downloads rules (not repo data — semgrep with --metrics=off never
-    #: sends code off-box, so the tool stays non-egress).
-    semgrep_config: str = "auto"
+    #: Semgrep ruleset passed to ``--config`` (Task 16; default fixed in Phase 10C T6). ``p/ci``
+    #: is a curated registry pack that works with the adapter's hardened ``--metrics=off``; the
+    #: old default ``auto`` REQUIRES metrics on and hard-errors with them off (rc=2 — verified
+    #: during the 10B live closeout). Point at a LOCAL rules dir for a fully offline scan. Rules
+    #: are fetched, not repo data — with ``--metrics=off`` semgrep never sends code off-box, so
+    #: the tool stays non-egress.
+    semgrep_config: str = "p/ci"
     #: Optional loopback ports the ``playwright_inspect`` tool may target (B3). Empty ⇒ any
     #: loopback port (still non-egress — the host allowlist is the guarantee).
     playwright_allow_ports: list[int] = Field(default_factory=list)

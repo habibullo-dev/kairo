@@ -280,7 +280,7 @@ def test_require_reports_missing_connector_keys(tmp_path: Path) -> None:
 def test_services_config_defaults(tmp_path: Path) -> None:
     cfg = load_config(root=tmp_path, env_file=None)
     assert cfg.services.enabled == []  # fail-closed: nothing on until a human lists it
-    assert cfg.services.semgrep_config == "auto"
+    assert cfg.services.semgrep_config == "p/ci"  # T6: works with --metrics=off (auto errors)
     assert cfg.services.playwright_allow_ports == []
 
 
