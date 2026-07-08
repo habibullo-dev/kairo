@@ -15,6 +15,7 @@ import { render as renderCosts } from "./screens/costs.js";
 import { render as renderLab } from "./screens/lab.js";
 import { render as renderMeetings } from "./screens/meetings.js";
 import { render as renderTrace } from "./screens/trace.js";
+import { get as getTheme, initTheme, setTheme } from "./ui/theme.js";
 
 const state = {
   chat: [],            // Daily conversation items {role, text} | {tool, resolution}
@@ -311,6 +312,19 @@ function init() {
   };
   document.getElementById("mode-daily").addEventListener("click", () => setMode(false));
   document.getElementById("mode-debug").addEventListener("click", () => setMode(true));
+  // Appearance theme toggle — client-side only (theme.js persists to localStorage, applies to
+  // <html>). No server route: appearance adds no authority.
+  const syncTheme = () => {
+    const cur = getTheme().theme;
+    document
+      .querySelectorAll("#theme-toggle button")
+      .forEach((b) => b.classList.toggle("active", b.dataset.themeChoice === cur));
+  };
+  document
+    .querySelectorAll("#theme-toggle button")
+    .forEach((b) => b.addEventListener("click", () => { setTheme(b.dataset.themeChoice); syncTheme(); }));
+  initTheme();
+  syncTheme();
   window.addEventListener("hashchange", navigate);
   connect();
   navigate();

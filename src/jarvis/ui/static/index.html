@@ -1,5 +1,7 @@
 <!DOCTYPE html>
-<html lang="en">
+<!-- Appearance is applied to <html> (theme.js, from localStorage); the defaults below avoid a
+     flash before the module runs. <body> stays plain (no class/attr). -->
+<html lang="en" data-theme="noir" data-density="comfortable" data-layout="focused">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -50,6 +52,11 @@
     <span class="grow"></span>
     <div class="voice">voice <b id="st-voice">off</b></div>
     <button id="st-mic" style="display:none">🎤 Talk</button>
+    <div class="theme-toggle" id="theme-toggle" title="Appearance theme">
+      <button data-theme-choice="noir">Noir</button>
+      <button data-theme-choice="light">Light</button>
+      <button data-theme-choice="neon">Neon</button>
+    </div>
     <div class="mode-toggle">
       <button id="mode-daily" class="active">Daily</button>
       <button id="mode-debug"><span class="dbg-dot"></span>Debug</button>

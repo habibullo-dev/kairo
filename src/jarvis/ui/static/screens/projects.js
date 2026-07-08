@@ -1,6 +1,8 @@
 // Projects — the workspace switcher + list (Phase 10). Create a project, activate one (which
 // starts a fresh conversation, since a chat is bound to one project for life), or archive it.
 // Renders no secrets; all state changes go through the enumerated /api/projects mutations.
+import { esc, escAttr } from "../ui/dom.js";
+
 export async function render(container, api) {
   const data = await api.get("/api/projects");
   if (!data) {
@@ -12,7 +14,7 @@ export async function render(container, api) {
   const rows = (data.projects || [])
     .map((p) => {
       const on = p.id === active;
-      const dot = p.color ? `<span class="pj-dot" style="background:${esc(p.color)}"></span>` : "";
+      const dot = p.color ? `<span class="pj-dot" style="background:${escAttr(p.color)}"></span>` : "";
       return `<tr>
         <td>${dot}<b>${esc(p.name)}</b> <span class="mono dim">${esc(p.slug)}</span>
           ${on ? '<span class="tag ok">active</span>' : ""}
@@ -62,10 +64,4 @@ export async function render(container, api) {
       render(container, api);
     });
   }
-}
-
-function esc(s) {
-  const d = document.createElement("div");
-  d.textContent = s ?? "";
-  return d.innerHTML;
 }

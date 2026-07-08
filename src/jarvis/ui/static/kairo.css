@@ -4,36 +4,105 @@
    the rest is the obsidian ramp. Calm: Daily shows one primary attention surface at a time
    (pending approval > current run > passive telemetry). System font stack (no external font). */
 
+/* --- Phase 11 token system (theme.js sets data-theme / data-density / data-layout /
+   reduce-motion on <html> from localStorage — appearance is client-side ONLY, no server route).
+   Themes: noir (base/default, dark), light, neon. System fonts + CSS gradient veils only (no
+   Inter, no external resources). The OLD obsidian token names below are a COMPAT SHIM: they now
+   alias the active theme's tokens (resolved per-theme via :root[data-theme]) so every existing
+   screen becomes theme-aware without a rewrite; new screens use the V2 tokens directly. */
 :root {
-  --bg: #0B0F14;
-  --nav-bg: #0A121E;
-  --nav-line: #1B2434;
-  --panel: #101827;
-  --panel-2: #152238;
-  --line: #1F2A3C;
-  --line-2: #253247;
-  --ink: #F4F7FB;
-  --ink-2: #DCE3EC;
-  --ink-3: #C4CEDA;
-  --muted: #93A0B1;
-  --dim: #6B7686;
-  --dimmer: #4C5766;
-  --cyan: #17D2FF;
-  --cyan-soft: #7CE4FF;
-  --amber: #FFB020;
-  --amber-soft: #FFC24D;
-  --ok: #4ec26f;
-  --user-bubble: #1A2740;
-  --user-line: #22314A;
-  --code-bg: #0A121E;
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --mono: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  /* knobs */
+  --font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono: "SF Mono", "Cascadia Code", "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --nav: 224px;      /* left rail width — Phase 11 keeps the 2-col shell; no third rail */
+  --gap: 16px;
+  --radius: 8px;
+  --motion: 180ms;
+
+  /* base theme = NOIR (the default when no data-theme override is present) */
+  color-scheme: dark;
+  --canvas: #050608;
+  --ink: #f0f5f8; --muted: #aab3bf; --subtle: #7c8794;
+  --line: rgba(235, 241, 248, .13); --line-strong: rgba(235, 241, 248, .24);
+  --panel: rgba(12, 14, 19, .76); --panel-strong: rgba(15, 17, 23, .91); --panel-soft: rgba(24, 27, 36, .64);
+  --nav-bg: rgba(8, 10, 14, .84);
+  --shadow: 0 28px 88px rgba(0, 0, 0, .50); --shadow-soft: 0 14px 44px rgba(0, 0, 0, .36);
+  --accent: #9ebfff; --accent-rgb: 158, 191, 255; --accent-2: #d4dbe3; --accent-3: #5bd2c8;
+  --good: #68d69c; --good-rgb: 104, 214, 156;
+  --attention: #e0a840; --attention-rgb: 224, 168, 64;
+  --danger: #ff7481; --danger-rgb: 255, 116, 129;
+  --cost: #71d6e6; --cost-rgb: 113, 214, 230;
+  --veil-a: rgba(2, 3, 5, .95); --veil-b: rgba(6, 8, 13, .75); --veil-c: rgba(3, 4, 7, .96);
+
+  /* compat shim: OLD obsidian names -> active theme tokens */
+  --bg: var(--canvas);
+  --nav-line: var(--line);
+  --panel-2: var(--panel-soft);
+  --line-2: var(--line-strong);
+  --ink-2: var(--ink);
+  --ink-3: var(--muted);
+  --ink-dim: var(--muted);
+  --dim: var(--subtle);
+  --dimmer: var(--subtle);
+  --cyan: var(--accent);
+  --cyan-soft: var(--accent);
+  --amber: var(--attention);
+  --amber-soft: var(--attention);
+  --ok: var(--good);
+  --user-bubble: var(--panel-soft);
+  --user-line: var(--line);
+  --code-bg: var(--panel-soft);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #f7fbff;
+  --ink: #101827; --muted: #596679; --subtle: #788497;
+  --line: rgba(22, 36, 58, .13); --line-strong: rgba(22, 36, 58, .24);
+  --panel: rgba(255, 255, 255, .76); --panel-strong: rgba(255, 255, 255, .90); --panel-soft: rgba(245, 249, 255, .74);
+  --nav-bg: rgba(255, 255, 255, .80);
+  --shadow: 0 24px 70px rgba(24, 38, 61, .16); --shadow-soft: 0 12px 34px rgba(24, 38, 61, .10);
+  --accent: #246bfe; --accent-rgb: 36, 107, 254; --accent-2: #10a78f; --accent-3: #744dff;
+  --good: #15895a; --good-rgb: 21, 137, 90;
+  --attention: #b87504; --attention-rgb: 184, 117, 4;
+  --danger: #c83b4b; --danger-rgb: 200, 59, 75;
+  --cost: #0f8aa1; --cost-rgb: 15, 138, 161;
+  --veil-a: rgba(247, 251, 255, .94); --veil-b: rgba(238, 247, 255, .70); --veil-c: rgba(248, 251, 255, .96);
+}
+
+:root[data-theme="neon"] {
+  color-scheme: dark;
+  --canvas: #050712;
+  --ink: #f7fcff; --muted: #b4c2d7; --subtle: #8090a9;
+  --line: rgba(144, 231, 255, .17); --line-strong: rgba(144, 231, 255, .30);
+  --panel: rgba(8, 10, 24, .74); --panel-strong: rgba(9, 12, 29, .91); --panel-soft: rgba(14, 17, 39, .68);
+  --nav-bg: rgba(7, 8, 20, .86);
+  --shadow: 0 30px 92px rgba(0, 0, 0, .58); --shadow-soft: 0 16px 48px rgba(0, 0, 0, .40);
+  --accent: #00d9ff; --accent-rgb: 0, 217, 255; --accent-2: #ff4fd8; --accent-3: #a7ff4a;
+  --good: #a7ff4a; --good-rgb: 167, 255, 74;
+  --attention: #ffd166; --attention-rgb: 255, 209, 102;
+  --danger: #ff5b80; --danger-rgb: 255, 91, 128;
+  --cost: #00d9ff; --cost-rgb: 0, 217, 255;
+  --veil-a: rgba(1, 3, 13, .94); --veil-b: rgba(6, 9, 28, .76); --veil-c: rgba(3, 5, 16, .96);
+}
+
+/* appearance knobs (client-side; theme.js persists them) */
+:root[data-density="compact"] { --gap: 12px; }
+:root[data-layout="expanded"] { --nav: 240px; --gap: 18px; }
+:root.reduce-motion, :root.reduce-motion * {
+  transition-duration: 1ms !important; animation-duration: 1ms !important; scroll-behavior: auto !important;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; }
 body {
-  background: var(--bg);
+  background-color: var(--canvas);
+  /* atmospheric veil (CSS gradients only — no image assets); tints per theme via the veil +
+     accent tokens. Sits behind the translucent panels/rail for a calm sense of depth. */
+  background-image:
+    linear-gradient(125deg, var(--veil-a), var(--veil-b) 55%, var(--veil-c)),
+    radial-gradient(circle at 18% 8%, rgba(var(--accent-rgb), .13), transparent 34%);
+  background-attachment: fixed;
   color: var(--ink);
   font-family: var(--font);
   font-size: 14px;
@@ -306,3 +375,131 @@ body.debug .debug-banner { display: flex; }
 .synth { margin-top: 8px; padding: 8px 10px; border-left: 2px solid var(--line-2); color: var(--ink-3); font-size: 13px; white-space: pre-wrap; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { color: var(--cyan); }
+
+/* ============================================================================================
+   Phase 11 V2 component layer (token-driven; used by the rebuilt screens T6-T14). Class names
+   here are deliberately NON-colliding with the obsidian classes above, so screens migrate one at
+   a time. backdrop-filter is used ONLY on the rail/modal/palette (with a solid fallback);
+   color-mix carries an rgba fallback. All colours flow from the theme tokens.
+   ============================================================================================ */
+
+/* surfaces */
+.surface { border: 1px solid var(--line); background: var(--panel); border-radius: var(--radius);
+  box-shadow: var(--shadow-soft); padding: 16px; }
+:root[data-density="compact"] .surface { padding: 13px; }
+.panel-title { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 12px; }
+.panel-title h3 { font-size: 15px; font-weight: 600; }
+.panel-title p { font-size: 12px; color: var(--muted); }
+.grid { display: grid; gap: var(--gap); }
+.grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 720px) { .grid.cols-2, .grid.cols-3 { grid-template-columns: 1fr; } }
+
+/* status pills + dot */
+.status-pill { display: inline-flex; gap: 6px; align-items: center; min-height: 26px;
+  padding: 5px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: rgba(var(--accent-rgb), .08); color: var(--muted); }
+.status-pill strong { color: var(--ink); font-weight: 600; }
+.status-pill.cost-tone { border-color: rgba(var(--cost-rgb), .26); background: rgba(var(--cost-rgb), .09); }
+.status-pill.attention { border-color: rgba(var(--attention-rgb), .34); background: rgba(var(--attention-rgb), .12); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good);
+  box-shadow: 0 0 0 4px rgba(var(--good-rgb), .12); flex: none; }
+.badge { min-width: 20px; height: 20px; padding: 0 6px; display: inline-grid; place-items: center;
+  border-radius: 999px; background: rgba(var(--accent-rgb), .14); color: var(--ink); font-size: 11px; }
+
+/* segmented / filter / tab buttons */
+.seg, .filter, .tabbar { display: inline-flex; gap: 7px; flex-wrap: wrap; }
+.tabbar { overflow-x: auto; padding-bottom: 2px; }
+.seg button, .filter button, .tab-button {
+  min-height: 32px; padding: 6px 11px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-soft); color: var(--muted); font: inherit; font-size: 12.5px;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 7px;
+  transition: color var(--motion), border-color var(--motion), background var(--motion); }
+.seg button:hover, .filter button:hover, .tab-button:hover {
+  color: var(--ink); border-color: var(--line-strong); background: rgba(var(--accent-rgb), .11); }
+.seg button.active, .filter button.active, .tab-button.active {
+  color: var(--ink); border-color: rgba(var(--accent-rgb), .42); background: rgba(var(--accent-rgb), .14); }
+
+/* plain buttons (primary = accent gradient, warning = amber, ghost = de-emphasised) */
+.plain-button { min-height: 34px; padding: 8px 14px; border: 1px solid var(--line-strong);
+  border-radius: 8px; background: var(--panel-soft); color: var(--ink); font: inherit;
+  font-weight: 600; font-size: 13px; cursor: pointer;
+  transition: transform var(--motion), border-color var(--motion), background var(--motion); }
+.plain-button:hover { border-color: rgba(var(--accent-rgb), .5); }
+.plain-button.primary { border: none; color: #06121a;
+  background: linear-gradient(120deg, var(--accent), var(--accent-2));
+  box-shadow: 0 16px 34px rgba(var(--accent-rgb), .22); }
+.plain-button.warning { border-color: rgba(var(--attention-rgb), .5); color: var(--attention);
+  background: rgba(var(--attention-rgb), .12); }
+.plain-button.ghost { opacity: .74; font-weight: 500; }
+.plain-button:disabled { opacity: .45; cursor: default; }
+
+/* list rows (+ attention / cost tone) */
+.list-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px;
+  align-items: center; min-height: 52px; padding: 11px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel-soft); }
+.list-icon { width: 34px; height: 34px; display: grid; place-items: center; flex: none;
+  border-radius: 8px; color: var(--accent); background: rgba(var(--accent-rgb), .12); }
+.list-row.attention { border-color: rgba(var(--attention-rgb), .36); background: rgba(var(--attention-rgb), .12); }
+.list-row.attention .list-icon { color: var(--attention); background: rgba(var(--attention-rgb), .16); }
+.list-row.cost-tone { border-color: rgba(var(--cost-rgb), .26); background: rgba(var(--cost-rgb), .09); }
+
+/* card family (projects / artifacts / saved views / runs / agents) */
+.project-card, .artifact-card, .saved-view, .run-card, .agent-card {
+  border: 1px solid var(--line); background: var(--panel); border-radius: 8px;
+  box-shadow: var(--shadow-soft); padding: 15px; min-width: 0; }
+.project-card.pinned, .artifact-card.pinned { border-color: rgba(var(--accent-rgb), .4); }
+.card-tile { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+  color: #fff; background: linear-gradient(135deg, var(--p1, var(--accent)), var(--p2, var(--accent-3)));
+  box-shadow: 0 14px 30px rgba(0, 0, 0, .28); /* fallback */
+  box-shadow: 0 14px 30px color-mix(in srgb, var(--p1, var(--accent)) 28%, transparent); }
+.progress { height: 6px; border-radius: 999px; background: var(--panel-soft); overflow: hidden; }
+.progress > span { display: block; height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+
+/* empty states + metrics */
+.empty-state { display: grid; gap: 8px; padding: 16px; border: 1px dashed var(--line-strong);
+  border-radius: 8px; background: var(--panel-soft); color: var(--muted); text-align: center; }
+.empty-state h4 { color: var(--ink); font-size: 14px; }
+.metric { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
+.metric .n { font-size: 22px; font-weight: 600; color: var(--ink); }
+.metric .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+
+/* command overlay + palette (glass — backdrop-filter here + modal only) */
+.command-overlay, .modal-backdrop { position: fixed; inset: 0; display: none; z-index: 60;
+  background: rgba(0, 0, 0, .44); padding: 18px; }
+.command-overlay { align-items: flex-start; justify-content: center; padding-top: 9vh; }
+.modal-backdrop { place-items: center; }
+.command-overlay.open { display: flex; }
+.modal-backdrop.open { display: grid; }
+.command-palette, .modal-card { width: min(760px, 100%); border: 1px solid var(--line-strong);
+  border-radius: var(--radius); background: var(--panel-strong); box-shadow: var(--shadow);
+  padding: 16px; backdrop-filter: blur(22px) saturate(1.1); }
+.command-palette { width: min(920px, 100%); }
+@supports not (backdrop-filter: blur(1px)) {
+  .command-palette, .modal-card { background: var(--panel-strong); }
+}
+.search-input { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px;
+  align-items: center; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-soft); }
+.search-input input { flex: 1; background: transparent; border: none; outline: none;
+  color: var(--ink); font: inherit; font-size: 17px; }
+.palette-results { margin-top: 12px; display: grid; gap: 6px; max-height: 56vh; overflow: auto; }
+.risk-banner { padding: 12px; border: 1px solid rgba(var(--attention-rgb), .38);
+  background: rgba(var(--attention-rgb), .13); border-radius: 8px; }
+.payload { overflow: auto; max-height: 170px; padding: 12px; border: 1px solid var(--line);
+  border-radius: 8px; background: rgba(0, 0, 0, .18); color: var(--ink);
+  font: 12px var(--mono); line-height: 1.5; white-space: pre-wrap; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+.kbd { font: 11px var(--mono); padding: 2px 6px; border: 1px solid var(--line-strong);
+  border-radius: 6px; color: var(--muted); background: var(--panel-soft); }
+.icon { display: inline-grid; place-items: center; width: 18px; height: 18px; }
+.icon svg { width: 18px; height: 18px; }
+
+/* status-bar theme toggle (added to the shell header in T5) */
+.theme-toggle { display: inline-flex; gap: 2px; background: var(--nav-bg); border: 1px solid var(--line);
+  border-radius: 9px; padding: 3px; flex-shrink: 0; }
+.theme-toggle button { border: none; cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 600;
+  padding: 4px 10px; border-radius: 6px; background: transparent; color: var(--muted); }
+.theme-toggle button.active { background: rgba(var(--accent-rgb), .16); color: var(--ink); }
