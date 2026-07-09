@@ -1463,6 +1463,19 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
     Shuts down with REPL parity: the background runner finishes any in-flight job (never a
     torn write) then stops, and the session is reflected on exit."""
     console = console or Console()
+    # Make the server self-sufficient for output encoding: force UTF-8 on the console (Windows
+    # defaults to cp1252, which crashes on an emoji/em-dash in a log line) and route structured
+    # logs to the UTF-8 file. The `jarvis --ui` entry does this too; doing it here means run_ui is
+    # safe no matter how it's launched — a Unicode char in a tool input/message can never kill a turn.
+    import contextlib as _ctx
+    import sys as _sys
+
+    for _stream in (_sys.stdout, _sys.stderr):
+        with _ctx.suppress(Exception):
+            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    with _ctx.suppress(Exception):
+        from jarvis.observability import configure_logging
+        configure_logging(config.logs_dir)
     if not config.ui.enabled:
         console.print(
             "[dim]The workstation UI is not enabled. Set ui.enabled: true in settings.yaml "

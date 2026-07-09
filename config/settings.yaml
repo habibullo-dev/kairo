@@ -2,12 +2,28 @@
 # Every value has a code default in src/jarvis/config.py; this file overrides them.
 
 models:
-  # Quality-first: the most capable model at every tier (API cost is not a constraint).
-  main: claude-opus-4-8       # the agent's reasoning + tool-use model
-  utility: claude-sonnet-5    # summarization / memory extraction (NOT a small model,
-                              # so background work can't silently corrupt context/memory)
-  judge: claude-opus-4-8      # LLM-as-judge for evals (phase 5)
-  embedding: voyage-3-large   # long-term memory embeddings (phase 2)
+  # Habib's routing (2026-07-09): Sonnet for the daily chat, Haiku for cheap/economy background
+  # work, DeepSeek/Gemini for coding/research workers, Fable/Opus for final authority.
+  main: claude-sonnet-5              # the daily interactive chat model (the composer's default)
+  utility: claude-haiku-4-5-20251001 # economy: summarization / memory extraction / compaction / digest
+  judge: claude-opus-4-8             # LLM-as-judge for evals (phase 5)
+  embedding: voyage-3-large          # long-term memory embeddings (phase 2)
+  # Role -> route registry (Phase 10). Only anthropic may hold final-authority (planner/judge) and
+  # private-context (utility) roles (10C pin); the cheap workers are context-policy-gated at runtime.
+  routes:
+    utility:    { provider: anthropic, model: claude-haiku-4-5-20251001 }  # economy tier
+    coder:      { provider: qwen,      model: qwen3-coder-plus }           # coding worker (DeepSeek also enabled)
+    researcher: { provider: gemini,    model: gemini-3.5-flash, text_only: true }  # long-context research
+    planner:    { provider: anthropic, model: claude-fable-5 }             # head architect / synthesizer
+    judge:      { provider: anthropic, model: claude-opus-4-8 }            # final reviewer / verdict
+    reviewer:   { provider: anthropic, model: claude-opus-4-8 }            # code/diff reviewer
+
+providers:
+  # Non-core model providers (Phase 10C). A provider is usable ONLY if listed here AND its key is
+  # present AND it has >=1 priced model in pricing.yaml (fail-closed). These carry the coder/
+  # researcher worker routes above; they are NOT private_ok, so the engine refuses to feed them
+  # private/project context (enforced at context assembly). Keys live in .env.
+  enabled: [qwen, deepseek, gemini]    # Qwen = coder route; DeepSeek = alternate coder; Gemini = research
 
 limits:
   max_iterations: 25            # hard stop on the agent loop (runaway guard)
