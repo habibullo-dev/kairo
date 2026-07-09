@@ -306,6 +306,21 @@ def create_app(
         )
         ledger = app.state.services.ledger
         status["ledger_degraded"] = ledger.status()["degraded"] if ledger is not None else False
+        # Phase 15.5 conversation truth: the active session + the interactive model/effort, so the
+        # client can rehydrate the transcript it is IN (fixes the "No messages yet" reload) and
+        # render honest composer chips. session_title is looked up fresh (a rename must show).
+        sess = app.state.session
+        sstore = app.state.services.sessions
+        status["session_id"] = sess.session_id if sess is not None else None
+        status["session_title"] = None
+        if sess is not None and sess.session_id is not None and sstore is not None:
+            meta = await sstore.get_meta(sess.session_id)
+            status["session_title"] = meta.title if meta is not None else None
+        # model reflects the interactive override once Task 2 wires it; here it is the config
+        # default (byte-identical to today). effort is the loop's output-config effort.
+        models = getattr(app.state, "interactive_models", None)
+        status["model"] = models.current() if models is not None else config.models.main
+        status["effort"] = config.limits.effort
         return status
 
     @app.post("/api/budgets")

@@ -296,3 +296,24 @@ def test_mode_route_sets_and_reports(tmp_path: Path) -> None:
     # a bogus mode is rejected
     bad = client.post("/api/mode", json={"mode": "yolo"}, headers=hdr(post=True))
     assert bad.status_code == 400
+
+
+def test_runner_reports_conversation_and_model_truth(tmp_path: Path) -> None:
+    # Phase 15.5: /api/runner carries the active session + the interactive model/effort, so the
+    # client can rehydrate the transcript it is in and render honest composer chips.
+    from fastapi.testclient import TestClient
+
+    from jarvis.ui.auth import SESSION_COOKIE, AuthManager
+    from jarvis.ui.server import create_app
+
+    cfg = load_config(root=tmp_path, env_file=None)
+    auth = AuthManager(token="tok")
+    client = TestClient(create_app(cfg, auth=auth), base_url="http://127.0.0.1")
+    body = client.get(
+        "/api/runner", headers={"cookie": f"{SESSION_COOKIE}={auth.mint_session()}"}
+    ).json()
+    # shape present (no session wired in this bare app ⇒ session_id/title are null)
+    assert set(body) >= {"session_id", "session_title", "model", "effort"}
+    assert body["session_id"] is None and body["session_title"] is None
+    assert body["model"] == cfg.models.main  # config default until Task 2's override state exists
+    assert body["effort"] == cfg.limits.effort

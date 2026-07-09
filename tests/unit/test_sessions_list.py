@@ -141,3 +141,32 @@ async def test_get_meta_missing(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     assert await store.get_meta(999) is None
     assert await store.set_pinned(999, True) is False
+
+
+async def test_archive_hides_from_default_lists_but_keeps_the_chat(tmp_path: Path) -> None:
+    # Phase 15.5: archiving is a status flip, NEVER a delete — the chat leaves the default list
+    # (and REPL/boot resume), but its transcript and metadata remain, and it returns on request.
+    store = await _store(tmp_path)
+    keep = await _chat(store, "keep me")
+    gone = await _chat(store, "tidy me away")
+    assert await store.set_archived(gone, True) is True
+
+    assert {r.id for r in await store.list_sessions()} == {keep}  # archived excluded by default
+    assert {r.id for r in await store.list_sessions(include_archived=True)} == {keep, gone}
+    assert await store.latest_session_id() == keep  # boot/resume never lands on an archived chat
+    meta = await store.get_meta(gone)
+    assert meta is not None and meta.archived is True and meta.message_count == 1  # not deleted
+
+    assert await store.set_archived(gone, False) is True  # reversible
+    assert {r.id for r in await store.list_sessions()} == {keep, gone}
+
+
+async def test_rename_sets_title_without_reordering(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    older = await _chat(store, "older")
+    await _chat(store, "newer")
+    before = [r.id for r in await store.list_sessions()]  # newest-first: [newer, older]
+    assert await store.set_title(older, "Renamed") is True
+    assert (await store.get_meta(older)).title == "Renamed"
+    assert [r.id for r in await store.list_sessions()] == before  # a pure rename doesn't reorder
+    assert await store.set_title(999, "x") is False  # unknown session

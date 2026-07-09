@@ -90,7 +90,7 @@ async def test_migration_v6_preserves_tasks_and_adds_digest_kind() -> None:
     )
     await db.commit()
 
-    assert await migrate(db) == 12  # applies pending through v12
+    assert await migrate(db) == 13  # applies pending through v12
 
     # Seeded rows survived the tasks rebuild; the FK from task_runs is intact.
     cur = await db.execute("SELECT kind FROM tasks WHERE id = 1")

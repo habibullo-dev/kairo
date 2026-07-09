@@ -55,6 +55,7 @@ class SessionMeta:
     updated_at: str
     reflected_at: str | None
     message_count: int
+    archived: bool = False  # Phase 15.5: archived chats leave the default lists (never deleted)
 
 
 #: Session kinds that may EVER feed reflection into long-term memory. 'subagent' is
@@ -146,7 +147,7 @@ class SessionStore:
         """Most recently updated *interactive* session — task sessions are invisible
         here so ``--resume`` never lands inside a background job's transcript."""
         cursor = await self.db.execute(
-            "SELECT id FROM sessions WHERE kind = 'interactive' "
+            "SELECT id FROM sessions WHERE kind = 'interactive' AND archived = 0 "
             "ORDER BY updated_at DESC, id DESC LIMIT 1"
         )
         row = await cursor.fetchone()
@@ -154,7 +155,7 @@ class SessionStore:
 
     _META_COLS = (
         "s.id, s.title, s.kind, s.project_id, s.pinned, s.created_at, s.updated_at, "
-        "s.reflected_at, (SELECT count(*) FROM messages m WHERE m.session_id = s.id)"
+        "s.reflected_at, (SELECT count(*) FROM messages m WHERE m.session_id = s.id), s.archived"
     )
 
     @staticmethod
@@ -169,6 +170,7 @@ class SessionStore:
             updated_at=row[6],
             reflected_at=row[7],
             message_count=row[8],
+            archived=bool(row[9]),
         )
 
     def _scope_clause(self, project_id: object) -> tuple[str, list[object]]:
@@ -186,12 +188,13 @@ class SessionStore:
         kind: str | None = "interactive",
         project_id: object = _ANY_PROJECT,
         pinned: bool | None = None,
+        include_archived: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> list[SessionMeta]:
         """Sessions newest-first (pinned first), filtered by kind / project / pinned. Only
         sessions that have at least one message are returned — an empty lazily-created row
-        never shows in the chats list."""
+        never shows in the chats list. Archived chats are excluded unless ``include_archived``."""
         where = "WHERE (SELECT count(*) FROM messages m WHERE m.session_id = s.id) > 0"
         params: list[object] = []
         if kind is not None:
@@ -203,6 +206,8 @@ class SessionStore:
         if pinned is not None:
             where += " AND s.pinned = ?"
             params.append(1 if pinned else 0)
+        if not include_archived:
+            where += " AND s.archived = 0"
         cursor = await self.db.execute(
             f"SELECT {self._META_COLS} FROM sessions s {where} "
             "ORDER BY s.pinned DESC, s.updated_at DESC, s.id DESC LIMIT ? OFFSET ?",
@@ -271,6 +276,27 @@ class SessionStore:
         async with self.lock:
             cursor = await self.db.execute(
                 "UPDATE sessions SET pinned = ? WHERE id = ?", (1 if pinned else 0, session_id)
+            )
+            await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def set_title(self, session_id: int, title: str) -> bool:
+        """Rename a chat (metadata only). ``updated_at`` is left untouched so a pure rename
+        doesn't reorder the recents list."""
+        async with self.lock:
+            cursor = await self.db.execute(
+                "UPDATE sessions SET title = ? WHERE id = ?", (title, session_id)
+            )
+            await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def set_archived(self, session_id: int, archived: bool) -> bool:
+        """Archive/unarchive a chat — a display-status flip (never a delete); archived chats
+        drop out of the default lists but keep their full transcript for audit/resume."""
+        async with self.lock:
+            cursor = await self.db.execute(
+                "UPDATE sessions SET archived = ? WHERE id = ?",
+                (1 if archived else 0, session_id),
             )
             await self.db.commit()
         return cursor.rowcount > 0

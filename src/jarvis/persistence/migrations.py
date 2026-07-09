@@ -930,6 +930,16 @@ END;
 """
 
 
+async def _migrate_v13(db: aiosqlite.Connection) -> None:
+    # Phase 15.5: archive a chat (never delete) — a display-status flip on sessions, so a
+    # long chat list can be tidied without losing history. Additive + guarded (ALTER ADD COLUMN
+    # has no IF NOT EXISTS), so a partial-failure re-run is a clean no-op — the _migrate_v11 shape.
+    cursor = await db.execute("PRAGMA table_info(sessions)")
+    existing = {row[1] for row in await cursor.fetchall()}
+    if "archived" not in existing:
+        await db.execute("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -948,6 +958,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (10, _SCHEMA_V10),
     (11, _migrate_v11),
     (12, _SCHEMA_V12),
+    (13, _migrate_v13),
 ]
 
 
