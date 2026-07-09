@@ -936,15 +936,27 @@ def settings_overview(
     }
 
 
-def interactive_models(config: Config, *, current: str | None = None) -> dict:
+def interactive_models(
+    config: Config,
+    *,
+    current: str | None = None,
+    efforts: dict[str, str] | None = None,
+    current_effort: str | None = None,
+) -> dict:
     """The composer's model picker (Phase 15.5). The Anthropic ``INTERACTIVE_MODELS`` are
     SELECTABLE (they may receive the chat's private context — the 10C ``private_ok`` pin); the
     external providers are listed visible-but-DISABLED with the plain reason they can't drive the
-    main chat, plus their fail-closed provider state. Presence/state only — never a key value."""
+    main chat, plus their fail-closed provider state. Presence/state only — never a key value.
+
+    ``efforts`` (per-model chosen effort) + ``current_effort`` + the ``effort_levels`` domain drive
+    the composer's per-model effort selector (cost control); each model row carries its ``effort``
+    so switching model shows that model's level."""
     from jarvis.models.providers import PROVIDER_CATALOG, ProviderRegistry, ProviderState
-    from jarvis.ui.state import EXTERNAL_CHAT_PROVIDERS, INTERACTIVE_MODELS
+    from jarvis.ui.state import EFFORT_LEVELS, EXTERNAL_CHAT_PROVIDERS, INTERACTIVE_MODELS
 
     cur = current or config.models.main
+    eff_by_model = efforts or {}
+    default_effort = current_effort or config.limits.effort
     # Resolve provider availability DEFENSIVELY: a pricing/config hiccup must never empty the model
     # picker. The Anthropic interactive models are ALWAYS listed (the app is already running on the
     # anthropic key); only the external-provider *states* depend on the registry.
@@ -962,6 +974,9 @@ def interactive_models(config: Config, *, current: str | None = None) -> dict:
             "provider": "anthropic",
             "selectable": keyed,
             "current": mid == cur,
+            "effort": eff_by_model.get(mid, default_effort),
+            # Haiku accepts effort but not adaptive thinking — surfaced so the UI can note it.
+            "thinking": "haiku" not in mid.lower(),
             "reason": "" if keyed else "set ANTHROPIC_API_KEY to use the main chat",
         }
         for mid, label in INTERACTIVE_MODELS
@@ -984,7 +999,13 @@ def interactive_models(config: Config, *, current: str | None = None) -> dict:
                 "reason": note if st == "available" else f"{note} ({st})",
             }
         )
-    return {"current": cur, "models": models, "external": external}
+    return {
+        "current": cur,
+        "models": models,
+        "external": external,
+        "current_effort": eff_by_model.get(cur, default_effort),
+        "effort_levels": [{"id": v, "label": label} for v, label in EFFORT_LEVELS],
+    }
 
 
 # --- capability truth: ONE availability read model, rendered by every surface (Phase 15.5) ---

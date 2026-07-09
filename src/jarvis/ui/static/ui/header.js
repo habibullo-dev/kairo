@@ -2,7 +2,7 @@
 // what SCOPE am I in (Global / a project), which CHAT, on which MODEL, in which MODE, and what is
 // available. Every value is real server state (the runner / models / capabilities / projects /
 // sessions read models); the controls POST only to the enumerated UI-state routes (projects-select,
-// sessions new|rename|archive|pin, model, mode) — never the agent-turn or approval routes. All text
+// sessions new|rename|archive|pin, model, effort, mode) — never the agent-turn or approval routes. All text
 // is set via el()/textContent (chat titles + project names are user/model text) — no raw-HTML sink.
 import { el } from "./dom.js";
 
@@ -87,6 +87,28 @@ function modelSelect(models) {
   return labeled("Model", sel);
 }
 
+// Per-model effort (cost control): lower effort ⇒ fewer output tokens ⇒ lower cost. The chosen
+// level is remembered per model server-side, so switching model re-renders this with that model's
+// effort. Degrades to nothing if the read model predates effort (never a broken control).
+function effortSelect(models) {
+  const levels = models.effort_levels || [];
+  if (!levels.length) return null;
+  const cur = models.current_effort || "high";
+  const sel = el("select", { class: "hdr-select", "aria-label": "Effort (cost)" },
+    levels.map((lv) => el("option", { value: lv.id, selected: lv.id === cur }, [lv.label])));
+  sel.value = cur;
+  // Tell the human when the current model is effort-only (Haiku has no extended thinking).
+  const curRow = (models.models || []).find((m) => m.current);
+  const title = curRow && curRow.thinking === false
+    ? "Economy model: effort controls cost; extended thinking is off for this model."
+    : "Lower effort spends fewer tokens (cheaper); higher is more thorough.";
+  sel.title = title;
+  sel.addEventListener("change", () => {
+    if (sel.value) post("/api/effort", { effort: sel.value, model: models.current });
+  });
+  return labeled("Effort", sel);
+}
+
 function modeSelect(runner) {
   const cur = runner.mode || "approval";
   const sel = el("select", { class: "hdr-select", "aria-label": "Mode" },
@@ -161,6 +183,7 @@ function render(runner, models, caps, projects, sessions) {
     el("div", { class: "hdr-left" }, [
       scopeSelect(runner, projects), titleCluster(runner), actions(runner, sessions),
     ]),
-    el("div", { class: "hdr-right" }, [modelSelect(models), modeSelect(runner), caph]),
+    el("div", { class: "hdr-right" },
+      [modelSelect(models), effortSelect(models), modeSelect(runner), caph].filter(Boolean)),
   ]));
 }

@@ -92,6 +92,7 @@ class OpenAIChatClient:
         tool_choice: dict | None = None,
         temperature: float | None = None,
         stable_prefix: str | None = None,
+        effort: str | None = None,  # protocol conformance; OpenAI-compat has no output_config
     ) -> ModelResponse:
         if tools:
             raise UnsupportedToolUseError(

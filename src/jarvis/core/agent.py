@@ -109,6 +109,7 @@ class AgentLoop:
         project: Callable[[], ProjectContext] | None = None,
         mode: Callable[[], Mode] | None = None,
         model_override: Callable[[], str | None] | None = None,
+        effort_override: Callable[[], str | None] | None = None,
         cost_purpose: str = "turn",
         add_time_context: bool = False,
         now: Callable[[], _dt.datetime] = _default_now,
@@ -134,6 +135,10 @@ class AgentLoop:
         # None to defer to the config default. Read once per turn (freezes like the project scope —
         # a switch applies next turn). None override => byte-identical to config.models.main.
         self.model_override = model_override
+        # Phase 15.5: the per-model effort selector (UI cost control). A callable returning the
+        # chosen output-config effort, or None to defer to the client's configured default. Read
+        # once per turn (freezes like the model). None override => byte-identical (no effort key).
+        self.effort_override = effort_override
         self._auto_allow: frozenset[str] = frozenset(config.modes.auto_allow_tools)
         # Phase 10 cost ledger: the purpose recorded for this loop's completions ("turn" for
         # interactive, "subagent"/"orchestration" for children). Nested utility calls
@@ -207,8 +212,11 @@ class AgentLoop:
         turn_model = self.config.models.main
         if self.model_override is not None:
             turn_model = self.model_override() or self.config.models.main
+        # Freeze the per-model effort too (same next-turn semantics). None ⇒ omit the kwarg ⇒ the
+        # client's configured effort ⇒ byte-identical to a build without the selector.
+        turn_effort = self.effort_override() if self.effort_override is not None else None
 
-        self.log.info("turn_start", trace_id=trace_id, model=turn_model)
+        self.log.info("turn_start", trace_id=trace_id, model=turn_model, effort=turn_effort)
 
         # Snapshot the active project once per turn (a switch mid-conversation applies from
         # the next turn, not mid-flight). None provider => global scope, no extra.
@@ -268,6 +276,10 @@ class AgentLoop:
                 "max_tokens": limits.max_output_tokens,
                 "on_text_delta": lambda t: emit(TextDelta(t)),
             }
+            if turn_effort is not None:
+                # Only when the human picked a non-default effort — otherwise the request stays
+                # byte-identical (the client applies its configured default).
+                create_kwargs["effort"] = turn_effort
             if self.config.context_reuse.enabled:
                 # S7 (Phase 13): hand the live client the stable/volatile seam — the stable
                 # framing (self.system) only, so only it is cached; the volatile, possibly-private

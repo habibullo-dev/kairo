@@ -346,10 +346,14 @@ class LedgeredClient:
         resp = await self._inner.create(**kwargs)  # type: ignore[attr-defined]
         tool_calls = sum(1 for b in resp.content_blocks if b.get("type") == "tool_use")
         cache = self._cache_fields(resp)
+        # Record the effort actually requested: a per-call override (the UI's per-model effort
+        # selector) wins over the client's configured default, so the ledger's effort column is
+        # honest about what drove this call.
+        call_effort = kwargs.get("effort") or self._effort
         await self._ledger.record(
             provider=self._provider,
             model=resp.model,
-            effort=self._effort,
+            effort=call_effort,
             usage=resp.usage,
             latency_ms=resp.latency_ms,
             tool_call_count=tool_calls,

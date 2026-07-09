@@ -328,7 +328,9 @@ def create_app(
         # default (byte-identical to today). effort is the loop's output-config effort.
         models = getattr(app.state, "interactive_models", None)
         status["model"] = models.current() if models is not None else config.models.main
-        status["effort"] = config.limits.effort
+        # effort is the CURRENT model's per-model effort (the composer's cost selector); falls back
+        # to the config default when the selector isn't wired.
+        status["effort"] = models.current_effort() if models is not None else config.limits.effort
         return status
 
     @app.post("/api/budgets")
@@ -393,6 +395,30 @@ def create_app(
         await app.state.connections.broadcast({"kind": "model_changed", "model": ims.current()})
         return JSONResponse({"ok": True, "model": ims.current()})
 
+    @app.post("/api/effort")
+    async def set_effort(request: Request) -> JSONResponse:
+        # Phase 15.5: choose the output-config effort for a model (cost control). Lower effort ⇒
+        # fewer output tokens ⇒ lower cost; higher ⇒ more thorough. Validated against VALID_EFFORTS
+        # in InteractiveModelState.set_effort (a bad level/model is a 400). UI-state only: the loop
+        # reads it next turn (frozen per turn) and the ledger records the requested effort. Effort
+        # is remembered per model; omit `model` to set the current model's. No tool/executor/Gate.
+        ims = app.state.interactive_models
+        if ims is None:
+            return _unavailable("effort selection")
+        body = await request.json()
+        model_id = body.get("model")
+        try:
+            ims.set_effort(
+                str(body.get("effort", "")), model_id=str(model_id) if model_id else None
+            )
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
+        log.info("interactive_effort_changed", model=ims.current(), effort=ims.current_effort())
+        await app.state.connections.broadcast(
+            {"kind": "effort_changed", "model": ims.current(), "effort": ims.current_effort()}
+        )
+        return JSONResponse({"ok": True, "effort": ims.current_effort(), "efforts": ims.efforts()})
+
     @app.post("/api/runner/pause")
     async def runner_pause() -> dict:
         # Maps to BackgroundRunner.stop(): finish any in-flight job (never a torn write),
@@ -450,7 +476,12 @@ def create_app(
         # Phase 15.5: the composer's model picker — selectable Anthropic models + honestly-disabled
         # externals with reasons. Read-only; presence/state only (secret-swept).
         ims = app.state.interactive_models
-        return interactive_models(config, current=ims.current() if ims is not None else None)
+        return interactive_models(
+            config,
+            current=ims.current() if ims is not None else None,
+            efforts=ims.efforts() if ims is not None else None,
+            current_effort=ims.current_effort() if ims is not None else None,
+        )
 
     def _capabilities() -> dict:
         # THE one availability truth (Phase 15.5), computed from live state: connectors/providers/

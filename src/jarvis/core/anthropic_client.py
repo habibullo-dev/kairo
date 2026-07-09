@@ -6,8 +6,11 @@ quality-first (API cost is not a constraint):
 
 * **Streaming** — required for the large ``max_tokens`` we allow; also gives the
   REPL live text and avoids HTTP timeouts.
-* **Adaptive thinking + effort** — Opus 4.8 uses ``thinking={"type":"adaptive"}``
-  (the only on-mode; ``budget_tokens`` is rejected) with ``output_config.effort``.
+* **Adaptive thinking + effort** — the reasoning tier (Opus/Sonnet/Fable) uses
+  ``thinking={"type":"adaptive"}`` (the only on-mode; ``budget_tokens`` is rejected)
+  with ``output_config.effort``. The Haiku tier rejects ``thinking`` (400) but accepts
+  ``effort``, so thinking is gated by model while effort applies across the tier — and
+  ``effort`` is per-call overridable (the UI's per-model effort selector).
 * **SDK retries** — the client retries 429/5xx with exponential backoff; we just
   raise ``max_retries``. No hand-rolled retry loop.
 
@@ -84,6 +87,15 @@ def _guard_compat_response(response: ModelResponse, model: str) -> None:
         raise CompatResponseError(f"compat provider returned empty content for model {model!r}")
     if response.usage.total_tokens == 0:
         raise CompatResponseError(f"compat provider reported zero token usage for model {model!r}")
+
+
+def _supports_adaptive_thinking(model: str) -> bool:
+    """Whether ``model`` accepts ``thinking={"type":"adaptive"}``. The Anthropic Haiku tier does
+    NOT (the API 400s: "adaptive thinking is not supported on this model"); the reasoning-tier
+    models (Opus/Sonnet/Fable) do. This gates ONLY the thinking param — ``output_config.effort``
+    is accepted across the tier (the thinking-off utility client drives Haiku with it), so the
+    economy model stays fully usable, just without extended reasoning."""
+    return "haiku" not in model.lower()
 
 
 class AnthropicClient:
@@ -173,6 +185,7 @@ class AnthropicClient:
         max_tokens: int,
         tool_choice: dict | None = None,
         temperature: float | None = None,
+        effort: str | None = None,
     ) -> dict:
         kwargs: dict = {
             "model": model,
@@ -181,16 +194,25 @@ class AnthropicClient:
             "messages": messages,
         }
         if not self.compat:
-            # effort/output_config is Anthropic-native; compat endpoints reject/ignore it.
-            kwargs["output_config"] = {"effort": self.effort}
+            # effort/output_config is Anthropic-native; compat endpoints reject/ignore it. A
+            # per-call `effort` (the UI's per-model effort selector) overrides the client default;
+            # None ⇒ the configured default ⇒ byte-identical to a build without the selector.
+            kwargs["output_config"] = {"effort": effort or self.effort}
         if tools:
             kwargs["tools"] = tools
         if tool_choice is not None:
             # Forcing a tool is incompatible with extended thinking; callers that
             # force a tool use a thinking-off client (utility). Belt and suspenders:
             kwargs["tool_choice"] = tool_choice
-        if self.thinking and tool_choice is None and not self.compat:
-            # Adaptive thinking is Anthropic-native — never sent to a compat endpoint.
+        if (
+            self.thinking
+            and tool_choice is None
+            and not self.compat
+            and _supports_adaptive_thinking(model)
+        ):
+            # Adaptive thinking is Anthropic-native — never sent to a compat endpoint, and never
+            # to a model that rejects it (the Haiku tier 400s on `thinking`). output_config.effort
+            # IS accepted there, so only the thinking param is gated by model capability.
             kwargs["thinking"] = {"type": "adaptive"}
         if temperature is not None:
             # Explicit temperature (the judge sets 1.0); default None leaves the
@@ -211,10 +233,11 @@ class AnthropicClient:
         tool_choice: dict | None = None,
         temperature: float | None = None,
         stable_prefix: str | None = None,
+        effort: str | None = None,
     ) -> ModelResponse:
         system_payload, cr_hash = self._cache_system(system, stable_prefix)
         kwargs = self._build_kwargs(
-            model, system_payload, messages, tools, max_tokens, tool_choice, temperature
+            model, system_payload, messages, tools, max_tokens, tool_choice, temperature, effort
         )
         start = perf_counter()
         async with self._client.messages.stream(**kwargs) as stream:  # type: ignore[attr-defined]

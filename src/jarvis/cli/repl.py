@@ -1271,7 +1271,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
     # Phase 15.5: the interactive model selector. The loop reads it via model_override (frozen per
     # turn); a switch is Anthropic-only (private-context pin) and never touches the ModelRegistry
     # routes. Default = config.models.main ⇒ byte-identical until the human picks another model.
-    model_state = InteractiveModelState(config.models.main)
+    model_state = InteractiveModelState(config.models.main, default_effort=config.limits.effort)
     if repl.agents is not None:
         # A child's ASK escalates to the UI screen (the Gate), not the terminal prompt.
         app_approvals = app.state.approvals
@@ -1290,6 +1290,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
         project=repl.projects.current if repl.projects is not None else None,
         mode=repl.modes.current,
         model_override=model_state.current,
+        effort_override=model_state.current_effort,
         add_time_context=repl.tasks is not None,
         system=build_system(
             memory_enabled=repl.memory is not None,
@@ -1466,7 +1467,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
     # Make the server self-sufficient for output encoding: force UTF-8 on the console (Windows
     # defaults to cp1252, which crashes on an emoji/em-dash in a log line) and route structured
     # logs to the UTF-8 file. The `jarvis --ui` entry does this too; doing it here means run_ui is
-    # safe no matter how it's launched — a Unicode char in a tool input/message can never kill a turn.
+    # safe however it's launched — a Unicode char in a tool input/message can never kill a turn.
     import contextlib as _ctx
     import sys as _sys
 

@@ -178,6 +178,40 @@ async def test_create_omits_tools_and_thinking_when_disabled() -> None:
     assert "thinking" not in kw
 
 
+async def test_haiku_omits_thinking_but_keeps_effort() -> None:
+    # THE bug fix: Haiku 4.5 400s on adaptive `thinking` but accepts output_config.effort. A
+    # thinking-ON client driving Haiku must send effort WITHOUT thinking (so the economy model is
+    # usable interactively). Opus (same client) still gets thinking — the gate is per model.
+    fake = _FakeAnthropic(_FakeStream([], _message(stop_reason="end_turn")))
+    client = AnthropicClient(client=fake, thinking=True, effort="high")
+    await client.create(
+        model="claude-haiku-4-5-20251001",
+        system="s",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        max_tokens=100,
+    )
+    kw = fake.messages.captured
+    assert "thinking" not in kw  # would 400 on Haiku
+    assert kw["output_config"] == {"effort": "high"}  # effort IS supported on Haiku
+
+
+async def test_per_call_effort_overrides_client_default() -> None:
+    # The UI's per-model effort selector: create(effort=...) wins over the client's configured
+    # effort, so a human can dial cost down for a turn. None ⇒ the client default (byte-identical).
+    fake = _FakeAnthropic(_FakeStream([], _message(stop_reason="end_turn")))
+    client = AnthropicClient(client=fake, effort="high")
+    await client.create(
+        model="claude-sonnet-5",
+        system="s",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        max_tokens=100,
+        effort="low",
+    )
+    assert fake.messages.captured["output_config"] == {"effort": "low"}
+
+
 # --- Phase 5: latency + temperature ----------------------------------------
 
 

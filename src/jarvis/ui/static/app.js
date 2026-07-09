@@ -110,6 +110,10 @@ function handleMessage(msg) {
     if (state.runner) state.runner.model = msg.model;
     renderRunnerState(); refreshHeader(); return;
   }
+  if (msg.kind === "effort_changed") {
+    if (state.runner) state.runner.effort = msg.effort;
+    renderRunnerState(); refreshHeader(); return;
+  }
   if (msg.kind === "project_changed") {
     // A scope switch started a fresh scoped conversation server-side — clear the local view.
     if (state.runner) state.runner.project = { id: msg.project_id, name: msg.name };

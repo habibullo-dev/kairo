@@ -26,19 +26,60 @@ EXTERNAL_CHAT_PROVIDERS: tuple[str, ...] = ("openai", "gemini", "qwen", "deepsee
 
 ALLOWED_MODEL_IDS: frozenset[str] = frozenset(mid for mid, _ in INTERACTIVE_MODELS)
 
+#: The output-config effort levels the human may pick, cheapest → most thorough. Fewer output
+#: tokens at a lower effort ⇒ lower cost; higher effort ⇒ more reasoning/thoroughness. Matches
+#: ``config.limits.effort``'s domain. ``POST /api/effort`` validates against this exact tuple.
+EFFORT_LEVELS: tuple[tuple[str, str], ...] = (
+    ("low", "Low — cheapest"),
+    ("medium", "Medium"),
+    ("high", "High"),
+    ("xhigh", "Extra high"),
+    ("max", "Max — most thorough"),
+)
+
+VALID_EFFORTS: frozenset[str] = frozenset(v for v, _ in EFFORT_LEVELS)
+
 
 class InteractiveModelState:
-    """The current interactive model id. Mirrors ``ModeState``: a tiny, mutable, in-process
-    holder read by the loop through a callable. ``set`` refuses anything outside
-    :data:`ALLOWED_MODEL_IDS` (fail-closed — the private-context Anthropic-only pin)."""
+    """The current interactive model id AND a per-model effort choice. Mirrors ``ModeState``: a
+    tiny, mutable, in-process holder read by the loop through callables (``current`` /
+    ``current_effort``, frozen per turn). ``set`` refuses anything outside
+    :data:`ALLOWED_MODEL_IDS` (fail-closed — the private-context Anthropic-only pin); ``set_effort``
+    refuses anything outside :data:`VALID_EFFORTS`.
 
-    def __init__(self, default: str) -> None:
+    Effort is remembered PER MODEL (the user's ask: "control the effort depending on each model"),
+    so switching model restores that model's chosen effort. A model with no explicit choice yet
+    uses ``default_effort`` (``config.limits.effort``) ⇒ byte-identical to no selector."""
+
+    def __init__(self, default: str, *, default_effort: str = "high") -> None:
         self._current = default
+        self._default_effort = default_effort if default_effort in VALID_EFFORTS else "high"
+        self._effort_by_model: dict[str, str] = {}
 
     def current(self) -> str:
         return self._current
+
+    def current_effort(self) -> str:
+        """The effort for the CURRENT model (its per-model choice, else the default)."""
+        return self._effort_by_model.get(self._current, self._default_effort)
+
+    def efforts(self) -> dict[str, str]:
+        """The effective effort for every allowed model (for the picker to prefill)."""
+        return {
+            mid: self._effort_by_model.get(mid, self._default_effort) for mid in ALLOWED_MODEL_IDS
+        }
 
     def set(self, model_id: str) -> None:
         if model_id not in ALLOWED_MODEL_IDS:
             raise ValueError(f"model must be one of {sorted(ALLOWED_MODEL_IDS)}")
         self._current = model_id
+
+    def set_effort(self, effort: str, *, model_id: str | None = None) -> None:
+        """Set the effort for ``model_id`` (default: the current model). Fail-closed on an unknown
+        effort or an out-of-allowlist model."""
+        if effort not in VALID_EFFORTS:
+            raise ValueError(f"effort must be one of {sorted(VALID_EFFORTS)}")
+        target = model_id or self._current
+        if target not in ALLOWED_MODEL_IDS:
+            raise ValueError(f"model must be one of {sorted(ALLOWED_MODEL_IDS)}")
+        self._effort_by_model[target] = effort

@@ -193,6 +193,7 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         # Phase 15.5: human-authority UI-state ops (the sessions/pin mold — no tool, no executor,
         # no Gate reach). Model selection is Anthropic-only; new/rename/archive are chat metadata.
         ("POST", "/api/model"),
+        ("POST", "/api/effort"),  # Phase 15.5: per-model output-config effort (cost control)
         ("POST", "/api/sessions/new"),
         ("POST", "/api/sessions/{session_id}/rename"),
         ("POST", "/api/sessions/{session_id}/archive"),

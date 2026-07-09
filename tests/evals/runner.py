@@ -99,6 +99,14 @@ EVAL_CLOCK = "2026-01-01T12:00:00+00:00"
 #: it None (no external wrapping).
 _EVAL_CASSETTE: dict = {"cfg": None}
 CROSS_JUDGE_MODEL = "claude-sonnet-5"  # uncounted cross-family check (see judge.py)
+#: The eval gate is DETERMINISTIC and decoupled from the user's freely-tunable daily models
+#: (config.models.main / .utility in settings.yaml). It always runs the scenario loop against the
+#: models the committed cassettes were recorded under — so an authorized daily-model change (e.g.
+#: main -> sonnet-5, utility -> haiku) never reds the keyless $0 replay gate. To change these you
+#: re-record the cassettes + ratchet baselines in a dedicated commit (record/live modes pin them
+#: too, so a re-record captures the same identities). Judge/embedding models keep their own pins.
+EVAL_MAIN_MODEL = "claude-opus-4-8"
+EVAL_UTILITY_MODEL = "claude-sonnet-5"
 
 
 # --- scenario loading ------------------------------------------------------
@@ -897,7 +905,12 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
         # Isolate the run by making the workdir the workspace *root*: tools and gate
         # both resolve relative paths against it, so the agent's files land here.
         policy_path = config.root / "config" / "permissions.yaml"
-        run_config = config.model_copy(update={"root": workdir})
+        # Pin the scenario models to the eval-recorded identities (deep-copy `models` so this never
+        # mutates the caller's config) — the gate is independent of settings.yaml daily models.
+        eval_models = config.models.model_copy(
+            update={"main": EVAL_MAIN_MODEL, "utility": EVAL_UTILITY_MODEL}
+        )
+        run_config = config.model_copy(update={"root": workdir, "models": eval_models})
 
         utility = factory(run_config)
         memory = None

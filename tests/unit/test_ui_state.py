@@ -18,14 +18,14 @@ from jarvis.tools import ToolContext, ToolExecutor, ToolRegistry
 from jarvis.ui.state import ALLOWED_MODEL_IDS, INTERACTIVE_MODELS, InteractiveModelState
 
 
-def _loop(tmp_path: Path, client, *, model_override=None):
+def _loop(tmp_path: Path, client, *, model_override=None, effort_override=None):
     cfg = load_config(root=tmp_path, env_file=None)
     reg = ToolRegistry()
     reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
     loop = AgentLoop(
         client=client, registry=reg, executor=ToolExecutor(),
         gate=PermissionGate(Policy(), tmp_path), config=cfg, system=build_system(),
-        model_override=model_override,
+        model_override=model_override, effort_override=effort_override,
     )
     return loop, cfg
 
@@ -65,6 +65,46 @@ async def test_no_override_is_byte_identical_to_config_default(tmp_path: Path) -
     loop, cfg = _loop(tmp_path, client, model_override=None)
     await loop.run_turn([{"role": "user", "content": "x"}])
     assert client.calls[-1]["model"] == cfg.models.main
+
+
+# --- per-model effort (cost control) ---------------------------------------
+def test_effort_is_per_model_validated_and_defaulted() -> None:
+    st = InteractiveModelState("claude-sonnet-5", default_effort="high")
+    assert st.current_effort() == "high"  # unset ⇒ default
+    st.set_effort("low")  # sets the CURRENT model (sonnet)
+    assert st.current_effort() == "low"
+    st.set("claude-opus-4-8")
+    assert st.current_effort() == "high"  # opus has its own (default) effort — per model
+    st.set("claude-sonnet-5")
+    assert st.current_effort() == "low"  # sonnet's choice was remembered
+    st.set_effort("max", model_id="claude-opus-4-8")  # set another model explicitly
+    assert st.efforts()["claude-opus-4-8"] == "max"
+    with pytest.raises(ValueError):
+        st.set_effort("turbo")  # not a valid effort level
+    with pytest.raises(ValueError):
+        st.set_effort("low", model_id="gpt-5.2")  # not an allowed (anthropic) model
+    assert st.current_effort() == "low"  # a rejected set never changes state
+
+
+async def test_loop_uses_effort_override_frozen_per_turn(tmp_path: Path) -> None:
+    st = InteractiveModelState("claude-sonnet-5", default_effort="high")
+    st.set_effort("low")
+    client = FakeClient([text_message("one"), text_message("two")])
+    loop, _cfg = _loop(tmp_path, client, effort_override=st.current_effort)
+    await loop.run_turn([{"role": "user", "content": "a"}])
+    assert client.calls[-1]["effort"] == "low"
+    st.set_effort("max")
+    await loop.run_turn([{"role": "user", "content": "b"}])
+    assert client.calls[-1]["effort"] == "max"  # the switch applied on the NEXT turn
+
+
+async def test_no_effort_override_sends_no_effort(tmp_path: Path) -> None:
+    # Unset ⇒ the loop omits the effort kwarg ⇒ the client applies its configured default
+    # (byte-identical to a build without the selector). FakeClient records None.
+    client = FakeClient([text_message("hi")])
+    loop, _cfg = _loop(tmp_path, client, effort_override=None)
+    await loop.run_turn([{"role": "user", "content": "x"}])
+    assert client.calls[-1]["effort"] is None
 
 
 async def test_override_returning_falsy_falls_back_to_config_default(tmp_path: Path) -> None:

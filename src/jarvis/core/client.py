@@ -75,6 +75,7 @@ class LLMClient(Protocol):
         tool_choice: dict | None = None,
         temperature: float | None = None,
         stable_prefix: str | None = None,
+        effort: str | None = None,
     ) -> ModelResponse: ...
 
 
@@ -138,10 +139,13 @@ class FakeClient:
         tool_choice: dict | None = None,
         temperature: float | None = None,
         stable_prefix: str | None = None,
+        effort: str | None = None,
     ) -> ModelResponse:
         # S7 (Phase 13): FakeClient accepts `stable_prefix` for protocol conformance but NEVER
         # acts on it — it emits no cache control and does not record it, so the fake path (and
         # every recorded cassette) stays byte-identical whether or not caching is enabled.
+        # `effort` IS recorded (None when the caller didn't override) so tests can assert the
+        # loop's per-turn effort plumbing without a live key.
         self.calls.append(
             {
                 "model": model,
@@ -151,6 +155,7 @@ class FakeClient:
                 "max_tokens": max_tokens,
                 "tool_choice": tool_choice,
                 "temperature": temperature,
+                "effort": effort,
             }
         )
         if not self.responses:
