@@ -73,6 +73,10 @@ class UiVoice:
     capture (+ a ``capture`` source). Any may be None. ``connections`` is wired so the
     read-only voice *state* can stream to the browser status bar."""
 
+    #: TTS caption cap — the safe caption is short by construction; this is a belt so a browser
+    #: can't push a long string off-device via the playback route.
+    TTS_MAX_CHARS = 600
+
     def __init__(
         self,
         *,
@@ -80,12 +84,20 @@ class UiVoice:
         meeting: MeetingCapture | None = None,
         capture: CaptureSource | None = None,
         connections: ConnectionManager | None = None,
+        tts: object | None = None,
+        stt_name: str = "local",
+        tts_name: str = "local",
         log=None,
     ) -> None:
         self.listener = listener
         self.meeting = meeting
         self.capture = capture
         self.connections = connections
+        # Phase 15.5: the TTS provider (for browser playback of the SAFE caption) + the provider
+        # NAMES (presence/label only, never a key). ``tts`` is set post-construction by the host.
+        self.tts = tts
+        self.stt_name = stt_name
+        self.tts_name = tts_name
         self.log = log or get_logger("jarvis.ui.voice")
         self.state = IDLE
         self._pushes: set = set()
@@ -108,22 +120,50 @@ class UiVoice:
             pass  # no running loop (sync context) — status() poll still reflects self.state
 
     def status(self) -> dict:
-        """Simple, calm status for Daily Mode: is voice available, the listening state, and
-        the meeting recording state (always visible — no silent capture)."""
+        """Calm, honest voice status: availability, the live listening state, the meeting
+        recording state, WHY it's off if it is, the STT/TTS provider names (presence only, never
+        a key), and whether TTS playback can produce audio (cloud) vs subtitle-only (local)."""
+        enabled = self.listener is not None or self.meeting is not None
         return {
-            "enabled": self.listener is not None or self.meeting is not None,
+            "enabled": enabled,
             "listening": self.state,
             "meeting": getattr(self.meeting, "state", IDLE) if self.meeting is not None else IDLE,
+            "reason": "" if enabled else "Voice is wired but no listener is available.",
+            "stt": self.stt_name,
+            "tts": self.tts_name,
+            "playback": self.tts is not None and self.tts_name != "local",  # cloud TTS → audio
         }
 
     async def listen_once(self) -> bool:
-        """One push-to-talk activation (a single utterance → one turn). State transitions
-        (listening → transcribing → thinking → speaking → idle) are streamed by the
-        listener's/session's ``on_state`` → :meth:`note_state`. Returns whether a turn ran."""
+        """One SERVER-mic push-to-talk activation (kept as a fallback; the browser mic is the
+        primary path in the workstation). A single utterance → one turn. Returns whether a turn
+        ran; state transitions stream via the listener's ``on_state`` → :meth:`note_state`."""
         if self.listener is None:
             return False
         result = await self.listener.listen_once()
         return result is not None
+
+    async def handle_utterance(self, audio: bytes) -> bool:
+        """Run one BROWSER-captured utterance as a voice turn: feed the audio to the SAME voice
+        session the server-mic path uses (STT → framed untrusted turn → safe caption), through the
+        unchanged VoiceApprover — so the screen stays the only approval surface. Returns whether a
+        turn ran (False on no listener / empty audio / a non-final transcript)."""
+        if self.listener is None or not audio:
+            return False
+        result = await self.listener.session.handle_audio(audio)
+        return result is not None
+
+    async def synthesize_caption(self, text: str) -> bytes | None:
+        """Synthesize ONLY a safe caption for browser playback: mask secret shapes + cap length,
+        then hand it to the existing TTS provider. Because the input is masked + capped here, a raw
+        answer, tool payload, or secret can never reach TTS. Returns None when no cloud TTS is
+        wired (local/subtitle mode ⇒ the browser keeps captions as text)."""
+        if self.tts is None:
+            return None
+        safe = _mask_secrets(text or "")[: self.TTS_MAX_CHARS]
+        if not safe.strip():
+            return None
+        return await self.tts.synthesize(safe)
 
     async def capture_meeting(self, *, title: str | None = None) -> object | None:
         """Capture one consented meeting recording → an unreviewed KB source. Requires both a

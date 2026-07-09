@@ -169,6 +169,11 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/orchestration/{run_id}/cancel"),  # Phase 10B: cancel the in-flight run
         ("POST", "/api/voice/listen"),
         ("POST", "/api/voice/meeting"),
+        # Phase 15.5 full browser voice: a browser-captured utterance runs a voice turn through the
+        # UNCHANGED VoiceApprover (screen stays the only approval surface — no new authority); tts
+        # synthesizes the SAFE caption for playback (stateless). Same voice floor as listen/meeting.
+        ("POST", "/api/voice/utterance"),
+        ("POST", "/api/voice/tts"),
         ("POST", "/api/projects/{project_id}/pin"),  # Phase 11: pin/unpin a project card
         ("POST", "/api/projects/{project_id}/label"),  # Phase 11: set a project's category label
         ("POST", "/api/projects/{project_id}/services"),  # Phase 13: narrow-only service selection

@@ -23,6 +23,7 @@ import { initKeys, clearScope, pushEscape } from "./ui/keys.js";
 import { emit as busEmit, on as busOn } from "./ui/bus.js";
 import { init as initPalette, openPalette } from "./ui/palette.js";
 import { refreshHeader } from "./ui/header.js";
+import { canCapture, playCaption, playbackOn, recording, setPlayback, toggleTalk } from "./ui/voice.js";
 import { money } from "./ui/format.js";
 
 const state = {
@@ -143,19 +144,35 @@ function onNotice(notice) {
 function onVoice(msg) {
   state.chat.push(msg.role === "heard" ? { role: "heard", text: msg.text } : { role: "assistant", text: msg.text });
   refreshIfActive("daily");
+  // Optional playback: speak the SAFE reply caption (the server masks + caps before TTS). The
+  // caption is always on screen too, so playback is a best-effort enhancement, never the record.
+  if (msg.role !== "heard") playCaption(msg.text);
 }
 
-// Read-only voice state pill (idle/listening/transcribing/thinking/speaking) — content-free.
+// Read-only voice state pill (idle/listening/transcribing/thinking/speaking/error) — content-free.
 const VOICE_LABELS = {
-  listening: "🎤 Listening…", capturing: "🎤 Capturing…", transcribing: "🎤 Transcribing…",
-  thinking: "🎤 Thinking…", speaking: "🎤 Speaking…",
+  listening: "⏹ Stop", capturing: "🎤 Capturing…", transcribing: "🎤 Transcribing…",
+  thinking: "🎤 Thinking…", speaking: "🎤 Speaking…", error: "🎤 Talk",
 };
 function onVoiceState(s) {
   state.voice.listening = s;
   const voiceEl = document.getElementById("st-voice");
-  if (voiceEl) voiceEl.textContent = s;
+  if (voiceEl) { voiceEl.textContent = s; if (s !== "error") voiceEl.title = ""; }
   const mic = document.getElementById("st-mic");
-  if (mic) mic.textContent = VOICE_LABELS[s] || "🎤 Talk";
+  if (mic) mic.textContent = VOICE_LABELS[s] || (recording() ? "⏹ Stop" : "🎤 Talk");
+}
+
+// The Talk button: browser push-to-talk. First press captures (mic permission prompt); second
+// press stops + sends the utterance to the server voice session. A failure (denied mic / no
+// audio / turn error) shows a plain reason on the pill — never a raw error body.
+async function talk() {
+  await toggleTalk((s, reason) => {
+    onVoiceState(s);
+    if (s === "error") {
+      const voiceEl = document.getElementById("st-voice");
+      if (voiceEl) { voiceEl.textContent = "error"; voiceEl.title = reason || ""; }
+    }
+  });
 }
 
 function onEvent(evt) {
@@ -364,28 +381,24 @@ async function pollStatus() {
   if (s) { state.runner = s; renderRunnerState(); rehydrateConversation(); }
   const v = await api.get("/api/voice/status");
   if (v) {
-    document.getElementById("st-voice").textContent = v.enabled ? (v.listening || "ready") : "off";
+    const voiceEl = document.getElementById("st-voice");
+    // Off ⇒ show "off" + WHY (on hover); on ⇒ the live state. Never a false "ready".
+    voiceEl.textContent = v.enabled ? (v.listening || "ready") : "off";
+    voiceEl.title = v.enabled ? "" : (v.reason || "");
     const mic = document.getElementById("st-mic");
-    mic.style.display = v.enabled ? "" : "none";  // only show when voice is wired
-    if (mic.dataset.busy !== "1") {
-      mic.textContent = v.listening === "listening" ? "🎤 Listening…" : "🎤 Talk";
+    // Talk shows ONLY when voice is enabled AND the browser can capture audio — with a clear
+    // reason on the pill otherwise (never a dead button).
+    const canTalk = v.enabled && canCapture();
+    mic.style.display = canTalk ? "" : "none";
+    if (v.enabled && !canCapture()) voiceEl.title = "This browser can't record audio.";
+    if (mic.dataset.busy !== "1" && !recording()) mic.textContent = "🎤 Talk";
+    // The playback toggle appears only when a cloud TTS can actually produce audio.
+    const play = document.getElementById("st-play");
+    if (play) {
+      play.style.display = v.enabled && v.playback ? "" : "none";
+      play.classList.toggle("active", playbackOn());
+      play.title = playbackOn() ? "Spoken replies: on" : "Spoken replies: off";
     }
-  }
-}
-
-// Push-to-talk: one activation opens the SERVER's mic for one utterance → one turn. Risky
-// actions in that turn still escalate to the on-screen Gate (voice prepares, screen commits).
-async function listenOnce() {
-  const mic = document.getElementById("st-mic");
-  if (mic.dataset.busy === "1") return;
-  mic.dataset.busy = "1"; mic.disabled = true; mic.textContent = "🎤 Listening…";
-  try {
-    const res = await api.post("/api/voice/listen");
-    if (!res.ok) mic.textContent = "🎤 (unavailable)";
-  } finally {
-    mic.dataset.busy = ""; mic.disabled = false;
-    setTimeout(() => { mic.textContent = "🎤 Talk"; }, 1500);
-    pollStatus();
   }
 }
 
@@ -396,7 +409,11 @@ function init() {
   document.getElementById("ap-deny").addEventListener("click", () => resolveApproval("deny"));
   document.getElementById("st-stop").addEventListener("click", async () => { await api.post("/api/runner/pause"); pollStatus(); });
   document.getElementById("st-resume").addEventListener("click", async () => { await api.post("/api/runner/resume"); pollStatus(); });
-  document.getElementById("st-mic").addEventListener("click", listenOnce);
+  document.getElementById("st-mic").addEventListener("click", talk);  // browser push-to-talk
+  document.getElementById("st-play").addEventListener("click", () => {  // toggle spoken replies
+    setPlayback(!playbackOn());
+    pollStatus();
+  });
   // Daily/Debug segmented toggle — the clear mode split. Debug reveals telemetry only
   // (a body class); it never changes any route or capability.
   const setMode = (debug) => {

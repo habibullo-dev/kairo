@@ -201,6 +201,11 @@ body.debug .dbg-only-inline { display: flex; }
 }
 #st-mic { color: var(--cyan-soft); }
 #st-mic:hover, .stop-btn:hover { border-color: #31435E; color: var(--ink); }
+/* Phase 15.5: spoken-replies toggle (shows only when a cloud TTS can produce audio) */
+#st-play { background: var(--panel-2); color: var(--muted); border: 1px solid var(--line-2);
+  border-radius: 8px; padding: 6px 10px; font-size: 12.5px; cursor: pointer; flex-shrink: 0; }
+#st-play:hover { border-color: #31435E; color: var(--ink); }
+#st-play.active { color: var(--cyan-soft); border-color: rgba(var(--accent-rgb), .5); }
 .stop-btn.stopped { color: var(--amber-soft); }
 
 /* Daily/Debug segmented toggle — the clear mode split */

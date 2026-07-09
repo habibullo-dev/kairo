@@ -1298,15 +1298,52 @@ def create_app(
 
     @app.get("/api/voice/status")
     async def voice_status() -> dict:
-        return app.state.voice.status() if app.state.voice is not None else {"enabled": False}
+        v = app.state.voice
+        if v is not None:
+            return v.status()
+        # Off: report WHY in plain language (the Talk button hides + shows this reason).
+        return {
+            "enabled": False, "listening": "idle", "meeting": "idle", "playback": False,
+            "stt": config.voice.stt_provider, "tts": config.voice.tts_provider,
+            "reason": "Voice is off — set voice.enabled: true in settings.yaml (and install the "
+                      "voice extra).",
+        }
 
     @app.post("/api/voice/listen")
     async def voice_listen() -> JSONResponse:
         v = app.state.voice
         if v is None or v.listener is None:
             return _unavailable("voice")
-        heard = await v.listen_once()  # one push-to-talk utterance → one turn
+        heard = await v.listen_once()  # server-mic fallback: one push-to-talk utterance → one turn
         return JSONResponse({"ok": True, "heard": heard})
+
+    @app.post("/api/voice/utterance")
+    async def voice_utterance(request: Request) -> JSONResponse:
+        # Phase 15.5: a BROWSER-captured utterance (raw audio body) → the SAME voice session the
+        # server-mic path uses (STT → framed untrusted turn → safe caption) through the unchanged
+        # VoiceApprover. The screen stays the ONLY approval surface; no new authority.
+        v = app.state.voice
+        if v is None or v.listener is None:
+            return _unavailable("voice")
+        audio = await request.body()
+        if not audio:
+            return JSONResponse({"ok": False, "message": "empty audio"}, status_code=400)
+        ran = await v.handle_utterance(audio)
+        return JSONResponse({"ok": True, "ran": ran})
+
+    @app.post("/api/voice/tts")
+    async def voice_tts(request: Request) -> Response:
+        # Phase 15.5: synthesize the SAFE caption for browser playback. The text is masked + capped
+        # server-side before it reaches TTS, so a raw answer / payload / secret can never be voiced.
+        # Local/subtitle TTS ⇒ 204 (no audio; the browser keeps captions as text).
+        v = app.state.voice
+        if v is None or v.tts is None:
+            return _unavailable("voice")
+        text = str((await request.json()).get("text", ""))
+        audio = await v.synthesize_caption(text)
+        if not audio:
+            return Response(status_code=204)
+        return _secure(Response(content=audio, media_type="audio/mpeg"), no_store=True)
 
     @app.post("/api/voice/meeting")
     async def voice_meeting(request: Request) -> JSONResponse:

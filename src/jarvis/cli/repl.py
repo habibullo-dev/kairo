@@ -1406,12 +1406,17 @@ def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None):
     )
 
     # UiVoice first, so its read-only note_state hook can wire the state machines below.
-    voice = UiVoice(connections=app.state.connections)
+    voice = UiVoice(
+        connections=app.state.connections,
+        stt_name=config.voice.stt_provider,
+        tts_name=config.voice.tts_provider,
+    )
     tts = build_tts(
         config.voice,
         openai_key=config.secrets.openai_api_key,
         elevenlabs_key=config.secrets.elevenlabs_api_key,
     )
+    voice.tts = tts  # Phase 15.5: browser TTS playback synthesizes the SAFE caption via this
     # The calm renderer, mirrored to the browser: heard transcript + the SAFE spoken caption
     # (post-privacy). Optional playback plays ONLY those synthesized-from-safe bytes; mid-turn
     # events stay unvoiced/unmirrored — one attention surface.
