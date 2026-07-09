@@ -14,6 +14,26 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 13 (research services live + context reuse) — complete; live-verified.** The hosted
+research capability the 10B catalog described is now real, behind the same fail-closed machinery:
+**`firecrawl_scrape`** (URL→markdown), **`exa_search`**, **`searxng_search`** (local loopback only),
+and **`generate_image`** (→ an `untrusted_model_generated` artifact, never executed). Each is a
+`ServiceTool` whose egress/ASK/framing/`public_only` policy is *derived* from its catalog row; every
+byte is framed untrusted; unknown/missing-key/unpriced ⇒ the tool never registers. New this phase:
+hard **cost caps** (per-run/day, refused *before* a metered call would breach), **per-project
+narrow-only** service selection, a read-only **settings** policy surface, and the **S7 context-reuse**
+enable-step (a default-OFF flag caches only the stable, non-sensitive prompt prefix — Anthropic
+`cache_control` / OpenAI `prompt_cache_key`; flag-off is byte-identical). Jina stayed deferred (no
+value bar cleared vs `web_fetch` + `firecrawl_scrape`); Z.ai stays an optional, disabled worker (no
+context reuse, no authority). Live-verified (firecrawl + exa + image + a hostile-content proof where
+the model treated a planted injection as data and flagged it + a real S7 cache hit + the private-
+canary refusal): [ADR-0019](docs/decisions/0019-research-services-live.md),
+[ADR-0018](docs/decisions/0018-context-reuse.md), closeout in
+[`docs/verification-13.md`](docs/verification-13.md). Phase 12 added the outward-write connectors
+(calendar/Docs/Gmail-drafts) as human-approved, two-phase write intents — the write tool only
+*proposes*; a separate human-approved route *executes* the stored request — on the Phase-9
+connector/egress floor ([ADR-0009](docs/decisions/0009-connectors-and-egress.md)).
+
 **Phase 11 (Kairo Workstation — product surface) — complete; adds zero new authority.** The
 workstation is now premium, project-first, and searchable: a **Daily command center** (priority
 cards + designed empty states), a **Projects grid** (labels/pins/health chips + smart collections),
