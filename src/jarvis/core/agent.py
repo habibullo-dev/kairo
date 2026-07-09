@@ -108,6 +108,7 @@ class AgentLoop:
         memory: MemoryService | None = None,
         project: Callable[[], ProjectContext] | None = None,
         mode: Callable[[], Mode] | None = None,
+        model_override: Callable[[], str | None] | None = None,
         cost_purpose: str = "turn",
         add_time_context: bool = False,
         now: Callable[[], _dt.datetime] = _default_now,
@@ -129,6 +130,10 @@ class AgentLoop:
         # only mode background/voice loops ever run in). Plan/Auto enforcement lives in
         # _handle_tools, co-located with egress taint. auto_allow_tools is the opt-in Auto set.
         self.mode = mode
+        # Phase 15.5: the interactive model selector. A callable returning the chosen model id, or
+        # None to defer to the config default. Read once per turn (freezes like the project scope —
+        # a switch applies next turn). None override => byte-identical to config.models.main.
+        self.model_override = model_override
         self._auto_allow: frozenset[str] = frozenset(config.modes.auto_allow_tools)
         # Phase 10 cost ledger: the purpose recorded for this loop's completions ("turn" for
         # interactive, "subagent"/"orchestration" for children). Nested utility calls
@@ -197,8 +202,13 @@ class AgentLoop:
         # a mid-turn flip into Auto never applies to an in-flight turn. Plan (restrictive) is
         # read live per iteration, so tightening takes effect immediately.
         self._turn_started_auto = self.mode is not None and self.mode() is Mode.AUTO
+        # Freeze the model for the whole turn (a mid-turn switch applies next turn, like project
+        # scope). An override returning falsy defers to the config default => byte-identical.
+        turn_model = self.config.models.main
+        if self.model_override is not None:
+            turn_model = self.model_override() or self.config.models.main
 
-        self.log.info("turn_start", trace_id=trace_id, model=self.config.models.main)
+        self.log.info("turn_start", trace_id=trace_id, model=turn_model)
 
         # Snapshot the active project once per turn (a switch mid-conversation applies from
         # the next turn, not mid-flight). None provider => global scope, no extra.
@@ -249,7 +259,7 @@ class AgentLoop:
                 )
 
             create_kwargs: dict = {
-                "model": self.config.models.main,
+                "model": turn_model,
                 "system": self._system_with_extras(
                     recall_block, summary=summary, project_extra=project_extra
                 ),

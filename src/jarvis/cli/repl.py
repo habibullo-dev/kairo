@@ -1265,8 +1265,13 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
     ``app.state.auth`` whose ``launch_token`` the host prints once)."""
     from jarvis.ui import AuthManager, UiServices, UiSession, make_ui_subagent_approver
     from jarvis.ui.server import create_app
+    from jarvis.ui.state import InteractiveModelState
 
     app = create_app(config, auth=auth or AuthManager(), gate=repl.gate)
+    # Phase 15.5: the interactive model selector. The loop reads it via model_override (frozen per
+    # turn); a switch is Anthropic-only (private-context pin) and never touches the ModelRegistry
+    # routes. Default = config.models.main ⇒ byte-identical until the human picks another model.
+    model_state = InteractiveModelState(config.models.main)
     if repl.agents is not None:
         # A child's ASK escalates to the UI screen (the Gate), not the terminal prompt.
         app_approvals = app.state.approvals
@@ -1284,6 +1289,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
         memory=repl.memory,
         project=repl.projects.current if repl.projects is not None else None,
         mode=repl.modes.current,
+        model_override=model_state.current,
         add_time_context=repl.tasks is not None,
         system=build_system(
             memory_enabled=repl.memory is not None,
@@ -1307,6 +1313,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
     )
     app.state.projects = repl.projects
     app.state.modes = repl.modes
+    app.state.interactive_models = model_state
     run_store = repl.agents.run_store if repl.agents is not None else None
     # Phase 10B: the orchestration store (Studio history/detail read models) exists whenever the
     # DB does; the engine + controller are wired only when delegation (spawn) is available.

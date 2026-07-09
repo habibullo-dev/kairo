@@ -185,6 +185,12 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         # approve/reject pattern; quarantined proposal -> durable memory/asserted node|edge).
         ("POST", "/api/graph/suggestions/{suggestion_id}/approve"),
         ("POST", "/api/graph/suggestions/{suggestion_id}/reject"),
+        # Phase 15.5: human-authority UI-state ops (the sessions/pin mold — no tool, no executor,
+        # no Gate reach). Model selection is Anthropic-only; new/rename/archive are chat metadata.
+        ("POST", "/api/model"),
+        ("POST", "/api/sessions/new"),
+        ("POST", "/api/sessions/{session_id}/rename"),
+        ("POST", "/api/sessions/{session_id}/archive"),
     }
 
 

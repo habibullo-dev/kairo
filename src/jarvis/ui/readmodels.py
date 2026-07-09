@@ -936,6 +936,160 @@ def settings_overview(
     }
 
 
+def interactive_models(config: Config, *, current: str | None = None) -> dict:
+    """The composer's model picker (Phase 15.5). The Anthropic ``INTERACTIVE_MODELS`` are
+    SELECTABLE (they may receive the chat's private context — the 10C ``private_ok`` pin); the
+    external providers are listed visible-but-DISABLED with the plain reason they can't drive the
+    main chat, plus their fail-closed provider state. Presence/state only — never a key value."""
+    from jarvis.models.providers import PROVIDER_CATALOG, ProviderRegistry, ProviderState
+    from jarvis.ui.state import EXTERNAL_CHAT_PROVIDERS, INTERACTIVE_MODELS
+
+    reg = ProviderRegistry.from_config(config)
+    cur = current or config.models.main
+    anthropic_state = reg.state("anthropic")
+    keyed = anthropic_state is not ProviderState.MISSING_CREDENTIALS  # the key is present
+    models: list[dict] = [
+        {
+            "id": mid,
+            "label": label,
+            "provider": "anthropic",
+            "selectable": keyed,
+            "current": mid == cur,
+            "reason": "" if keyed else "set ANTHROPIC_API_KEY to use the main chat",
+        }
+        for mid, label in INTERACTIVE_MODELS
+    ]
+    external: list[dict] = []
+    for name in EXTERNAL_CHAT_PROVIDERS:
+        spec = PROVIDER_CATALOG.get(name)
+        if spec is None:
+            continue
+        st = reg.state(name).value
+        note = "receives your private conversation context — not enabled for the main chat"
+        external.append(
+            {
+                "id": name,
+                "label": (spec.default_models[0] if spec.default_models else name),
+                "provider": name,
+                "selectable": False,  # never — external providers are not private_ok (10C)
+                "current": False,
+                "state": st,
+                "reason": note if st == "available" else f"{note} ({st})",
+            }
+        )
+    return {"current": cur, "models": models, "external": external}
+
+
+# --- capability truth: ONE availability read model, rendered by every surface (Phase 15.5) ---
+
+#: Substring needles that mark a connector's chat tools present in the loop's registered set.
+_CAP_NEEDLES = {"gmail": ("gmail",), "drive": ("drive",), "calendar": ("calendar",)}
+
+
+def _exposed(registered: set[str] | None, needles: tuple[str, ...], *, connected: bool) -> bool:
+    """Is this capability actually usable in chat? With the loop's ``registered`` tool names, it is
+    exact (a connected connector whose tool failed to register reads as NOT exposed — the 'why'
+    case). Without them, fall back to connected-implies-exposed (today's behavior)."""
+    if not connected:
+        return False
+    if registered is None:
+        return True
+    return any(any(n in t for n in needles) for t in registered)
+
+
+def capability_truth(
+    config: Config,
+    *,
+    connectors: dict | None = None,
+    voice: dict | None = None,
+    registered_tools: set[str] | None = None,
+) -> dict:
+    """THE one availability truth (Phase 15.5) — connectors / providers / services / voice / MCP as
+    ``{name, state, exposed_to_chat, reason}`` rows. Daily, Hub, Settings, and the conversation
+    header all render THIS, so they can never disagree about what's connected or usable. Every field
+    is presence / state / plain reason — never a key value (secret-swept). ``exposed_to_chat`` is
+    whether the capability is actually wired into the chat (precise when ``registered_tools`` is
+    passed; connected-implies-exposed otherwise)."""
+    from jarvis.models.providers import PROVIDER_CATALOG, ProviderRegistry
+    from jarvis.ui.state import EXTERNAL_CHAT_PROVIDERS
+
+    c = connectors or _empty_connectors()
+    demo = bool(c.get("demo"))
+    google = c.get("google")
+    g_connected = bool(google) and bool(google.get("connected", True)) and not (
+        isinstance(google, dict) and google.get("needs_reconnect")
+    )
+    g_reconnect = isinstance(google, dict) and bool(google.get("needs_reconnect"))
+
+    def _google_row(label: str, key: str) -> dict:
+        if google is None:
+            return {"name": label, "state": "not_configured", "exposed_to_chat": False,
+                    "reason": "Connect Google in the Hub to use it here."}
+        if g_reconnect:
+            return {"name": label, "state": "needs_reconnect", "exposed_to_chat": False,
+                    "reason": "Google sign-in expired — reconnect in the Hub."}
+        exposed = _exposed(registered_tools, _CAP_NEEDLES[key], connected=g_connected)
+        reason = "" if exposed else "Connected, but not available as a tool in this chat."
+        if demo:
+            reason = "Demo data — not your real account."
+        return {"name": label, "state": "connected", "exposed_to_chat": exposed, "reason": reason}
+
+    conn_rows = [_google_row("Google Calendar", "calendar"), _google_row("Gmail", "gmail"),
+                 _google_row("Google Drive", "drive")]
+    for name, label in (("telegram", "Telegram"), ("kakao", "Kakao")):
+        st = (c.get("notifiers") or {}).get(name)
+        configured = bool(st) and bool(st.get("configured", st.get("connected", False)))
+        conn_rows.append({
+            "name": label,
+            "state": "connected" if configured else "not_configured",
+            "exposed_to_chat": False,  # a notifier delivers messages OUT; it is not a chat tool
+            "reason": ("Delivers notifications; not a chat tool."
+                       if configured else f"Add {label} in settings to receive notifications."),
+        })
+
+    reg = ProviderRegistry.from_config(config)
+    prov_rows = [{
+        "name": "Anthropic", "state": reg.state("anthropic").value,
+        "exposed_to_chat": True, "reason": "",  # anthropic IS the main chat
+    }]
+    for name in EXTERNAL_CHAT_PROVIDERS:
+        if name not in PROVIDER_CATALOG:
+            continue
+        prov_rows.append({
+            "name": name, "state": reg.state(name).value, "exposed_to_chat": False,
+            "reason": "Not enabled for the main chat (would receive private context).",
+        })
+
+    svc_rows = []
+    for s in services_status(config):
+        avail = s.get("state") == "available"
+        svc_rows.append({
+            "name": s.get("name"), "state": s.get("state"), "exposed_to_chat": avail,
+            "reason": "" if avail else f"Service {s.get('state')}.",
+        })
+
+    v = voice or {}
+    v_on = bool(v.get("enabled"))
+    voice_row = {
+        "state": "on" if v_on else "off", "exposed_to_chat": v_on,
+        "reason": "" if v_on else (v.get("reason") or "Voice is off — enable it in settings.yaml."),
+    }
+    mcp_row = {"state": "not_configured", "exposed_to_chat": False,
+               "reason": "No MCP client yet — a future phase."}
+
+    exposed_conns = [r["name"] for r in conn_rows if r["exposed_to_chat"]]
+    exposed_svcs = sum(1 for r in svc_rows if r["exposed_to_chat"])
+    bits = []
+    bits.append(", ".join(exposed_conns) if exposed_conns else "no connectors")
+    if exposed_svcs:
+        bits.append(f"{exposed_svcs} service{'s' if exposed_svcs != 1 else ''}")
+    bits.append("voice on" if v_on else "voice off")
+    return {
+        "connectors": conn_rows, "providers": prov_rows, "services": svc_rows,
+        "voice": voice_row, "mcp": mcp_row, "summary": " · ".join(bits),
+    }
+
+
 # --- daily: the bootstrap read model (Phase 9) ------------------------------
 
 

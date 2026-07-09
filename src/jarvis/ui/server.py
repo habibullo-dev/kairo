@@ -40,9 +40,11 @@ from jarvis.ui.readmodels import (
     UiServices,
     activity_feed,
     artifacts_list,
+    capability_truth,
     costs_overview,
     daily_overview,
     hub_status,
+    interactive_models,
     lab_overview,
     list_agent_runs,
     list_memories,
@@ -184,6 +186,9 @@ def create_app(
     app.state.run_digest_now = None  # async () -> DigestOutcome, set by run_ui; None ⇒ 503
     app.state.projects = None  # a ProjectService, set by build_ui_app; None ⇒ projects 503
     app.state.modes = None  # a ModeState, set by build_ui_app; None ⇒ mode reads 'approval'
+    # Phase 15.5: the interactive model selector state, set by build_ui_app; None ⇒ the config
+    # default model + a picker whose current is that default (no runtime override).
+    app.state.interactive_models = None
     app.state.orchestrator = None  # an OrchestrationController, set by build_ui_app; None ⇒ 503
     # The UI is voice's fail-closed "screen": a VoiceApprover wired to this UIScreenApprover
     # resolves risky voice actions on the authenticated, live, watching Gate surface — or
@@ -367,6 +372,24 @@ def create_app(
         await app.state.connections.broadcast({"kind": "mode_changed", "mode": new_mode.value})
         return JSONResponse({"ok": True, "mode": new_mode.value})
 
+    @app.post("/api/model")
+    async def set_model(request: Request) -> JSONResponse:
+        # Phase 15.5: choose the interactive model. Anthropic-only allowlist (the private-context
+        # pin, 10C) enforced in InteractiveModelState.set — anything else is a 400. This is UI-state
+        # only: the loop reads it next turn (frozen per turn) and the ledger attributes the switched
+        # model automatically (provider stays anthropic). The ModelRegistry routes are untouched.
+        ims = app.state.interactive_models
+        if ims is None:
+            return _unavailable("model selection")
+        body = await request.json()
+        try:
+            ims.set(str(body.get("model", "")))
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
+        log.info("interactive_model_changed", model=ims.current())
+        await app.state.connections.broadcast({"kind": "model_changed", "model": ims.current()})
+        return JSONResponse({"ok": True, "model": ims.current()})
+
     @app.post("/api/runner/pause")
     async def runner_pause() -> dict:
         # Maps to BackgroundRunner.stop(): finish any in-flight job (never a torn write),
@@ -413,6 +436,31 @@ def create_app(
             config,
             connectors=connectors.status() if connectors is not None else None,
             ledger_status=ledger.status() if ledger is not None else None,
+        )
+
+    @app.get("/api/models")
+    async def models_list() -> dict:
+        # Phase 15.5: the composer's model picker — selectable Anthropic models + honestly-disabled
+        # externals with reasons. Read-only; presence/state only (secret-swept).
+        ims = app.state.interactive_models
+        return interactive_models(config, current=ims.current() if ims is not None else None)
+
+    @app.get("/api/capabilities")
+    async def capabilities() -> dict:
+        # Phase 15.5: THE one availability truth — connectors/providers/services/voice/MCP with
+        # exposed_to_chat + plain reasons. Daily/Hub/Settings/header all render this, so they can
+        # never disagree. exposed_to_chat is exact when the live loop's tools are available.
+        connectors = app.state.services.connectors
+        voice = app.state.voice.status() if app.state.voice is not None else {"enabled": False}
+        registered: set[str] | None = None
+        sess = app.state.session
+        if sess is not None and getattr(sess, "loop", None) is not None:
+            registered = set(sess.loop.registry.names())
+        return capability_truth(
+            config,
+            connectors=connectors.status() if connectors is not None else None,
+            voice=voice,
+            registered_tools=registered,
         )
 
     @app.get("/api/daily")
@@ -734,6 +782,44 @@ def create_app(
             return _unavailable("sessions")
         resumed = await app.state.session.resume(session_id)
         return JSONResponse({"ok": resumed}, status_code=200 if resumed else 409)
+
+    @app.post("/api/sessions/new")
+    async def sessions_new() -> JSONResponse:
+        # Phase 15.5: start a FRESH conversation under the current project scope (exposes the
+        # existing UiSession.start_new_session). 409 while a turn is in flight — the loop state
+        # must not change mid-turn. No new authority: a new session is created lazily on its first
+        # turn, exactly like the REPL.
+        sess = app.state.session
+        if sess is None:
+            return _unavailable("sessions")
+        if sess.busy:
+            return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
+        projects = app.state.projects
+        cur = projects.current() if projects is not None else None
+        sess.start_new_session(cur.project_id if cur is not None else None)
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/sessions/{session_id}/rename")
+    async def sessions_rename(session_id: int, request: Request) -> JSONResponse:
+        # Rename a chat (metadata only, no reorder). Body {"title": str}; empty/blank is a 400.
+        svc = app.state.services.sessions
+        if svc is None:
+            return _unavailable("sessions")
+        title = str((await request.json()).get("title", "")).strip()
+        if not title:
+            return JSONResponse({"ok": False, "message": "title required"}, status_code=400)
+        ok = await svc.set_title(session_id, title)
+        return JSONResponse({"ok": ok})
+
+    @app.post("/api/sessions/{session_id}/archive")
+    async def sessions_archive(session_id: int, request: Request) -> JSONResponse:
+        # Archive/unarchive a chat — a status flip (never a delete); body {"archived": bool}.
+        svc = app.state.services.sessions
+        if svc is None:
+            return _unavailable("sessions")
+        archived = bool((await request.json()).get("archived", True))
+        ok = await svc.set_archived(session_id, archived)
+        return JSONResponse({"ok": ok})
 
     @app.post("/api/projects")
     async def projects_create(request: Request) -> JSONResponse:
