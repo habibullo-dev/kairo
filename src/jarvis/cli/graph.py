@@ -88,6 +88,9 @@ def graph_cli(argv: list[str]) -> int:
     sp.add_argument("node", type=int, help="node id to pull back out")
     un = sub.add_parser("undo", help="Reverse a journaled merge by its id.")
     un.add_argument("merge_id", type=int, help="graph_merges journal id")
+    ex = sub.add_parser("export", help="Project entities + memory into the Obsidian vault.")
+    ex.add_argument("--project", type=int, help="restrict to this project (default: all + global)")
+    ex.add_argument("--write", action="store_true", help="apply (default: dry-run diff summary)")
     args = ap.parse_args(argv)
 
     if args.cmd == "rebuild":
@@ -108,6 +111,8 @@ def graph_cli(argv: list[str]) -> int:
         return asyncio.run(_run_split(args.node))
     if args.cmd == "undo":
         return asyncio.run(_run_undo(args.merge_id))
+    if args.cmd == "export":
+        return asyncio.run(_run_export(args.project, args.write))
     return 1
 
 
@@ -226,5 +231,27 @@ async def _run_undo(merge_id: int) -> int:
         state = "reversed" if ok else "no-op (unknown or already undone)"
         print(f"undo merge #{merge_id}: {state}")
         return 0 if ok else 2
+    finally:
+        await db.close()
+
+
+async def _run_export(project_id: int | None, write: bool) -> int:
+    from jarvis.config import load_config
+    from jarvis.graph.obsidian import export
+    from jarvis.graph.store import ANY_PROJECT
+    from jarvis.memory import MemoryStore
+
+    config = load_config()
+    db, store = await _graph_db()
+    try:
+        scope = project_id if project_id is not None else ANY_PROJECT
+        report = await export(
+            store, MemoryStore(db, store.lock), config.knowledge_dir / "wiki",
+            project_id=scope, write=write)
+        print(f"graph export{'' if write else ' (dry-run — no files written)'}: {report.summary()}")
+        for a in report.actions:
+            flag = " [redacted]" if a.redacted else ""
+            print(f"  {a.status:>14}  {a.path}{flag}")
+        return 0
     finally:
         await db.close()
