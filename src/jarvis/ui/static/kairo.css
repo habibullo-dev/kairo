@@ -710,7 +710,11 @@ tr.clickable:hover td { color: var(--cyan); }
 .room-icon { font-size: 20px; line-height: 1; }
 .room-name { font-weight: 600; }
 .room-sub { font-size: 12px; }
+.room-caret { margin-left: auto; background: transparent; border: none; color: var(--muted);
+  cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 6px; flex: none; }
+.room-caret:hover { color: var(--ink); }
 .node-grid { display: grid; gap: 8px; }
+.room-card.collapsed .node-grid { display: none; }
 
 .office-node { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border-radius: 8px;
   border: 1px solid var(--line); background: var(--panel-soft); cursor: pointer; }

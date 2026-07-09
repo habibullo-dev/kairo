@@ -35,6 +35,30 @@ let _mounted = null; // { projectId, api, live, runId, root }
 let _mode = "compact";
 const rootClass = () => "office " + (_mode === "office" ? "office-full" : "office-compact");
 
+// Per-project view layout, persisted to localStorage ONLY (like ui/theme.js — appearance is
+// client-side; there is deliberately NO server route, no new authority, the mutation-route set is
+// unchanged). Blob: { mode, collapsed:[team] }. Values are clamped on read (localStorage is
+// same-origin + user-writable, so never trust its shape).
+const _LKEY = (pid) => `kairo:office:${pid}`;
+function loadLayout(pid) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(_LKEY(pid)) || "{}") || {};
+    const mode = raw.mode === "office" ? "office" : "compact"; // clamp to a known mode
+    const collapsed = Array.isArray(raw.collapsed)
+      ? raw.collapsed.filter((t) => typeof t === "string") : [];
+    return { mode, collapsed: new Set(collapsed) };
+  } catch {
+    return { mode: "compact", collapsed: new Set() };
+  }
+}
+function saveLayout() {
+  if (!_mounted) return;
+  try {
+    localStorage.setItem(_LKEY(_mounted.projectId), JSON.stringify(
+      { mode: _mode, collapsed: [..._mounted.collapsed] }));
+  } catch { /* storage disabled — layout falls back to defaults next open */ }
+}
+
 const initials = (s) =>
   (s || "?").split(/\s+/).map((w) => w[0] || "").join("").slice(0, 2).toUpperCase() || "?";
 
@@ -112,11 +136,16 @@ function roomSub(r, live) {
   return bits.join(" · ");
 }
 
-function room(r, live) {
+function room(r, live, collapsed) {
   const isLive = live && live.team === r.team;
+  const isCollapsed = !!(collapsed && collapsed.has(r.team));
+  const caret = el("button", {
+    class: "room-caret", "aria-expanded": isCollapsed ? "false" : "true",
+    "aria-label": `Toggle ${r.name || r.team} room`,
+  }, [isCollapsed ? "▸" : "▾"]);
   const card = el("div", {
-    class: "room-card" + (isLive ? " live" : ""), role: "region",
-    "aria-label": `${r.name || r.team} team`, dataset: { room: r.team },
+    class: "room-card" + (isLive ? " live" : "") + (isCollapsed ? " collapsed" : ""),
+    role: "region", "aria-label": `${r.name || r.team} team`, dataset: { room: r.team },
   }, [
     el("div", { class: "room-head" }, [
       el("span", { class: "room-icon" }, [r.icon || "•"]),
@@ -124,11 +153,25 @@ function room(r, live) {
         el("div", { class: "room-name" }, [r.name || r.team]),
         el("div", { class: "room-sub dim", dataset: { roomSub: "1" } }, [roomSub(r, live)]),
       ]),
+      caret,
     ]),
     el("div", { class: "node-grid" }, (r.nodes || []).map((n) => memberNode(n, r.team))),
   ]);
+  caret.addEventListener("click", () => toggleRoomCollapse(r.team, card, caret));
   if (r.accent) card.style.setProperty("--room-accent", r.accent);
   return card;
+}
+
+// Collapse/expand a room — persisted per project to localStorage (no server route).
+function toggleRoomCollapse(team, card, caret) {
+  if (!_mounted) return;
+  const nowCollapsed = !card.classList.contains("collapsed");
+  card.classList.toggle("collapsed", nowCollapsed);
+  caret.textContent = nowCollapsed ? "▸" : "▾";
+  caret.setAttribute("aria-expanded", nowCollapsed ? "false" : "true");
+  if (nowCollapsed) _mounted.collapsed.add(team);
+  else _mounted.collapsed.delete(team);
+  saveLayout();
 }
 
 function feedRow(e) {
@@ -315,6 +358,7 @@ function setMode(mode) {
     b.classList.toggle("active", on);
     b.setAttribute("aria-pressed", on ? "true" : "false");
   });
+  saveLayout(); // remember the view mode per project
 }
 
 function modeToggle() {
@@ -332,10 +376,10 @@ function modeToggle() {
 }
 
 // --- build + render -------------------------------------------------------
-function build(data, api) {
+function build(data, api, collapsed) {
   const stages = data.stages || [];
   const live = data.live || null;
-  const rooms = (data.rooms || []).map((r) => room(r, live));
+  const rooms = (data.rooms || []).map((r) => room(r, live, collapsed));
   const recent = (data.recent_runs || []).map((rn) =>
     el("div", { class: "office-recent-row" }, [
       el("span", {}, [(rn.team || "") + " · " + (rn.workflow || "")]),
@@ -381,11 +425,13 @@ export async function render(container, api, ctx) {
     _mounted = null;
     return;
   }
-  const root = build(data, api);
+  const layout = loadLayout(ctx.projectId);
+  _mode = layout.mode; // restore the per-project view mode BEFORE build (the root class reads it)
+  const root = build(data, api, layout.collapsed);
   container.appendChild(root);
   _mounted = {
     projectId: ctx.projectId, api, root,
     live: data.live || null, runId: data.live ? data.live.id : null,
-    stages: data.stages || [], rooms: data.rooms || [],
+    stages: data.stages || [], rooms: data.rooms || [], collapsed: layout.collapsed,
   };
 }
