@@ -7,6 +7,7 @@
 // other card reads or navigates. Detail lives in Trace/Debug.
 import { esc } from "../ui/dom.js";
 import { money, relTime } from "../ui/format.js";
+import { mountHeader } from "../ui/header.js";
 
 // Workflow chips are prepared prompts submitted through the SAME gated POST /api/turn — the
 // single action path (no new authority). Two are navigation only.
@@ -33,16 +34,22 @@ export function render(container, api) {
         <h1>Daily</h1>
         <div class="sub">Ask Kairo anything. Risky actions pause here for your approval.</div>
       </div>
+      <div id="daily-convo-header"></div>
       <div id="daily-zones"></div>
       <div class="composer"><div class="box">
         <input id="composer-input" placeholder="Message Kairo…" autocomplete="off">
-        <div class="chips"><span>opus-4-8</span><span>effort high</span></div>
+        <div class="live-chips"><span id="composer-model"></span><span id="composer-mode"></span></div>
         <button class="send" id="composer-send" aria-label="Send">➜</button>
       </div></div>`;
     const input = container.querySelector("#composer-input");
     const send = () => submitText(container, api, input.value.trim(), input);
     container.querySelector("#composer-send").addEventListener("click", send);
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+    // The conversation header (scope · title · model · mode · capabilities + New/Resume/Rename/
+    // Pin/Archive). Mounted ONCE (it fetches) so a streaming turn never re-fires its GETs; a
+    // conversation change reloads the chat view. Values are all server state (no fake chips).
+    mountHeader(container.querySelector("#daily-convo-header"), api,
+      { onChanged: () => renderChat(container, api) });
   }
   renderZones(container, api);
 }

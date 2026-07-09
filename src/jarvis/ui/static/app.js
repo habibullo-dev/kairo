@@ -22,6 +22,7 @@ import { get as getTheme, initTheme, setTheme } from "./ui/theme.js";
 import { initKeys, clearScope, pushEscape } from "./ui/keys.js";
 import { emit as busEmit, on as busOn } from "./ui/bus.js";
 import { init as initPalette } from "./ui/palette.js";
+import { refreshHeader } from "./ui/header.js";
 import { money } from "./ui/format.js";
 
 const state = {
@@ -99,6 +100,20 @@ function handleMessage(msg) {
     refreshIfActive("studio");
     if (msg.kind === "orchestration_completed") pollStatus();  // refresh spend/busy chips
     return;
+  }
+  if (msg.kind === "mode_changed") {
+    if (state.runner) state.runner.mode = msg.mode;
+    renderRunnerState(); refreshHeader(); return;
+  }
+  if (msg.kind === "model_changed") {
+    if (state.runner) state.runner.model = msg.model;
+    renderRunnerState(); refreshHeader(); return;
+  }
+  if (msg.kind === "project_changed") {
+    // A scope switch started a fresh scoped conversation server-side — clear the local view.
+    if (state.runner) state.runner.project = { id: msg.project_id, name: msg.name };
+    state.chat = [];
+    renderRunnerState(); refreshHeader(); refreshIfActive("daily"); return;
   }
   if (msg.kind === "event") { onEvent(msg); return; }
   if (msg.kind === "notice") { onNotice(msg.notice); return; }
@@ -304,6 +319,10 @@ function renderRunnerState() {
   // Phase 10 status strip: active project, run mode, today's spend, cost-ledger health.
   setText("st-project", s.project && s.project.name ? s.project.name : "global");
   setText("st-mode", s.mode || "approval");
+  // Phase 15.5: the composer's always-visible live model + mode readout (real server state, not
+  // the old debug-only fake chips). The full selectors live in the conversation header.
+  setText("composer-model", s.model || "");
+  setText("composer-mode", s.mode ? `mode ${s.mode}` : "");
   if (typeof s.today_spend_usd === "number") setText("st-spend", `$${s.today_spend_usd.toFixed(4)}`);
   const led = document.getElementById("st-ledger"); if (led) led.style.display = s.ledger_degraded ? "" : "none";
   // Daily current-activity card (if mounted) — same source, same result
@@ -317,9 +336,25 @@ function renderRunnerState() {
   }
 }
 
+let _rehydrated = false;
+// Fix the "No messages yet" reload: the server keeps the active conversation alive across a
+// browser reload, so on first load pull the transcript we are IN back into the view. Runs once,
+// only when there's an active session and no local chat yet (never clobbers an in-progress chat).
+async function rehydrateConversation() {
+  const sid = state.runner && state.runner.session_id;
+  if (_rehydrated || sid == null) return;
+  _rehydrated = true;
+  if (state.chat.length) return;
+  const t = await api.get(`/api/sessions/${sid}`);
+  if (t && Array.isArray(t.messages)) {
+    state.chat = t.messages.map((m) => ({ role: m.role, text: m.text }));
+    refreshIfActive("daily");
+  }
+}
+
 async function pollStatus() {
   const s = await api.get("/api/runner");
-  if (s) { state.runner = s; renderRunnerState(); }
+  if (s) { state.runner = s; renderRunnerState(); rehydrateConversation(); }
   const v = await api.get("/api/voice/status");
   if (v) {
     document.getElementById("st-voice").textContent = v.enabled ? (v.listening || "ready") : "off";

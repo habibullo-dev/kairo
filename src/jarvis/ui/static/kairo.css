@@ -269,6 +269,25 @@ pre.block { background: var(--code-bg); border: 1px solid var(--line); border-ra
 .composer .chips { display: none; gap: 7px; font-family: var(--mono); font-size: 11px; color: var(--dimmer); }
 body.debug .composer .chips { display: flex; }
 .composer .chips span { padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; }
+/* Phase 15.5: an always-visible live model/mode readout on the composer (never the old fake chips) */
+.composer .live-chips { display: flex; gap: 7px; flex: none; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.composer .live-chips span:empty { display: none; }
+.composer .live-chips span { padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; white-space: nowrap; }
+
+/* --- Phase 15.5: conversation header (the calm control bar above the chat) --- */
+.convo-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 11px 14px; margin-bottom: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.convo-header .hdr-left, .convo-header .hdr-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.hdr-field { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+.hdr-field .hdr-k { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--dimmer); }
+.hdr-select { background: var(--bg); color: var(--ink); border: 1px solid var(--line-2); border-radius: 8px; padding: 5px 8px; font-size: 12.5px; font-family: var(--font); max-width: 220px; }
+.hdr-select:hover { border-color: rgba(var(--accent-rgb), .5); }
+.hdr-title { font-weight: 600; color: var(--ink); font-size: 14px; max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hdr-rename { background: var(--bg); color: var(--ink); border: 1px solid rgba(var(--accent-rgb), .6); border-radius: 8px; padding: 5px 8px; font-size: 14px; font-family: var(--font); min-width: 22ch; }
+.hdr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.hdr-actions .plain-button { min-height: 30px; padding: 5px 10px; font-size: 12.5px; }
+.hdr-caps { cursor: pointer; background: transparent; border: 1px dashed var(--line-2); border-radius: 999px; padding: 5px 12px; font-size: 12px; color: var(--dim); }
+.hdr-caps:hover { color: var(--ink); border-color: rgba(var(--accent-rgb), .5); }
+@media (max-width: 640px) { .convo-header { flex-direction: column; align-items: stretch; } .convo-header .hdr-right { justify-content: flex-start; } .hdr-title { max-width: 100%; } }
 
 /* --- approval modal (priority attention surface) --- */
 .overlay { position: fixed; inset: 0; background: rgba(4,7,10,0.74); backdrop-filter: blur(3px); display: none; align-items: center; justify-content: center; z-index: 100; }
