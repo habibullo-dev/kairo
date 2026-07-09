@@ -47,3 +47,15 @@ def test_adding_office_did_not_weaken_the_unknown_tab_gate() -> None:
     # The shell still defaults an unrecognized (attacker-influenceable) tab to a safe known one,
     # rather than importing an off-allowlist module.
     assert 'TAB_KEYS.includes(args && args[1]) ? args[1] : "overview"' in WS_JS
+
+
+def test_office_has_compact_and_office_view_modes() -> None:
+    # A Compact (default) | Office segmented toggle that swaps ONLY the root layout class — a pure
+    # CSS relayout, never a re-render or refetch. The Office is never the app default; this picks
+    # the tab's inner layout.
+    assert 'let _mode = "compact"' in OFFICE_JS  # compact is the default view mode
+    assert "office-modes" in OFFICE_JS and "mode-btn" in OFFICE_JS
+    assert '"Compact"' in OFFICE_JS and '"Office"' in OFFICE_JS
+    assert "office-compact" in OFFICE_JS and "office-full" in OFFICE_JS
+    assert "root.className = rootClass()" in OFFICE_JS  # toggle relayouts via the root class only
+    assert "refreshIfActive(" not in OFFICE_JS  # the Office never CALLS a shell re-render

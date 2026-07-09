@@ -28,6 +28,13 @@ const FEED_CAP = 50; // the live feed is bounded; long history lives in recent_r
 // after a tab switch and prevents stale-DOM writes.
 let _mounted = null; // { projectId, api, live, runId, root }
 
+// View mode: "compact" (default — dense, information-first) or "office" (the richer operations
+// floor). Same data + DOM; only the root class differs, so the toggle is a pure CSS relayout (no
+// re-render, no refetch). Session-scoped here; per-project persistence arrives in Task 6. The
+// Office is never the app default — #studio stays home; this only picks the *tab's* inner layout.
+let _mode = "compact";
+const rootClass = () => "office " + (_mode === "office" ? "office-full" : "office-compact");
+
 const initials = (s) =>
   (s || "?").split(/\s+/).map((w) => w[0] || "").join("").slice(0, 2).toUpperCase() || "?";
 
@@ -297,6 +304,33 @@ function onOrchestration(msg) {
 }
 busOn("orchestration", onOrchestration); // registered once per module load (import is cached)
 
+// --- view mode toggle (Compact | Office) ----------------------------------
+function setMode(mode) {
+  _mode = mode === "office" ? "office" : "compact";
+  const root = _mounted && _mounted.root;
+  if (!root) return;
+  root.className = rootClass(); // pure relayout — CSS handles the two arrangements
+  root.querySelectorAll(".mode-btn").forEach((b) => {
+    const on = b.dataset.mode === _mode;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+
+function modeToggle() {
+  const mk = (mode, label) => {
+    const b = el("button", {
+      class: "mode-btn" + (_mode === mode ? " active" : ""),
+      "aria-pressed": _mode === mode ? "true" : "false", dataset: { mode },
+    }, [label]);
+    b.addEventListener("click", () => setMode(mode));
+    return b;
+  };
+  return el("div", { class: "office-modes", role: "group", "aria-label": "Office view mode" }, [
+    mk("compact", "Compact"), mk("office", "Office"),
+  ]);
+}
+
 // --- build + render -------------------------------------------------------
 function build(data, api) {
   const stages = data.stages || [];
@@ -321,17 +355,18 @@ function build(data, api) {
     section("Recent runs", recent.length ? recent : [emptyState("None yet", "Completed runs show here.")]),
   ]);
 
-  return el("div", { class: "office office-compact", dataset: { officeRoot: "1" } }, [
+  return el("div", { class: rootClass(), dataset: { officeRoot: "1" } }, [
     el("div", { class: "office-head" }, [
       el("div", { class: "office-title" }, [
         el("h2", {}, ["Team Office"]),
         el("div", { class: "sub dim" }, ["A calm view of this project's teams, stages, and activity."]),
       ]),
-      headChair(data.head),
+      modeToggle(),
       el("a", { href: "#studio", class: "plain-button", "aria-label": "Launch a run in Studio" },
         ["Launch in Studio"]),
     ]),
-    stageRail(stages, live && live.stage),
+    // The workflow as a calm flow terminating at Fable's "chair" (synthesis + verdict engine stage).
+    el("div", { class: "office-flow" }, [stageRail(stages, live && live.stage), headChair(data.head)]),
     liveStrip(live, api),
     el("div", { class: "office-main" }, [floor, side]),
   ]);
