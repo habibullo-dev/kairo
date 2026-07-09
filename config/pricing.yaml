@@ -38,6 +38,11 @@ models:
     # ⇒ unpriced ⇒ blocked until the pricing table can represent context-tiered rates.
     gemini-3.5-flash: {input: 1.5, output: 9.0}
     gemini-2.5-flash: {input: 0.3, output: 2.5}
+  # Phase 15: embedding provider (Voyage). Embeddings have input tokens only (output: 0). The
+  # memory-graph indexer + unified search fail CLOSED without this row. Verify vs the invoice.
+  voyage:
+    voyage-3-large: {input: 0.06, output: 0.0}
+    voyage-3: {input: 0.02, output: 0.0}
   # qwen: intentionally ABSENT — no official pricing was verified, so Qwen stays UNPRICED and
   # fail-closed (blocked) until real DashScope numbers are filled here (see docs/verification-10C).
 

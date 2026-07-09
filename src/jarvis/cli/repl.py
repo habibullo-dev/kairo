@@ -1334,6 +1334,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
         intents=repl.intents,  # Phase 12: the outward-write approval queue
         write_journal=repl.write_journal,  # Phase 12: the metadata-only write journal
         graph=GraphStore(repl.store.db, repl.store.lock) if repl.store is not None else None,
+        embedder=repl.memory.embedder if repl.memory is not None else None,  # Phase 15 search
     )
     if repl.agents is not None and orch_store is not None:
         app.state.orchestrator = _build_orchestrator(

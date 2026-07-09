@@ -67,8 +67,10 @@ class UiServices:
     intents: Any = None  # an IntentStore
     write_journal: Any = None  # a ConnectorWriteJournal
     # Phase 15: the graph store backs the memory-graph read models (subgraph / node card /
-    # suggestions review). None when the DB isn't composed.
+    # suggestions review); the embedder (shared with memory) backs unified semantic search — None
+    # when unavailable, in which case search degrades to keyword (FTS) only.
     graph: Any = None  # a GraphStore
+    embedder: Any = None  # an Embedder (memory.embedder); None ⇒ FTS-only search
 
 
 # --- memory ----------------------------------------------------------------

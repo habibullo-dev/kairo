@@ -12,6 +12,7 @@ approvals, read models, and the frontend land in later tasks against this floor.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,10 +20,13 @@ from fastapi import FastAPI, Request, WebSocket, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
+from jarvis.graph.index import CostAwareEmbedder
 from jarvis.graph.review import approve as graph_approve
 from jarvis.graph.review import reject as graph_reject
+from jarvis.graph.search import unified_search
 from jarvis.graph.service import node_card, subgraph, suggestions_view
 from jarvis.observability import get_logger
+from jarvis.observability.cost import load_pricing
 from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.modes import Mode
 from jarvis.persistence.artifacts import ArtifactPathError
@@ -1140,6 +1144,21 @@ def create_app(
         if svc.graph is None:
             return JSONResponse({"ok": False, "reason": "graph unavailable"}, status_code=404)
         return JSONResponse(await graph_reject(svc.graph, suggestion_id, resolved_by="user"))
+
+    @app.get("/api/graph/search")
+    async def graph_search(q: str, project_id: int | None = None, limit: int = 20) -> JSONResponse:
+        # Unified semantic + keyword + graph search. Read-only, quarantine-aware. Semantic layer
+        # needs the (priced) embedder; absent/unpriced ⇒ it degrades to FTS-only (never errors).
+        svc = app.state.services
+        if svc.graph is None:
+            return JSONResponse({"query": q, "results": [], "count": 0})
+        embedder = None
+        if svc.embedder is not None:
+            with contextlib.suppress(Exception):
+                pricing = load_pricing(config.root / "config" / "pricing.yaml")
+                embedder = CostAwareEmbedder(svc.embedder, pricing)
+        return JSONResponse(
+            await unified_search(svc.graph, embedder, q, project_id=project_id, limit=limit))
 
     @app.post("/api/orchestration/run")
     async def orchestration_run(request: Request) -> JSONResponse:

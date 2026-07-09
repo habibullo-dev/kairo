@@ -71,6 +71,8 @@ def graph_cli(argv: list[str]) -> int:
     rv.add_argument("--project", type=int, help="list pending suggestions for this project")
     rv.add_argument("--approve", type=int, metavar="ID", help="approve a suggestion by id")
     rv.add_argument("--reject", type=int, metavar="ID", help="reject a suggestion by id")
+    ri = sub.add_parser("reindex", help="Embed entities + unindexed memories (content-hash keyed).")
+    ri.add_argument("--dry-run", action="store_true", help="report what would be embedded + spend")
     args = ap.parse_args(argv)
 
     if args.cmd == "rebuild":
@@ -81,7 +83,31 @@ def graph_cli(argv: list[str]) -> int:
         return asyncio.run(_run_suggest(args.project, args.limit))
     if args.cmd == "review":
         return asyncio.run(_run_review(args.project, args.approve, args.reject))
+    if args.cmd == "reindex":
+        return asyncio.run(_run_reindex(args.dry_run))
     return 1
+
+
+async def _run_reindex(dry_run: bool) -> int:
+    from jarvis.config import load_config
+    from jarvis.graph import GraphStore
+    from jarvis.graph.index import CostAwareEmbedder, reindex
+    from jarvis.memory import VoyageEmbedder
+    from jarvis.observability.cost import load_pricing
+    from jarvis.persistence.db import connect
+
+    config = load_config()
+    db = await connect(config.data_dir / "jarvis.db")
+    try:
+        store = GraphStore(db, asyncio.Lock())
+        pricing = load_pricing(config.root / "config" / "pricing.yaml")
+        embedder = CostAwareEmbedder(VoyageEmbedder.from_config(config), pricing)
+        report = await reindex(store, embedder, dry_run=dry_run)
+        tag = " (dry-run — no spend)" if dry_run else ""
+        print(f"graph reindex{tag}: {report}")
+        return 0
+    finally:
+        await db.close()
 
 
 async def _run_review(project_id: int | None, approve_id: int | None, reject_id: int | None) -> int:

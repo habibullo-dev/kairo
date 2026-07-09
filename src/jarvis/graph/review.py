@@ -9,7 +9,7 @@ review``). There is no automatic path.
       placeholder embedding + the ``unindexed`` model sentinel, so it is immediately FTS-searchable
       but excluded from semantic recall until ``jarvis graph reindex`` (Task 6) embeds it — approve
       stays fast, keyless, and never makes a surprise model call.
-    - ``node`` -> an asserted ``graph_nodes`` row (``created_by='user'``, trust from the suggestion).
+    - ``node`` -> an asserted ``graph_nodes`` row (``created_by='user'``, trust from suggestion).
     - ``edge`` -> an asserted ``graph_edges`` row (``origin='asserted'``).
   Trust is carried through from the suggestion (worst-of-evidence) and never upgraded on approval.
 """
