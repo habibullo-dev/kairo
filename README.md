@@ -14,6 +14,28 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 15 (Memory Graph + Knowledge Topology) — complete; a reasoning/search surface, adds zero new
+authority.** Kairo now relates its first-party state — projects, chats, runs, members, tasks,
+memories, KB sources, artifacts, wiki pages — as a **graph**, and searches across it. A **derived
+core** (edges re-derived from foreign keys by `jarvis graph rebuild`; every derived row carries its
+SOURCE row's timestamp, so a rebuild is byte-identical and safe to rerun) sits under an **asserted
+overlay** (human-approved nodes/edges, never deleted — only retracted) and a **quarantined suggestion
+queue** (`graph_suggestions` — proposed memories/entities with NO FTS/retrieval/export path and **no
+auto-approve**; the only door out is the Vault-shaped review route / `jarvis graph review`, and trust
+flows worst-of-evidence and is never upgraded, so untrusted content can never become trusted memory).
+A calm **Graphify-style canvas** is a per-project **Graph** workspace tab (deterministic hash-seeded
+layout, reduced-motion, node-capped, read/navigate-only). **Unified search** merges FTS + semantic +
+entity hits — quarantine-aware, fail-closed on an unpriced embedder, ledgered (`CostAwareEmbedder`
+over `pricing.yaml`; Voyage priced). Dedup **merge/split** is reversible and CLI-only (`jarvis graph
+merge|split|undo`, journaled). An **Obsidian export** (`jarvis graph export`, dry-run by default)
+projects entities + per-project memory into reserved `wiki/_graph/`+`wiki/_memory/` namespaces —
+deterministic, non-destructive (writes only files carrying the `generated_by: kairo-graph` marker,
+contained by `safe_wiki_path`), private-excluded and secret-redacted. Migration v12 is additive (four
+tables + an entities FTS). The graph never reaches the PermissionGate, tool scopes, or prompts — the
+only new mutations are the two review routes, so the mutation-route closed set is a test-pinned **37**;
+screenshot DoD GREEN across noir/light/neon × 1440/1024/390 ([ADR-0021](docs/decisions/0021-memory-graph.md),
+closeout in [`docs/verification-15.md`](docs/verification-15.md)).
+
 **Phase 14 (AI Team Office — visual orchestration view) — complete; render-only, adds zero new
 authority.** An optional, premium "operations floor" over the existing orchestration system, reached
 as a per-project **Office** workspace tab (`#workspace/{id}/office`) — the calm `#studio` timeline
