@@ -14,6 +14,25 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 15.6 (Cost-Aware Routing) — implemented; ⛔ mandatory checkpoint before Phase 16; changes no
+safety boundary but the widened `private_ok` set.** The interactive default is now **Auto** cost-aware
+routing, not a fixed premium model. A cheap **Gemini 2.5 Flash-Lite** classifier reads each message
+(intent/difficulty/sensitivity/needs-tools) and a pure policy layer picks the model: tool-free simple
+work → **Gemini 2.5 Flash** (loop sends no tools that turn), cheap tool-using work → **Haiku 4.5**,
+judgment/private/important → **Sonnet 5**, deep/high-risk → **Opus 4.8** / **Fable 5** (never the
+simple-chat default). Safety is enforced in **pure code, not the classifier** (an optimization only):
+`private_ok` is widened to `{anthropic, gemini, openai}` (Habib-approved) so Auto may route the
+private main chat to Gemini, but `trusted_authority` stays anthropic-only and the cheap workers
+(Qwen/DeepSeek/GLM) remain `private_ok=False` — never a main-chat target. The classifier fails **safe**
+(any failure/uncertainty escalates to a trusted, tool-capable model); an unavailable tier fails
+**closed** (down to Sonnet, never a cheap/non-private route). The loop switches the **ledgered client
+per provider** per turn; with no router (REPL/sub-agents/evals) it is byte-identical. Migration **v14**
+adds `model_calls.routing_mode` (auto|manual|NULL). The composer leads with **Auto — recommended**
+("uses cheap models first, escalates only when needed"), shows the live pick ("→ Sonnet 5"), and lists
+other providers disabled with honest reasons
+([ADR-0023](docs/decisions/0023-cost-aware-routing.md), evidence in
+[`docs/verification-15_6.md`](docs/verification-15_6.md)).
+
 **Phase 15.5 (Workstation UI/UX Repair) — complete; adds zero new agent authority.** A repair of the
 user journey so Kairo feels like a premium, conversation-first workstation. A calm **conversation
 header** (scope · chat title · model · mode · a capability summary + New/Resume/Rename/Pin/Archive)
