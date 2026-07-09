@@ -62,7 +62,7 @@ PANELS = [
 PANEL_ROUTES = {
     "chats": ["/api/sessions/"],
     "artifacts": ["/api/artifacts/"],
-    "memory": ["/api/memory/"],
+    "memory": ["/api/memory/", "/api/graph/suggestions/"],  # Phase 15: the review queue
     "tasks": ["/api/tasks/"],
     "vault": ["/api/vault/sources/"],
     "overview": [],

@@ -67,6 +67,10 @@ def graph_cli(argv: list[str]) -> int:
     sg = sub.add_parser("suggest", help="Propose QUARANTINED memories from a project's material.")
     sg.add_argument("--project", type=int, required=True, help="project id to extract from")
     sg.add_argument("--limit", type=int, default=20, help="max material items to scan")
+    rv = sub.add_parser("review", help="List / approve / reject quarantined suggestions.")
+    rv.add_argument("--project", type=int, help="list pending suggestions for this project")
+    rv.add_argument("--approve", type=int, metavar="ID", help="approve a suggestion by id")
+    rv.add_argument("--reject", type=int, metavar="ID", help="reject a suggestion by id")
     args = ap.parse_args(argv)
 
     if args.cmd == "rebuild":
@@ -75,4 +79,33 @@ def graph_cli(argv: list[str]) -> int:
         return asyncio.run(_run_rebuild(load_config().data_dir))
     if args.cmd == "suggest":
         return asyncio.run(_run_suggest(args.project, args.limit))
+    if args.cmd == "review":
+        return asyncio.run(_run_review(args.project, args.approve, args.reject))
     return 1
+
+
+async def _run_review(project_id: int | None, approve_id: int | None, reject_id: int | None) -> int:
+    from jarvis.config import load_config
+    from jarvis.graph import GraphStore
+    from jarvis.graph.review import approve, reject
+    from jarvis.graph.service import suggestions_view
+    from jarvis.persistence.db import connect
+
+    db = await connect(load_config().data_dir / "jarvis.db")
+    try:
+        store = GraphStore(db, asyncio.Lock())
+        if approve_id is not None:
+            print(await approve(store, approve_id, resolved_by="cli"))
+        elif reject_id is not None:
+            print(await reject(store, reject_id, resolved_by="cli"))
+        elif project_id is not None:
+            view = await suggestions_view(store, project_id)
+            print(f"project {project_id}: {len(view['suggestions'])} pending suggestion(s)")
+            for s in view["suggestions"]:
+                print(f"  #{s['id']} [{s['kind']} · {s['trust_class']}] {s['preview']!r}")
+        else:
+            print("usage: jarvis graph review --project N | --approve ID | --reject ID")
+            return 2
+        return 0
+    finally:
+        await db.close()

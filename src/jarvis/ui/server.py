@@ -19,7 +19,9 @@ from fastapi import FastAPI, Request, WebSocket, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
-from jarvis.graph.service import node_card, subgraph
+from jarvis.graph.review import approve as graph_approve
+from jarvis.graph.review import reject as graph_reject
+from jarvis.graph.service import node_card, subgraph, suggestions_view
 from jarvis.observability import get_logger
 from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.modes import Mode
@@ -1113,6 +1115,31 @@ def create_app(
         if card is None:
             return JSONResponse({"detail": "node not found"}, status_code=404)
         return JSONResponse(card)
+
+    @app.get("/api/graph/suggestions")
+    async def graph_suggestions(project_id: int) -> JSONResponse:
+        # The project's QUARANTINED review queue (bodies-free previews + evidence pointers).
+        svc = app.state.services
+        if svc.graph is None:
+            return JSONResponse({"project_id": project_id, "suggestions": [],
+                                 "counts": {"by_trust": {}}})
+        return JSONResponse(await suggestions_view(svc.graph, project_id))
+
+    @app.post("/api/graph/suggestions/{suggestion_id}/approve")
+    async def graph_suggestion_approve(suggestion_id: int) -> JSONResponse:
+        # The ONLY door from a quarantined proposal to durable graph truth — the Vault review
+        # pattern (idempotent claim-then-materialize). New mutation route (pin 35->37).
+        svc = app.state.services
+        if svc.graph is None:
+            return JSONResponse({"ok": False, "reason": "graph unavailable"}, status_code=404)
+        return JSONResponse(await graph_approve(svc.graph, suggestion_id, resolved_by="user"))
+
+    @app.post("/api/graph/suggestions/{suggestion_id}/reject")
+    async def graph_suggestion_reject(suggestion_id: int) -> JSONResponse:
+        svc = app.state.services
+        if svc.graph is None:
+            return JSONResponse({"ok": False, "reason": "graph unavailable"}, status_code=404)
+        return JSONResponse(await graph_reject(svc.graph, suggestion_id, resolved_by="user"))
 
     @app.post("/api/orchestration/run")
     async def orchestration_run(request: Request) -> JSONResponse:

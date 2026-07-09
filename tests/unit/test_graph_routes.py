@@ -56,6 +56,9 @@ async def _client(tmp_path: Path):
         "VALUES ('pages/a.md','pages/b.md','b','wikilink',?)", (_TS,))
     store = GraphStore(db, lock)
     await rebuild(store)
+    # a QUARANTINED suggestion (id 1) for the review-route tests
+    await store.add_suggestion(kind="memory", trust_class="model_generated", project_id=1,
+                               payload={"content": "route-test fact"})
     auth = AuthManager(token="tok")
     app = create_app(cfg, auth=auth)
     app.state.services = UiServices(
@@ -66,6 +69,14 @@ async def _client(tmp_path: Path):
 
 def _hdr(auth: AuthManager) -> dict[str, str]:
     return {"cookie": f"{SESSION_COOKIE}={auth.mint_session()}"}
+
+
+# Mutations also require a loopback Origin (anti-CSRF), checked before auth.
+_ORIGIN = {"origin": "http://127.0.0.1"}
+
+
+def _post_hdr(auth: AuthManager) -> dict[str, str]:
+    return {**_hdr(auth), **_ORIGIN}
 
 
 async def test_graph_route_returns_projection(tmp_path: Path) -> None:
@@ -91,6 +102,30 @@ async def test_graph_routes_require_session(tmp_path: Path) -> None:
     client, _auth, rid = await _client(tmp_path)
     assert client.get("/api/workspace/1/graph").status_code == 401
     assert client.get(f"/api/graph/node/run/{rid}").status_code == 401
+
+
+async def test_suggestions_queue_and_review_routes(tmp_path: Path) -> None:
+    client, auth, _ = await _client(tmp_path)
+    q = client.get("/api/workspace/1/graph", headers=_hdr(auth))  # warm
+    assert q.status_code == 200
+    queue = client.get("/api/graph/suggestions?project_id=1", headers=_hdr(auth))
+    assert queue.status_code == 200 and len(queue.json()["suggestions"]) == 1
+    # approve the pending suggestion (id 1) — the Vault-pattern review mutation (needs Origin).
+    ap = client.post("/api/graph/suggestions/1/approve", headers=_post_hdr(auth))
+    assert ap.status_code == 200 and ap.json()["ok"] is True
+    # idempotent: a re-approve is a no-op; the queue is now empty.
+    again = client.post("/api/graph/suggestions/1/approve", headers=_post_hdr(auth))
+    assert again.json()["ok"] is False
+    assert client.get("/api/graph/suggestions?project_id=1", headers=_hdr(auth)).json()[
+        "suggestions"] == []
+
+
+async def test_review_routes_require_session(tmp_path: Path) -> None:
+    client, _auth, _ = await _client(tmp_path)
+    # with a valid loopback Origin but NO session cookie, the mutation is rejected by auth (401).
+    assert client.post("/api/graph/suggestions/1/approve", headers=_ORIGIN).status_code == 401
+    assert client.post("/api/graph/suggestions/1/reject", headers=_ORIGIN).status_code == 401
+    assert client.get("/api/graph/suggestions?project_id=1").status_code == 401
 
 
 async def test_graph_routes_leak_no_secret_or_body(tmp_path: Path) -> None:

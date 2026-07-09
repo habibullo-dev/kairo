@@ -211,6 +211,24 @@ async def node_card(
     return {**self_card, "neighbor_count": len(edges), "neighbors": neighbors}
 
 
+async def suggestions_view(store: GraphStore, project_id: int, *, status: str = "pending") -> dict:
+    """The review queue for a project: bodies-free suggestion rows (short preview + evidence
+    POINTERS + trust badge) for the Memory-tab 'Suggested' section / `jarvis graph review`."""
+    rows = []
+    for s in await store.list_suggestions(project_id=project_id, status=status):
+        payload = s.payload or {}
+        preview = str(payload.get("content") or payload.get("title") or "")[:_MEM_LABEL]
+        rows.append({
+            "id": s.id, "kind": s.kind, "trust_class": s.trust_class, "sensitivity": s.sensitivity,
+            "preview": preview, "evidence": s.evidence, "extractor_model": s.extractor_model,
+            "created_at": s.created_at,
+        })
+    return {
+        "project_id": project_id, "suggestions": rows,
+        "counts": {"by_trust": dict(Counter(r["trust_class"] for r in rows))},
+    }
+
+
 async def counts_for_project(store: GraphStore, project_id: int) -> dict:
     """Bare node/edge counts for a project (a cheap header stat). Read-only, degrades to zero."""
     out = {"nodes": 0, "edges": 0}

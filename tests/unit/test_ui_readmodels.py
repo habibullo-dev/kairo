@@ -181,6 +181,10 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/intents/{intent_id}/approve"),
         ("POST", "/api/intents/{intent_id}/reject"),
         ("POST", "/api/intents/{intent_id}/undo"),
+        # Phase 15: the graph suggestion review ops (the ONLY new authority — the Vault
+        # approve/reject pattern; quarantined proposal -> durable memory/asserted node|edge).
+        ("POST", "/api/graph/suggestions/{suggestion_id}/approve"),
+        ("POST", "/api/graph/suggestions/{suggestion_id}/reject"),
     }
 
 
