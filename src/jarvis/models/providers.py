@@ -12,9 +12,12 @@ becomes usable and never silently downgrades to another provider.
 
 Two authority axes are catalog-static (enforced in :func:`jarvis.models.registry.validate_route`,
 which is pure — no config needed): ``trusted_authority`` (may hold final-authority roles) and
-``private_ok`` (may receive PRIVATE-provenance context). For Phase 10C only ``anthropic`` is
-trusted/private-ok; the cheap workers are neither (their privacy refusal is enforced in the
-orchestration engine before fan-out).
+``private_ok`` (may receive PRIVATE-provenance context). ``trusted_authority`` is ``anthropic``
+only (planner/judge/utility stay on Claude). ``private_ok`` was ``anthropic`` only in 10C;
+Phase 15.6 widens it to ``{anthropic, gemini, openai}`` (Habib-approved) so the cost-aware Auto
+router may route the private main chat to Gemini as well as Claude — the cheap workers
+(qwen/deepseek/zai) remain ``private_ok=False`` and their privacy refusal is enforced in the
+orchestration engine before fan-out (and, for the interactive router, by the same private_ok gate).
 """
 
 from __future__ import annotations
@@ -89,11 +92,11 @@ PROVIDER_CATALOG: dict[str, ProviderSpec] = {
         key_service="openai",
         credential_env=("OPENAI_API_KEY",),
         tool_capable=False,  # text-only adapter (Phase 10)
-        private_ok=False,
+        private_ok=True,  # Phase 15.6: private-capable backup/utility (not default; not trusted)
         trusted_authority=False,
         core=True,
         default_models=("gpt-5.2", "gpt-5.2-mini"),
-        note="text-only analysis/synthesis; existing adapter.",
+        note="text-only analysis; private-capable backup/utility (opt-in, never the default).",
         supports_context_reuse=True,
         context_reuse_mode="automatic_prefix",  # automatic prefix caching + prompt_cache_key
         supports_cache_key=True,
@@ -131,9 +134,9 @@ PROVIDER_CATALOG: dict[str, ProviderSpec] = {
         # DashScope plan may use a different path — confirm + override at live verification.
         default_base_url="https://coding-intl.dashscope.aliyuncs.com/apps/anthropic",
         auth_style="x-api-key",
-        default_models=("qwen3-coder-plus", "qwen3-coder-next"),
-        note="cheap coding / summarization / multilingual / long-context worker. "
-        "UNPRICED until real DashScope pricing is added (fail-closed: blocked until then).",
+        default_models=("qwen3-coder-plus", "qwen3-coder-flash"),
+        note="cheap coding / tests / boilerplate / extraction worker (NON-private only). "
+        "Priced (DashScope International, 32K-128K band) in pricing.yaml.",
         supports_context_reuse=True,
         context_reuse_mode="explicit_breakpoint",  # DashScope cache_control blocks
         reports_cached_tokens=True,
@@ -160,12 +163,13 @@ PROVIDER_CATALOG: dict[str, ProviderSpec] = {
         key_service="gemini",
         credential_env=("GEMINI_API_KEY",),  # NOT GOOGLE_CLIENT_ID/SECRET (Phase 9 connectors)
         tool_capable=False,  # text-only this phase; tool/function calling deferred
-        private_ok=False,
+        private_ok=True,  # Phase 15.6: private-capable (Auto router + daily worker); not trusted
         trusted_authority=False,
         core=False,
         default_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        default_models=("gemini-3.5-flash", "gemini-2.5-flash"),
-        note="text-only long-context / research / context-synthesis; multimodal deferred.",
+        default_models=("gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3.5-flash"),
+        note="Phase 15.6 cost-aware routing: flash-lite = Auto router/classifier, flash = cheap "
+        "daily worker; private-capable (private_ok) but not trusted_authority; text-only.",
         supports_context_reuse=True,
         # Implicit caching by default; explicit CachedContent resources DEFERRED (needs a privacy
         # review — see the S7 ADR) so private/large-doc caching is not enabled here.

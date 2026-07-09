@@ -24,17 +24,22 @@ def test_catalog_fully_classified() -> None:
         assert (spec.default_base_url is None) == spec.core
 
 
-def test_only_anthropic_is_trusted_and_private_ok() -> None:
-    # The load-bearing authority invariant for 10C: exactly one trusted provider, and it is the
-    # only one that may receive private context.
+def test_trusted_is_anthropic_only_and_private_ok_is_the_15_6_set() -> None:
+    # The load-bearing authority invariant: exactly ONE trusted-authority provider (anthropic —
+    # planner/judge/utility stay on Claude). Phase 15.6 (Habib-approved) widens private_ok to
+    # {anthropic, gemini, openai} so the cost-aware Auto router may route the private main chat to
+    # Gemini/OpenAI too; the cheap workers (deepseek/qwen/zai) stay private_ok=False.
     assert set(TRUSTED_AUTHORITY_PROVIDERS) == {"anthropic"}
     trusted = {n for n, s in PROVIDER_CATALOG.items() if s.trusted_authority}
     private = {n for n, s in PROVIDER_CATALOG.items() if s.private_ok}
     assert trusted == {"anthropic"}
-    assert private == {"anthropic"}
-    for name in ("deepseek", "qwen", "zai", "gemini"):
+    assert private == {"anthropic", "gemini", "openai"}
+    for name in ("deepseek", "qwen", "zai"):
         assert not PROVIDER_CATALOG[name].trusted_authority
-        assert not PROVIDER_CATALOG[name].private_ok
+        assert not PROVIDER_CATALOG[name].private_ok  # non-private workers (fail-closed)
+    for name in ("gemini", "openai"):
+        assert PROVIDER_CATALOG[name].private_ok  # private-capable...
+        assert not PROVIDER_CATALOG[name].trusted_authority  # ...but never final authority
 
 
 def test_core_providers_are_exactly_anthropic_and_openai() -> None:

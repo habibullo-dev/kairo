@@ -75,9 +75,9 @@ def test_private_prefix_not_cached_without_route_permission() -> None:
     assert allowed.emit  # provider permits + route permits ⇒ cacheable
 
 
-def test_private_prefix_never_cached_on_non_private_provider() -> None:
-    # openai is not private_ok ⇒ cache_private_allowed False ⇒ a private prefix is never cached,
-    # even if the route "allows" it.
+def test_private_prefix_never_cached_on_non_private_cache_provider() -> None:
+    # The caching gate is cache_private_allowed, NOT private_ok: openai is private_ok (15.6) yet
+    # cache_private_allowed=False ⇒ a private prefix is never cached, even if the route "allows" it.
     d = plan(capability("openai"), _prompt(sensitive=True), route_allows_private=True)
     assert not d.emit and "private" in d.reason
 

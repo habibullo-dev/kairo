@@ -38,11 +38,19 @@ models:
     # ⇒ unpriced ⇒ blocked until the pricing table can represent context-tiered rates.
     gemini-3.5-flash: {input: 1.5, output: 9.0}
     gemini-2.5-flash: {input: 0.3, output: 2.5}
+    # Phase 15.6: the cost-aware Auto router/classifier (cheapest tier). Numbers Habib-confirmed.
+    gemini-2.5-flash-lite: {input: 0.1, output: 0.4}
   # Phase 15: embedding provider (Voyage). Embeddings have input tokens only (output: 0). The
   # memory-graph indexer + unified search fail CLOSED without this row. Verify vs the invoice.
   voyage:
     voyage-3-large: {input: 0.06, output: 0.0}
     voyage-3: {input: 0.02, output: 0.0}
+    # Phase 15.6: the 15.6 memory/RAG set. Embeddings are input-only (output 0); rerank is billed
+    # on the tokens it scores (recorded as input). Numbers Habib-confirmed (per 1M tokens).
+    voyage-3.5-lite: {input: 0.02, output: 0.0}    # default embeddings (cheap)
+    voyage-3.5: {input: 0.06, output: 0.0}         # high-quality embeddings
+    rerank-2.5: {input: 0.05, output: 0.0}         # rerank retrieved context
+    rerank-2.5-lite: {input: 0.02, output: 0.0}    # optional cheaper rerank fallback
   # Qwen (DashScope International/Singapore endpoint — matches the provider base_url). Qwen3-Coder
   # is CONTEXT-TIERED by request input size (plus: $1/$5 ≤32K, $1.80/$9 32-128K, $3/$15 128-256K,
   # $6/$60 256K-1M; flash: $0.30/$1.50, $0.50/$2.50, $0.80/$4, $1.60/$9.60 across the same bands).
