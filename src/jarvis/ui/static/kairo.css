@@ -719,7 +719,12 @@ tr.clickable:hover td { color: var(--cyan); }
 .office-node { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border-radius: 8px;
   border: 1px solid var(--line); background: var(--panel-soft); cursor: pointer; }
 .office-node:hover { border-color: rgba(var(--accent-rgb), .4); }
-.office-node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* visible keyboard focus across every Office interactive (all themes; not color-only — status
+   also carries a text label on each node). */
+.office-node:focus-visible, .mode-btn:focus-visible, .room-caret:focus-visible,
+.icon-button:focus-visible, .office .plain-button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
 .node-ring { width: 36px; height: 36px; border-radius: 50%; flex: none; display: grid; place-items: center;
   border: 2px solid var(--subtle); color: var(--muted); }
 .node-ring.busy { border-color: var(--accent); color: var(--ink); animation: office-pulse 1.8s ease-in-out infinite; }

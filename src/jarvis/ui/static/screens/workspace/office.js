@@ -302,10 +302,39 @@ function pushFeed(root, e) {
   while (feed.children.length > FEED_CAP) feed.removeChild(feed.lastChild);
 }
 
-// The ONE registered handler (module singleton). Inert unless the office is mounted.
-function onOrchestration(msg) {
+// Coalesced repaint (perf): a bus event MUTATES the model + marks what changed here; the actual DOM
+// repaint is batched into one requestAnimationFrame, so a burst of N events is a single relayout,
+// not N. Every pending structure is BOUNDED — rooms (Set ≤ teams), nodes (Map ≤ members, keyed so
+// repeats collapse), feed (array trimmed to FEED_CAP on queue) — so nothing grows without limit even
+// if a flush is delayed (e.g. a backgrounded tab). Feed history beyond the cap lives in recent_runs.
+const _pending = { stages: false, live: false, rooms: new Set(), nodes: new Map(), feed: [] };
+let _rafId = 0;
+function queueFeed(e) {
+  _pending.feed.push(e);
+  if (_pending.feed.length > FEED_CAP) _pending.feed.shift(); // bound the buffer, not just the DOM
+}
+function scheduleFlush() {
+  if (_rafId) return;
+  _rafId = requestAnimationFrame(flushPending);
+}
+function flushPending() {
+  _rafId = 0;
   const root = officeRoot();
-  if (!root || !msg || !msg.kind) return;
+  const p = _pending;
+  if (root && _mounted) {
+    if (p.stages) repaintStages(root, _mounted.live && _mounted.live.stage);
+    if (p.live) repaintLive(root);
+    p.rooms.forEach((t) => repaintRoom(root, t, _mounted.live));
+    p.nodes.forEach((n) => repaintAgentNodes(root, n.team, n.role, n.status, n.stage));
+    p.feed.forEach((e) => pushFeed(root, e));
+  }
+  p.stages = false; p.live = false; p.rooms.clear(); p.nodes.clear(); p.feed.length = 0;
+}
+
+// The ONE registered handler (module singleton). Inert unless the office is mounted; only touches
+// the model + the bounded pending buffers, then schedules the coalesced flush.
+function onOrchestration(msg) {
+  if (!officeRoot() || !msg || !msg.kind) return;
   const k = msg.kind;
   if (k === "orchestration_started") {
     _mounted.runId = msg.run_id;
@@ -314,36 +343,31 @@ function onOrchestration(msg) {
       stage: null, status: "running", estimated_cost_usd: msg.estimated_cost_usd,
       actual_cost_usd: null,
     };
-    repaintLive(root);
-    repaintStages(root, null);
-    repaintRoom(root, msg.team, _mounted.live);
-    pushFeed(root, { type: "run", title: msg.title || "run started", status: "running", ts: msg.ts });
-    return;
+    _pending.live = true; _pending.stages = true; _pending.rooms.add(msg.team);
+    queueFeed({ type: "run", title: msg.title || "run started", status: "running", ts: msg.ts });
+    return scheduleFlush();
   }
   if (!_mounted.live || msg.run_id !== _mounted.runId) return; // only the in-flight run
   if (k === "orchestration_stage") {
     _mounted.live.stage = msg.stage;
-    repaintStages(root, msg.stage);
-    repaintLive(root);
-    repaintRoom(root, _mounted.live.team, _mounted.live);
-    pushFeed(root, { type: "stage", title: `Stage · ${STAGE_LABEL[msg.stage] || msg.stage}`, ts: msg.ts });
+    _pending.stages = true; _pending.live = true; _pending.rooms.add(_mounted.live.team);
+    queueFeed({ type: "stage", title: `Stage · ${STAGE_LABEL[msg.stage] || msg.stage}`, ts: msg.ts });
   } else if (k === "orchestration_agent") {
-    repaintAgentNodes(root, msg.team, msg.role, msg.ok ? "ok" : "denied", msg.stage);
-    pushFeed(root, {
-      type: "agent", title: `${msg.member || msg.role || "member"} · ${STAGE_LABEL[msg.stage] || msg.stage || ""}`,
-      status: msg.ok ? "ok" : "denied", ts: msg.ts,
+    _pending.nodes.set(`${msg.team}::${msg.role}`,
+      { team: msg.team, role: msg.role, status: msg.ok ? "ok" : "denied", stage: msg.stage });
+    queueFeed({
+      type: "agent", status: msg.ok ? "ok" : "denied", ts: msg.ts,
+      title: `${msg.member || msg.role || "member"} · ${STAGE_LABEL[msg.stage] || msg.stage || ""}`,
     });
   } else if (k === "orchestration_round") {
-    _mounted.live.stage = "verdict";
-    repaintStages(root, "verdict");
-    pushFeed(root, { type: "stage", title: `Verdict round ${msg.round}`, status: msg.verdict, ts: msg.ts });
+    _mounted.live.stage = "verdict"; _pending.stages = true;
+    queueFeed({ type: "stage", title: `Verdict round ${msg.round}`, status: msg.verdict, ts: msg.ts });
   } else if (k === "orchestration_completed") {
-    _mounted.live.status = msg.status;
-    _mounted.live.verdict = msg.verdict;
-    repaintLive(root);
-    repaintRoom(root, _mounted.live.team, _mounted.live);
-    pushFeed(root, { type: "done", title: "Run complete", status: msg.verdict || msg.status, ts: msg.ts });
+    _mounted.live.status = msg.status; _mounted.live.verdict = msg.verdict;
+    _pending.live = true; _pending.rooms.add(_mounted.live.team);
+    queueFeed({ type: "done", title: "Run complete", status: msg.verdict || msg.status, ts: msg.ts });
   }
+  scheduleFlush();
 }
 busOn("orchestration", onOrchestration); // registered once per module load (import is cached)
 
@@ -375,6 +399,22 @@ function modeToggle() {
   ]);
 }
 
+// Roving keyboard navigation: arrow keys move focus between member nodes (they are role="button",
+// tabindex 0 — Enter/Space open inspect). Only active once a node holds focus, so it never hijacks
+// the arrow keys elsewhere. Attached to the freshly-built floor each render (no accumulation).
+function onFloorKeys(ev) {
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(ev.key)) return;
+  const root = officeRoot();
+  if (!root) return;
+  const nodes = [...root.querySelectorAll(".office-node")];
+  const i = nodes.indexOf(document.activeElement);
+  if (i < 0) return; // rove only when a node is focused
+  ev.preventDefault();
+  const fwd = ev.key === "ArrowDown" || ev.key === "ArrowRight";
+  const next = nodes[(i + (fwd ? 1 : -1) + nodes.length) % nodes.length];
+  if (next) next.focus();
+}
+
 // --- build + render -------------------------------------------------------
 function build(data, api, collapsed) {
   const stages = data.stages || [];
@@ -388,7 +428,7 @@ function build(data, api, collapsed) {
     ]));
   const feedRows = (data.feed || []).slice(0, FEED_CAP).map(feedRow);
 
-  const floor = el("div", { class: "office-floor" },
+  const floor = el("div", { class: "office-floor", onkeydown: onFloorKeys },
     rooms.length ? rooms : [emptyState("No teams", "This project's teams will appear here as rooms.")]);
   const side = el("div", { class: "office-side" }, [
     section("Live activity", [
