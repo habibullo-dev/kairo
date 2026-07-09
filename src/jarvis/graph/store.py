@@ -464,6 +464,125 @@ class GraphStore:
             await self.db.commit()
         return cur.rowcount > 0
 
+    async def _live_node_row(self, node_id: int) -> tuple | None:
+        cur = await self.db.execute(
+            f"SELECT {_NODE_COLS} FROM graph_nodes WHERE id=? AND status='live'", (node_id,)
+        )
+        return await cur.fetchone()
+
+    async def merge_nodes(
+        self, *, canonical_id: int, merged_id: int, created_by: str = "user"
+    ) -> int:
+        """Fold asserted node ``merged_id`` into ``canonical_id`` (same kind): re-point the merged
+        node's asserted edges onto the canonical endpoint, alias its title onto the canonical, and
+        RETRACT the merged node (never delete). Returns the ``graph_merges`` journal id;
+        :meth:`undo_merge` reverses it exactly. Derived edges are untouched (a rebuild re-derives
+        them against surviving rows). Raises ValueError on an invalid pair."""
+        if canonical_id == merged_id:
+            raise ValueError("cannot merge a node into itself")
+        async with self.lock:
+            canon = await self._live_node_row(canonical_id)
+            merged = await self._live_node_row(merged_id)
+            if canon is None or merged is None:
+                raise ValueError("both nodes must exist and be live")
+            if canon[1] != merged[1]:  # kind must match — merging distinct kinds is nonsensical
+                raise ValueError(f"kind mismatch: {canon[1]} != {merged[1]}")
+            cep, mep = (canon[1], str(canonical_id)), (merged[1], str(merged_id))
+            ops: list[dict] = []
+            cur = await self.db.execute(
+                f"SELECT {_EDGE_COLS} FROM graph_edges WHERE origin='asserted' AND status='live' "
+                "AND ((src_kind=? AND src_id=?) OR (dst_kind=? AND dst_id=?)) ORDER BY id",
+                (mep[0], mep[1], mep[0], mep[1]),
+            )
+            for e in await cur.fetchall():
+                eid, (sk, si, dk, di), ekind = e[0], (e[1], e[2], e[3], e[4]), e[5]
+                nsk, nsi = cep if (sk, si) == mep else (sk, si)
+                ndk, ndi = cep if (dk, di) == mep else (dk, di)
+                if (nsk, nsi) == (ndk, ndi):  # self-loop after the fold → retract, no re-point
+                    await self.db.execute(
+                        "UPDATE graph_edges SET status='retracted' WHERE id=?", (eid,))
+                    ops.append({"op": "retract", "id": eid})
+                    continue
+                dup = await self.db.execute(
+                    "SELECT id, status FROM graph_edges WHERE src_kind=? AND src_id=? AND "
+                    "dst_kind=? AND dst_id=? AND edge_kind=? AND origin='asserted' AND id!=?",
+                    (nsk, nsi, ndk, ndi, ekind, eid),
+                )
+                other = await dup.fetchone()
+                if other is not None:  # re-pointing would collide with the identity index → drop
+                    await self.db.execute(
+                        "UPDATE graph_edges SET status='retracted' WHERE id=?", (eid,))
+                    ops.append({"op": "retract", "id": eid})
+                    if other[1] == "retracted":  # revive the survivor; undo re-retracts it
+                        await self.db.execute(
+                            "UPDATE graph_edges SET status='live' WHERE id=?", (other[0],))
+                        ops.append({"op": "revive", "id": other[0]})
+                else:
+                    await self.db.execute(
+                        "UPDATE graph_edges SET src_kind=?, src_id=?, dst_kind=?, dst_id=? "
+                        "WHERE id=?", (nsk, nsi, ndk, ndi, eid))
+                    ops.append({"op": "repoint", "id": eid, "old": [sk, si, dk, di]})
+            alias = None  # keep the merged title discoverable as an alias label on the canonical
+            labels = _loads(canon[14], [])
+            if merged[2] and merged[2] != canon[2] and merged[2] not in labels:
+                await self.db.execute(
+                    "UPDATE graph_nodes SET labels_json=?, updated_at=? WHERE id=?",
+                    (json.dumps([*labels, merged[2]]), _now(), canonical_id))
+                alias = merged[2]
+            await self.db.execute(
+                "UPDATE graph_nodes SET status='retracted', updated_at=? WHERE id=? "
+                "AND status='live'", (_now(), merged_id))
+            undo = {"merged_id": merged_id, "alias": alias, "edges": ops}
+            j = await self.db.execute(
+                f"INSERT INTO graph_merges ({_MERGE_COLS}) VALUES "
+                "(NULL, 'merge', ?, ?, ?, ?, ?, ?, ?, NULL)",
+                (cep[0], cep[1], mep[0], mep[1], json.dumps(undo), created_by, _now()))
+            await self.db.commit()
+        assert j.lastrowid is not None
+        return j.lastrowid
+
+    async def undo_merge(self, merge_id: int) -> bool:
+        """Reverse a journaled merge exactly: restore re-pointed/retracted edges, drop the alias,
+        bring the merged node back live, mark the journal row undone. Idempotent (a second call is
+        a no-op — returns False)."""
+        async with self.lock:
+            cur = await self.db.execute(
+                "SELECT canonical_id, undo_json FROM graph_merges "
+                "WHERE id=? AND undone_at IS NULL", (merge_id,))
+            row = await cur.fetchone()
+            if row is None:
+                return False
+            canonical_id, undo = int(row[0]), _loads(row[1], {})
+            for op in reversed(undo.get("edges", [])):
+                if op["op"] == "repoint":
+                    sk, si, dk, di = op["old"]
+                    await self.db.execute(
+                        "UPDATE graph_edges SET src_kind=?, src_id=?, dst_kind=?, dst_id=? "
+                        "WHERE id=?", (sk, si, dk, di, op["id"]))
+                elif op["op"] == "retract":
+                    await self.db.execute(
+                        "UPDATE graph_edges SET status='live' WHERE id=?", (op["id"],))
+                elif op["op"] == "revive":
+                    await self.db.execute(
+                        "UPDATE graph_edges SET status='retracted' WHERE id=?", (op["id"],))
+            alias = undo.get("alias")
+            if alias:
+                lc = await self.db.execute(
+                    "SELECT labels_json FROM graph_nodes WHERE id=?", (canonical_id,))
+                lrow = await lc.fetchone()
+                if lrow is not None:
+                    kept = [x for x in _loads(lrow[0], []) if x != alias]
+                    await self.db.execute(
+                        "UPDATE graph_nodes SET labels_json=?, updated_at=? WHERE id=?",
+                        (json.dumps(kept), _now(), canonical_id))
+            await self.db.execute(
+                "UPDATE graph_nodes SET status='live', updated_at=? WHERE id=?",
+                (_now(), int(undo["merged_id"])))
+            await self.db.execute(
+                "UPDATE graph_merges SET undone_at=? WHERE id=?", (_now(), merge_id))
+            await self.db.commit()
+        return True
+
 
 def _row_to_node(r: tuple) -> GraphNode:
     return GraphNode(

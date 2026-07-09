@@ -1,10 +1,15 @@
 """``jarvis graph …`` — terminal rituals over the memory graph (Phase 15).
 
     jarvis graph rebuild      delete + re-derive the derived edge cache from existing stores
+    jarvis graph dedup        report likely-duplicate entities (no writes)
+    jarvis graph merge        fold one asserted node into another (reversible, journaled)
+    jarvis graph split        pull a node back out of the canonical it was merged into
+    jarvis graph undo         reverse a journaled merge by id
 
-Derive/read-only; adds no authority. More subcommands (suggest / review / reindex / merge / export)
-land in later Phase-15 tasks. A thin delegate imported on demand from ``__main__`` (like ``eval`` /
-``connect``) so ``--version`` / ``--help`` stay instant.
+Derive/read-only, EXCEPT the human-invoked merge/split/undo, which mutate asserted rows reversibly
+(nodes retracted never deleted; edges re-pointed and restorable) and are CLI-only — no route, so
+the graph UI gains no new authority. ``export`` lands in Task 10. A thin delegate imported on demand
+from ``__main__`` (like ``eval`` / ``connect``) so ``--version`` / ``--help`` stay instant.
 """
 
 from __future__ import annotations
@@ -73,6 +78,16 @@ def graph_cli(argv: list[str]) -> int:
     rv.add_argument("--reject", type=int, metavar="ID", help="reject a suggestion by id")
     ri = sub.add_parser("reindex", help="Embed entities + unindexed memories (content-hash keyed).")
     ri.add_argument("--dry-run", action="store_true", help="report what would be embedded + spend")
+    dd = sub.add_parser("dedup", help="Report likely-duplicate entities (report-only, no writes).")
+    dd.add_argument("--project", type=int, help="restrict to this project (default: all + global)")
+    dd.add_argument("--threshold", type=float, default=0.90, help="cosine floor for 'similar'")
+    mg = sub.add_parser("merge", help="Fold one asserted node into another (reversible).")
+    mg.add_argument("--into", type=int, required=True, metavar="ID", help="surviving node id")
+    mg.add_argument("merged", type=int, help="node id to fold in (retracted, never deleted)")
+    sp = sub.add_parser("split", help="Reverse the most recent merge that folded this node away.")
+    sp.add_argument("node", type=int, help="node id to pull back out")
+    un = sub.add_parser("undo", help="Reverse a journaled merge by its id.")
+    un.add_argument("merge_id", type=int, help="graph_merges journal id")
     args = ap.parse_args(argv)
 
     if args.cmd == "rebuild":
@@ -85,6 +100,14 @@ def graph_cli(argv: list[str]) -> int:
         return asyncio.run(_run_review(args.project, args.approve, args.reject))
     if args.cmd == "reindex":
         return asyncio.run(_run_reindex(args.dry_run))
+    if args.cmd == "dedup":
+        return asyncio.run(_run_dedup(args.project, args.threshold))
+    if args.cmd == "merge":
+        return asyncio.run(_run_merge(args.into, args.merged))
+    if args.cmd == "split":
+        return asyncio.run(_run_split(args.node))
+    if args.cmd == "undo":
+        return asyncio.run(_run_undo(args.merge_id))
     return 1
 
 
@@ -133,5 +156,75 @@ async def _run_review(project_id: int | None, approve_id: int | None, reject_id:
             print("usage: jarvis graph review --project N | --approve ID | --reject ID")
             return 2
         return 0
+    finally:
+        await db.close()
+
+
+async def _graph_db():
+    from jarvis.config import load_config
+    from jarvis.graph import GraphStore
+    from jarvis.persistence.db import connect
+
+    db = await connect(load_config().data_dir / "jarvis.db")
+    return db, GraphStore(db, asyncio.Lock())
+
+
+async def _run_dedup(project_id: int | None, threshold: float) -> int:
+    from jarvis.graph.merge import find_duplicates
+    from jarvis.graph.store import ANY_PROJECT
+
+    db, store = await _graph_db()
+    try:
+        scope = project_id if project_id is not None else ANY_PROJECT
+        cands = await find_duplicates(store, project_id=scope, threshold=threshold)
+        if not cands:
+            print("no duplicate candidates found (report-only).")
+            return 0
+        print(f"{len(cands)} candidate pair(s) — REPORT ONLY (confirm with `jarvis graph merge`):")
+        for c in cands:
+            print(f"  [{c.kind}] #{c.a_id} {c.a_title!r} ~ #{c.b_id} {c.b_title!r} "
+                  f"({c.reason} {c.score:.3f})")
+        return 0
+    finally:
+        await db.close()
+
+
+async def _run_merge(canonical_id: int, merged_id: int) -> int:
+    db, store = await _graph_db()
+    try:
+        mid = await store.merge_nodes(
+            canonical_id=canonical_id, merged_id=merged_id, created_by="user")
+        print(f"merged #{merged_id} into #{canonical_id} (journal #{mid}); "
+              f"reverse with `jarvis graph undo {mid}` or `jarvis graph split {merged_id}`.")
+        return 0
+    except ValueError as e:
+        print(f"merge refused: {e}")
+        return 2
+    finally:
+        await db.close()
+
+
+async def _run_split(node_id: int) -> int:
+    from jarvis.graph.merge import split
+
+    db, store = await _graph_db()
+    try:
+        mid = await split(store, node_id)
+        if mid is None:
+            print(f"node #{node_id} was not merged into anything — nothing to split.")
+            return 2
+        print(f"split #{node_id} back out (reversed merge journal #{mid}).")
+        return 0
+    finally:
+        await db.close()
+
+
+async def _run_undo(merge_id: int) -> int:
+    db, store = await _graph_db()
+    try:
+        ok = await store.undo_merge(merge_id)
+        state = "reversed" if ok else "no-op (unknown or already undone)"
+        print(f"undo merge #{merge_id}: {state}")
+        return 0 if ok else 2
     finally:
         await db.close()
