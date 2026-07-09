@@ -32,7 +32,7 @@ def test_shell_validates_tab_against_allowlist_before_dynamic_import() -> None:
     assert "TAB_KEYS" in WS_JS and "TAB_KEYS.includes" in WS_JS
     assert "await import(`./workspace/${tab}.js`)" in WS_JS
     for tab in ("overview", "chats", "artifacts", "memory", "tasks", "vault", "studio", "office",
-                "costs", "activity"):
+                "graph", "costs", "activity"):
         assert f'"{tab}"' in WS_JS, tab
 
 
@@ -55,8 +55,8 @@ def test_shell_renders_without_innerhtml() -> None:
 
 PANELS_DIR = STATIC_DIR / "screens" / "workspace"
 PANELS = [
-    "overview", "chats", "artifacts", "memory", "tasks", "vault", "studio", "office", "costs",
-    "activity",
+    "overview", "chats", "artifacts", "memory", "tasks", "vault", "studio", "office", "graph",
+    "costs", "activity",
 ]
 # The ONLY mutations each panel may make (existing routes). Read-only panels get an empty list.
 PANEL_ROUTES = {
@@ -68,6 +68,7 @@ PANEL_ROUTES = {
     "overview": [],
     "studio": [],
     "office": ["/api/orchestration/"],  # Task 3 wires launch/cancel to the existing run routes
+    "graph": [],  # Phase 15: read/navigate-only canvas (GET subgraph + node card; no mutations)
     "costs": [],
     "activity": [],
 }
@@ -113,4 +114,5 @@ def test_panels_read_project_scoped_endpoints() -> None:
         assert "project_id" in _panel(p), p
     assert "/activity" in _panel("activity")
     assert "/office" in _panel("office")
+    assert "/graph" in _panel("graph")
     assert "/api/workspace/" in _panel("overview")

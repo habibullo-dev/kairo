@@ -778,3 +778,22 @@ tr.clickable:hover td { color: var(--cyan); }
   .live-meta { margin-left: 0; width: 100%; }
   .office-inspect { right: 12px; left: 12px; width: auto; }
 }
+
+/* --- Phase 15: Memory Graph -------------------------------------------------
+   Token-driven, no assets — the canvas draws itself (graphview.js); these style the shell. */
+.graph-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: var(--gap); }
+.graph-head h2 { font-size: 20px; }
+.graph-filters { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.graph-main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--gap);
+  align-items: start; }
+.graph-host { border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel-soft); overflow: hidden; }
+.graph-canvas-wrap { position: relative; }
+.graph-canvas { display: block; width: 100%; }
+.graph-cap { position: absolute; bottom: 6px; left: 8px; font-size: 11px; }
+.graph-side { display: flex; flex-direction: column; gap: var(--gap); }
+.graph-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel);
+  padding: 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.graph-card-title { font-weight: 600; }
+.graph-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+@media (max-width: 900px) { .graph-main { grid-template-columns: 1fr; } }
