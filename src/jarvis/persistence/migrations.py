@@ -806,6 +806,130 @@ async def _migrate_v11(db: aiosqlite.Connection) -> None:
             await db.execute(f"ALTER TABLE model_calls ADD COLUMN {name} {sql_type}")
 
 
+_SCHEMA_V12 = """
+-- --- Phase 15: Memory Graph + Knowledge Topology ----------------------------------------
+-- Three layers (mirrors kb_sources[primary] vs kb_chunks[derived]):
+--   * DERIVED edges are a rebuildable CACHE over existing rows/FKs (origin='derived'); the
+--     builder may delete+re-derive them (the one sanctioned DELETE). They hold no truth.
+--   * ASSERTED nodes (graph_nodes) + edges (origin='asserted') are human-approved and
+--     NEVER-DELETE: retract by status, never DROP a row (the memory/kb audit posture).
+--   * SUGGESTIONS (graph_suggestions) are QUARANTINED: never FTS-indexed, never retrievable,
+--     never exported, until a human approves (the ADR-0004 review gate). No auto-approve path.
+-- Every node/edge carries provenance metadata; trust_class can never exceed its source's.
+
+-- Asserted entities that have no existing row of their own (people/decisions/topics/refs).
+-- Derived nodes are NOT stored here; they reference existing rows by (kind, ref_id) on edges.
+CREATE TABLE IF NOT EXISTS graph_nodes (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind             TEXT NOT NULL,            -- person|decision|topic|external_ref|custom
+    title            TEXT NOT NULL,
+    summary          TEXT NOT NULL DEFAULT '',           -- short, bodies-free
+    embedding        BLOB,                               -- numpy unit vector (NULL until indexed)
+    embedding_model  TEXT,
+    content_hash     TEXT,                     -- sha256(title+summary): re-embed on change
+    project_id       INTEGER REFERENCES projects(id),    -- NULL == global
+    trust_class      TEXT NOT NULL CHECK (trust_class IN
+                        ('trusted_local','reviewed','untrusted_external','model_generated')),
+    sensitivity      TEXT,                               -- low|medium|high|private (advisory)
+    source_kind      TEXT,
+    created_by       TEXT NOT NULL CHECK (created_by IN ('user','agent','system')),
+    model            TEXT,
+    status           TEXT NOT NULL DEFAULT 'live' CHECK (status IN ('live','retracted')),
+    labels_json      TEXT NOT NULL DEFAULT '[]',
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_project ON graph_nodes(project_id, id);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_kind    ON graph_nodes(kind, status);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_hash    ON graph_nodes(content_hash);
+
+-- Edges over (kind, ref_id) endpoints: derived kinds reference existing rows (project:3,
+-- artifact:41, wiki:pages/x.md, memory:17, run:9, source:12, task:5, chat:22, team:security,
+-- service:firecrawl); asserted kinds reference graph_nodes.id (person:2, decision:4). ref ids
+-- are TEXT to hold both integer row-ids and wiki paths.
+CREATE TABLE IF NOT EXISTS graph_edges (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    src_kind      TEXT NOT NULL,
+    src_id        TEXT NOT NULL,
+    dst_kind      TEXT NOT NULL,
+    dst_id        TEXT NOT NULL,
+    edge_kind     TEXT NOT NULL,                         -- produced_by|cited_by|ran_in|relates_to|…
+    origin        TEXT NOT NULL CHECK (origin IN ('derived','asserted')),
+    project_id    INTEGER REFERENCES projects(id),
+    trust_class   TEXT NOT NULL CHECK (trust_class IN
+                     ('trusted_local','reviewed','untrusted_external','model_generated')),
+    sensitivity   TEXT,
+    created_by    TEXT NOT NULL CHECK (created_by IN ('user','agent','system')),
+    model         TEXT,
+    team          TEXT,
+    evidence_json TEXT NOT NULL DEFAULT '[]',            -- pointers only (kind:id), bodies-free
+    status        TEXT NOT NULL DEFAULT 'live' CHECK (status IN ('live','retracted')),
+    created_at    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_graph_edges_identity
+    ON graph_edges(src_kind, src_id, dst_kind, dst_id, edge_kind, origin);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_src     ON graph_edges(src_kind, src_id, status);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_dst     ON graph_edges(dst_kind, dst_id, status);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_project ON graph_edges(project_id, id);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_origin  ON graph_edges(origin, status);
+
+-- Quarantined proposals: NEVER FTS-indexed, retrievable, or exported until approved. Approving
+-- materializes a real memories row / asserted graph node|edge. trust_class = worst evidence.
+CREATE TABLE IF NOT EXISTS graph_suggestions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind            TEXT NOT NULL CHECK (kind IN ('memory','node','edge')),
+    payload_json    TEXT NOT NULL,                       -- proposed memory/node/edge fields
+    evidence_json   TEXT NOT NULL DEFAULT '[]',          -- pointers only, bodies-free
+    project_id      INTEGER REFERENCES projects(id),
+    trust_class     TEXT NOT NULL CHECK (trust_class IN
+                       ('trusted_local','reviewed','untrusted_external','model_generated')),
+    sensitivity     TEXT,
+    extractor_model TEXT,
+    est_cost_usd    REAL,                                -- NULL == unpriced (fail-closed upstream)
+    status          TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending','approved','rejected')),
+    created_at      TEXT NOT NULL,
+    resolved_at     TEXT,
+    resolved_by     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_graph_suggestions_queue ON graph_suggestions(status, project_id, id);
+
+-- Reversible journal for dedup merge/split (nodes are retracted, never deleted; edges re-point).
+CREATE TABLE IF NOT EXISTS graph_merges (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    action         TEXT NOT NULL CHECK (action IN ('merge','split')),
+    canonical_kind TEXT NOT NULL,
+    canonical_id   TEXT NOT NULL,
+    merged_kind    TEXT NOT NULL,
+    merged_id      TEXT NOT NULL,
+    undo_json      TEXT NOT NULL DEFAULT '{}',
+    created_by     TEXT NOT NULL CHECK (created_by IN ('user','agent','system')),
+    created_at     TEXT NOT NULL,
+    undone_at      TEXT
+);
+
+-- FTS 'entities' domain over asserted nodes' title+summary (status filtered in the query;
+-- suggestions are a SEPARATE table and thus never indexed — quarantine by construction).
+CREATE VIRTUAL TABLE IF NOT EXISTS graph_nodes_fts USING fts5(
+    title, summary,
+    content='graph_nodes', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS graph_nodes_fts_ai AFTER INSERT ON graph_nodes BEGIN
+    INSERT INTO graph_nodes_fts(rowid, title, summary) VALUES (new.id, new.title, new.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS graph_nodes_fts_ad AFTER DELETE ON graph_nodes BEGIN
+    INSERT INTO graph_nodes_fts(graph_nodes_fts, rowid, title, summary)
+        VALUES ('delete', old.id, old.title, old.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS graph_nodes_fts_au AFTER UPDATE ON graph_nodes BEGIN
+    INSERT INTO graph_nodes_fts(graph_nodes_fts, rowid, title, summary)
+        VALUES ('delete', old.id, old.title, old.summary);
+    INSERT INTO graph_nodes_fts(rowid, title, summary) VALUES (new.id, new.title, new.summary);
+END;
+"""
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -823,6 +947,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (9, _migrate_v9),
     (10, _SCHEMA_V10),
     (11, _migrate_v11),
+    (12, _SCHEMA_V12),
 ]
 
 

@@ -84,11 +84,12 @@ def test_fts_match_query_neutralises_operators_and_quotes() -> None:
 
 
 # --- structure ------------------------------------------------------------------------
-async def test_seven_domains_and_empty_db_passes_integrity(tmp_path: Path) -> None:
+async def test_domains_and_empty_db_passes_integrity(tmp_path: Path) -> None:
     db = await _db(tmp_path)
-    assert len(FTS_TABLES) == 7
+    assert len(FTS_TABLES) == 8
     assert set(DOMAINS) == {
-        "chats", "memories", "knowledge", "tasks", "orchestration", "digests", "artifacts"
+        "chats", "memories", "knowledge", "tasks", "orchestration", "digests", "artifacts",
+        "entities",  # Phase 15: asserted graph nodes
     }
     await integrity_check_all(db)  # all indexes empty but consistent → no raise
 

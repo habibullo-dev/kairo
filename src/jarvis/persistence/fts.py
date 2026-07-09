@@ -142,6 +142,17 @@ DOMAINS: dict[str, Domain] = {
         static_where="AND (a.sensitivity IS NULL OR a.sensitivity != 'quarantined')",
         project_col="a.project_id",
     ),
+    # Phase 15: asserted graph entities (people/decisions/topics/refs). Only 'live' nodes are
+    # searchable; retracted ones vanish. graph_suggestions is a SEPARATE table with no FTS index,
+    # so a quarantined suggestion can never surface here — quarantine by construction.
+    "entities": Domain(
+        name="entities",
+        fts="graph_nodes_fts",
+        id_expr="gn.id",
+        join_sql="JOIN graph_nodes gn ON gn.id = graph_nodes_fts.rowid",
+        static_where="AND gn.status = 'live'",
+        project_col="gn.project_id",
+    ),
 }
 
 #: Every FTS table (for rebuild / integrity-check maintenance).
@@ -196,20 +207,37 @@ async def query_domain(
     return [(int(row[0]), float(row[1])) for row in await cursor.fetchall()]
 
 
+async def _present_fts(db: aiosqlite.Connection) -> set[str]:
+    """The FTS tables that actually exist in this DB. A DB migrated to less than the latest
+    schema (e.g. a migration test stopped at v9) legitimately lacks later FTS tables; the
+    maintenance helpers must skip those rather than error on a table that isn't there."""
+    cur = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+        f"({', '.join('?' for _ in FTS_TABLES)})",
+        FTS_TABLES,
+    )
+    return {r[0] for r in await cur.fetchall()}
+
+
 async def rebuild_all(db: aiosqlite.Connection, lock: asyncio.Lock | None = None) -> None:
-    """Rebuild every FTS index from its content table — idempotent maintenance (also how the
-    v9 migration backfills). Safe to run any time; re-syncs an index the triggers ever missed.
+    """Rebuild every present FTS index from its content table — idempotent maintenance (also how
+    the v9 migration backfills). Safe to run any time; re-syncs an index the triggers ever missed.
     Holds the write lock (this is a write)."""
     lock = lock or asyncio.Lock()
+    present = await _present_fts(db)
     async with lock:
         for fts in FTS_TABLES:
-            await db.execute(f"INSERT INTO {fts}({fts}) VALUES ('rebuild')")
+            if fts in present:
+                await db.execute(f"INSERT INTO {fts}({fts}) VALUES ('rebuild')")
         await db.commit()
 
 
 async def integrity_check_all(db: aiosqlite.Connection) -> None:
-    """Assert every FTS index is consistent with its external content table. Raises
+    """Assert every present FTS index is consistent with its external content table. Raises
     ``aiosqlite``/``sqlite3`` error (SQLITE_CORRUPT_VTAB) if a trigger ever let an index drift
-    from its base table — the rigorous trigger↔base parity check."""
+    from its base table — the rigorous trigger↔base parity check. (A not-yet-created FTS table
+    on a partially-migrated DB can't be inconsistent, so it is skipped.)"""
+    present = await _present_fts(db)
     for fts in FTS_TABLES:
-        await db.execute(f"INSERT INTO {fts}({fts}, rank) VALUES ('integrity-check', 1)")
+        if fts in present:
+            await db.execute(f"INSERT INTO {fts}({fts}, rank) VALUES ('integrity-check', 1)")
