@@ -282,9 +282,14 @@ pre.block { background: var(--code-bg); border: 1px solid var(--line); border-ra
 body.debug .composer .chips { display: flex; }
 .composer .chips span { padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; }
 /* Phase 15.5: an always-visible live model/mode readout on the composer (never the old fake chips) */
+.composer .box { flex-wrap: wrap; }
+.composer input { min-width: 0; }  /* let the input shrink instead of overflowing a narrow viewport */
 .composer .live-chips { display: flex; gap: 7px; flex: none; font-family: var(--mono); font-size: 11px; color: var(--dim); }
 .composer .live-chips span:empty { display: none; }
 .composer .live-chips span { padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; white-space: nowrap; }
+/* On a narrow viewport the header already carries the model/mode; drop the composer echo so the
+   input + Send never overflow. */
+@media (max-width: 640px) { .composer .live-chips { display: none; } }
 
 /* --- Phase 15.5: conversation header (the calm control bar above the chat) --- */
 .convo-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 11px 14px; margin-bottom: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
