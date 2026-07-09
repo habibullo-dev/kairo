@@ -398,6 +398,101 @@ async def activity_feed(services: UiServices, project_id: int, *, limit: int = 3
     return {"events": events[:limit], "project_id": project_id}
 
 
+#: The canonical orchestration stage machine the Office stage-map renders (Phase 14). The head
+#: reviewer (Fable, planner route) owns synthesis + the final verdict — an engine stage, not a room.
+_OFFICE_STAGES = ("council", "synthesis", "execution", "review", "verdict")
+
+
+def _office_nodes(
+    members: list[dict], member_runs: list[dict], routes: dict, svc_state: dict
+) -> list[dict]:
+    """Build a room's member nodes: the static roster (model/provider/tools/services derived from
+    the route + service catalogs) overlaid, when a run is live/recent, with each member's live
+    stage/status/cost/iterations. Overlay is matched per route_role, consuming member_runs in order
+    so duplicate roles map deterministically. Metadata only (member_runs are bodies-free)."""
+    by_role: dict[str, list[dict]] = {}
+    for mr in member_runs:
+        by_role.setdefault(mr.get("role"), []).append(mr)
+    nodes: list[dict] = []
+    for m in members:
+        route = routes.get(m["route_role"], {})
+        queue = by_role.get(m["route_role"])
+        mr = queue.pop(0) if queue else None
+        svcs = [{"name": s, "state": svc_state.get(s, "unknown")} for s in m["services"]]
+        nodes.append(
+            {
+                "member_id": m["id"],
+                "title": m["title"],
+                "role": m["route_role"],
+                "capability": m["capability"],
+                "model": route.get("model"),
+                "provider": route.get("provider"),
+                "tools": m["tools"],
+                "services": svcs,
+                "stage": mr.get("stage") if mr else None,
+                "status": mr.get("status") if mr else "idle",
+                "cost_usd": mr.get("cost_usd") if mr else None,
+                "iterations": mr.get("iterations") if mr else None,
+            }
+        )
+    return nodes
+
+
+async def office_overview(
+    config: Config, services: UiServices, project_id: int, *, limit: int = 30
+) -> dict:
+    """The AI Team Office (Phase 14): a pure ASSEMBLER over existing read models — teams as rooms
+    of member nodes, the head reviewer (Fable), the canonical stage map, the latest run's live
+    summary + per-member overlay, recent runs, and the metadata-only activity feed. No new storage;
+    the client patches further live updates from the orchestration WS bus on top. Presence /
+    metadata / short summaries ONLY — never a prompt, report body, or key value (secret-swept).
+    Each source degrades independently: a missing service ⇒ idle rooms / empty feed, not a crash."""
+    routes = {r["role"]: r for r in model_routes_status(config)}
+    svc_state = {s["name"]: s["state"] for s in services_status(config)}
+    hr = routes.get("planner") or {}
+    head = {"label": "Fable", "model": hr.get("model"), "provider": hr.get("provider")}
+
+    live: dict | None = None
+    overlay: dict[str, list[dict]] = {}
+    if services.orchestration is not None:
+        with contextlib.suppress(Exception):
+            runs = await services.orchestration.list(project_id=project_id, limit=1)
+            if runs:
+                live = serialize_orchestration_run(runs[0])
+                if services.run_store is not None:
+                    overlay[live["team"]] = await services.run_store.member_runs(runs[0].id)
+
+    rooms = [
+        {
+            "team": team["id"],
+            "name": team["name"],
+            "icon": team["icon"],
+            "accent": team["color"],
+            "description": team["description"],
+            "nodes": _office_nodes(team["members"], overlay.get(team["id"], []), routes, svc_state),
+        }
+        for team in teams_catalog()
+    ]
+
+    recent: list[dict] = []
+    if services.orchestration is not None:
+        with contextlib.suppress(Exception):
+            view = await orchestration_runs_view(
+                services.orchestration, project_id=project_id, limit=10
+            )
+            recent = view["runs"]
+    feed = (await activity_feed(services, project_id, limit=limit))["events"]
+    return {
+        "project_id": project_id,
+        "head": head,
+        "stages": list(_OFFICE_STAGES),
+        "rooms": rooms,
+        "live": live,
+        "recent_runs": recent,
+        "feed": feed,
+    }
+
+
 async def orchestration_roi(
     store: Any, budgets: Any, *, project_id: int | None = None, limit: int = 20
 ) -> list[dict]:

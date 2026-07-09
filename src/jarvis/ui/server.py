@@ -42,6 +42,7 @@ from jarvis.ui.readmodels import (
     list_sessions_view,
     list_tasks,
     model_routes_status,
+    office_overview,
     orchestration_roi,
     orchestration_run_detail,
     orchestration_runs_view,
@@ -1072,6 +1073,13 @@ def create_app(
     async def workspace_activity(project_id: int) -> JSONResponse:
         # Derived, metadata-only project activity feed (artifacts/runs/chats). Read-only.
         return JSONResponse(await activity_feed(app.state.services, project_id))
+
+    @app.get("/api/workspace/{project_id}/office")
+    async def workspace_office(project_id: int) -> JSONResponse:
+        # Phase 14: the AI Team Office projection (teams→rooms→nodes, head, stages, live run +
+        # per-member overlay, recent runs, activity feed). Read-only ASSEMBLER over existing read
+        # models — presence/metadata/summaries only, never a body or key value.
+        return JSONResponse(await office_overview(config, app.state.services, project_id))
 
     @app.post("/api/orchestration/run")
     async def orchestration_run(request: Request) -> JSONResponse:
