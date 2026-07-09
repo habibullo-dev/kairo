@@ -39,11 +39,10 @@ def test_every_card_has_a_designed_empty_state() -> None:
 
 
 def test_daily_reads_and_navigates_only() -> None:
-    # Daily's direct mutations are the gated turn + run-digest; resuming a recent chat goes through
-    # the shared api.resumeChat helper (which posts the existing /resume route). No new authority.
+    # Daily's direct mutations are the gated turn + run-digest; everything else reads/navigates.
+    # (Resuming a chat moved to the conversation header in Phase 15.5.)
     assert DAILY_JS.count("api.post(") == 2
     assert "/api/turn" in DAILY_JS and "/api/digest/run" in DAILY_JS
-    assert "api.resumeChat(" in DAILY_JS  # T11 recent-chats resume via the shared helper
     # Artifacts open the hardened read-only content GET; runs navigate to Studio (hash).
     assert "/api/artifacts/" in DAILY_JS and "/content" in DAILY_JS and "noopener" in DAILY_JS
 
@@ -97,7 +96,9 @@ def test_daily_overview_failure_shows_unavailable_not_loading() -> None:
     assert "Unavailable" in DAILY_JS
 
 
-def test_recent_chats_card_present() -> None:
-    # T11: a recent-chats card reads /api/sessions and resumes via the existing route.
-    assert "daily-chats" in DAILY_JS and "fillChats" in DAILY_JS
-    assert "/api/sessions?limit=" in DAILY_JS
+def test_recent_chats_moved_to_the_conversation_header() -> None:
+    # Phase 15.5: the standalone Daily "recent chats" card is gone — recent chats live in the
+    # conversation header's Resume control (reading /api/sessions, resuming via the shared helper).
+    assert "daily-chats" not in DAILY_JS
+    hdr = (STATIC_DIR / "ui" / "header.js").read_text(encoding="utf-8")
+    assert "/api/sessions?limit=" in hdr and "resumeChat(" in hdr

@@ -21,7 +21,7 @@ import { render as renderArtifacts } from "./screens/artifacts.js";
 import { get as getTheme, initTheme, setTheme } from "./ui/theme.js";
 import { initKeys, clearScope, pushEscape } from "./ui/keys.js";
 import { emit as busEmit, on as busOn } from "./ui/bus.js";
-import { init as initPalette } from "./ui/palette.js";
+import { init as initPalette, openPalette } from "./ui/palette.js";
 import { refreshHeader } from "./ui/header.js";
 import { money } from "./ui/format.js";
 
@@ -323,6 +323,13 @@ function renderRunnerState() {
   // the old debug-only fake chips). The full selectors live in the conversation header.
   setText("composer-model", s.model || "");
   setText("composer-mode", s.mode ? `mode ${s.mode}` : "");
+  // The rail's Workspace entry deep-links to the ACTIVE project (hidden in global scope).
+  const ws = document.getElementById("rail-workspace");
+  if (ws) {
+    const pid = s.project && s.project.id;
+    ws.style.display = pid ? "" : "none";
+    if (pid) ws.setAttribute("href", `#workspace/${pid}`);
+  }
   if (typeof s.today_spend_usd === "number") setText("st-spend", `$${s.today_spend_usd.toFixed(4)}`);
   const led = document.getElementById("st-ledger"); if (led) led.style.display = s.ledger_degraded ? "" : "none";
   // Daily current-activity card (if mounted) — same source, same result
@@ -416,7 +423,8 @@ function init() {
   initTheme();
   syncTheme();
   initKeys();                                        // single keydown dispatcher
-  initPalette(api);                                  // Ctrl/Cmd-K command palette (search + navigate, GET-only)
+  initPalette(api);                                  // Ctrl/Cmd-K command palette (search + actions)
+  document.getElementById("rail-search").addEventListener("click", () => openPalette());
   window.addEventListener("hashchange", navigate);
   connect();
   navigate();

@@ -15,13 +15,16 @@
       <span class="brand-mark" aria-hidden="true"></span>
       <span class="name">KAIRO</span>
     </div>
-    <!-- Primary rail: the five places you live in. Vault/Tasks/Memory moved into the project
-         Workspace as tabs (T10); they stay reachable by hash until then. -->
+    <!-- Primary rail: the places you live in. Workspace deep-links to the ACTIVE project (hidden
+         in global scope); Vault/Tasks/Memory are Workspace tabs + palette-reachable. -->
     <a href="#daily" data-screen="daily"><span class="dot"></span><span class="label">Daily</span></a>
     <a href="#projects" data-screen="projects"><span class="dot"></span><span class="label">Projects</span></a>
+    <a href="#projects" data-screen="workspace" id="rail-workspace" style="display:none"><span class="dot"></span><span class="label">Workspace</span></a>
+    <a href="#artifacts" data-screen="artifacts"><span class="dot"></span><span class="label">Artifacts</span></a>
     <a href="#studio" data-screen="studio"><span class="dot"></span><span class="label">Studio</span></a>
     <a href="#costs" data-screen="costs"><span class="dot"></span><span class="label">Costs</span></a>
     <a href="#settings" data-screen="settings"><span class="dot"></span><span class="label">Settings</span></a>
+    <button class="rail-search" id="rail-search" aria-label="Search (Ctrl/Cmd-K)"><span class="dot"></span><span class="label">⌘K Search</span></button>
     <div class="spacer"></div>
     <!-- Utility area: tools and surfaces you dip into. Gate keeps its persistent pending badge. -->
     <div class="rail-cap">Tools</div>

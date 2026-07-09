@@ -29,29 +29,54 @@ const ARTIFACT_ICONS = {
 
 export function render(container, api) {
   if (!container.querySelector("#composer-input")) {
+    // Conversation-first shell (Phase 15.5 D6): the amber pending banner (top attention surface),
+    // then the CONVERSATION HERO — header + chat + composer as one unit — then the dashboard zones
+    // (briefing/tasks/artifacts/run/connectors/cost) as calm secondary context below. The hero is
+    // built ONCE and persists (a streaming turn updates only the chat, never re-mounts the header).
     container.innerHTML = `
       <div class="rise">
         <h1>Daily</h1>
         <div class="sub">Ask Kairo anything. Risky actions pause here for your approval.</div>
       </div>
-      <div id="daily-convo-header"></div>
-      <div id="daily-zones"></div>
-      <div class="composer"><div class="box">
-        <input id="composer-input" placeholder="Message Kairo…" autocomplete="off">
-        <div class="live-chips"><span id="composer-model"></span><span id="composer-mode"></span></div>
-        <button class="send" id="composer-send" aria-label="Send">➜</button>
-      </div></div>`;
+      <div id="daily-pending"></div>
+      <section class="convo-hero">
+        <div id="daily-convo-header"></div>
+        <div class="chat" id="daily-chat"></div>
+        <div class="composer"><div class="box">
+          <input id="composer-input" placeholder="Message Kairo…" autocomplete="off">
+          <div class="live-chips"><span id="composer-model"></span><span id="composer-mode"></span></div>
+          <button class="send" id="composer-send" aria-label="Send">➜</button>
+        </div></div>
+      </section>
+      <div id="daily-zones"></div>`;
     const input = container.querySelector("#composer-input");
     const send = () => submitText(container, api, input.value.trim(), input);
     container.querySelector("#composer-send").addEventListener("click", send);
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
-    // The conversation header (scope · title · model · mode · capabilities + New/Resume/Rename/
-    // Pin/Archive). Mounted ONCE (it fetches) so a streaming turn never re-fires its GETs; a
-    // conversation change reloads the chat view. Values are all server state (no fake chips).
     mountHeader(container.querySelector("#daily-convo-header"), api,
       { onChanged: () => renderChat(container, api) });
   }
+  renderPending(container, api);
+  renderChat(container, api);
   renderZones(container, api);
+}
+
+// The amber pending-approval banner — the single primary attention surface, in its own persistent
+// host ABOVE the conversation hero (never buried under the dashboard). Empty when nothing pends.
+function renderPending(container, api) {
+  const host = container.querySelector("#daily-pending");
+  if (!host) return;
+  const pend = [...api.state.pending.values()];
+  if (!pend.length) { host.textContent = ""; return; }
+  const p = pend[0];
+  const more = pend.length > 1 ? ` +${pend.length - 1} more` : "";
+  host.innerHTML = `<div class="zone-pending rise"><div class="ico">⚠</div>
+    <div class="body">
+      <div class="card-label amber" style="margin-bottom:3px">Waiting on you</div>
+      <div class="lead">Kairo wants to <b>${esc(p.tool)}</b>${p.title ? " — " + esc(p.title) : ""}${esc(more)}</div>
+    </div>
+    <button class="btn btn-amber" id="daily-review">Review</button></div>`;
+  host.querySelector("#daily-review").addEventListener("click", () => api.reviewPending());
 }
 
 // Submit a prepared/typed prompt through the one gated turn path.
@@ -79,26 +104,18 @@ function emptyState(heading, hint) {
   return box;
 }
 
+// The DASHBOARD below the conversation hero (Phase 15.5 D6): calm, glanceable secondary context.
+// Tier order — Now → Briefing/Today (secondary) → Artifacts/Run/Connectors (tertiary) → Notices →
+// Workflows → "What changed" (repo/eval noise, DEBUG-ONLY unless urgent). The pending banner and
+// the conversation itself live in the persistent hero above, not here.
 function renderZones(container, api) {
   const s = api.state;
   const zones = container.querySelector("#daily-zones");
   const busy = s.runner && s.runner.turn_busy;
-  const pend = [...s.pending.values()];
   const spend = s.runner && typeof s.runner.today_spend_usd === "number" ? s.runner.today_spend_usd : null;
 
   let html = "";
-  // 1) PENDING APPROVAL — the one primary attention surface (amber), when present.
-  if (pend.length) {
-    const p = pend[0];
-    const more = pend.length > 1 ? ` <span class="dim">+${pend.length - 1} more</span>` : "";
-    html += `<div class="zone-pending rise"><div class="ico">⚠</div>
-      <div class="body">
-        <div class="card-label amber" style="margin-bottom:3px">Waiting on you</div>
-        <div class="lead">Kairo wants to <b>${esc(p.tool)}</b>${p.title ? " — " + esc(p.title) : ""}${more}</div>
-      </div>
-      <button class="btn btn-amber" id="daily-review">Review</button></div>`;
-  }
-  // 2) NOW — current activity + cost today. Stable IDs so app.js renderRunnerState() writes this
+  // NOW — current activity + cost today. Stable IDs so app.js renderRunnerState() writes this
   // card (lead/dot/desc AND the cost metric) from the SAME settled state.runner as the status bar.
   html += `<div class="surface rise"><div class="zone-now">
       <span class="runner-dot${busy ? " busy" : ""}" id="daily-now-dot"></span>
@@ -110,49 +127,40 @@ function renderZones(container, api) {
         <div class="n" id="daily-cost-today">${spend == null ? "—" : money(spend)}</div>
         <div class="l">spent today</div>
       </div></div></div>`;
-  // 3) BRIEFING — the latest digest (filled from /api/daily). Quiet card, no toast.
+  // BRIEFING (secondary) — the latest digest (filled from /api/daily). Quiet card, no toast.
   html += `<div class="surface rise" id="daily-briefing">
       <div class="panel-title"><h3>Briefing</h3>
         <button class="rowbtn" id="daily-digest-run">Run digest now</button></div>
       <div id="daily-briefing-body" class="dim">Loading…</div></div>`;
-  // 4) TODAY — populated from /api/tasks if the scheduler is on (hidden otherwise).
+  // TODAY (secondary) — from /api/tasks if the scheduler is on (hidden otherwise).
   html += `<div class="surface rise" id="daily-today" style="display:none">
       <div class="panel-title"><h3>Today</h3><a href="#tasks">All tasks →</a></div>
       <div id="daily-today-rows" class="daily-rows"></div></div>`;
-  // 5) RECENT ARTIFACTS (new) — newest across projects; a servable one opens its read-only content.
-  html += `<div class="surface rise" id="daily-artifacts">
-      <div class="panel-title"><h3>Recent artifacts</h3></div>
-      <div id="daily-artifacts-body" class="daily-rows"><div class="dim">Loading…</div></div></div>`;
-  // 5b) RECENT CHATS (T11) — jump back into a recent conversation.
-  html += `<div class="surface rise" id="daily-chats">
-      <div class="panel-title"><h3>Recent chats</h3></div>
-      <div id="daily-chats-body" class="daily-rows"><div class="dim">Loading…</div></div></div>`;
-  // 6) LATEST RUN (new) — the most recent orchestration run; links into Studio.
-  html += `<div class="surface rise" id="daily-run">
+  // TERTIARY STRIP — recent artifacts · latest run · connector health, side by side on wide screens.
+  html += `<div class="daily-tertiary">
+    <div class="surface rise" id="daily-artifacts">
+      <div class="panel-title"><h3>Recent artifacts</h3><a href="#artifacts">All →</a></div>
+      <div id="daily-artifacts-body" class="daily-rows"><div class="dim">Loading…</div></div></div>
+    <div class="surface rise" id="daily-run">
       <div class="panel-title"><h3>Latest run</h3><a href="#studio">Studio →</a></div>
-      <div id="daily-run-body" class="daily-rows"><div class="dim">Loading…</div></div></div>`;
-  // 7) NOTICES (new) — background job/reminder/digest notices; hidden when there are none (calm).
+      <div id="daily-run-body" class="daily-rows"><div class="dim">Loading…</div></div></div>
+    <div class="surface rise" id="daily-connectors">
+      <div class="panel-title"><h3>Connectors</h3><a href="#hub">Hub →</a></div>
+      <div id="daily-connectors-body"><div class="dim">Loading…</div></div></div></div>`;
+  // NOTICES — background job/reminder/digest notices; hidden when there are none (calm).
   html += `<div class="surface rise" id="daily-notices" style="display:none">
       <div class="panel-title"><h3>Notices</h3></div>
       <div id="daily-notices-body" class="daily-rows"></div></div>`;
-  // 8) CONNECTOR HEALTH (new) — presence booleans from the hub read model (never a key value).
-  html += `<div class="surface rise" id="daily-connectors">
-      <div class="panel-title"><h3>Connectors</h3><a href="#hub">Hub →</a></div>
-      <div id="daily-connectors-body"><div class="dim">Loading…</div></div></div>`;
-  // 9) WHAT CHANGED — repo state + eval freshness + KB review (filled from /api/daily).
-  html += `<div class="surface rise" id="daily-changed">
-      <div class="panel-title"><h3>What changed</h3></div>
-      <div id="daily-changed-body" class="dim">Loading…</div></div>`;
-  // 10) WORKFLOWS — prepared prompts (through /api/turn) + navigation shortcuts.
+  // WORKFLOWS — prepared prompts (through /api/turn) + navigation shortcuts.
   html += `<div class="surface rise"><div class="panel-title"><h3>Workflows</h3></div>
       <div class="chip-row" id="daily-workflows"></div></div>`;
-  // 11) CONVERSATION
-  html += `<div class="rise"><div class="panel-title" style="margin-bottom:14px"><h3>Conversation</h3></div>
-      <div class="chat" id="daily-chat"></div></div>`;
+  // WHAT CHANGED — repo state + eval freshness + KB review. Dev noise: DEBUG-ONLY (an urgent
+  // eval-stale chip still surfaces inside, but the card itself hides in the calm Daily view).
+  html += `<div class="surface rise debug-only" id="daily-changed">
+      <div class="panel-title"><h3>What changed</h3></div>
+      <div id="daily-changed-body" class="dim">Loading…</div></div>`;
   zones.innerHTML = html;
 
-  const review = container.querySelector("#daily-review");
-  if (review) review.addEventListener("click", () => api.reviewPending());
   container.querySelector("#daily-digest-run").addEventListener("click", async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true; btn.textContent = "Running…";
@@ -161,21 +169,19 @@ function renderZones(container, api) {
     if (res.ok) fillDaily(container, api);  // refresh the Briefing (no reload)
   });
   renderWorkflows(container, api);
-  renderChat(container, api);
   fillNotices(container, api);   // client-side (state.notices) — instant
   scheduleFills(container, api); // coalesce the read-only GETs (see below)
 }
 
 // renderZones re-runs on every WS event, including each streaming text_delta. Coalesce the
 // read-only data fetches (/api/daily, /api/tasks) so a streaming turn can't fire two GETs per
-// token — the chat itself still updates immediately (renderChat, above).
+// token — the chat itself still updates immediately (renderChat in render(), above).
 let _fillTimer = null;
 function scheduleFills(container, api) {
   if (_fillTimer) clearTimeout(_fillTimer);
   _fillTimer = setTimeout(() => {
     _fillTimer = null;
     fillToday(container, api);
-    fillChats(container, api);
     fillDaily(container, api);
   }, 200);
 }
@@ -484,7 +490,8 @@ function renderChat(container, api) {
   if (!chat) return;
   chat.innerHTML = "";
   if (!api.state.chat.length) {
-    chat.appendChild(emptyState("No messages yet", "Ask Kairo anything, or pick a workflow above to get started."));
+    chat.appendChild(emptyState("No messages yet",
+      "Ask Kairo anything, or pick a workflow below to get started."));
     return;
   }
   for (const item of api.state.chat) {
@@ -498,6 +505,7 @@ function renderChat(container, api) {
     }
     chat.appendChild(div);
   }
+  chat.scrollTop = chat.scrollHeight;  // keep the newest message in view in the bounded pane
 }
 
 async function fillToday(container, api) {
@@ -519,46 +527,8 @@ async function fillToday(container, api) {
   }
 }
 
-async function fillChats(container, api) {
-  const body = container.querySelector("#daily-chats-body");
-  if (!body) return;
-  const data = await api.get("/api/sessions?limit=6");
-  body.textContent = "";
-  const chats = (data && data.sessions) || [];
-  if (!chats.length) {
-    body.appendChild(emptyState("No chats yet", "Your recent conversations will appear here."));
-    return;
-  }
-  for (const s of chats.slice(0, 5)) {
-    const row = document.createElement("div");
-    row.className = "list-row";
-    const icon = document.createElement("span");
-    icon.className = "list-icon";
-    icon.textContent = "💬";
-    const mid = document.createElement("div");
-    mid.style.minWidth = "0";
-    const t = document.createElement("div");
-    t.className = "lr-t";
-    t.textContent = s.title || "(untitled)";
-    const sub = document.createElement("div");
-    sub.className = "lr-s";
-    sub.textContent = s.updated_at ? relTime(s.updated_at) : "";
-    mid.append(t, sub);
-    const resume = document.createElement("button");
-    resume.className = "plain-button ghost";
-    resume.textContent = "Resume";
-    resume.addEventListener("click", async () => {
-      // Resume loads the chat into the live session AND its transcript into this view; we're
-      // already on Daily so re-render to show the loaded conversation.
-      if (await api.resumeChat(s.id)) {
-        location.hash = "daily";
-        render(container, api);
-      }
-    });
-    row.append(icon, mid, resume);
-    body.appendChild(row);
-  }
-}
+// (Recent chats moved into the conversation header's Resume menu in Phase 15.5 — the Daily
+// dashboard no longer carries a separate chats card.)
 
 function shortTime(iso) {
   if (!iso) return "—";

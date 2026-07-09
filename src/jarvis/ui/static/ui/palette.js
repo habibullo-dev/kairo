@@ -210,3 +210,8 @@ export function init(api) {
   _api = api;
   setPaletteToggle(toggle);
 }
+
+// Open the palette programmatically (the rail's ⌘K Search affordance) — same surface as the key.
+export function openPalette() {
+  open();
+}

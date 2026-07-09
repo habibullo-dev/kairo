@@ -45,12 +45,19 @@ def test_digest_and_commit_text_rendered_as_textcontent() -> None:
     assert 'createElement("a")' not in briefing  # digest summary/actions never become links
 
 
-def test_attention_order_pending_before_briefing() -> None:
-    # One primary attention surface: pending approval renders before activity, then briefing.
-    # Anchor on code-only markers (the header comment mentions the zone names too).
+def test_conversation_is_the_hero_pending_first() -> None:
+    # Phase 15.5 relayout (D6): the persistent shell orders the amber pending banner, then the
+    # CONVERSATION HERO (header + chat + composer), then the dashboard zones — the conversation is
+    # the main event, the pending banner is still the single primary attention surface above it,
+    # and the dashboard is calm secondary context below.
+    assert (DAILY.index('id="daily-pending"') < DAILY.index('id="daily-convo-header"')
+            < DAILY.index('id="daily-chat"') < DAILY.index('id="daily-zones"'))
+    # within the dashboard, the Now card still precedes the Briefing; the settle IDs are preserved.
     body = DAILY.split("function renderZones")[1]
-    assert body.index("zone-pending") < body.index("Kairo is idle") < body.index("daily-briefing")
-    assert "daily-now-lead" in DAILY  # the settle IDs the status bar shares are preserved
+    assert body.index("Kairo is idle") < body.index("daily-briefing")
+    assert "daily-now-lead" in DAILY
+    # "What changed" (repo/eval noise) is debug-gated in the calm view.
+    assert "debug-only" in DAILY and "daily-changed" in DAILY
 
 
 def test_demo_badge_present() -> None:

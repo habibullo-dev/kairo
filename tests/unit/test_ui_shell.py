@@ -37,6 +37,19 @@ def test_utility_area_after_the_spacer() -> None:
         assert INDEX.index(f'data-screen="{screen}"') > spacer, screen
 
 
+def test_rail_surfaces_workspace_artifacts_and_search() -> None:
+    # Phase 15.5: the rail exposes the previously-hidden power surfaces. Workspace deep-links to
+    # the ACTIVE project (app.js sets its href + hides it in global scope); Artifacts is a
+    # first-class destination; a ⌘K Search affordance opens the command palette.
+    spacer = INDEX.index('class="spacer"')
+    for screen in ("workspace", "artifacts"):
+        assert f'data-screen="{screen}"' in INDEX
+        assert INDEX.index(f'data-screen="{screen}"') < spacer  # primary area, before the spacer
+    assert 'id="rail-workspace"' in INDEX and 'id="rail-search"' in INDEX
+    assert "rail-search" in APP_JS and "openPalette" in APP_JS  # the button opens the palette
+    assert "rail-workspace" in APP_JS and "#workspace/" in APP_JS  # href from the active project
+
+
 def test_gate_badge_is_persistent_in_the_rail() -> None:
     # The pending-approval count rides the Gate rail entry and updates live from the socket.
     assert 'id="gate-badge"' in INDEX
