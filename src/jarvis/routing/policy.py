@@ -45,10 +45,15 @@ class Tier:
     label: str
 
 
-#: Auto tiers — ALL private_ok (safe for the private main chat). Simple daily work → Gemini Flash
-#: (cheapest); judgment/private/important → Sonnet 5; deep/high-risk → Opus 4.8; deep *planning* →
-#: Fable 5. Opus/Fable are never the simple-chat default (only hard/expert or planning reach them).
-SIMPLE = Tier("simple", "gemini", "gemini-2.5-flash", "Gemini 2.5 Flash (cheap daily)")
+#: Auto tiers — ALL private_ok (safe for the private main chat). The simple bucket splits on
+#: whether the turn needs a TOOL: Gemini (text-only in this codebase — tools raise) serves ONLY
+#: genuinely tool-free simple turns; anything needing a tool goes to Haiku (cheap, tool-capable).
+#: judgment/private/important → Sonnet 5; deep/high-risk → Opus 4.8; deep *planning* → Fable 5.
+#: Opus/Fable are never the simple-chat default (only hard/expert or planning reach them).
+SIMPLE = Tier("simple", "gemini", "gemini-2.5-flash", "Gemini 2.5 Flash (cheap, no tools)")
+SIMPLE_TOOLED = Tier(
+    "simple_tooled", "anthropic", "claude-haiku-4-5-20251001", "Claude Haiku 4.5 (cheap, tools)"
+)
 JUDGMENT = Tier("judgment", "anthropic", "claude-sonnet-5", "Claude Sonnet 5 (judgment/private)")
 DEEP = Tier("deep", "anthropic", "claude-opus-4-8", "Claude Opus 4.8 (deep/high-risk)")
 PLANNING = Tier("planning", "anthropic", "claude-fable-5", "Fable 5 (deep planning)")
@@ -58,7 +63,7 @@ PLANNING = Tier("planning", "anthropic", "claude-fable-5", "Fable 5 (deep planni
 #: / an unavailable tier — never fail-open to a cheap or non-private provider.
 SAFE_DEFAULT = JUDGMENT
 
-ALL_TIERS: tuple[Tier, ...] = (SIMPLE, JUDGMENT, DEEP, PLANNING)
+ALL_TIERS: tuple[Tier, ...] = (SIMPLE, SIMPLE_TOOLED, JUDGMENT, DEEP, PLANNING)
 
 #: Allowed classifier enum values; anything else coerces to the SAFE value (fail-safe).
 DIFFICULTIES: frozenset[str] = frozenset({"trivial", "simple", "moderate", "hard", "expert"})
@@ -75,28 +80,30 @@ _HARD = {"hard", "expert"}
 @dataclass(frozen=True)
 class Classification:
     """The Flash-Lite classifier's read of one user message. Unknown/partial values are coerced to
-    the SAFE extreme (difficulty=hard, sensitivity=private) so a degraded parse escalates, never
-    downgrades."""
+    the SAFE extreme (difficulty=hard, sensitivity=private, needs_tools=True) so a degraded parse
+    escalates to a trusted, tool-capable model — never downgrades."""
 
     intent: str
     difficulty: str
     sensitivity: str
     category: str
+    needs_tools: bool  # does answering require a TOOL/action (read email/files, web, run code)?
 
 
 #: The fail-safe classification used when the classifier errors or returns junk: treat as PRIVATE +
-#: hard ⇒ routes to the trusted JUDGMENT tier (Sonnet). Never non_sensitive/simple (that would
-#: risk a cheap route for private content).
+#: hard + needs_tools ⇒ routes to the trusted, tool-capable JUDGMENT tier (Sonnet). Never
+#: non_sensitive/simple/no-tools (that would risk a cheap or tool-less route for real work).
 FAILSAFE = Classification(
-    intent="unknown", difficulty="hard", sensitivity="private", category="other"
+    intent="unknown", difficulty="hard", sensitivity="private", category="other", needs_tools=True
 )
 
 
 @dataclass(frozen=True)
 class RouteDecision:
     """The resolved route for one turn. ``mode`` is the routing mode (auto|manual) recorded in the
-    cost ledger; ``tier`` is the Auto tier key (or ``manual``); ``reason`` is a short, safe,
-    human-facing explanation shown in the UI + trace."""
+    cost ledger; ``tier`` is the Auto tier key (or ``manual``); ``tools_enabled`` is False when the
+    routed provider is text-only (the loop then sends NO tools that turn); ``reason`` is a short,
+    safe, human-facing explanation shown in the UI + trace."""
 
     provider: str
     model: str
@@ -105,6 +112,7 @@ class RouteDecision:
     mode: str
     sensitivity: str
     reason: str
+    tools_enabled: bool = True
 
 
 def coerce_classification(data: dict) -> Classification:
@@ -117,11 +125,14 @@ def coerce_classification(data: dict) -> Classification:
         return v if v in allowed else safe
 
     intent = data.get("intent")
+    # needs_tools defaults to True (fail-safe): only an EXPLICIT false skips tools ⇒ Gemini.
+    needs = data.get("needs_tools")
     return Classification(
         intent=(intent if isinstance(intent, str) else "unknown")[:80],
         difficulty=pick(data.get("difficulty"), DIFFICULTIES, "hard"),
         sensitivity=pick(data.get("sensitivity"), SENSITIVITIES, "private"),
         category=pick(data.get("category"), CATEGORIES, "other"),
+        needs_tools=needs is not False,
     )
 
 
@@ -138,7 +149,9 @@ def choose_tier(c: Classification) -> Tier:
         or c.category == "coding"
     ):
         return JUDGMENT  # judgment-heavy / private / important
-    return SIMPLE  # simple everyday non-sensitive work
+    # Simple everyday non-sensitive work: Gemini ONLY when tool-free (it is text-only); anything
+    # needing a tool goes to Haiku (cheap + tool-capable) so the turn can actually act.
+    return SIMPLE_TOOLED if c.needs_tools else SIMPLE
 
 
 #: Prefix → provider for attributing a manually-picked model id to its provider (the ledger needs
@@ -169,11 +182,22 @@ def _is_private_ok(provider: str) -> bool:
     return bool(spec and spec.private_ok)
 
 
+def _tool_capable(provider: str) -> bool:
+    spec = provider_spec(provider)
+    return bool(spec and spec.tool_capable)
+
+
 def resolve_route(c: Classification, *, is_available: Callable[[str], bool]) -> RouteDecision:
     """Map a classification to a safe, available :class:`RouteDecision`. The chosen tier must be
     private_ok (the main chat is private) AND available; otherwise downgrade to the SAFE default."""
     tier = choose_tier(c)
     chosen = tier
+    # Gemini unavailable (disabled / missing key / unpriced) ⇒ the cheap tool-capable Haiku, not
+    # the pricier Sonnet — keeps a simple turn cheap while staying private_ok + available.
+    if chosen is SIMPLE and not is_available(SIMPLE.provider):
+        chosen = SIMPLE_TOOLED
+    # Belt-and-suspenders: the target MUST be private_ok (main chat is private) AND available;
+    # otherwise the trusted, always-available SAFE default.
     if not _is_private_ok(chosen.provider) or not is_available(chosen.provider):
         chosen = SAFE_DEFAULT
     reason = f"auto: {c.category}/{c.difficulty}/{c.sensitivity} → {chosen.label}"
@@ -187,4 +211,5 @@ def resolve_route(c: Classification, *, is_available: Callable[[str], bool]) -> 
         mode="auto",
         sensitivity=c.sensitivity,
         reason=reason,
+        tools_enabled=_tool_capable(chosen.provider),
     )

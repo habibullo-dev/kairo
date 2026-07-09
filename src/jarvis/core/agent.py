@@ -224,6 +224,7 @@ class AgentLoop:
         turn_effort: str | None = None
         turn_client = self.client
         turn_mode: str | None = None
+        turn_tools_enabled = True  # text-only routed providers (Gemini) get NO tools that turn
         if self.router is not None:
             # Phase 15.6 cost-aware Auto/Manual routing (interactive UI loop only). Classify the
             # latest user message → a RouteDecision (model/effort/mode/provider), then select the
@@ -233,6 +234,7 @@ class AgentLoop:
             turn_model = decision.model or self.config.models.main
             turn_effort = decision.effort
             turn_mode = decision.mode
+            turn_tools_enabled = getattr(decision, "tools_enabled", True)
             if self.client_selector is not None:
                 turn_client = self.client_selector(decision) or self.client
             if self.on_route is not None:
@@ -309,7 +311,9 @@ class AgentLoop:
                     recall_block, summary=summary, project_extra=project_extra
                 ),
                 "messages": api_messages,
-                "tools": self.registry.specs(),
+                # A text-only routed provider (Gemini) gets NO tools (the router only sends it
+                # tool-free turns); every tool-capable route gets the full toolset (unchanged).
+                "tools": self.registry.specs() if turn_tools_enabled else [],
                 "max_tokens": limits.max_output_tokens,
                 "on_text_delta": lambda t: emit(TextDelta(t)),
             }

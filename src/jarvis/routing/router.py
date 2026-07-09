@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from jarvis.models.providers import provider_spec
 from jarvis.routing.classifier import Classifier
 from jarvis.routing.policy import (
     FAILSAFE,
@@ -62,14 +63,17 @@ class Router:
     async def route(self, user_text: str | None) -> RouteDecision:
         if self._state.mode() is RoutingMode.MANUAL:
             model = self._manual_model()
+            provider = provider_for_model(model)
+            spec = provider_spec(provider)
             return RouteDecision(
-                provider=provider_for_model(model),
+                provider=provider,
                 model=model,
                 effort=self._manual_effort(),
                 tier="manual",
                 mode="manual",
                 sensitivity="unknown",
                 reason=f"manual: {model}",
+                tools_enabled=bool(spec and spec.tool_capable),
             )
         # AUTO — fail-closed to the trusted SAFE default if the router model can't run.
         if self._classifier is None or not self._is_available(_ROUTER_PROVIDER):

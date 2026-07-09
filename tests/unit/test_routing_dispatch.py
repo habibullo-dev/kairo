@@ -52,16 +52,36 @@ def _router(state, classifier):
     )
 
 
-async def test_auto_simple_dispatches_to_gemini_flash(tmp_path: Path) -> None:
+async def test_auto_toolfree_simple_dispatches_to_gemini_with_tools_off(tmp_path: Path) -> None:
     anth = FakeClient([text_message("should-not-run")])
     gem = FakeClient([text_message("done")])
-    clf = _classifier('{"difficulty":"simple","sensitivity":"non_sensitive","category":"chat"}')
+    clf = _classifier(
+        '{"difficulty":"simple","sensitivity":"non_sensitive","category":"chat","needs_tools":false}'
+    )
     loop, _ = _loop(
         tmp_path, router=_router(RoutingState(RoutingMode.AUTO), clf), anth=anth, gem=gem
     )
     await loop.run_turn([{"role": "user", "content": "what's 2+2"}])
     assert gem.calls and gem.calls[-1]["model"] == "gemini-2.5-flash"
-    assert not anth.calls  # the anthropic client never ran for a simple non-sensitive turn
+    assert gem.calls[-1]["tools"] == []  # text-only provider ⇒ NO tools that turn
+    assert not anth.calls  # the anthropic client never ran for a tool-free simple turn
+
+
+async def test_auto_simple_needing_tools_dispatches_to_haiku_with_tools(tmp_path: Path) -> None:
+    # A simple but tool-needing turn must NOT go to text-only Gemini — it goes to Haiku (cheap,
+    # tool-capable), and the full toolset is sent so it can actually act.
+    anth = FakeClient([text_message("done")])
+    gem = FakeClient([text_message("should-not-run")])
+    clf = _classifier(
+        '{"difficulty":"simple","sensitivity":"non_sensitive","category":"other","needs_tools":true}'
+    )
+    loop, _ = _loop(
+        tmp_path, router=_router(RoutingState(RoutingMode.AUTO), clf), anth=anth, gem=gem
+    )
+    await loop.run_turn([{"role": "user", "content": "search the web for X"}])
+    assert anth.calls and anth.calls[-1]["model"] == "claude-haiku-4-5-20251001"
+    assert anth.calls[-1]["tools"]  # tool-capable route ⇒ full toolset present
+    assert not gem.calls
 
 
 async def test_auto_private_dispatches_to_sonnet(tmp_path: Path) -> None:

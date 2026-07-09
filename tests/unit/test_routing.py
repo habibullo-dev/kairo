@@ -18,6 +18,7 @@ from jarvis.routing.policy import (
     JUDGMENT,
     PLANNING,
     SIMPLE,
+    SIMPLE_TOOLED,
     Classification,
     choose_tier,
     coerce_classification,
@@ -31,7 +32,10 @@ _NO_GEMINI = lambda p: p != "gemini"  # noqa: E731
 
 
 def _c(**kw) -> Classification:
-    base = dict(intent="i", difficulty="simple", sensitivity="non_sensitive", category="chat")
+    base = dict(
+        intent="i", difficulty="simple", sensitivity="non_sensitive", category="chat",
+        needs_tools=True,
+    )
     base.update(kw)
     return Classification(**base)
 
@@ -44,9 +48,12 @@ def test_all_auto_tiers_are_private_ok() -> None:
 
 
 # --- policy: tier selection --------------------------------------------------
-def test_simple_nonsensitive_goes_to_gemini_flash() -> None:
-    c = _c(difficulty="simple", sensitivity="non_sensitive", category="chat")
-    assert choose_tier(c) is SIMPLE
+def test_simple_toolfree_goes_to_gemini_but_tool_need_goes_to_haiku() -> None:
+    # Gemini is text-only: it serves ONLY tool-free simple turns; tool-needing simple work → Haiku.
+    tool_free = _c(sensitivity="non_sensitive", category="chat", needs_tools=False)
+    assert choose_tier(tool_free) is SIMPLE
+    needs_tool = _c(sensitivity="non_sensitive", category="chat", needs_tools=True)
+    assert choose_tier(needs_tool) is SIMPLE_TOOLED
 
 
 @pytest.mark.parametrize(
@@ -72,22 +79,26 @@ def test_expert_goes_deep_and_planning_goes_fable() -> None:
 
 
 def test_opus_fable_are_not_the_simple_default() -> None:
-    # Normal chat must NOT reach Opus/Fable — only expert/planning do.
+    # Normal chat must NOT reach Opus/Fable — only expert/planning do. It lands on a cheap tier.
     t = choose_tier(_c(difficulty="moderate", sensitivity="non_sensitive", category="chat"))
-    assert t is SIMPLE
+    assert t in (SIMPLE, SIMPLE_TOOLED)
 
 
 # --- policy: private_ok + availability gate ----------------------------------
-def test_gemini_unavailable_downgrades_simple_to_sonnet() -> None:
-    d = resolve_route(_c(difficulty="simple", sensitivity="non_sensitive"), is_available=_NO_GEMINI)
-    assert (d.provider, d.model) == ("anthropic", "claude-sonnet-5")
-    assert "downgraded" in d.reason
+def test_gemini_unavailable_downgrades_simple_to_haiku() -> None:
+    # A tool-free simple turn wants Gemini; if Gemini is unavailable it drops to the cheap
+    # tool-capable Haiku (NOT the pricier Sonnet) — still private_ok + always available.
+    c = _c(difficulty="simple", sensitivity="non_sensitive", needs_tools=False)
+    d = resolve_route(c, is_available=_NO_GEMINI)
+    assert (d.provider, d.model) == ("anthropic", "claude-haiku-4-5-20251001")
+    assert d.tools_enabled and "downgraded" in d.reason
 
 
-def test_available_simple_stays_on_gemini_flash() -> None:
-    d = resolve_route(_c(difficulty="simple", sensitivity="non_sensitive"), is_available=_ALL)
+def test_available_toolfree_simple_stays_on_gemini_flash_with_tools_off() -> None:
+    c = _c(difficulty="simple", sensitivity="non_sensitive", needs_tools=False)
+    d = resolve_route(c, is_available=_ALL)
     assert (d.provider, d.model) == ("gemini", "gemini-2.5-flash")
-    assert d.mode == "auto" and d.effort is None
+    assert d.mode == "auto" and d.effort is None and d.tools_enabled is False
 
 
 def test_private_content_never_lands_on_a_non_private_provider() -> None:
@@ -101,11 +112,17 @@ def test_private_content_never_lands_on_a_non_private_provider() -> None:
 def test_coerce_unknown_values_to_safe_extreme() -> None:
     c = coerce_classification({"difficulty": "banana", "sensitivity": "meh", "category": "xyz"})
     assert c.difficulty == "hard" and c.sensitivity == "private" and c.category == "other"
+    assert c.needs_tools is True  # unknown ⇒ assume tools needed (route to a tool-capable model)
 
 
-def test_coerce_empty_is_private_hard() -> None:
+def test_coerce_empty_is_private_hard_needs_tools() -> None:
     c = coerce_classification({})
-    assert c.sensitivity == "private" and c.difficulty == "hard"
+    assert c.sensitivity == "private" and c.difficulty == "hard" and c.needs_tools is True
+
+
+def test_coerce_needs_tools_only_false_when_explicitly_false() -> None:
+    assert coerce_classification({"needs_tools": False}).needs_tools is False
+    assert coerce_classification({"needs_tools": "no"}).needs_tools is True  # non-bool ⇒ safe True
 
 
 def test_provider_for_model_prefixes() -> None:
@@ -158,7 +175,7 @@ async def test_manual_returns_pinned_model_and_effort() -> None:
 
 
 async def test_auto_routes_simple_to_gemini() -> None:
-    payload = '{"intent":"x","difficulty":"simple","sensitivity":"non_sensitive","category":"chat"}'
+    payload = '{"difficulty":"simple","sensitivity":"non_sensitive","needs_tools":false}'
     state = RoutingState(RoutingMode.AUTO)
     r = Router(
         state=state,

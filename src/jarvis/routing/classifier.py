@@ -35,9 +35,12 @@ _SYSTEM = (
     '  "sensitivity": one of non_sensitive|personal|private '
     "(personal/private = anything about the user’s email, calendar, finances, health, "
     "relationships, private projects, or company/client/school matters),\n"
-    '  "category": one of chat|summary|coding|planning|email|calendar|finance|other.\n'
-    "If unsure about sensitivity, choose private. If unsure about difficulty, choose hard. "
-    "Return only the JSON object, no prose, no code fence."
+    '  "category": one of chat|summary|coding|planning|email|calendar|finance|other,\n'
+    '  "needs_tools": true if answering needs an ACTION/TOOL (read the user’s email/calendar/'
+    "files, search the web, run code, send/create something) rather than just conversation or "
+    "general knowledge; false ONLY for pure chat/explanation/rephrasing/summarizing given text.\n"
+    "If unsure about sensitivity choose private; about difficulty choose hard; about needs_tools "
+    "choose true. Return only the JSON object, no prose, no code fence."
 )
 
 _MAX_INPUT_CHARS = 4000  # cap the classified text (cost + latency); a long turn is still labeled
