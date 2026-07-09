@@ -203,9 +203,35 @@ entity hits, labeled `Entity`, opening the graph tab focused on the node; chat r
 artifact results open the artifacts screen/content; run results open Studio). Writes ⊆ the D7
 allowlist, pinned.
 
-### 5.6 Voice (`index.html` + `app.js`)
-Off: Talk hidden, pill shows "voice off — {reason}". On: Talk visible; pill cycles the full state
-vocabulary; error state renders "🎤 error — see Trace". No caption/renderer changes.
+### 5.6 Voice — full browser experience (`index.html` + `app.js` + `ui/voice.js` + server)
+*(Scope expanded 2026-07-09 by Habib: "Full browser voice". Reuses the Phase-7 pipeline — same
+STT/TTS providers, same egress logging, same VoiceApprover→UIScreenApprover contract — moving the
+audio to/from the browser. Adds NO new authority and NO new egress class. Activates ONLY when voice
+is enabled (config, user-controlled); I never touch `config/settings.yaml` or the consent checkpoint.)*
+
+- **Availability + state (always honest):** off ⇒ Talk hidden, pill shows "voice off — {reason}";
+  on ⇒ Talk visible, pill cycles the FULL vocabulary (idle/listening/transcribing/thinking/
+  speaking) + an **error** state ("🎤 error — {reason}"). `voice.status()` gains `reason`, `stt`,
+  `tts` (presence/names only). No caption/renderer privacy change.
+- **Browser-mic push-to-talk:** Talk requests `getUserMedia({audio})` (explicit browser permission,
+  with prompting/denied/unsupported states), records one utterance (`MediaRecorder`), and uploads it
+  to a NEW `POST /api/voice/utterance` (multipart audio) → the EXISTING `STT.transcribe` → the same
+  voice turn path the server-mic `listen` used. Audio egress is the same class the server path
+  already logs. The server-mic `/api/voice/listen` stays as a fallback.
+- **Optional OpenAI TTS playback:** when a safe caption is produced, the browser may fetch its audio
+  from a NEW `POST /api/voice/tts` that synthesizes ONLY the already-safe caption (post-mask/cap) via
+  the existing `TTS.synthesize`, and plays it in an `<audio>` element. Because only the SAFE caption
+  is ever synthesized, no secret/payload can reach TTS. Playback is opt-in (a toggle); local/subtitle
+  TTS returns no audio (captions stay text — honest).
+- **Failure reasons everywhere:** mic denied, no cloud provider, STT/TTS error, unsupported browser
+  — each renders a plain reason, never a raw error body.
+- **Safety invariant (unchanged, pinned):** voice PREPARES; the screen is the ONLY approval surface.
+  A risky action in a voice turn still escalates to the on-screen Gate via the unchanged
+  VoiceApprover→UIScreenApprover; a spoken/heard transcript is untrusted; no unattended mic.
+- **Testability:** keyless tests cover the new endpoints (fake audio bytes + fake STT/TTS), the
+  safety framing (TTS only ever receives the safe caption; utterance routes through the approver),
+  and the JS structure (permission flow, no inline handlers). Live browser mic + audio playback is a
+  MANUAL check at Checkpoint J2 (can't be exercised keyless in CI).
 
 ### 5.7 Graph & Workspace discovery
 Daily tertiary strip gains an **Active workspace** card (project name, tab links incl. Graph,
@@ -264,8 +290,8 @@ only, deep-linking `#workspace/{pid}/graph` focused on the node). No new authori
 ## 8. Screenshot definition of done (`tests/ui/workbench_dod.py`)
 
 Self-contained harness (the office/graph `*_dod.py` pattern: seeded JSON + static copy + real JS
-in headless chromium + `analyze_overlap`), **8 states × 3 themes (noir/light/neon) × 3 viewports
-(1440/1024/390) = 72 shots**, zero overlap/overflow violations, reduced-motion stable:
+in headless chromium + `analyze_overlap`), **9 states × 3 themes (noir/light/neon) × 3 viewports
+(1440/1024/390) = 81 shots**, zero overlap/overflow violations, reduced-motion stable:
 
 | State | What it proves |
 |---|---|
@@ -277,6 +303,7 @@ in headless chromium + `analyze_overlap`), **8 states × 3 themes (noir/light/ne
 | `palette` | Open with a query: Actions + Go-to + mixed Results (chat/artifact/entity/run) |
 | `hub-truth` | Hub grid rendering `capability_truth` states incl. a needs_reconnect + a not-exposed reason |
 | `graph-discovery` | Daily workspace card + the graph tab's improved empty state |
+| `voice` | Talk state (off-with-reason AND a listening/transcript-bubble state) renders cleanly |
 
 Mobile (390) must show: composer + controls usable, header collapsing gracefully, rail behavior
 sane. Spot-check at least 4 shots visually (not just the probe) before the checkpoint.
@@ -307,8 +334,15 @@ sane. Spot-check at least 4 shots visually (not just the probe) before the check
    raw catalog dump demoted to a collapsed "advanced" section. *Accept:* consistency + sweep tests.
 5. **Daily conversation-first relayout** (§5.3) + rail update (§5.4). *Accept:* zone order pinned
    structurally; "What changed" debug-gated; approval banner still outranks everything.
-6. **Voice honesty** (§5.6): status `reason`, Talk gating from first paint, full state pill.
-   *Accept:* voice-off state renders reason; caption/renderer tests untouched and green.
+6. **Full browser voice** (§5.6, scope expanded by Habib): status `reason`/`stt`/`tts`; Talk
+   gating + full state vocabulary + error; browser-mic push-to-talk (getUserMedia → `POST
+   /api/voice/utterance` → existing STT + turn) with permission/denied/unsupported states; optional
+   OpenAI TTS playback (`POST /api/voice/tts`, SAFE-caption-only) in an `<audio>`; safe transcript
+   bubbles + captions; clear failure reasons. All behind the existing voice-enabled/cloud opt-in
+   (config, user-controlled — untouched here). *Accept:* voice-off renders reason; the two new
+   endpoints route through the unchanged VoiceApprover (screen-only approval) and TTS only ever
+   receives the safe caption (keyless pins); caption/renderer privacy tests untouched and green;
+   live browser mic + playback is a manual Checkpoint-J2 step.
 
 **M2 — discovery**
 7. **Palette v2** (§5.5): actions (allowlisted writes), resume-routing, entity/run/artifact

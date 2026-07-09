@@ -419,11 +419,13 @@ def create_app(
     async def hub() -> dict:
         connectors = app.state.services.connectors
         ledger = app.state.services.ledger
-        return hub_status(
+        data = hub_status(
             config,
             connectors=connectors.status() if connectors is not None else None,
             ledger_status=ledger.status() if ledger is not None else None,
         )
+        data["capabilities"] = _capabilities()  # Phase 15.5: the shared truth, embedded
+        return data
 
     @app.get("/api/settings")
     async def settings_status() -> dict:
@@ -432,11 +434,13 @@ def create_app(
         # service flags stay YAML-only.
         connectors = app.state.services.connectors
         ledger = app.state.services.ledger
-        return settings_overview(
+        data = settings_overview(
             config,
             connectors=connectors.status() if connectors is not None else None,
             ledger_status=ledger.status() if ledger is not None else None,
         )
+        data["capabilities"] = _capabilities()  # Phase 15.5: the shared truth, embedded
+        return data
 
     @app.get("/api/models")
     async def models_list() -> dict:
@@ -445,10 +449,10 @@ def create_app(
         ims = app.state.interactive_models
         return interactive_models(config, current=ims.current() if ims is not None else None)
 
-    @app.get("/api/capabilities")
-    async def capabilities() -> dict:
-        # Phase 15.5: THE one availability truth — connectors/providers/services/voice/MCP with
-        # exposed_to_chat + plain reasons. Daily/Hub/Settings/header all render this, so they can
+    def _capabilities() -> dict:
+        # THE one availability truth (Phase 15.5), computed from live state: connectors/providers/
+        # services/voice/MCP with exposed_to_chat + plain reasons. Daily, Hub, Settings, and the
+        # header all render THIS (embedded in their payloads + the dedicated route), so they can
         # never disagree. exposed_to_chat is exact when the live loop's tools are available.
         connectors = app.state.services.connectors
         voice = app.state.voice.status() if app.state.voice is not None else {"enabled": False}
@@ -463,15 +467,19 @@ def create_app(
             registered_tools=registered,
         )
 
+    @app.get("/api/capabilities")
+    async def capabilities() -> dict:
+        return _capabilities()
+
     @app.get("/api/daily")
     async def daily() -> JSONResponse:
         # Read-only Daily bootstrap (Phase 9). NOT a mutating route.
         pending = len(app.state.approvals.pending())
-        return JSONResponse(
-            await daily_overview(
-                config, app.state.services, notices=app.state.notices, gate_pending=pending
-            )
+        data = await daily_overview(
+            config, app.state.services, notices=app.state.notices, gate_pending=pending
         )
+        data["capabilities"] = _capabilities()  # Phase 15.5: the shared connector-truth
+        return JSONResponse(data)
 
     @app.get("/api/lab")
     async def lab() -> dict:

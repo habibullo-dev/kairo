@@ -72,10 +72,13 @@ def test_priority_order_pending_before_activity() -> None:
 
 
 def test_connector_dot_reflects_real_status() -> None:
-    # A disconnected connector must NOT show a green (connected) dot; connected-state is derived
-    # from the registry status-dict fields, not object-truthiness, and honours needs_reconnect.
-    assert '" off"' in DAILY_JS  # the grey off-dot is actually applied
-    assert "connOn(" in DAILY_JS and "needs_reconnect" in DAILY_JS
+    # Phase 15.5: the connector strip renders the SHARED capability truth (data.capabilities.
+    # connectors) — the same rows Hub/Settings show. A disconnected/not-exposed connector must NOT
+    # show a green dot; the tone is derived from state + exposed_to_chat (needs_reconnect ⇒ warn),
+    # and the state/reason derivation now lives server-side in capability_truth (not the client).
+    assert '" off"' in DAILY_JS  # the grey off-dot is still actually applied
+    assert "capabilities" in DAILY_JS and "exposed_to_chat" in DAILY_JS
+    assert "needs_reconnect" in DAILY_JS  # honoured in the tone (capTone)
 
 
 def test_run_tone_uses_real_status_vocabulary() -> None:

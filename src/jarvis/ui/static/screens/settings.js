@@ -120,6 +120,39 @@ function serviceRow(x) {
   return el("div", { style: "margin-bottom:6px" }, [head, note].filter(Boolean));
 }
 
+// One capability line: name · state (+ "not in chat" when connected-but-unexposed) + plain reason.
+// Renders the SHARED capability_truth, so Settings agrees with Daily and the Hub.
+function capLine(r) {
+  const usable = ["connected", "available", "on"].includes(r.state) && r.exposed_to_chat;
+  const notInChat = ["connected", "available", "on"].includes(r.state) && !r.exposed_to_chat;
+  const pill = el("span", { class: "status-pill" + (usable ? " good" : "") }, [
+    el("span", { class: "dot" + (usable ? "" : " off") }, []),
+    el("span", {}, [`${r.name} · ${r.state}${notInChat ? " · not in chat" : ""}`]),
+  ]);
+  const reason = r.reason
+    ? el("span", { class: "set-s", style: "margin-left:8px" }, [r.reason]) : null;
+  return el("div", { class: "cap-line" }, [pill, reason].filter(Boolean));
+}
+
+function capabilitySection(setData) {
+  const capd = setData.capabilities || {};
+  const nodes = [];
+  for (const [title, rows] of [["Connectors", capd.connectors], ["Model providers", capd.providers],
+    ["Services & tools", capd.services]]) {
+    if (!(rows || []).length) continue;
+    nodes.push(el("div", { class: "cap-group" }, [title]));
+    for (const r of rows) nodes.push(capLine(r));
+  }
+  const voice = capd.voice || {};
+  const mcp = capd.mcp || {};
+  nodes.push(el("div", { class: "cap-group" }, ["Voice & MCP"]));
+  nodes.push(capLine({ name: "Voice", state: voice.state || "off",
+    exposed_to_chat: voice.exposed_to_chat, reason: voice.reason }));
+  nodes.push(capLine({ name: "MCP", state: mcp.state || "not_configured",
+    exposed_to_chat: false, reason: mcp.reason }));
+  return statusSection("Capabilities — what chat can use", nodes);
+}
+
 function renderStatus(region) {
   region.textContent = "";
   const s = _status;
@@ -128,6 +161,9 @@ function renderStatus(region) {
   const costs = s.costs || {};
   const runner = s.runner || {};
   const set = s.settings || {};
+
+  // The shared availability truth FIRST — the calm, plain-language answer to "what can chat use?".
+  region.appendChild(capabilitySection(set));
 
   // Providers (10C availability: state + authority + private_ok) & model routes
   const provRows = (set.providers || []).map((p) => {
@@ -143,7 +179,8 @@ function renderStatus(region) {
     el("div", { class: "art-meta" }, routeRows),
   ], "hub"));
 
-  // Services catalog — availability + policy badges + credential NAMES + how to enable
+  // Services catalog — the raw availability + policy badges + credential NAMES + how-to-enable is
+  // DEV detail, so it's demoted into a collapsed <details> (the plain truth is up in Capabilities).
   const services = set.services || hub.services || [];
   const svcNodes = services.length
     ? services.map(serviceRow)
@@ -151,7 +188,10 @@ function renderStatus(region) {
   if (set.enable_hint) {
     svcNodes.push(el("pre", { class: "set-s", style: "white-space:pre-wrap;margin-top:8px;opacity:.8" }, [set.enable_hint]));
   }
-  region.appendChild(statusSection("Services", svcNodes));
+  const details = el("details", { class: "advanced" }, [
+    el("summary", {}, ["Advanced: full service catalog + policies"]), ...svcNodes,
+  ]);
+  region.appendChild(statusSection("Services", [details]));
 
   // Connectors — presence + granted scope NAMES + expiry (never a token)
   const c = set.connectors || hub.connectors || {};

@@ -375,47 +375,47 @@ function fillNotices(container, api) {
   }
 }
 
-// Connected-state from the registry's presence status (a dict, NOT a bool): honour
-// connected/configured and needs_reconnect. A present-but-unconfigured connector reads as NOT
-// connected (grey), never a false green. Presence-only — no key/token value is ever inspected.
-function connOn(status) {
-  if (status == null) return false;
-  if (typeof status === "boolean") return status;
-  const base = status.connected ?? status.configured ?? true; // a present dict w/o those = configured
-  return !!base && !status.needs_reconnect;
+// Render the SHARED capability truth (data.capabilities.connectors) — the exact rows Hub and
+// Settings show, so the three surfaces can never disagree (Habib's "Daily says none, Settings says
+// Google" bug). A connected-but-not-exposed-to-chat connector reads honestly (amber-ish + a "why"),
+// never a false green. Presence/state/reason only — no key/token value is ever inspected.
+function capTone(r) {
+  if (r.state === "needs_reconnect") return "warn";
+  if (r.state === "connected" && r.exposed_to_chat) return "good";
+  return "";
+}
+
+function capPill(r) {
+  const tone = capTone(r);
+  const pill = document.createElement("span");
+  pill.className = "status-pill " + (tone || "");
+  if (r.reason) pill.title = r.reason; // the plain-language "why" on hover (safe: an attribute)
+  const dot = document.createElement("span");
+  dot.className = "dot" + (tone === "good" ? "" : " off");
+  const label = document.createElement("span");
+  const suffix = r.state === "connected" && !r.exposed_to_chat ? " · not in chat" : "";
+  label.textContent = r.name + suffix;
+  pill.append(dot, label);
+  return pill;
 }
 
 function fillConnectors(container, data) {
   const body = container.querySelector("#daily-connectors-body");
   if (!body) return;
   body.textContent = "";
-  const c = data.connectors || {};
-  // Only pill connectors that are actually PRESENT, so a fresh machine reaches the empty state.
-  const pills = [];
-  if (data.demo) pills.push(connPill("Demo mode", true));
-  if (c.google != null) pills.push(connPill("Google", connOn(c.google)));
-  for (const [name, status] of Object.entries(c.notifiers || {})) {
-    pills.push(connPill(name, connOn(status)));
-  }
-  if (!pills.length) {
-    body.appendChild(emptyState("No connectors configured", "Connect accounts in the Hub to enrich your briefing."));
+  const rows = (data.capabilities && data.capabilities.connectors) || [];
+  // Show what's actually set up (connected / needs-reconnect); a fresh machine reaches the empty
+  // state — matching Settings, which reports the very same rows as not_configured.
+  const active = rows.filter((r) => r.state !== "not_configured");
+  if (!active.length) {
+    body.appendChild(emptyState("No connectors configured",
+      "Connect accounts in the Hub to enrich your briefing."));
     return;
   }
   const strip = document.createElement("div");
   strip.className = "conn-strip";
-  for (const p of pills) strip.appendChild(p);
+  for (const r of active) strip.appendChild(capPill(r));
   body.appendChild(strip);
-}
-
-function connPill(name, on) {
-  const pill = document.createElement("span");
-  pill.className = "status-pill " + (on ? "good" : "");
-  const dot = document.createElement("span");
-  dot.className = "dot" + (on ? "" : " off"); // grey, un-glowed when not connected — never a false green
-  const label = document.createElement("span");
-  label.textContent = name;
-  pill.append(dot, label);
-  return pill;
 }
 
 function fillChanged(container, data) {
