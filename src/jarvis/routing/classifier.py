@@ -76,7 +76,7 @@ class Classifier:
         self._model = model
         self._max_tokens = max_tokens
 
-    async def classify(self, user_text: str) -> Classification | None:
+    async def classify(self, user_text: str | None) -> Classification | None:
         try:
             resp = await self._client.create(
                 model=self._model,

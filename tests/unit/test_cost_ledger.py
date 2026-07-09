@@ -74,6 +74,31 @@ async def test_ledgered_client_records_one_row(tmp_path: Path) -> None:
     assert rows[0]["cost_usd"] is not None and rows[0]["cost_usd"] > 0
 
 
+async def test_records_routing_mode(tmp_path: Path) -> None:
+    # Phase 15.6: the ledger records HOW the model was chosen — 'auto'|'manual' from the router,
+    # NULL on the legacy path (no router: REPL / sub-agents / evals).
+    ledger = await _ledger(tmp_path)
+    client = LedgeredClient(
+        FakeClient([text_message("a", model="gemini-2.5-flash"), text_message("b", model="x")]),
+        ledger=ledger,
+        provider="gemini",
+        effort="high",
+    )
+    token = cost_context.set(CostContext(purpose="turn", mode="auto"))
+    try:
+        await client.create(model="m", system="s", messages=[], tools=[], max_tokens=10)
+    finally:
+        cost_context.reset(token)
+    cur = await ledger.db.execute(
+        "SELECT provider, model, routing_mode FROM model_calls ORDER BY id DESC LIMIT 1"
+    )
+    assert tuple(await cur.fetchone()) == ("gemini", "gemini-2.5-flash", "auto")
+    # No mode in context ⇒ routing_mode NULL (byte-identical legacy path).
+    await client.create(model="m", system="s", messages=[], tools=[], max_tokens=10)
+    cur = await ledger.db.execute("SELECT routing_mode FROM model_calls ORDER BY id DESC LIMIT 1")
+    assert (await cur.fetchone())[0] is None
+
+
 async def test_unpriced_model_records_null_not_zero(tmp_path: Path) -> None:
     ledger = await _ledger(tmp_path)
     inner = FakeClient([text_message("x", usage=Usage(input_tokens=500))])

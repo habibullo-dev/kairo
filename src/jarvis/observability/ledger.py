@@ -37,7 +37,9 @@ _COLUMNS = (
     "team, stage, "
     # S7 Context Reuse (normalized, cross-provider; NULL = not reported / not cached):
     "cached_input_tokens, provider_cache_mode, provider_cache_hit_tokens, "
-    "estimated_cache_savings_usd, stable_prefix_hash"
+    "estimated_cache_savings_usd, stable_prefix_hash, "
+    # Phase 15.6: how the model was chosen — 'auto'|'manual' (NULL = no router / legacy path).
+    "routing_mode"
 )
 
 
@@ -59,6 +61,7 @@ class CostContext:
     team: str | None = None  # Phase 10B: orchestration team
     stage: str | None = None  # Phase 10B: council|synthesis|execution|review|verdict
     trace_id: str | None = None
+    mode: str | None = None  # Phase 15.6: routing mode — 'auto'|'manual' (None = no router)
 
 
 # The default is a FROZEN CostContext (immutable), so a single shared default instance is
@@ -124,7 +127,7 @@ class CostLedger:
                 await self.db.execute(
                     f"INSERT INTO model_calls ({_COLUMNS}) VALUES "
                     "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-                    "?, ?, ?, ?, ?)",
+                    "?, ?, ?, ?, ?, ?)",
                     (
                         _now(),
                         ctx.trace_id,
@@ -152,6 +155,7 @@ class CostLedger:
                         provider_cache_hit_tokens,
                         estimated_cache_savings_usd,
                         stable_prefix_hash,
+                        ctx.mode,  # Phase 15.6 routing mode (auto|manual|NULL)
                     ),
                 )
                 await self.db.commit()

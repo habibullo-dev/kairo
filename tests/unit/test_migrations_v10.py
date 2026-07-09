@@ -46,7 +46,7 @@ async def _build_v9(path: Path) -> aiosqlite.Connection:
 async def test_v9_to_v10_is_additive(tmp_path: Path) -> None:
     db = await _build_v9(tmp_path / "m.db")
     try:
-        assert await migrate(db) == 13  # v10..v12 apply; v10's tables are asserted below
+        assert await migrate(db) == 14  # v10..v12 apply; v10's tables are asserted below
 
         # Pre-existing rows survive untouched.
         cur = await db.execute("SELECT name FROM projects WHERE id = 1")
@@ -130,7 +130,7 @@ async def test_v10_migration_is_rerunnable(tmp_path: Path) -> None:
         # Simulate a crash before the version bump: rewind user_version and re-run the step.
         await db.execute("PRAGMA user_version = 9")
         await db.commit()
-        assert await migrate(db) == 13  # re-applying v10 (+v11+v12) over itself does not error
+        assert await migrate(db) == 14  # re-applying v10 (+v11+v12) over itself does not error
         cur = await db.execute("PRAGMA foreign_key_check")
         assert await cur.fetchall() == []
     finally:

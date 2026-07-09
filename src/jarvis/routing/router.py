@@ -59,7 +59,7 @@ class Router:
         self._classifier = classifier
         self._is_available = is_available
 
-    async def route(self, user_text: str) -> RouteDecision:
+    async def route(self, user_text: str | None) -> RouteDecision:
         if self._state.mode() is RoutingMode.MANUAL:
             model = self._manual_model()
             return RouteDecision(

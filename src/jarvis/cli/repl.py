@@ -1272,6 +1272,47 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
     # turn); a switch is Anthropic-only (private-context pin) and never touches the ModelRegistry
     # routes. Default = config.models.main ⇒ byte-identical until the human picks another model.
     model_state = InteractiveModelState(config.models.main, default_effort=config.limits.effort)
+    # Phase 15.6: cost-aware Auto routing (interactive loop ONLY). Default policy = AUTO — Gemini
+    # 2.5 Flash-Lite classifies each message and the router picks Gemini Flash (simple) / Sonnet 5
+    # (judgment/private) / Opus·Fable (deep), with the private_ok hard gate + fail-closed fallback
+    # to Sonnet enforced in jarvis.routing. MANUAL pins model_state. A ledgered client per routable
+    # provider (anthropic = repl.client; gemini only when available) keeps ledger attribution
+    # correct. REPL / sub-agents / evals get NO router ⇒ byte-identical (self.client + config main).
+    from jarvis.models.factory import ClientFactory
+    from jarvis.models.providers import ProviderRegistry
+    from jarvis.models.roles import ModelRoute
+    from jarvis.routing import Classifier, Router, RoutingState
+
+    provider_registry = ProviderRegistry.from_config(config)
+    routing_state = RoutingState()  # default AUTO — the cost-aware daily experience
+    clients_by_provider: dict[str, object] = {"anthropic": repl.client}
+    classifier = None
+    if provider_registry.route_allowed("gemini"):
+        _gem_client = ClientFactory(config).for_route(
+            ModelRoute("gemini", "gemini-2.5-flash", text_only=True)
+        )
+        if repl.cost_ledger is not None:
+            _gem_client = LedgeredClient(
+                _gem_client, ledger=repl.cost_ledger, provider="gemini", effort=config.limits.effort
+            )
+        clients_by_provider["gemini"] = _gem_client
+        classifier = Classifier(_gem_client, "gemini-2.5-flash-lite")
+    router = Router(
+        state=routing_state,
+        manual_model=model_state.current,
+        manual_effort=model_state.current_effort,
+        classifier=classifier,
+        is_available=provider_registry.route_allowed,
+    )
+    app.state.routing = routing_state
+    app.state.last_route = None
+
+    def _client_selector(decision):  # RouteDecision → the ledgered client for its provider
+        return clients_by_provider.get(decision.provider)
+
+    def _on_route(decision):  # surface the per-turn pick for the UI (Task 6 reads last_route)
+        app.state.last_route = decision
+
     if repl.agents is not None:
         # A child's ASK escalates to the UI screen (the Gate), not the terminal prompt.
         app_approvals = app.state.approvals
@@ -1291,6 +1332,9 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
         mode=repl.modes.current,
         model_override=model_state.current,
         effort_override=model_state.current_effort,
+        router=router,
+        client_selector=_client_selector,
+        on_route=_on_route,
         add_time_context=repl.tasks is not None,
         system=build_system(
             memory_enabled=repl.memory is not None,

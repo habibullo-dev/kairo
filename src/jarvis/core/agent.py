@@ -110,6 +110,9 @@ class AgentLoop:
         mode: Callable[[], Mode] | None = None,
         model_override: Callable[[], str | None] | None = None,
         effort_override: Callable[[], str | None] | None = None,
+        router: object | None = None,
+        client_selector: Callable[[object], object | None] | None = None,
+        on_route: Callable[[object], None] | None = None,
         cost_purpose: str = "turn",
         add_time_context: bool = False,
         now: Callable[[], _dt.datetime] = _default_now,
@@ -139,6 +142,14 @@ class AgentLoop:
         # chosen output-config effort, or None to defer to the client's configured default. Read
         # once per turn (freezes like the model). None override => byte-identical (no effort key).
         self.effort_override = effort_override
+        # Phase 15.6: cost-aware Auto routing. When ``router`` is set (the interactive UI loop), it
+        # picks the turn's model/effort/mode per message (classify → tier) and ``client_selector``
+        # returns the ledgered client for the routed provider (Anthropic vs Gemini). When None
+        # (REPL / sub-agents / evals), the loop is byte-identical — self.client + model_override.
+        # ``on_route`` (optional) receives each RouteDecision so a surface can show what was picked.
+        self.router = router
+        self.client_selector = client_selector
+        self.on_route = on_route
         self._auto_allow: frozenset[str] = frozenset(config.modes.auto_allow_tools)
         # Phase 10 cost ledger: the purpose recorded for this loop's completions ("turn" for
         # interactive, "subagent"/"orchestration" for children). Nested utility calls
@@ -210,11 +221,36 @@ class AgentLoop:
         # Freeze the model for the whole turn (a mid-turn switch applies next turn, like project
         # scope). An override returning falsy defers to the config default => byte-identical.
         turn_model = self.config.models.main
-        if self.model_override is not None:
-            turn_model = self.model_override() or self.config.models.main
-        # Freeze the per-model effort too (same next-turn semantics). None ⇒ omit the kwarg ⇒ the
-        # client's configured effort ⇒ byte-identical to a build without the selector.
-        turn_effort = self.effort_override() if self.effort_override is not None else None
+        turn_effort: str | None = None
+        turn_client = self.client
+        turn_mode: str | None = None
+        if self.router is not None:
+            # Phase 15.6 cost-aware Auto/Manual routing (interactive UI loop only). Classify the
+            # latest user message → a RouteDecision (model/effort/mode/provider), then select the
+            # ledgered client for the routed provider. The router enforces the private_ok gate +
+            # fail-closed fallback; this loop just applies its decision for the whole turn.
+            decision = await self.router.route(_latest_user_text(messages))
+            turn_model = decision.model or self.config.models.main
+            turn_effort = decision.effort
+            turn_mode = decision.mode
+            if self.client_selector is not None:
+                turn_client = self.client_selector(decision) or self.client
+            if self.on_route is not None:
+                self.on_route(decision)
+            self.log.info(
+                "route_selected",
+                trace_id=trace_id,
+                provider=decision.provider,
+                model=turn_model,
+                tier=decision.tier,
+                mode=decision.mode,
+                reason=decision.reason,
+            )
+        else:
+            # Legacy seam (REPL / tests): a manual model + effort override, or the config default.
+            if self.model_override is not None:
+                turn_model = self.model_override() or self.config.models.main
+            turn_effort = self.effort_override() if self.effort_override is not None else None
 
         self.log.info("turn_start", trace_id=trace_id, model=turn_model, effort=turn_effort)
 
@@ -234,6 +270,7 @@ class AgentLoop:
                 purpose=self.cost_purpose,
                 project_id=(project.project_id if project is not None else base.project_id),
                 trace_id=trace_id,
+                mode=turn_mode,  # Phase 15.6: 'auto'|'manual'|None → model_calls.routing_mode
             )
         )
         # Auto-recall runs once per turn, on the new user message (not per iteration), scoped
@@ -287,7 +324,7 @@ class AgentLoop:
                 # breakpoint and is never cached. Passed ONLY when caching is on ⇒ a flag-off
                 # turn's request is byte-identical to before the enable-step.
                 create_kwargs["stable_prefix"] = self.system
-            response = await self.client.create(**create_kwargs)
+            response = await turn_client.create(**create_kwargs)
             total = total + response.usage
             total_latency_ms += response.latency_ms or 0.0
             if self.context_manager is not None:

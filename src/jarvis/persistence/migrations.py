@@ -940,6 +940,17 @@ async def _migrate_v13(db: aiosqlite.Connection) -> None:
         await db.execute("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
 
 
+async def _migrate_v14(db: aiosqlite.Connection) -> None:
+    # Phase 15.6: cost-aware routing mode attribution. Every model_calls row records HOW its model
+    # was chosen — 'auto' (the cost-aware router), 'manual' (a human-pinned model), or NULL (no
+    # router: REPL / sub-agents / evals — byte-identical to before). Additive + guarded (nullable,
+    # no default), so a partial-failure re-run is a clean no-op.
+    cursor = await db.execute("PRAGMA table_info(model_calls)")
+    existing = {row[1] for row in await cursor.fetchall()}
+    if "routing_mode" not in existing:
+        await db.execute("ALTER TABLE model_calls ADD COLUMN routing_mode TEXT")
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -959,6 +970,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (11, _migrate_v11),
     (12, _SCHEMA_V12),
     (13, _migrate_v13),
+    (14, _migrate_v14),
 ]
 
 
