@@ -19,6 +19,7 @@ from fastapi import FastAPI, Request, WebSocket, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
+from jarvis.graph.service import node_card, subgraph
 from jarvis.observability import get_logger
 from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.modes import Mode
@@ -1080,6 +1081,38 @@ def create_app(
         # per-member overlay, recent runs, activity feed). Read-only ASSEMBLER over existing read
         # models — presence/metadata/summaries only, never a body or key value.
         return JSONResponse(await office_overview(config, app.state.services, project_id))
+
+    @app.get("/api/workspace/{project_id}/graph")
+    async def workspace_graph(
+        project_id: int, focus: str | None = None, depth: int = 1, kinds: str | None = None,
+        trust: str | None = None, since: str | None = None, limit: int = 300,
+    ) -> JSONResponse:
+        # Phase 15: the project-scoped memory-graph subgraph (nodes+edges+counts). READ-ONLY,
+        # clamped (depth<=2, limit<=300), bodies-free. Degrades to an empty graph if unavailable.
+        svc = app.state.services
+        if svc.graph is None:
+            return JSONResponse({"project_id": project_id, "nodes": [], "edges": [],
+                                 "counts": {"by_kind": {}, "by_trust": {}}, "truncated": False})
+        focus_ep = None
+        if focus and ":" in focus:
+            fk, fid = focus.split(":", 1)
+            focus_ep = (fk, fid)
+        return JSONResponse(await subgraph(
+            svc.graph, project_id, focus=focus_ep, depth=depth,
+            kinds=set(kinds.split(",")) if kinds else None,
+            trust=set(trust.split(",")) if trust else None, since=since, limit=limit,
+        ))
+
+    @app.get("/api/graph/node/{kind}/{ref_id:path}")
+    async def graph_node(kind: str, ref_id: str) -> JSONResponse:
+        # One node's card + capped neighbors (ref_id is a path converter so wiki paths work).
+        svc = app.state.services
+        if svc.graph is None:
+            return JSONResponse({"detail": "graph unavailable"}, status_code=404)
+        card = await node_card(svc.graph, kind, ref_id)
+        if card is None:
+            return JSONResponse({"detail": "node not found"}, status_code=404)
+        return JSONResponse(card)
 
     @app.post("/api/orchestration/run")
     async def orchestration_run(request: Request) -> JSONResponse:

@@ -30,6 +30,7 @@ from jarvis.core.context import ContextManager
 from jarvis.core.events import SubAgentCompleted
 from jarvis.core.prompts import build_system
 from jarvis.digest import DigestBuilder, DigestStore, ensure_digest_task
+from jarvis.graph import GraphStore
 from jarvis.knowledge.service import KnowledgeService
 from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder, reflect
@@ -1332,6 +1333,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
         views=views_store,  # Phase 11: saved views / smart collections
         intents=repl.intents,  # Phase 12: the outward-write approval queue
         write_journal=repl.write_journal,  # Phase 12: the metadata-only write journal
+        graph=GraphStore(repl.store.db, repl.store.lock) if repl.store is not None else None,
     )
     if repl.agents is not None and orch_store is not None:
         app.state.orchestrator = _build_orchestrator(

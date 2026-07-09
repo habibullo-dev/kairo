@@ -66,6 +66,9 @@ class UiServices:
     # read model + undo. Both None when the write substrate isn't composed.
     intents: Any = None  # an IntentStore
     write_journal: Any = None  # a ConnectorWriteJournal
+    # Phase 15: the graph store backs the memory-graph read models (subgraph / node card /
+    # suggestions review). None when the DB isn't composed.
+    graph: Any = None  # a GraphStore
 
 
 # --- memory ----------------------------------------------------------------
