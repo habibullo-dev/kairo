@@ -1829,6 +1829,22 @@ def cli(argv: list[str] | None = None) -> int:
     # key). Harmless for live/record runs — the model just sees a fixed date.
     os.environ["JARVIS_EVAL_CLOCK"] = EVAL_CLOCK
 
+    # The KB/memory stores stamp created_at with a wall-clock module-level `_now()`, so a
+    # freshly-ingested source cites *today's* date. That real date leaks into the model's next
+    # request and drifts the cassette key daily — staling committed retrieval cassettes overnight
+    # (a green kb/memory/underquery gate goes red the next morning with no code change). Freeze
+    # both stores' `_now()` to the same frozen clock the agent loop already uses, so fresh-ingest
+    # citations are stable across days. Eval-harness only — production `_now()` is untouched, and
+    # already-dated fixture rows (seeded outside these calls) are unaffected.
+    import jarvis.knowledge.store as _kb_store
+    import jarvis.memory.store as _mem_store
+
+    def _frozen_now() -> str:
+        return EVAL_CLOCK
+
+    _kb_store._now = _frozen_now
+    _mem_store._now = _frozen_now
+
     if args.cmd == "plan":
         mode = "live" if args.live else ("record" if args.record else "replay")
         _print_plan(project_cost(args.suite, args.runs, mode))
