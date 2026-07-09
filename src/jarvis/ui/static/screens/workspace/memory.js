@@ -49,9 +49,26 @@ export async function render(container, api, ctx) {
   }
   const rows = memories.map((m) =>
     row("🧠", m.content, m.type + " · " + relTime(m.created_at), {
-      trailing: actionButton("Forget",
-        () => api.post(`/api/memory/${m.id}/forget`, {}).then(rerender), "ghost"),
+      trailing: el("div", { class: "row-actions" }, [
+        graphLink(ctx.projectId, `memory:${m.id}`),
+        actionButton("Forget",
+          () => api.post(`/api/memory/${m.id}/forget`, {}).then(rerender), "ghost"),
+      ]),
     })
   );
   container.appendChild(section("Memory", rows));
+}
+
+// A quiet "View in graph" deep-link: focus the graph tab on this node (graph.js reads its focus
+// from localStorage) then navigate. GET/navigate-only — it sets a display preference + a hash,
+// never a server write, so the Memory panel stays within its enumerated routes.
+function graphLink(projectId, ref) {
+  const a = el("a", { class: "plain-button ghost", href: `#workspace/${projectId}/graph` },
+    ["In graph"]);
+  a.addEventListener("click", () => {
+    try {
+      localStorage.setItem(`kairo:graph:${projectId}`, JSON.stringify({ focus: ref, kinds: [] }));
+    } catch { /* storage disabled — the graph opens unfocused */ }
+  });
+  return a;
 }

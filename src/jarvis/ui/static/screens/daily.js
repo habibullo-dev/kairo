@@ -136,8 +136,11 @@ function renderZones(container, api) {
   html += `<div class="surface rise" id="daily-today" style="display:none">
       <div class="panel-title"><h3>Today</h3><a href="#tasks">All tasks →</a></div>
       <div id="daily-today-rows" class="daily-rows"></div></div>`;
-  // TERTIARY STRIP — recent artifacts · latest run · connector health, side by side on wide screens.
+  // TERTIARY STRIP — active workspace · recent artifacts · latest run · connectors, side by side.
   html += `<div class="daily-tertiary">
+    <div class="surface rise" id="daily-workspace">
+      <div class="panel-title"><h3>Active workspace</h3></div>
+      <div id="daily-workspace-body"></div></div>
     <div class="surface rise" id="daily-artifacts">
       <div class="panel-title"><h3>Recent artifacts</h3><a href="#artifacts">All →</a></div>
       <div id="daily-artifacts-body" class="daily-rows"><div class="dim">Loading…</div></div></div>
@@ -169,8 +172,40 @@ function renderZones(container, api) {
     if (res.ok) fillDaily(container, api);  // refresh the Briefing (no reload)
   });
   renderWorkflows(container, api);
-  fillNotices(container, api);   // client-side (state.notices) — instant
-  scheduleFills(container, api); // coalesce the read-only GETs (see below)
+  fillNotices(container, api);     // client-side (state.notices) — instant
+  fillWorkspace(container, api);   // client-side (state.runner.project) — instant
+  scheduleFills(container, api);   // coalesce the read-only GETs (see below)
+}
+
+// Active-workspace card — makes the project's Workspace (incl. the Graph) reachable from Daily.
+// Client-side from the settled runner state (no fetch); navigate-only.
+function fillWorkspace(container, api) {
+  const body = container.querySelector("#daily-workspace-body");
+  if (!body) return;
+  body.textContent = "";
+  const proj = api.state.runner && api.state.runner.project;
+  if (!proj || !proj.id) {
+    body.appendChild(emptyState("No active project",
+      "Pick a project to open its workspace, or keep chatting globally."));
+    const a = document.createElement("a");
+    a.href = "#projects"; a.className = "review-link"; a.textContent = "Choose a project →";
+    body.appendChild(a);
+    return;
+  }
+  const name = document.createElement("div");
+  name.className = "lr-t"; name.style.marginBottom = "8px";
+  name.textContent = proj.name || `Project ${proj.id}`;
+  const row = document.createElement("div");
+  row.className = "chip-row";
+  for (const [label, suffix] of [["Overview", ""], ["Graph", "/graph"],
+    ["Artifacts", "/artifacts"], ["Memory", "/memory"], ["Chats", "/chats"]]) {
+    const a = document.createElement("a");
+    a.href = `#workspace/${proj.id}${suffix}`;
+    a.className = "chip-btn";
+    a.textContent = label;
+    row.appendChild(a);
+  }
+  body.append(name, row);
 }
 
 // renderZones re-runs on every WS event, including each streaming text_delta. Coalesce the

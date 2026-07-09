@@ -40,9 +40,21 @@ export async function render(container, api, ctx) {
     const data = await api.get(`/api/workspace/${pid}/graph?` + params.toString());
     container.textContent = "";
     if (!data || !(data.nodes || []).length) {
-      container.appendChild(section("Knowledge Graph", [emptyState(
-        "Nothing to graph yet",
-        "Run `jarvis graph rebuild` (or work in this project) to populate the graph.")]));
+      // A teaching empty state: WHAT the graph is + exactly HOW to populate it (copy the CLI
+      // ritual). Read-only — the copy button touches only the clipboard, never the server.
+      const copy = el("button", { class: "plain-button ghost" }, ["Copy: jarvis graph rebuild"]);
+      copy.addEventListener("click", () =>
+        navigator.clipboard && navigator.clipboard.writeText("jarvis graph rebuild"));
+      const help = el("div", { class: "dim", style: "margin-top:10px;max-width:62ch" }, [
+        "The graph links this project's chats, runs, artifacts, memory, sources and people into a "
+        + "calm map you can explore and search. It's read-only — exploring it never changes your "
+        + "data, and new memories still go through review before they appear."]);
+      container.appendChild(section("Knowledge Graph", [
+        emptyState("Nothing to graph yet",
+          "Work in this project, then rebuild the derived links to populate the graph."),
+        el("div", { class: "graph-empty-actions" }, [copy]),
+        help,
+      ]));
       return;
     }
     container.appendChild(buildHeader(data));
