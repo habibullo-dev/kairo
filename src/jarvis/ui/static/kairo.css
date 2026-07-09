@@ -298,6 +298,9 @@ body.debug .composer .chips { display: flex; }
 .hdr-field .hdr-k { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--dimmer); }
 .hdr-select { background: var(--bg); color: var(--ink); border: 1px solid var(--line-2); border-radius: 8px; padding: 5px 8px; font-size: 12.5px; font-family: var(--font); max-width: 220px; }
 .hdr-select:hover { border-color: rgba(var(--accent-rgb), .5); }
+.hdr-select:disabled { opacity: .55; cursor: not-allowed; }
+/* Phase 15.6: the Auto "→ picked model" caption next to the routing selector. */
+.hdr-routed { font-size: 11px; color: var(--dim); font-style: italic; margin-left: 2px; }
 .hdr-title { font-weight: 600; color: var(--ink); font-size: 14px; max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hdr-rename { background: var(--bg); color: var(--ink); border: 1px solid rgba(var(--accent-rgb), .6); border-radius: 8px; padding: 5px 8px; font-size: 14px; font-family: var(--font); min-width: 22ch; }
 .hdr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }

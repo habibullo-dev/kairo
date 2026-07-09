@@ -942,15 +942,18 @@ def interactive_models(
     current: str | None = None,
     efforts: dict[str, str] | None = None,
     current_effort: str | None = None,
+    policy: str = "manual",
+    routed: dict | None = None,
 ) -> dict:
-    """The composer's model picker (Phase 15.5). The Anthropic ``INTERACTIVE_MODELS`` are
-    SELECTABLE (they may receive the chat's private context — the 10C ``private_ok`` pin); the
-    external providers are listed visible-but-DISABLED with the plain reason they can't drive the
-    main chat, plus their fail-closed provider state. Presence/state only — never a key value.
+    """The composer's model picker (Phase 15.5 + 15.6). The Anthropic ``INTERACTIVE_MODELS`` are the
+    SELECTABLE manual picks (trusted, tool-capable, private_ok); the other providers are listed
+    visible-but-DISABLED with a plain reason (text-only / not-allowed-for-private / unavailable),
+    plus their fail-closed state. Presence/state only — never a key value.
 
-    ``efforts`` (per-model chosen effort) + ``current_effort`` + the ``effort_levels`` domain drive
-    the composer's per-model effort selector (cost control); each model row carries its ``effort``
-    so switching model shows that model's level."""
+    Phase 15.6: ``policy`` (auto|manual) is the routing mode; the returned ``auto`` option is the
+    recommended default (cheap-first, escalate-when-needed) and ``routed`` is what Auto picked last
+    turn. ``efforts`` / ``current_effort`` / ``effort_levels`` drive the per-model effort selector
+    (a MANUAL-mode cost control; Auto uses the client default)."""
     from jarvis.models.providers import PROVIDER_CATALOG, ProviderRegistry, ProviderState
     from jarvis.ui.state import EFFORT_LEVELS, EXTERNAL_CHAT_PROVIDERS, INTERACTIVE_MODELS
 
@@ -990,13 +993,19 @@ def interactive_models(
         if spec is None or reg is None:
             continue
         st = reg.state(name).value
-        note = "receives your private conversation context — not enabled for the main chat"
+        # Phase 15.6: honest reasons. private_ok providers (gemini/openai) are text-only here, so
+        # they aren't a MANUAL pick for the tool-using chat — Auto uses Gemini for cheap tool-free
+        # turns. Non-private providers (qwen/deepseek/zai) never receive the private main chat.
+        if spec.private_ok:
+            note = "text-only — not a manual pick; Auto uses Gemini for cheap simple turns"
+        else:
+            note = "not allowed for private context (used only as a scoped worker)"
         external.append(
             {
                 "id": name,
                 "label": (spec.default_models[0] if spec.default_models else name),
                 "provider": name,
-                "selectable": False,  # never — external providers are not private_ok (10C)
+                "selectable": False,  # never a manual main-chat pick this phase
                 "current": False,
                 "state": st,
                 "reason": note if st == "available" else f"{note} ({st})",
@@ -1008,6 +1017,16 @@ def interactive_models(
         "external": external,
         "current_effort": eff_by_model.get(cur, default_effort),
         "effort_levels": [{"id": v, "label": label} for v, label in EFFORT_LEVELS],
+        # Phase 15.6 cost-aware routing: the policy (auto|manual), the recommended Auto option, and
+        # what Auto picked last turn (so the composer can show "Auto → Sonnet 5").
+        "policy": policy,
+        "auto": {
+            "recommended": True,
+            "label": "Auto",
+            "description": "uses cheap models first, escalates only when needed",
+            "current": policy == "auto",
+        },
+        "routed": routed,
     }
 
 

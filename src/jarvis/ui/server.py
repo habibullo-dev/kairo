@@ -30,6 +30,7 @@ from jarvis.observability.cost import load_pricing
 from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.modes import Mode
 from jarvis.persistence.artifacts import ArtifactPathError
+from jarvis.routing import RoutingMode
 from jarvis.search import search as _federated_search
 from jarvis.tools import Permission
 from jarvis.ui.approver import ApprovalManager, UIApprover, UIScreenApprover
@@ -331,6 +332,10 @@ def create_app(
         # effort is the CURRENT model's per-model effort (the composer's cost selector); falls back
         # to the config default when the selector isn't wired.
         status["effort"] = models.current_effort() if models is not None else config.limits.effort
+        # Phase 15.6: the routing policy (auto|manual) + what Auto last picked, so the header can
+        # show "Auto → Sonnet 5" vs a pinned manual model.
+        status["routing"] = _routing_policy()
+        status["routed"] = _routed_dict()
         return status
 
     @app.post("/api/budgets")
@@ -379,21 +384,32 @@ def create_app(
 
     @app.post("/api/model")
     async def set_model(request: Request) -> JSONResponse:
-        # Phase 15.5: choose the interactive model. Anthropic-only allowlist (the private-context
-        # pin, 10C) enforced in InteractiveModelState.set — anything else is a 400. This is UI-state
-        # only: the loop reads it next turn (frozen per turn) and the ledger attributes the switched
-        # model automatically (provider stays anthropic). The ModelRegistry routes are untouched.
+        # Phase 15.5/15.6: choose the interactive routing. "auto" ⇒ cost-aware Auto routing
+        # (RoutingState=AUTO). A model id ⇒ MANUAL, pinned to that model — the Anthropic-only
+        # allowlist (private-context pin) enforced in InteractiveModelState.set (else 400). UI-state
+        # only: the loop reads it next turn; the ledger attributes model + routing_mode. Non-private
+        # / text-only providers are NEVER a manual main-chat pick (they 400 via the allowlist).
         ims = app.state.interactive_models
+        routing = getattr(app.state, "routing", None)
         if ims is None:
             return _unavailable("model selection")
         body = await request.json()
+        choice = str(body.get("model", ""))
+        if choice == "auto":
+            if routing is not None:
+                routing.set(RoutingMode.AUTO)
+            log.info("interactive_routing_changed", policy="auto")
+            await app.state.connections.broadcast({"kind": "model_changed", "model": "auto"})
+            return JSONResponse({"ok": True, "model": "auto", "policy": "auto"})
         try:
-            ims.set(str(body.get("model", "")))
+            ims.set(choice)
         except ValueError as exc:
             return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
-        log.info("interactive_model_changed", model=ims.current())
+        if routing is not None:
+            routing.set(RoutingMode.MANUAL)  # pinning a model switches OUT of Auto
+        log.info("interactive_model_changed", model=ims.current(), policy="manual")
         await app.state.connections.broadcast({"kind": "model_changed", "model": ims.current()})
-        return JSONResponse({"ok": True, "model": ims.current()})
+        return JSONResponse({"ok": True, "model": ims.current(), "policy": "manual"})
 
     @app.post("/api/effort")
     async def set_effort(request: Request) -> JSONResponse:
@@ -481,7 +497,30 @@ def create_app(
             current=ims.current() if ims is not None else None,
             efforts=ims.efforts() if ims is not None else None,
             current_effort=ims.current_effort() if ims is not None else None,
+            policy=_routing_policy(),
+            routed=_routed_dict(),
         )
+
+    def _routing_policy() -> str:
+        # Phase 15.6: the interactive routing mode (auto|manual). Default 'manual' if the router
+        # isn't wired (e.g. a bare app) so the surface never errors.
+        routing = getattr(app.state, "routing", None)
+        return routing.mode().value if routing is not None else "manual"
+
+    def _routed_dict() -> dict | None:
+        # The last Auto pick, so the composer can show "Auto → Sonnet 5 (reason)". Safe fields only
+        # (model names + a plain reason) — never a secret. None until Auto has routed a turn.
+        d = getattr(app.state, "last_route", None)
+        if d is None:
+            return None
+        return {
+            "provider": d.provider,
+            "model": d.model,
+            "tier": d.tier,
+            "mode": d.mode,
+            "reason": d.reason,
+            "tools_enabled": getattr(d, "tools_enabled", True),
+        }
 
     def _capabilities() -> dict:
         # THE one availability truth (Phase 15.5), computed from live state: connectors/providers/

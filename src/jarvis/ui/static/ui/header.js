@@ -66,25 +66,42 @@ function scopeSelect(runner, projects) {
   return labeled("Scope", sel);
 }
 
+// Phase 15.6: the routing selector. "Auto" (recommended, default) is cost-aware per-message
+// routing; below it, Manual pins a trusted Claude model. Other providers are shown DISABLED with
+// an honest reason (text-only / not-allowed-for-private / unavailable). When Auto, a caption shows
+// what it picked last turn ("→ Sonnet 5").
 function modelSelect(models) {
-  const selectable = models.models || [];
-  const opts = selectable.map((m) =>
-    el("option", { value: m.id, selected: m.current, disabled: !m.selectable }, [m.label]));
+  const policy = models.policy || "manual";
+  const auto = models.auto || {};
+  const manual = models.models || [];
+  const opts = [
+    el("option", { value: "auto", selected: policy === "auto" },
+      [`${auto.label || "Auto"} — recommended`]),
+  ];
+  if (manual.length) {
+    opts.push(el("optgroup", { label: "Manual" }, manual.map((m) =>
+      el("option", { value: m.id, selected: policy === "manual" && m.current, disabled: !m.selectable },
+        [m.label]))));
+  } else {
+    // Never a blank picker if the manual list came back empty (a failed/absent read model).
+    opts.push(el("option", { value: "", disabled: true }, ["No manual models — check providers"]));
+  }
   if ((models.external || []).length) {
-    opts.push(el("optgroup", { label: "Not available for the main chat" },
+    opts.push(el("optgroup", { label: "Not a manual pick" },
       models.external.map((e) =>
         el("option", { value: e.id, disabled: true }, [`${e.label} — ${e.reason}`]))));
   }
-  // Never a blank select: if the picker came back empty (a failed/absent /api/models), show a
-  // single disabled option that says so, rather than an empty control (Checkpoint-J2 blocker 1).
-  if (!selectable.length) {
-    opts.unshift(el("option", { value: "", disabled: true, selected: true },
-      ["No models available — check providers"]));
-  }
-  const sel = el("select", { class: "hdr-select", "aria-label": "Model" }, opts);
-  if (models.current) sel.value = models.current;
+  const sel = el("select", { class: "hdr-select", "aria-label": "Model routing" }, opts);
+  sel.value = policy === "auto" ? "auto" : (models.current || "auto");
+  sel.title = auto.description || "uses cheap models first, escalates only when needed";
   sel.addEventListener("change", () => { if (sel.value) post("/api/model", { model: sel.value }); });
-  return labeled("Model", sel);
+  const field = labeled("Model", sel);
+  const routed = models.routed;
+  if (policy === "auto" && routed && routed.model) {
+    field.appendChild(el("span", { class: "hdr-routed", title: routed.reason || "" },
+      [`→ ${routed.model}`]));
+  }
+  return field;
 }
 
 // Per-model effort (cost control): lower effort ⇒ fewer output tokens ⇒ lower cost. The chosen
@@ -96,15 +113,20 @@ function effortSelect(models) {
   if (!levels.length) return null;
   const cur = models.current_effort || "high";
   const curRow = (models.models || []).find((m) => m.current);
-  const supported = !curRow || curRow.supports_effort !== false;
+  // Auto manages effort per tier (client default); the manual per-model knob is disabled then.
+  const isAuto = (models.policy || "manual") === "auto";
+  const supported = !isAuto && (!curRow || curRow.supports_effort !== false);
   const opts = levels.map((lv) => el("option", { value: lv.id, selected: lv.id === cur }, [lv.label]));
-  if (!supported) opts.push(el("option", { value: "", selected: true }, ["n/a for this model"]));
+  const disabledLabel = isAuto ? "Auto-managed" : "n/a for this model";
+  if (!supported) opts.push(el("option", { value: "", selected: true }, [disabledLabel]));
   const sel = el("select",
     { class: "hdr-select", "aria-label": "Effort (cost)", disabled: !supported }, opts);
   if (supported) sel.value = cur;
   sel.title = supported
     ? "Lower effort spends fewer tokens (cheaper); higher is more thorough."
-    : "This economy model has no effort control (and no extended thinking) — it is already the cheapest tier.";
+    : isAuto
+      ? "Auto picks the model AND effort per turn (cheap-first). Switch to a manual model to tune effort."
+      : "This economy model has no effort control (and no extended thinking) — already the cheapest tier.";
   sel.addEventListener("change", () => {
     if (sel.value && supported) post("/api/effort", { effort: sel.value, model: models.current });
   });
