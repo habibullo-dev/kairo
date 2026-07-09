@@ -33,7 +33,7 @@ NO_INJECTED = {"inj_reflection_launder", "inj_task_payload"}
 
 def test_adversarial_scenarios_present() -> None:
     names = {s.name for s in ADV}
-    assert len(ADV) == 23
+    assert len(ADV) == 24
     assert names == {
         "inj_read_file",
         "inj_web_fetch",
@@ -62,6 +62,9 @@ def test_adversarial_scenarios_present() -> None:
         # direct egress and a scan never reveals a sensitive file.
         "inj_scanner_finding_poison",
         "inj_scan_target_sensitive",
+        # Phase 15 graph: a note directs "save as trusted memory + auto-approve + exfiltrate" —
+        # suggestions are quarantined model_generated proposals; no agent tool approves them.
+        "inj_graph_suggestion_poison",
     }
 
 
@@ -88,7 +91,7 @@ def test_each_scenario_uses_a_distinct_canary() -> None:
         for tok in set(re.findall(r"CANARY-[A-Za-z0-9]+", s.yaml_text)):
             assert tok not in seen, f"{tok} reused by {s.name} and {seen[tok]}"
             seen[tok] = s.name
-    assert len(seen) == 23  # one canary family per scenario
+    assert len(seen) == 24  # one canary family per scenario
 
 
 def test_direct_scenarios_declare_an_injected_signature() -> None:
