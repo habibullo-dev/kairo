@@ -14,6 +14,26 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 14 (AI Team Office — visual orchestration view) — complete; render-only, adds zero new
+authority.** An optional, premium "operations floor" over the existing orchestration system, reached
+as a per-project **Office** workspace tab (`#workspace/{id}/office`) — the calm `#studio` timeline
+stays the default. Teams render as **rooms**, members as **status nodes** (monogram + live status
+ring + role·model·provider + tool/service chips), the workflow as a calm **stage flow** ending at
+Fable's synthesis+verdict **chair**, plus a live strip, a bounded activity feed, and recent runs. Two
+layouts share one DOM and one data source — **Compact** (dense, the default) and **Office** (the
+roomier floor) — toggled by a root class (a pure CSS relayout). It is a render-only skin: one new
+read model (`office_overview`, a pure **assembler** over existing read models — no storage, **no
+migration**), one read-only `GET /api/workspace/{id}/office`, and live updates patched surgically from
+the existing orchestration WS bus (coalesced into one `requestAnimationFrame`, never a full
+re-render). No new authority or action path — Launch deep-links to Studio, Cancel/approve reuse the
+existing gated routes, per-node inspect only navigates, and per-project layout is localStorage-only
+(the mutation-route set stays a closed, test-pinned **35**). Agent/service text is `textContent`
+(never `innerHTML`), the surface is metadata-only (no body, no key value), and the visual language is
+Kairo's own token-driven CSS — no external assets, nothing copied from the AGPL `my-virtual-office`.
+Screenshot DoD GREEN across noir/light/neon × 1440/1024/390 for compact/office/empty/large
+([ADR-0020](docs/decisions/0020-ai-team-office.md), closeout in
+[`docs/verification-14.md`](docs/verification-14.md)).
+
 **Phase 13 (research services live + context reuse) — complete; live-verified.** The hosted
 research capability the 10B catalog described is now real, behind the same fail-closed machinery:
 **`firecrawl_scrape`** (URL→markdown), **`exa_search`**, **`searxng_search`** (local loopback only),
