@@ -8,9 +8,9 @@ quality-first (API cost is not a constraint):
   REPL live text and avoids HTTP timeouts.
 * **Adaptive thinking + effort** — the reasoning tier (Opus/Sonnet/Fable) uses
   ``thinking={"type":"adaptive"}`` (the only on-mode; ``budget_tokens`` is rejected)
-  with ``output_config.effort``. The Haiku tier rejects ``thinking`` (400) but accepts
-  ``effort``, so thinking is gated by model while effort applies across the tier — and
-  ``effort`` is per-call overridable (the UI's per-model effort selector).
+  with ``output_config.effort``. The Haiku tier rejects BOTH (400), so both are gated
+  off by model there; ``effort`` is per-call overridable on the reasoning tier (the
+  UI's per-model effort selector — Haiku simply has no effort knob).
 * **SDK retries** — the client retries 429/5xx with exponential backoff; we just
   raise ``max_retries``. No hand-rolled retry loop.
 
@@ -89,13 +89,23 @@ def _guard_compat_response(response: ModelResponse, model: str) -> None:
         raise CompatResponseError(f"compat provider reported zero token usage for model {model!r}")
 
 
+def _is_haiku_tier(model: str) -> bool:
+    """The Anthropic Haiku tier — the fast/economy models. They reject BOTH the extended-reasoning
+    knobs the reasoning tier (Opus/Sonnet/Fable) accepts: ``thinking`` (400 "adaptive thinking is
+    not supported on this model") AND ``output_config`` (400 "this model does not support the
+    effort parameter"). So both are gated off for Haiku; it stays fully usable, just without
+    extended reasoning or an effort knob."""
+    return "haiku" in model.lower()
+
+
 def _supports_adaptive_thinking(model: str) -> bool:
-    """Whether ``model`` accepts ``thinking={"type":"adaptive"}``. The Anthropic Haiku tier does
-    NOT (the API 400s: "adaptive thinking is not supported on this model"); the reasoning-tier
-    models (Opus/Sonnet/Fable) do. This gates ONLY the thinking param — ``output_config.effort``
-    is accepted across the tier (the thinking-off utility client drives Haiku with it), so the
-    economy model stays fully usable, just without extended reasoning."""
-    return "haiku" not in model.lower()
+    """Whether ``model`` accepts ``thinking={"type":"adaptive"}`` (reasoning tier only)."""
+    return not _is_haiku_tier(model)
+
+
+def _supports_effort(model: str) -> bool:
+    """Whether ``model`` accepts ``output_config.effort`` (reasoning tier only — Haiku 400s)."""
+    return not _is_haiku_tier(model)
 
 
 class AnthropicClient:
@@ -193,10 +203,11 @@ class AnthropicClient:
             "system": system,
             "messages": messages,
         }
-        if not self.compat:
-            # effort/output_config is Anthropic-native; compat endpoints reject/ignore it. A
-            # per-call `effort` (the UI's per-model effort selector) overrides the client default;
-            # None ⇒ the configured default ⇒ byte-identical to a build without the selector.
+        if not self.compat and _supports_effort(model):
+            # effort/output_config is Anthropic-native; compat endpoints reject/ignore it, and the
+            # Haiku tier 400s on it entirely (so it's gated off there). A per-call `effort` (the
+            # UI's per-model effort selector) overrides the client default; None ⇒ the configured
+            # default ⇒ byte-identical to a build without the selector.
             kwargs["output_config"] = {"effort": effort or self.effort}
         if tools:
             kwargs["tools"] = tools

@@ -89,22 +89,24 @@ function modelSelect(models) {
 
 // Per-model effort (cost control): lower effort ⇒ fewer output tokens ⇒ lower cost. The chosen
 // level is remembered per model server-side, so switching model re-renders this with that model's
-// effort. Degrades to nothing if the read model predates effort (never a broken control).
+// effort. Degrades to nothing if the read model predates effort (never a broken control). The
+// Haiku tier has NO effort knob (the API rejects it), so the control is disabled + labeled there.
 function effortSelect(models) {
   const levels = models.effort_levels || [];
   if (!levels.length) return null;
   const cur = models.current_effort || "high";
-  const sel = el("select", { class: "hdr-select", "aria-label": "Effort (cost)" },
-    levels.map((lv) => el("option", { value: lv.id, selected: lv.id === cur }, [lv.label])));
-  sel.value = cur;
-  // Tell the human when the current model is effort-only (Haiku has no extended thinking).
   const curRow = (models.models || []).find((m) => m.current);
-  const title = curRow && curRow.thinking === false
-    ? "Economy model: effort controls cost; extended thinking is off for this model."
-    : "Lower effort spends fewer tokens (cheaper); higher is more thorough.";
-  sel.title = title;
+  const supported = !curRow || curRow.supports_effort !== false;
+  const opts = levels.map((lv) => el("option", { value: lv.id, selected: lv.id === cur }, [lv.label]));
+  if (!supported) opts.push(el("option", { value: "", selected: true }, ["n/a for this model"]));
+  const sel = el("select",
+    { class: "hdr-select", "aria-label": "Effort (cost)", disabled: !supported }, opts);
+  if (supported) sel.value = cur;
+  sel.title = supported
+    ? "Lower effort spends fewer tokens (cheaper); higher is more thorough."
+    : "This economy model has no effort control (and no extended thinking) — it is already the cheapest tier.";
   sel.addEventListener("change", () => {
-    if (sel.value) post("/api/effort", { effort: sel.value, model: models.current });
+    if (sel.value && supported) post("/api/effort", { effort: sel.value, model: models.current });
   });
   return labeled("Effort", sel);
 }

@@ -975,8 +975,11 @@ def interactive_models(
             "selectable": keyed,
             "current": mid == cur,
             "effort": eff_by_model.get(mid, default_effort),
-            # Haiku accepts effort but not adaptive thinking — surfaced so the UI can note it.
+            # The Haiku tier rejects BOTH adaptive thinking and the effort parameter (400), so the
+            # UI hides extended-reasoning + disables the effort selector for it. The reasoning tier
+            # supports both. Surfaced per-model so the composer stays honest.
             "thinking": "haiku" not in mid.lower(),
+            "supports_effort": "haiku" not in mid.lower(),
             "reason": "" if keyed else "set ANTHROPIC_API_KEY to use the main chat",
         }
         for mid, label in INTERACTIVE_MODELS
