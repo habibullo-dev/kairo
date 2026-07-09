@@ -234,7 +234,9 @@ def create_app(
         # assets are somehow missing, rather than 500.
         index = STATIC_DIR / "index.html"
         if index.is_file():
-            return FileResponse(index)
+            # no-cache: the browser MUST revalidate (ETag) so a JS/HTML update is picked up on the
+            # next load rather than served stale — a local app has no CDN, revalidation is cheap.
+            return FileResponse(index, headers={"Cache-Control": "no-cache"})
         return Response("Kairo Workstation — assets missing.", media_type="text/plain")
 
     @app.get("/static/{path:path}")
@@ -246,7 +248,8 @@ def create_app(
             return _deny(status.HTTP_404_NOT_FOUND, "not found")
         if not target.is_file():
             return _deny(status.HTTP_404_NOT_FOUND, "not found")
-        return FileResponse(target)
+        # no-cache (revalidate via ETag) so an updated module is never served stale from disk cache.
+        return FileResponse(target, headers={"Cache-Control": "no-cache"})
 
     # --- Gate: approvals (the crown jewels) + read-only policy/audit views -------------
 

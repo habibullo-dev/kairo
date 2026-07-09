@@ -67,16 +67,23 @@ function scopeSelect(runner, projects) {
 }
 
 function modelSelect(models) {
-  const opts = (models.models || []).map((m) =>
+  const selectable = models.models || [];
+  const opts = selectable.map((m) =>
     el("option", { value: m.id, selected: m.current, disabled: !m.selectable }, [m.label]));
   if ((models.external || []).length) {
     opts.push(el("optgroup", { label: "Not available for the main chat" },
       models.external.map((e) =>
         el("option", { value: e.id, disabled: true }, [`${e.label} — ${e.reason}`]))));
   }
+  // Never a blank select: if the picker came back empty (a failed/absent /api/models), show a
+  // single disabled option that says so, rather than an empty control (Checkpoint-J2 blocker 1).
+  if (!selectable.length) {
+    opts.unshift(el("option", { value: "", disabled: true, selected: true },
+      ["No models available — check providers"]));
+  }
   const sel = el("select", { class: "hdr-select", "aria-label": "Model" }, opts);
   if (models.current) sel.value = models.current;
-  sel.addEventListener("change", () => post("/api/model", { model: sel.value }));
+  sel.addEventListener("change", () => { if (sel.value) post("/api/model", { model: sel.value }); });
   return labeled("Model", sel);
 }
 

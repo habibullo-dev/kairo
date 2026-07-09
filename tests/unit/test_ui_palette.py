@@ -59,6 +59,13 @@ def test_palette_searches_the_unified_graph_search() -> None:
     assert "_api.get(" in PALETTE_JS  # search is a GET
 
 
+def test_palette_makes_recent_chats_findable() -> None:
+    # Blocker 3: the word-based unified search can miss chats, so the palette surfaces recent chats
+    # by TITLE (always browsable + resumable) — searching "chat"/a title finds your conversations.
+    assert "computeChats" in PALETTE_JS
+    assert "/api/sessions" in PALETTE_JS and "resumeChat(" in PALETTE_JS
+
+
 def test_palette_uses_the_shipped_overlay_classes() -> None:
     for cls in ("command-overlay", "command-palette", "search-input", "palette-results"):
         assert cls in PALETTE_JS

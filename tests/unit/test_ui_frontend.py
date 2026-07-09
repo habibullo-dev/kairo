@@ -71,3 +71,14 @@ def test_assets_have_no_inline_event_handlers() -> None:
         if f.suffix in {".html", ".js"}:
             text = f.read_text(encoding="utf-8")
             assert " onclick=" not in text and " onload=" not in text, f.name
+
+
+def test_shell_hides_via_class_not_blocked_inline_style() -> None:
+    # The strict CSP (style-src 'self') BLOCKS inline style= — so an element that must start hidden
+    # would be left VISIBLE by style="display:none" (this was the Talk-button / empty-card bug).
+    # The shell must hide via the is-hidden CLASS (toggled by classList, which CSP allows).
+    index = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'style="display:none"' not in index, "use the is-hidden class, not blocked inline style"
+    assert "is-hidden" in index
+    from jarvis.ui.server import STATIC_DIR as SD
+    assert ".is-hidden" in (SD / "kairo.css").read_text(encoding="utf-8")

@@ -72,3 +72,19 @@ async def test_override_returning_falsy_falls_back_to_config_default(tmp_path: P
     loop, cfg = _loop(tmp_path, client, model_override=lambda: None)
     await loop.run_turn([{"role": "user", "content": "x"}])
     assert client.calls[-1]["model"] == cfg.models.main
+
+
+def test_interactive_models_resilient_to_provider_failure(tmp_path: Path, monkeypatch) -> None:
+    # A pricing/provider hiccup must NEVER empty the model picker (the Checkpoint-J2 blocker-1 root
+    # cause: a throwing /api/models → an empty <select>). The four Anthropic models are always
+    # listed + selectable; only the external-provider states degrade.
+    import jarvis.models.providers as prov
+    from jarvis.ui.readmodels import interactive_models
+
+    def boom(*_a, **_k):
+        raise RuntimeError("pricing table exploded")
+
+    monkeypatch.setattr(prov.ProviderRegistry, "from_config", classmethod(boom))
+    m = interactive_models(load_config(root=tmp_path, env_file=None))
+    assert len(m["models"]) == 4 and all(x["selectable"] for x in m["models"])
+    assert m["external"] == []  # degraded, but the picker is never empty

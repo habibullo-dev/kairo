@@ -317,6 +317,10 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 .daily-tertiary { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; }
 @media (max-width: 720px) { .daily-tertiary { grid-template-columns: 1fr; } }
 .graph-empty-actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+/* Phase 15.5: CSP-safe hide toggle. The strict CSP (style-src 'self') blocks inline
+   style="display:none", so elements that must start hidden use this CLASS (toggled via classList,
+   which CSP allows) instead of an inline style — fixes the always-visible Talk button + empty cards. */
+.is-hidden { display: none !important; }
 
 /* --- approval modal (priority attention surface) --- */
 .overlay { position: fixed; inset: 0; background: rgba(4,7,10,0.74); backdrop-filter: blur(3px); display: none; align-items: center; justify-content: center; z-index: 100; }

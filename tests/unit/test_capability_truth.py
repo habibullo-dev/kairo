@@ -75,3 +75,20 @@ def test_needs_reconnect_surfaces(tmp_path: Path) -> None:
 def test_summary_is_a_short_plain_string(tmp_path: Path) -> None:
     cap = capability_truth(_cfg(tmp_path), connectors=None, voice={"enabled": False})
     assert isinstance(cap["summary"], str) and "voice off" in cap["summary"]
+
+
+def test_resilient_to_provider_registry_failure(tmp_path: Path, monkeypatch) -> None:
+    # A pricing/provider hiccup must NEVER blank the grid or 500 the surface (the Checkpoint-J2
+    # root cause: a throwing read model → empty Hub / empty selector). The connector rows + voice +
+    # MCP always render; providers degrade to just anthropic.
+    import jarvis.models.providers as prov
+
+    def boom(*_a, **_k):
+        raise RuntimeError("pricing table exploded")
+
+    monkeypatch.setattr(prov.ProviderRegistry, "from_config", classmethod(boom))
+    monkeypatch.setattr("jarvis.ui.readmodels.services_status", boom)
+    cap = capability_truth(_cfg(tmp_path), connectors=None, voice={"enabled": False})
+    assert len(cap["connectors"]) == 5  # ALWAYS the five connector rows
+    assert cap["providers"][0]["name"] == "Anthropic"  # anthropic still shown (the main chat)
+    assert cap["services"] == [] and "summary" in cap  # services degrade; no crash

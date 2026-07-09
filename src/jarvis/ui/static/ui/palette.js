@@ -55,7 +55,7 @@ let _sel = 0;
 let _escOff = null;
 let _seq = 0;
 let _timer = null;
-let _ctx = { runner: {}, projects: [], models: [] };
+let _ctx = { runner: {}, projects: [], models: [], sessions: [] };
 
 function go(hash) { close(); location.hash = hash; }
 
@@ -99,6 +99,20 @@ function computeActions(q) {
     }
   }
   return out.filter((a) => !ql || a.title.toLowerCase().includes(ql) || a.snip.toLowerCase().includes(ql));
+}
+
+// Recent chats, matched by TITLE (the unified search is word/content-based + project-scoped, so it
+// can miss chats — this makes them always findable + jumpable). Selecting one resumes it.
+function computeChats(q) {
+  const ql = q.toLowerCase();
+  return (_ctx.sessions || [])
+    .filter((s) => !ql || (s.title || "").toLowerCase().includes(ql))
+    .slice(0, 8)
+    .map((s) => ({
+      kind: "chat", chip: "Chat", title: s.title || `Chat ${s.id}`,
+      snip: "Resume this conversation",
+      run: () => { _api.resumeChat(s.id).then(() => go("#daily")); },
+    }));
 }
 
 function computeNav(q) {
@@ -145,7 +159,7 @@ function markSel() {
   }
 }
 
-const _CAP = { action: "Actions", nav: "Go to", result: "Results" };
+const _CAP = { action: "Actions", chat: "Chats", nav: "Go to", result: "Results" };
 
 function render() {
   _list.textContent = "";
@@ -173,11 +187,14 @@ function render() {
   });
 }
 
+let _chats = [];
+
 function rebuild() {
   const q = _input.value.trim();
   _actions = computeActions(q);
+  _chats = computeChats(q);
   _navItems = computeNav(q);
-  _items = [..._actions, ..._navItems];
+  _items = [..._actions, ..._chats, ..._navItems];
   if (_sel >= _items.length) _sel = 0;
   render();
 }
@@ -194,7 +211,7 @@ function scheduleSearch() {
     const scope = pid ? `&project_id=${pid}` : "";
     const data = await _api.get(`/api/graph/search?q=${encodeURIComponent(q)}&limit=25${scope}`);
     if (my !== _seq) return;  // a newer keystroke superseded this one
-    _items = [..._actions, ..._navItems, ...resultItems((data && data.results) || [])];
+    _items = [..._actions, ..._chats, ..._navItems, ...resultItems((data && data.results) || [])];
     if (_sel >= _items.length) _sel = Math.max(0, _items.length - 1);
     render();
   }, 160);
@@ -239,11 +256,15 @@ async function open() {
   rebuild();       // instant: actions + nav (context from the last open)
   _input.focus();
   _escOff = pushEscape(close);
-  // Refresh the action context (active project/model/mode + the pickers), then re-render.
-  const [runner, projects, models] = await Promise.all([
+  // Refresh the action context (active project/model/mode + the pickers + recent chats), re-render.
+  const [runner, projects, models, sessions] = await Promise.all([
     _api.get("/api/runner"), _api.get("/api/projects"), _api.get("/api/models"),
+    _api.get("/api/sessions?limit=20"),
   ]);
-  _ctx = { runner: runner || {}, projects: (projects && projects.projects) || [], models: (models && models.models) || [] };
+  _ctx = {
+    runner: runner || {}, projects: (projects && projects.projects) || [],
+    models: (models && models.models) || [], sessions: (sessions && sessions.sessions) || [],
+  };
   if (_overlay.classList.contains("open")) rebuild();
 }
 

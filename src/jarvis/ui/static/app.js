@@ -331,8 +331,8 @@ function renderRunnerState() {
   setText("st-runner", busy ? "Kairo is working" : (s.runner_running ? "Kairo is idle" : "Kairo is paused"));
   setClass("runner-dot", dotClass);
   setText("st-turn", busy ? "working" : "ready");
-  const stop = document.getElementById("st-stop"); if (stop) stop.style.display = s.runner_running ? "" : "none";
-  const resume = document.getElementById("st-resume"); if (resume) resume.style.display = s.runner_running ? "none" : "";
+  const stop = document.getElementById("st-stop"); if (stop) stop.classList.toggle("is-hidden", !s.runner_running);
+  const resume = document.getElementById("st-resume"); if (resume) resume.classList.toggle("is-hidden", !!s.runner_running);
   // Phase 10 status strip: active project, run mode, today's spend, cost-ledger health.
   setText("st-project", s.project && s.project.name ? s.project.name : "global");
   setText("st-mode", s.mode || "approval");
@@ -344,11 +344,11 @@ function renderRunnerState() {
   const ws = document.getElementById("rail-workspace");
   if (ws) {
     const pid = s.project && s.project.id;
-    ws.style.display = pid ? "" : "none";
+    ws.classList.toggle("is-hidden", !pid);
     if (pid) ws.setAttribute("href", `#workspace/${pid}`);
   }
   if (typeof s.today_spend_usd === "number") setText("st-spend", `$${s.today_spend_usd.toFixed(4)}`);
-  const led = document.getElementById("st-ledger"); if (led) led.style.display = s.ledger_degraded ? "" : "none";
+  const led = document.getElementById("st-ledger"); if (led) led.classList.toggle("is-hidden", !s.ledger_degraded);
   // Daily current-activity card (if mounted) — same source, same result
   if (document.getElementById("daily-now-lead")) {
     setClass("daily-now-dot", dotClass);
@@ -379,26 +379,27 @@ async function rehydrateConversation() {
 async function pollStatus() {
   const s = await api.get("/api/runner");
   if (s) { state.runner = s; renderRunnerState(); rehydrateConversation(); }
-  const v = await api.get("/api/voice/status");
-  if (v) {
-    const voiceEl = document.getElementById("st-voice");
-    // Off ⇒ show "off" + WHY (on hover); on ⇒ the live state. Never a false "ready".
+  // Default to OFF when the status can't be read (v null), so the mic is ALWAYS gated — never left
+  // at the CSP-blocked HTML default (which would leave Talk visible while voice is off, blocker 4).
+  const v = (await api.get("/api/voice/status")) || { enabled: false, reason: "" };
+  const voiceEl = document.getElementById("st-voice");
+  if (voiceEl) {
     voiceEl.textContent = v.enabled ? (v.listening || "ready") : "off";
     voiceEl.title = v.enabled ? "" : (v.reason || "");
-    const mic = document.getElementById("st-mic");
-    // Talk shows ONLY when voice is enabled AND the browser can capture audio — with a clear
-    // reason on the pill otherwise (never a dead button).
-    const canTalk = v.enabled && canCapture();
-    mic.style.display = canTalk ? "" : "none";
     if (v.enabled && !canCapture()) voiceEl.title = "This browser can't record audio.";
+  }
+  const mic = document.getElementById("st-mic");
+  if (mic) {
+    // Talk shows ONLY when voice is enabled AND the browser can capture audio (class toggle, so
+    // the strict CSP can't leave it stuck visible).
+    mic.classList.toggle("is-hidden", !(v.enabled && canCapture()));
     if (mic.dataset.busy !== "1" && !recording()) mic.textContent = "🎤 Talk";
-    // The playback toggle appears only when a cloud TTS can actually produce audio.
-    const play = document.getElementById("st-play");
-    if (play) {
-      play.style.display = v.enabled && v.playback ? "" : "none";
-      play.classList.toggle("active", playbackOn());
-      play.title = playbackOn() ? "Spoken replies: on" : "Spoken replies: off";
-    }
+  }
+  const play = document.getElementById("st-play");
+  if (play) {  // playback toggle appears only when a cloud TTS can actually produce audio
+    play.classList.toggle("is-hidden", !(v.enabled && v.playback));
+    play.classList.toggle("active", playbackOn());
+    play.title = playbackOn() ? "Spoken replies: on" : "Spoken replies: off";
   }
 }
 

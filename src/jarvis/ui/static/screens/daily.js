@@ -133,7 +133,7 @@ function renderZones(container, api) {
         <button class="rowbtn" id="daily-digest-run">Run digest now</button></div>
       <div id="daily-briefing-body" class="dim">Loading…</div></div>`;
   // TODAY (secondary) — from /api/tasks if the scheduler is on (hidden otherwise).
-  html += `<div class="surface rise" id="daily-today" style="display:none">
+  html += `<div class="surface rise is-hidden" id="daily-today">
       <div class="panel-title"><h3>Today</h3><a href="#tasks">All tasks →</a></div>
       <div id="daily-today-rows" class="daily-rows"></div></div>`;
   // TERTIARY STRIP — active workspace · recent artifacts · latest run · connectors, side by side.
@@ -151,7 +151,7 @@ function renderZones(container, api) {
       <div class="panel-title"><h3>Connectors</h3><a href="#hub">Hub →</a></div>
       <div id="daily-connectors-body"><div class="dim">Loading…</div></div></div></div>`;
   // NOTICES — background job/reminder/digest notices; hidden when there are none (calm).
-  html += `<div class="surface rise" id="daily-notices" style="display:none">
+  html += `<div class="surface rise is-hidden" id="daily-notices">
       <div class="panel-title"><h3>Notices</h3></div>
       <div id="daily-notices-body" class="daily-rows"></div></div>`;
   // WORKFLOWS — prepared prompts (through /api/turn) + navigation shortcuts.
@@ -389,8 +389,8 @@ function fillNotices(container, api) {
   const body = container.querySelector("#daily-notices-body");
   if (!card || !body) return;
   const notices = api.state.notices || [];
-  if (!notices.length) { card.style.display = "none"; return; }
-  card.style.display = "";
+  if (!notices.length) { card.classList.add("is-hidden"); return; }
+  card.classList.remove("is-hidden");
   body.textContent = "";
   for (const n of notices.slice(0, 5)) {
     const row = document.createElement("div");
@@ -548,8 +548,8 @@ async function fillToday(container, api) {
   const card = container.querySelector("#daily-today");
   if (!card) return;
   const active = Array.isArray(rows) ? rows.filter((t) => t.status === "active").slice(0, 4) : [];
-  if (!active.length) return;  // nothing today ⇒ keep the card hidden (calm)
-  card.style.display = "";
+  if (!active.length) { card.classList.add("is-hidden"); return; }  // nothing today ⇒ hide (calm)
+  card.classList.remove("is-hidden");
   const body = card.querySelector("#daily-today-rows");
   body.innerHTML = "";
   for (const t of active) {

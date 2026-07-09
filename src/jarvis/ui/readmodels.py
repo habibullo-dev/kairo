@@ -944,10 +944,17 @@ def interactive_models(config: Config, *, current: str | None = None) -> dict:
     from jarvis.models.providers import PROVIDER_CATALOG, ProviderRegistry, ProviderState
     from jarvis.ui.state import EXTERNAL_CHAT_PROVIDERS, INTERACTIVE_MODELS
 
-    reg = ProviderRegistry.from_config(config)
     cur = current or config.models.main
-    anthropic_state = reg.state("anthropic")
-    keyed = anthropic_state is not ProviderState.MISSING_CREDENTIALS  # the key is present
+    # Resolve provider availability DEFENSIVELY: a pricing/config hiccup must never empty the model
+    # picker. The Anthropic interactive models are ALWAYS listed (the app is already running on the
+    # anthropic key); only the external-provider *states* depend on the registry.
+    reg: ProviderRegistry | None = None
+    keyed = True
+    try:
+        reg = ProviderRegistry.from_config(config)
+        keyed = reg.state("anthropic") is not ProviderState.MISSING_CREDENTIALS
+    except Exception:  # noqa: BLE001 - degrade to listed+selectable, never a 500 / empty select
+        reg = None
     models: list[dict] = [
         {
             "id": mid,
@@ -962,7 +969,7 @@ def interactive_models(config: Config, *, current: str | None = None) -> dict:
     external: list[dict] = []
     for name in EXTERNAL_CHAT_PROVIDERS:
         spec = PROVIDER_CATALOG.get(name)
-        if spec is None:
+        if spec is None or reg is None:
             continue
         st = reg.state(name).value
         note = "receives your private conversation context — not enabled for the main chat"
@@ -1047,21 +1054,29 @@ def capability_truth(
                        if configured else f"Add {label} in settings to receive notifications."),
         })
 
-    reg = ProviderRegistry.from_config(config)
-    prov_rows = [{
-        "name": "Anthropic", "state": reg.state("anthropic").value,
-        "exposed_to_chat": True, "reason": "",  # anthropic IS the main chat
-    }]
-    for name in EXTERNAL_CHAT_PROVIDERS:
-        if name not in PROVIDER_CATALOG:
-            continue
-        prov_rows.append({
-            "name": name, "state": reg.state(name).value, "exposed_to_chat": False,
-            "reason": "Not enabled for the main chat (would receive private context).",
-        })
+    # Providers + services depend on the pricing table / provider registry. Resolve them
+    # DEFENSIVELY: a hiccup there must never blank the whole grid — the connector rows above (and
+    # voice/MCP below) always render, and anthropic (the main chat) is shown available by default.
+    prov_rows = [{"name": "Anthropic", "state": "available", "exposed_to_chat": True, "reason": ""}]
+    try:
+        reg = ProviderRegistry.from_config(config)
+        prov_rows[0]["state"] = reg.state("anthropic").value
+        for name in EXTERNAL_CHAT_PROVIDERS:
+            if name not in PROVIDER_CATALOG:
+                continue
+            prov_rows.append({
+                "name": name, "state": reg.state(name).value, "exposed_to_chat": False,
+                "reason": "Not enabled for the main chat (would receive private context).",
+            })
+    except Exception:  # noqa: BLE001 - keep the grid rendering; just show anthropic
+        pass
 
     svc_rows = []
-    for s in services_status(config):
+    try:
+        services = services_status(config)
+    except Exception:  # noqa: BLE001 - services availability needs pricing; degrade to none
+        services = []
+    for s in services:
         avail = s.get("state") == "available"
         svc_rows.append({
             "name": s.get("name"), "state": s.get("state"), "exposed_to_chat": avail,
