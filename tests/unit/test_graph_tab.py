@@ -32,6 +32,13 @@ def test_graph_canvas_is_read_only() -> None:
     assert "/api/turn" not in GRAPH_JS
 
 
+def test_saved_view_persists_to_localstorage_only() -> None:
+    # The saved view (last focus + kind filters) is remembered in localStorage ONLY — never via a
+    # server route — so the tab stays strictly read-only (Phase 15 Task 8).
+    assert "localStorage" in GRAPH_JS and "kairo:graph:" in GRAPH_JS
+    assert "saveState(" in GRAPH_JS  # called on filter / focus / reset
+
+
 def test_graph_has_no_external_assets() -> None:
     for js in (GRAPH_JS, VIEW_JS):
         for banned in ("http://", "https://", "//cdn", "@import", "url(http"):

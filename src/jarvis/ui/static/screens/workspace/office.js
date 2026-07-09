@@ -219,7 +219,8 @@ function openInspect(n) {
   if (!root) return;
   const pid = _mounted.projectId;
   const links = [
-    ["Trace", "#trace"], ["Artifacts", `#workspace/${pid}/artifacts`], ["Costs", `#workspace/${pid}/costs`],
+    ["Trace", "#trace"], ["Artifacts", `#workspace/${pid}/artifacts`],
+    ["Costs", `#workspace/${pid}/costs`], ["Graph", `#workspace/${pid}/graph`],
   ].map(([label, href]) => el("a", { href, class: "plain-button ghost" }, [label]));
   const chips = [
     ...(n.tools || []).map((t) => chip(t, "tool")),

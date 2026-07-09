@@ -14,7 +14,24 @@ const KIND_ICON = {
 export async function render(container, api, ctx) {
   container.textContent = "";
   const pid = ctx.projectId;
-  const state = { focus: null, kinds: new Set(), depth: 1 };
+  // Saved view — last focus + kind filters, persisted to localStorage ONLY (like themes / office
+  // layout). No server route, so the tab stays read-only.
+  const LKEY = `kairo:graph:${pid}`;
+  function loadState() {
+    try {
+      const r = JSON.parse(localStorage.getItem(LKEY) || "{}") || {};
+      return { focus: r.focus || null, kinds: new Set(Array.isArray(r.kinds) ? r.kinds : []),
+               depth: 1 };
+    } catch {
+      return { focus: null, kinds: new Set(), depth: 1 };
+    }
+  }
+  function saveState() {
+    try {
+      localStorage.setItem(LKEY, JSON.stringify({ focus: state.focus, kinds: [...state.kinds] }));
+    } catch { /* storage disabled — the view just isn't remembered */ }
+  }
+  const state = loadState();
 
   async function load() {
     const params = new URLSearchParams({ depth: String(state.depth), limit: "150" });
@@ -46,6 +63,7 @@ export async function render(container, api, ctx) {
       c.style.cursor = "pointer";
       c.addEventListener("click", () => {
         if (on) state.kinds.delete(k); else state.kinds.add(k);
+        saveState();
         load();
       });
       return c;
@@ -56,7 +74,9 @@ export async function render(container, api, ctx) {
     ]);
     if (state.focus || state.kinds.size) {
       const reset = el("button", { class: "plain-button ghost" }, ["Reset view"]);
-      reset.addEventListener("click", () => { state.focus = null; state.kinds.clear(); load(); });
+      reset.addEventListener("click", () => {
+        state.focus = null; state.kinds.clear(); saveState(); load();
+      });
       head.appendChild(reset);
     }
     return head;
@@ -71,7 +91,7 @@ export async function render(container, api, ctx) {
       ["Costs", `#workspace/${pid}/costs`],
     ].map(([t, href]) => el("a", { href, class: "plain-button ghost" }, [t]));
     const focusBtn = el("button", { class: "plain-button" }, ["Focus here"]);
-    focusBtn.addEventListener("click", () => { state.focus = node.id; load(); });
+    focusBtn.addEventListener("click", () => { state.focus = node.id; saveState(); load(); });
     const neighbors = ((card && card.neighbors) || []).slice(0, 12).map((nb) =>
       row(KIND_ICON[nb.node.kind] || "•", nb.node.label, `${nb.direction} · ${nb.edge_kind}`));
     side.append(
