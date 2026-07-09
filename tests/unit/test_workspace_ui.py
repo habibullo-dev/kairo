@@ -31,8 +31,8 @@ def test_shell_validates_tab_against_allowlist_before_dynamic_import() -> None:
     # TAB_KEYS allowlist before the dynamic import, so no crafted tab can load an off-path module.
     assert "TAB_KEYS" in WS_JS and "TAB_KEYS.includes" in WS_JS
     assert "await import(`./workspace/${tab}.js`)" in WS_JS
-    for tab in ("overview", "chats", "artifacts", "memory", "tasks", "vault", "studio", "costs",
-                "activity"):
+    for tab in ("overview", "chats", "artifacts", "memory", "tasks", "vault", "studio", "office",
+                "costs", "activity"):
         assert f'"{tab}"' in WS_JS, tab
 
 
@@ -55,7 +55,8 @@ def test_shell_renders_without_innerhtml() -> None:
 
 PANELS_DIR = STATIC_DIR / "screens" / "workspace"
 PANELS = [
-    "overview", "chats", "artifacts", "memory", "tasks", "vault", "studio", "costs", "activity",
+    "overview", "chats", "artifacts", "memory", "tasks", "vault", "studio", "office", "costs",
+    "activity",
 ]
 # The ONLY mutations each panel may make (existing routes). Read-only panels get an empty list.
 PANEL_ROUTES = {
@@ -66,6 +67,7 @@ PANEL_ROUTES = {
     "vault": ["/api/vault/sources/"],
     "overview": [],
     "studio": [],
+    "office": ["/api/orchestration/"],  # Task 3 wires launch/cancel to the existing run routes
     "costs": [],
     "activity": [],
 }
@@ -75,7 +77,7 @@ def _panel(name: str) -> str:
     return (PANELS_DIR / f"{name}.js").read_text(encoding="utf-8")
 
 
-def test_all_nine_panels_exist_and_export_render() -> None:
+def test_all_workspace_panels_exist_and_export_render() -> None:
     for p in PANELS:
         assert (PANELS_DIR / f"{p}.js").is_file(), p
         assert "export async function render" in _panel(p), p
@@ -110,4 +112,5 @@ def test_panels_read_project_scoped_endpoints() -> None:
     for p in ("chats", "artifacts", "memory", "tasks", "vault", "studio", "costs"):
         assert "project_id" in _panel(p), p
     assert "/activity" in _panel("activity")
+    assert "/office" in _panel("office")
     assert "/api/workspace/" in _panel("overview")

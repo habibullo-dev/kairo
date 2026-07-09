@@ -9,7 +9,7 @@ import { el } from "../ui/dom.js";
 const TABS = [
   ["overview", "Overview"], ["chats", "Chats"], ["artifacts", "Artifacts"],
   ["memory", "Memory"], ["tasks", "Tasks"], ["vault", "Vault"],
-  ["studio", "Studio"], ["costs", "Costs"], ["activity", "Activity"],
+  ["studio", "Studio"], ["office", "Office"], ["costs", "Costs"], ["activity", "Activity"],
 ];
 const TAB_KEYS = TABS.map(([k]) => k);
 
