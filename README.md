@@ -14,6 +14,30 @@ per-task design notes are in [`docs/learning-notes.md`](docs/learning-notes.md).
 
 ## Status
 
+**Phase 15.5 (Workstation UI/UX Repair) — complete; adds zero new agent authority.** A repair of the
+user journey so Kairo feels like a premium, conversation-first workstation. A calm **conversation
+header** (scope · chat title · model · mode · a capability summary + New/Resume/Rename/Pin/Archive)
+sits above a **hero** (header + chat + composer); the dashboard (briefing/tasks/artifacts/run/
+connectors) is calm secondary context below, with repo/eval noise behind Debug. The **model and mode
+selectors are real server state** — model selection is Anthropic-only (the main chat carries private
+context; 10C pins `private_ok` to anthropic), read by the loop through a per-turn `model_override`
+that is byte-identical when unset, and cost-attributed automatically; external providers show
+disabled with the reason. A browser **reload now restores the live conversation** (the client
+rehydrates the active transcript from `GET /api/sessions/{id}` — the "No messages yet" bug is gone).
+**One connector-truth read model** (`capability_truth`: connectors/providers/services/voice/MCP with
+state + `exposed_to_chat` + a plain reason) is embedded in Daily, Hub, and Settings so they can never
+disagree. **Full browser voice**: mic push-to-talk (`getUserMedia` → `/api/voice/utterance` → the
+same voice session) + optional OpenAI TTS playback of the masked **safe caption** (`/api/voice/tts`),
+with clear off/permission/error reasons — the screen stays the only approval surface (voice prepares,
+never commits). The **command palette** gains actions (New Chat, Switch Project/Model/Mode, Open
+Workspace/Graph, Run Workflow) + unified search incl. graph entities, with writes pinned to exactly
+the four reversible UI-state routes. Workspace + Graph are discoverable from the rail, palette, Daily
+card, and per-memory deep-links. The mutation-route closed set is a test-pinned **43** (Phase-15's 37
++ 4 UI-state ops + 2 full-browser-voice routes); migration v13 adds chat archive (a status flip,
+never a delete); screenshot DoD GREEN 81/81 across noir/light/neon × 1440/1024/390
+([ADR-0022](docs/decisions/0022-workstation-journey.md), closeout in
+[`docs/verification-15_5.md`](docs/verification-15_5.md)).
+
 **Phase 15 (Memory Graph + Knowledge Topology) — complete; a reasoning/search surface, adds zero new
 authority.** Kairo now relates its first-party state — projects, chats, runs, members, tasks,
 memories, KB sources, artifacts, wiki pages — as a **graph**, and searches across it. A **derived
