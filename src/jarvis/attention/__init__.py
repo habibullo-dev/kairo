@@ -7,6 +7,13 @@ Proposal-only dreaming (later tasks) writes here and nowhere risky.
 
 from __future__ import annotations
 
+from jarvis.attention.routing import (
+    NotificationRouter,
+    NotifyDecision,
+    in_quiet_hours,
+    minimized_push,
+    route_notification,
+)
 from jarvis.attention.store import (
     ALLOWED_TRANSITIONS,
     TRUST_CLASSES,
@@ -27,4 +34,9 @@ __all__ = [
     "AttentionState",
     "AttentionStore",
     "InvalidTransition",
+    "NotificationRouter",
+    "NotifyDecision",
+    "in_quiet_hours",
+    "minimized_push",
+    "route_notification",
 ]

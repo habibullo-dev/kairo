@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # service name -> (Secrets attribute, env var name) for require() error messages.
@@ -485,6 +485,27 @@ class BudgetsConfig(BaseModel):
     treat_unpriced_as_blocking: bool = True  # refuse orchestration on unpriced role models
 
 
+class AttentionConfig(BaseModel):
+    """Attention routing (Phase 16). Urgent items MAY push to notifiers; everything else folds
+    into the digest or stays in the center. Pushes are minimized (count + kind only, never a
+    body). ``urgent_channels`` defaults to EMPTY — no surprise egress until you opt a channel in;
+    each named channel still needs its notifier configured (connectors)."""
+
+    urgent_channels: list[str] = Field(default_factory=list)  # subset of {telegram, kakao}
+    quiet_hours_start: int | None = None  # local hour [0-23] inclusive; None = no quiet window
+    quiet_hours_end: int | None = None  # local hour [0-23] exclusive
+    muted_projects: list[int] = Field(default_factory=list)  # project ids that never push
+
+    @field_validator("urgent_channels")
+    @classmethod
+    def _known_channels(cls, v: list[str]) -> list[str]:
+        allowed = {"telegram", "kakao"}
+        bad = [c for c in v if c not in allowed]
+        if bad:
+            raise ValueError(f"urgent_channels must be subset of {sorted(allowed)}; got {bad}")
+        return v
+
+
 class Config(BaseModel):
     """Fully assembled configuration passed through the app."""
 
@@ -504,6 +525,7 @@ class Config(BaseModel):
     services: ServicesConfig = Field(default_factory=ServicesConfig)  # Phase 10B
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)  # Phase 10C
     context_reuse: ContextReuseConfig = Field(default_factory=ContextReuseConfig)  # Phase 13 (S7)
+    attention: AttentionConfig = Field(default_factory=AttentionConfig)  # Phase 16
     paths: PathsConfig
     secrets: Secrets
 
