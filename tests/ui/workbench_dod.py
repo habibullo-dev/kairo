@@ -139,7 +139,9 @@ def _base() -> dict:
 def _seed_for(state: str) -> dict:
     s = _base()
     r = s["/api/runner"]
-    if state == "daily-empty":
+    if state == "daily-populated":
+        s["_hash"] = "daily"
+    elif state == "daily-empty":
         s["_hash"] = "daily"
         s["/api/daily"] = {"digest": None, "recent_artifacts": [], "latest_run": None,
                            "repos": [], "evals": {"ever_run": False}, "demo": False,

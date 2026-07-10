@@ -320,6 +320,27 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 .daily-tertiary { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; }
 @media (max-width: 720px) { .daily-tertiary { grid-template-columns: 1fr; } }
 
+/* --- Daily: briefing-only companion to the primary Chat surface --- */
+.daily-briefing { max-width: 900px; margin: 0 auto; padding: 34px 32px 28px; }
+.daily-briefing-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.daily-briefing-head .sub { margin-bottom: 22px; }
+.daily-status { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 2px; color: var(--subtle); font-size: 12px; border-bottom: 1px solid var(--line); }
+.daily-status > div { display: flex; gap: 8px; min-width: 0; }
+.daily-status strong { color: var(--ink); font-weight: 600; white-space: nowrap; }
+.daily-status span:not(.runner-dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.daily-cost { margin-left: auto; font: 11px var(--mono); color: var(--subtle); }
+.daily-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.daily-grid .surface { min-height: 148px; padding: 16px; }
+.daily-active { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid rgba(var(--accent-rgb), .35); border-radius: 12px; background: rgba(var(--accent-rgb), .07); color: var(--ink); font-size: 13px; }
+.daily-active a, .daily-links a { color: var(--accent); font-size: 12px; }
+.daily-project-name { margin-bottom: 12px; font-weight: 600; color: var(--ink); }
+.daily-links { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 2px 0; }
+.daily-links a { color: var(--subtle); }
+.daily-links a:hover { color: var(--accent); }
+.daily-briefing .empty-state { margin: 0; padding: 4px 0; text-align: left; background: transparent; border: 0; }
+.daily-briefing .empty-state .chip-row { margin-top: 12px; }
+@media (max-width: 640px) { .daily-briefing { padding: 22px 16px 20px; } .daily-briefing-head { align-items: flex-start; } .daily-briefing-head .btn { white-space: nowrap; padding: 8px 11px; } .daily-status { align-items: flex-start; flex-wrap: wrap; } .daily-status > div { display: block; width: calc(100% - 20px); } .daily-status #daily-now-desc { display: block; margin-top: 3px; } .daily-cost { margin-left: 20px; } .daily-grid { grid-template-columns: 1fr; } }
+
 /* --- Chat: the primary full-height talking surface --- */
 .screen.chat-screen { max-width: none; min-height: 100%; padding: 0; }
 .chat-shell { width: min(100%, 980px); min-height: calc(100vh - 56px); margin: 0 auto; padding: 34px 32px 18px; display: grid; grid-template-rows: auto auto auto minmax(260px, 1fr) auto; }

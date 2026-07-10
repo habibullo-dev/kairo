@@ -13,6 +13,7 @@ from jarvis.ui.server import STATIC_DIR
 HDR = (STATIC_DIR / "ui" / "header.js").read_text(encoding="utf-8")
 APP = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 DAILY = (STATIC_DIR / "screens" / "daily.js").read_text(encoding="utf-8")
+CHAT = (STATIC_DIR / "screens" / "chat.js").read_text(encoding="utf-8")
 
 
 def test_header_exports_mount_and_refresh() -> None:
@@ -25,8 +26,9 @@ def test_header_renders_from_server_state_not_fake_chips() -> None:
     assert "/api/runner" in HDR and "/api/models" in HDR and "/api/capabilities" in HDR
     assert "opus-4-8" not in DAILY  # the hardcoded fake model chip was removed
     assert "opus-4-8" not in HDR  # the header never hardcodes a model id
-    assert 'id="composer-model"' in DAILY  # a live, server-filled readout replaces it
-    assert 'id="daily-convo-header"' in DAILY  # the header is mounted once, persistently
+    assert 'id="chat-model"' in CHAT  # Chat owns the live model/mode readout
+    assert 'id="chat-convo-header"' in CHAT  # the header is mounted once, persistently
+    assert 'daily-convo-header' not in DAILY
 
 
 def test_header_writes_only_allowlisted_ui_state_routes() -> None:

@@ -51,14 +51,12 @@ def test_debug_is_off_by_default_and_presentation_only() -> None:
 
 
 def test_daily_has_the_priority_zones() -> None:
-    # Pending approval (amber) is a distinct zone from the current-activity/today cards —
-    # one primary attention surface, ordered above the rest.
+    # Pending approval (amber) is a distinct zone above the calm Daily status and briefing.
     assert "zone-pending" in DAILY_JS and "Waiting on you" in DAILY_JS
     assert "Kairo is working" in DAILY_JS and "Kairo is idle" in DAILY_JS
-    assert "Conversation" in DAILY_JS
-    assert "composer" in DAILY_JS  # sticky composer
-    # the pending zone is rendered before the activity/today cards
-    assert DAILY_JS.index("zone-pending") < DAILY_JS.index("Kairo is idle")
+    assert "Continue chat" in DAILY_JS
+    assert "daily-chat" not in DAILY_JS and "composer-input" not in DAILY_JS
+    assert DAILY_JS.index('id="daily-pending"') < DAILY_JS.index('id="daily-status"')
 
 
 def test_voice_states_and_talk_button_present() -> None:

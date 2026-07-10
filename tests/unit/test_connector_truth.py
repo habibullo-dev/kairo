@@ -58,7 +58,11 @@ def test_new_and_changed_gets_leak_no_secret(tmp_path: Path) -> None:
         assert "SECRET-CANARY-HUB" not in client.get(path, headers=_hdr(auth)).text, path
 
 
-def test_all_three_screens_render_capabilities() -> None:
-    for name in ("daily", "hub", "settings"):
+def test_capability_details_live_in_hub_and_settings() -> None:
+    # Daily is intentionally a calm briefing in Slice 3; it links to Hub rather than duplicating
+    # connector/provider truth. Hub and Settings remain the rendering homes for the same read model.
+    for name in ("hub", "settings"):
         js = (STATIC_DIR / "screens" / f"{name}.js").read_text(encoding="utf-8")
         assert "capabilities" in js, name
+    daily = (STATIC_DIR / "screens" / "daily.js").read_text(encoding="utf-8")
+    assert 'href="#hub"' in daily

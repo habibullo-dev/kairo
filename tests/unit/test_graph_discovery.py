@@ -14,10 +14,10 @@ GRAPH = (STATIC_DIR / "screens" / "workspace" / "graph.js").read_text(encoding="
 MEMORY = (STATIC_DIR / "screens" / "workspace" / "memory.js").read_text(encoding="utf-8")
 
 
-def test_daily_has_an_active_workspace_card() -> None:
-    assert "daily-workspace" in DAILY and "fillWorkspace" in DAILY
-    assert "Active workspace" in DAILY
-    assert "#workspace/${proj.id}" in DAILY  # deep-links to the active project's workspace tabs
+def test_daily_has_an_active_project_card() -> None:
+    assert "daily-project" in DAILY and "renderProject" in DAILY
+    assert "Active project" in DAILY
+    assert "#workspace/${project.id}" in DAILY  # deep-links to the active project's workspace tabs
     assert "Choose a project" in DAILY  # the global-scope empty state guides to Projects
 
 

@@ -24,7 +24,7 @@ def test_chat_reuses_existing_turn_and_conversation_state() -> None:
     assert 'api.post("/api/turn"' in CONVERSATION
     assert "onConversationEvent(state, evt)" in APP
     assert 'from "./conversation.js"' in CHAT
-    assert 'from "./conversation.js"' in DAILY
+    assert 'from "./conversation.js"' not in DAILY
     assert "/api/approvals" not in CHAT
     assert "/api/model" not in CHAT
 

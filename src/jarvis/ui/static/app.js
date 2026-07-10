@@ -409,14 +409,14 @@ function renderRunnerState() {
   }
   if (typeof s.today_spend_usd === "number") setText("st-spend", `$${s.today_spend_usd.toFixed(4)}`);
   const led = document.getElementById("st-ledger"); if (led) led.classList.toggle("is-hidden", !s.ledger_degraded);
-  // Daily current-activity card (if mounted) — same source, same result
+  // Daily's quiet briefing line (if mounted) shares the settled runner state, but Chat remains
+  // the only place to send a message. Keep this copy/format aligned with Daily's initial render.
   if (document.getElementById("daily-now-lead")) {
     setClass("daily-now-dot", dotClass);
     setText("daily-now-lead", busy ? "Kairo is working" : "Kairo is idle");
-    setClass("daily-now-lead", "lead" + (busy ? "" : " idle"));
-    setText("daily-now-desc", busy ? "Working on your request." : "Nothing running. Send a message to begin.");
-    // Daily's "spent today" metric shares the same settled runner state as the status bar.
-    if (typeof s.today_spend_usd === "number") setText("daily-cost-today", money(s.today_spend_usd));
+    setText("daily-now-desc", busy ? "Progress is available in Chat." : "Your briefing is up to date.");
+    setText("daily-cost-today", typeof s.today_spend_usd === "number"
+      ? `${money(s.today_spend_usd)} today` : "Cost unavailable");
   }
 }
 
