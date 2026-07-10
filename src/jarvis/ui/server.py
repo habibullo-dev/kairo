@@ -1196,6 +1196,50 @@ def create_app(
             )
         return JSONResponse({"ok": True, "state": result.state.value})
 
+    # --- Phase 16: the ONE attention queue (Notification Center) ---------------------------
+    @app.get("/api/attention")
+    async def attention_index(project_id: int | None = None, limit: int = 200) -> JSONResponse:
+        # The unified open queue over live approvals + write-intents + graph suggestions + durable
+        # attention rows. Read-only projection; each item points AT its source's existing route.
+        from jarvis.attention.readmodel import attention_queue
+
+        svc = app.state.services
+        if svc.attention is None:
+            return _unavailable("attention")
+        pid = project_id
+        if pid is None and app.state.projects is not None:
+            pid = app.state.projects.current().project_id
+        data = await attention_queue(
+            attention=svc.attention,
+            intents=svc.intents,
+            graph=svc.graph,
+            approvals=app.state.approvals,
+            project_id=pid,
+            limit=limit,
+        )
+        return JSONResponse(data)
+
+    @app.post("/api/attention/{item_id}/resolve")
+    async def attention_resolve(item_id: int, request: Request) -> JSONResponse:
+        # Metadata-only state flip on a durable attention row: done | dismiss | snooze | expire.
+        # This grants NO new authority — a proposal's ACCEPT path is the human on its source's
+        # existing gated route, never here. Only attention_items rows resolve through this route;
+        # intents/suggestions/gate items keep their own approve/reject routes.
+        svc = app.state.services
+        if svc.attention is None:
+            return _unavailable("attention")
+        body = await request.json()
+        action = str(body.get("action", ""))
+        try:
+            item = await svc.attention.resolve(item_id, action, until=body.get("until"))
+        except KeyError:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        except ValueError as exc:  # unknown action / illegal transition / snooze needs until
+            return JSONResponse(
+                {"ok": False, "message": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST
+            )
+        return JSONResponse({"ok": True, "state": item.state.value})
+
     @app.get("/api/search")
     async def global_search(
         q: str = "", project_id: int | None = None, limit: int = 40

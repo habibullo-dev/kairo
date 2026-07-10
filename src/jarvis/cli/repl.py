@@ -20,6 +20,7 @@ from rich.console import Console
 
 from jarvis.actions import ConnectorWriteJournal, IntentStore
 from jarvis.agents import AgentRunStore, SubAgentService
+from jarvis.attention import AttentionStore
 from jarvis.cli.jobs import JobRunner
 from jarvis.cli.render import ConsoleRenderer
 from jarvis.config import Config
@@ -1387,6 +1388,9 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
         write_journal=repl.write_journal,  # Phase 12: the metadata-only write journal
         graph=GraphStore(repl.store.db, repl.store.lock) if repl.store is not None else None,
         embedder=repl.memory.embedder if repl.memory is not None else None,  # Phase 15 search
+        attention=(  # Phase 16: the ONE attention queue (proposals/alerts/reviews)
+            AttentionStore(repl.store.db, repl.store.lock) if repl.store is not None else None
+        ),
     )
     if repl.agents is not None and orch_store is not None:
         app.state.orchestrator = _build_orchestrator(

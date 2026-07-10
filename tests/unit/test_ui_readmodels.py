@@ -197,6 +197,10 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/sessions/new"),
         ("POST", "/api/sessions/{session_id}/rename"),
         ("POST", "/api/sessions/{session_id}/archive"),
+        # Phase 16: the ONE new attention route — a metadata-only state flip (done/dismiss/snooze)
+        # on a durable attention row. It grants NO authority: a proposal's accept is the human on
+        # its source's EXISTING gated route. All other queue items keep their own approve/reject.
+        ("POST", "/api/attention/{item_id}/resolve"),
     }
 
 

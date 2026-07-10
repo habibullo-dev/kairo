@@ -71,6 +71,9 @@ class UiServices:
     # when unavailable, in which case search degrades to keyword (FTS) only.
     graph: Any = None  # a GraphStore
     embedder: Any = None  # an Embedder (memory.embedder); None ⇒ FTS-only search
+    # Phase 16: the ONE attention queue (proposals/alerts/reviews). The Notification Center unions
+    # this with live approvals + write-intents + graph suggestions at read time.
+    attention: Any = None  # an AttentionStore
 
 
 # --- memory ----------------------------------------------------------------
