@@ -49,6 +49,28 @@ FORBIDDEN_TOOLS: frozenset[str] = frozenset(
 )
 
 
+#: Dreaming model policy (Habib 2026-07-10). Recurring proposal-only work runs on the cheap utility
+#: tier (Haiku); it ESCALATES to Sonnet for weekly/monthly deep review, security-sensitive findings,
+#: finance/client/company-critical summaries, low-confidence/ambiguous proposal generation, and any
+#: proposal touching code architecture, major workflow changes, or high-priority personal decisions.
+#: Both are Anthropic (private_ok) — dreaming reads the user's private data, so the summarizer MUST
+#: be a trusted private_ok model; a cheap non-private worker is never used here.
+DREAMING_DEFAULT_MODEL = "claude-haiku-4-5-20251001"  # utility tier — cheap, private_ok
+DREAMING_ESCALATION_MODEL = "claude-sonnet-5"  # judgment tier — private_ok
+
+#: Job/finding signals that force escalation (documented; a builder passes ``escalate`` per these).
+DREAMING_ESCALATION_REASONS: tuple[str, ...] = (
+    "weekly_or_monthly", "security", "finance_client_company", "low_confidence",
+    "architecture_or_major_workflow", "high_priority_personal",
+)
+
+
+def dreaming_model(*, escalate: bool) -> str:
+    """The model for a dreaming summarize/proposal call: Haiku by default, Sonnet when the job or a
+    finding warrants escalation (see :data:`DREAMING_ESCALATION_REASONS`). Both are private_ok."""
+    return DREAMING_ESCALATION_MODEL if escalate else DREAMING_DEFAULT_MODEL
+
+
 class DreamingCageError(RuntimeError):
     """Raised if the cage would admit a forbidden/risky tool — a construction-time failure, never a
     silent leak."""

@@ -8,12 +8,16 @@ Proposal-only dreaming (later tasks) writes here and nowhere risky.
 from __future__ import annotations
 
 from jarvis.attention.dreaming import (
+    DREAMING_DEFAULT_MODEL,
+    DREAMING_ESCALATION_MODEL,
+    DREAMING_ESCALATION_REASONS,
     DREAMING_TOOLS,
     FORBIDDEN_TOOLS,
     DreamingBudget,
     DreamingCageError,
     assert_caged,
     build_dreaming_registry,
+    dreaming_model,
     emit_budget_halt_alert,
 )
 from jarvis.attention.routing import (
@@ -55,4 +59,8 @@ __all__ = [
     "assert_caged",
     "build_dreaming_registry",
     "emit_budget_halt_alert",
+    "DREAMING_DEFAULT_MODEL",
+    "DREAMING_ESCALATION_MODEL",
+    "DREAMING_ESCALATION_REASONS",
+    "dreaming_model",
 ]

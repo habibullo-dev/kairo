@@ -85,6 +85,24 @@ def test_zero_cap_disables_dreaming() -> None:
     assert b.over_cap is True  # disabled ⇒ refuses before spending anything
 
 
+def test_dreaming_model_policy_haiku_default_sonnet_escalation() -> None:
+    from jarvis.attention import (
+        DREAMING_DEFAULT_MODEL,
+        DREAMING_ESCALATION_MODEL,
+        dreaming_model,
+    )
+    from jarvis.routing.policy import provider_for_model
+
+    assert dreaming_model(escalate=False) == DREAMING_DEFAULT_MODEL == "claude-haiku-4-5-20251001"
+    assert dreaming_model(escalate=True) == DREAMING_ESCALATION_MODEL == "claude-sonnet-5"
+    # SAFETY PIN: dreaming reads the user's private data, so BOTH tiers must be private_ok.
+    from jarvis.models.providers import provider_spec
+
+    for model in (DREAMING_DEFAULT_MODEL, DREAMING_ESCALATION_MODEL):
+        spec = provider_spec(provider_for_model(model))
+        assert spec is not None and spec.private_ok, f"{model} is not private_ok"
+
+
 async def test_budget_halt_emits_one_alert(tmp_path: Path) -> None:
     db = await connect(tmp_path / "a.db")
     try:
