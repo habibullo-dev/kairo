@@ -1339,6 +1339,8 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
         router=router,
         client_selector=_client_selector,
         on_route=_on_route,
+        chat_limits=config.chat,
+        pricing=repl.cost_ledger.pricing if repl.cost_ledger is not None else None,
         add_time_context=repl.tasks is not None,
         system=build_system(
             memory_enabled=repl.memory is not None,
@@ -1391,6 +1393,8 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
             router=router,
             client_selector=_client_selector,
             on_route=_on_route,
+            chat_limits=config.chat,
+            pricing=repl.cost_ledger.pricing if repl.cost_ledger is not None else None,
             add_time_context=repl.tasks is not None,
             system=build_system(
                 memory_enabled=repl.memory is not None,

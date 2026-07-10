@@ -146,6 +146,14 @@ class UiSession:
         # Persistence is an explicit user-facing lifecycle, not an assumption. The value is a
         # small safe vocabulary for the UI; database/OS error details stay in local logs.
         self.persistence_state = "new"  # new | saving | saved | failed
+        # Last-turn cost truth is held with the live workspace, never inferred from another
+        # session's ledger rows. ``None`` means unavailable/unpriced, not free.
+        self.last_turn_cost_usd: float | None = None
+        self.last_turn_model: str | None = None
+        self.last_turn_provider: str | None = None
+        self.turn_budget_usd: float | None = getattr(
+            getattr(loop, "chat_limits", None), "hard_stop_usd_per_turn", None
+        )
 
     def _context(self) -> ExecutionContext | None:
         """Return this chat's persisted delivery identity, never a wildcard selector."""
@@ -204,6 +212,10 @@ class UiSession:
                         turn_messages, on_event=lambda event: self._emit(event, context)
                     )
             self.messages = result.messages
+            self.last_turn_cost_usd = getattr(result, "cost_usd", None)
+            self.last_turn_model = getattr(result, "model", None)
+            self.last_turn_provider = getattr(result, "provider", None)
+            self.turn_budget_usd = getattr(result, "budget_usd", self.turn_budget_usd)
             await self._persist(context)
             return result
 
@@ -253,6 +265,9 @@ class UiSession:
                 summary, cut = await self.sessions.load_compaction(session_id)
                 self.context_manager.restore(summary, cut)
             self.persistence_state = "saved"
+            self.last_turn_cost_usd = None
+            self.last_turn_model = None
+            self.last_turn_provider = None
         return True
 
     def submit(self, text: str) -> bool:
@@ -283,6 +298,9 @@ class UiSession:
         self.session_id = None
         self.project_id = project_id
         self.persistence_state = "new"
+        self.last_turn_cost_usd = None
+        self.last_turn_model = None
+        self.last_turn_provider = None
         if self.context_manager is not None:
             # A compaction summary belongs to one conversation.  It must not survive a new chat.
             self.context_manager.restore(None, 0)

@@ -10,7 +10,7 @@ falls back to the trusted SAFE default (Sonnet) — fail-closed, never a cheap/n
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from jarvis.models.providers import provider_spec
 from jarvis.routing.classifier import Classifier
@@ -60,7 +60,13 @@ class Router:
         self._classifier = classifier
         self._is_available = is_available
 
-    async def route(self, user_text: str | None) -> RouteDecision:
+    async def route(
+        self,
+        user_text: str | None,
+        *,
+        before_classifier: Callable[[str, dict], Awaitable[None]] | None = None,
+        after_classifier: Callable[[str, object], Awaitable[None]] | None = None,
+    ) -> RouteDecision:
         if self._state.mode() is RoutingMode.MANUAL:
             model = self._manual_model()
             provider = provider_for_model(model)
@@ -86,7 +92,19 @@ class Router:
                 sensitivity="unknown",
                 reason="auto: router model unavailable → safe default (Sonnet 5)",
             )
-        classification = await self._classifier.classify(user_text)
+        classification = await self._classifier.classify(
+            user_text,
+            before_call=(
+                (lambda request: before_classifier(_ROUTER_PROVIDER, request))
+                if before_classifier is not None
+                else None
+            ),
+            after_call=(
+                (lambda response: after_classifier(_ROUTER_PROVIDER, response))
+                if after_classifier is not None
+                else None
+            ),
+        )
         if classification is None:
             classification = FAILSAFE  # private/hard ⇒ escalate to the trusted tier
         return resolve_route(classification, is_available=self._is_available)

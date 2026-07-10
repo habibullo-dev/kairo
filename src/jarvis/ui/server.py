@@ -400,6 +400,19 @@ def create_app(
         status["today_spend_usd"] = (
             (await budgets.period_spend("day"))["cost_usd"] if budgets is not None else None
         )
+        # The global Cost Center total remains available above, while the attended workspace can
+        # show its own project context without borrowing another project's spend.
+        status["project_today_spend_usd"] = None
+        status["project_month_spend_usd"] = None
+        status["project_month_budget_usd"] = None
+        if budgets is not None and cur is not None:
+            status["project_today_spend_usd"] = (
+                await budgets.period_spend("day", project_id=cur.project_id)
+            )["cost_usd"]
+            status["project_month_spend_usd"] = (
+                await budgets.period_spend("month", project_id=cur.project_id)
+            )["cost_usd"]
+            status["project_month_budget_usd"] = budgets.config.project_monthly_usd
         ledger = app.state.services.ledger
         status["ledger_degraded"] = ledger.status()["degraded"] if ledger is not None else False
         # Phase 15.5 conversation truth: the active session + the interactive model/effort, so the
@@ -412,6 +425,12 @@ def create_app(
         status["session_created_at"] = None
         status["session_updated_at"] = None
         status["session_pinned"] = False
+        status["chat_turn_budget_usd"] = getattr(
+            sess, "turn_budget_usd", config.chat.hard_stop_usd_per_turn
+        )
+        status["last_turn_cost_usd"] = getattr(sess, "last_turn_cost_usd", None)
+        status["last_turn_model"] = getattr(sess, "last_turn_model", None)
+        status["last_turn_provider"] = getattr(sess, "last_turn_provider", None)
         if sess is not None and sess.session_id is not None and sstore is not None:
             meta = await sstore.get_meta(sess.session_id)
             if meta is not None:
@@ -430,6 +449,7 @@ def create_app(
         # show "Auto → Sonnet 5" vs a pinned manual model.
         status["routing"] = _routing_policy()
         status["routed"] = _routed_dict()
+        status["auto_may_classify"] = status["routing"] == "auto"
         return JSONResponse(status)
 
     @app.post("/api/budgets")

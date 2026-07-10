@@ -133,8 +133,19 @@ function renderMeta(container, api) {
   const runner = api.state.runner || {};
   const project = runner.project && runner.project.name ? runner.project.name : "Global";
   const title = runner.session_title || "New chat";
-  const spend = typeof runner.today_spend_usd === "number" ? `$${runner.today_spend_usd.toFixed(4)} today` : "";
-  meta.textContent = [project, title, spend].filter(Boolean).join(" · ");
+  const spend = typeof runner.project_today_spend_usd === "number"
+    ? `$${runner.project_today_spend_usd.toFixed(4)} project today`
+    : (typeof runner.today_spend_usd === "number" ? `$${runner.today_spend_usd.toFixed(4)} today` : "");
+  const budget = typeof runner.chat_turn_budget_usd === "number" && runner.chat_turn_budget_usd > 0
+    ? `turn cap $${runner.chat_turn_budget_usd.toFixed(2)}` : "";
+  const last = typeof runner.last_turn_cost_usd === "number"
+    ? `last $${runner.last_turn_cost_usd.toFixed(4)}`
+    : (runner.last_turn_model ? "last cost unavailable" : "");
+  const route = runner.last_turn_model
+    ? `${runner.last_turn_provider ? `${runner.last_turn_provider} · ` : ""}${runner.last_turn_model}` : "";
+  const classifier = runner.auto_may_classify ? "Auto may classify first" : "";
+  meta.textContent = [project, title, budget, last, route, classifier, spend]
+    .filter(Boolean).join(" · ");
 }
 
 function saveLabel(state) {

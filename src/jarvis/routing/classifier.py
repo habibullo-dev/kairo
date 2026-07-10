@@ -16,6 +16,7 @@ Design for safety + cost:
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 
 from jarvis.core.client import LLMClient
 from jarvis.observability import get_logger
@@ -79,18 +80,36 @@ class Classifier:
         self._model = model
         self._max_tokens = max_tokens
 
-    async def classify(self, user_text: str | None) -> Classification | None:
+    def request_for(self, user_text: str | None) -> dict:
+        """The compact, text-only router request, exposed for a pre-call cost policy."""
+        return {
+            "model": self._model,
+            "system": _SYSTEM,
+            "messages": [{"role": "user", "content": (user_text or "")[:_MAX_INPUT_CHARS]}],
+            "tools": [],
+            "max_tokens": self._max_tokens,
+        }
+
+    async def classify(
+        self,
+        user_text: str | None,
+        *,
+        before_call: Callable[[dict], Awaitable[None]] | None = None,
+        after_call: Callable[[object], Awaitable[None]] | None = None,
+    ) -> Classification | None:
+        request = self.request_for(user_text)
+        # The preflight sits outside the provider-error boundary deliberately: an attended-turn
+        # cost refusal must reach the caller rather than being mistaken for a classifier failure
+        # and routed to a more expensive safe default.
+        if before_call is not None:
+            await before_call(request)
         try:
-            resp = await self._client.create(
-                model=self._model,
-                system=_SYSTEM,
-                messages=[{"role": "user", "content": (user_text or "")[:_MAX_INPUT_CHARS]}],
-                tools=[],
-                max_tokens=self._max_tokens,
-            )
+            resp = await self._client.create(**request)
         except Exception as exc:  # noqa: BLE001 - ANY failure ⇒ fail-safe (caller escalates)
             _log.warning("router_classify_failed", error=str(exc)[:120])
             return None
+        if after_call is not None:
+            await after_call(resp)
         data = _extract_json(getattr(resp, "text", "") or "")
         if data is None:
             _log.warning("router_classify_unparseable")

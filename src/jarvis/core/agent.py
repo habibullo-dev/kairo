@@ -20,13 +20,14 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import json
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING
 
-from jarvis.config import Config
+from jarvis.config import ChatConfig, Config
 from jarvis.core.client import LLMClient, ToolCall
 from jarvis.core.context import ContextManager
 from jarvis.core.events import (
@@ -37,9 +38,10 @@ from jarvis.core.events import (
     ToolStarted,
     TurnCompleted,
 )
+from jarvis.core.execution import current_execution_context
 from jarvis.core.prompts import build_system
 from jarvis.observability import bind_trace, get_logger
-from jarvis.observability.cost import Usage, cost_of
+from jarvis.observability.cost import PricingTable, Usage, cost_of
 from jarvis.observability.ledger import cost_context
 from jarvis.permissions.gate import Decision, PermissionGate
 from jarvis.permissions.modes import Mode, auto_approves, plan_blocks
@@ -91,6 +93,33 @@ class TurnResult:
     usage: Usage
     iterations: int
     latency_ms: float = 0.0  # summed wall-clock of the turn's model calls (0.0 if unmeasured)
+    # Populated by the ordinary browser-chat budget; None is unknown, never a fabricated $0.
+    cost_usd: float | None = None
+    model: str | None = None
+    provider: str | None = None
+    budget_usd: float | None = None
+
+
+def _request_token_ceiling(
+    *, system: str, messages: list[dict], tools: list[dict], margin: int
+) -> int:
+    """Conservative preflight input ceiling, used only for length and never persisted.
+
+    UTF-8 wire bytes safely over-estimate normal text-token counts; a small fixed margin covers
+    provider message framing. This lets the cap refuse before an external model call without
+    logging or retaining the request contents.
+    """
+    wire = json.dumps(
+        {"system": system, "messages": messages, "tools": tools},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return len(wire) + margin
+
+
+class _ChatBudgetRefusal(Exception):
+    """Private control flow for a preflight refusal before a router model call."""
 
 
 class AgentLoop:
@@ -113,6 +142,10 @@ class AgentLoop:
         router: object | None = None,
         client_selector: Callable[[object], object | None] | None = None,
         on_route: Callable[[object], None] | None = None,
+        # Browser chat alone supplies these lower limits. Other loop owners retain config.limits.
+        chat_limits: ChatConfig | None = None,
+        pricing: PricingTable | None = None,
+        provider_override: Callable[[], str | None] | None = None,
         cost_purpose: str = "turn",
         add_time_context: bool = False,
         now: Callable[[], _dt.datetime] = _default_now,
@@ -150,6 +183,9 @@ class AgentLoop:
         self.router = router
         self.client_selector = client_selector
         self.on_route = on_route
+        self.chat_limits = chat_limits
+        self.pricing = pricing
+        self.provider_override = provider_override
         self._auto_allow: frozenset[str] = frozenset(config.modes.auto_allow_tools)
         # Phase 10 cost ledger: the purpose recorded for this loop's completions ("turn" for
         # interactive, "subagent"/"orchestration" for children). Nested utility calls
@@ -212,7 +248,16 @@ class AgentLoop:
         messages = list(messages)
         total = Usage()
         total_latency_ms = 0.0
-        limits = self.config.limits
+        # The lower limits apply only where the UI composition opted in below; all other loop
+        # owners (voice, REPL, subagents, orchestration) continue to use the shared limits.
+        limits = self.chat_limits or self.config.limits
+        turn_budget_usd = (
+            self.chat_limits.hard_stop_usd_per_turn
+            if self.chat_limits is not None and self.chat_limits.hard_stop_usd_per_turn > 0
+            else None
+        )
+        turn_cost_usd = 0.0
+        pricing_known = True
         self._turn_tainted = False  # egress taint is per-turn (Phase 9)
         # Freeze the permissive side of mode for the whole turn (Phase 10, pre-mortem #12):
         # a mid-turn flip into Auto never applies to an in-flight turn. Plan (restrictive) is
@@ -223,55 +268,180 @@ class AgentLoop:
         turn_model = self.config.models.main
         turn_effort: str | None = None
         turn_client = self.client
+        turn_provider: str | None = None
         turn_mode: str | None = None
         turn_tools_enabled = True  # text-only routed providers (Gemini) get NO tools that turn
+        router_budget_refusal: str | None = None
+        # Bind session/project attribution before Auto's classifier runs: it is a model call too,
+        # and must never escape the chat's execution context in the ledger.
+        project = self.project() if self.project is not None else None
+        project_extra = project.system_extra if project is not None else None
+        base = cost_context.get()
+        execution = current_execution_context()
+        cost_context.set(
+            _dc_replace(
+                base,
+                purpose=self.cost_purpose,
+                project_id=(project.project_id if project is not None else base.project_id),
+                session_id=(execution.session_id if execution is not None else base.session_id),
+                trace_id=trace_id,
+            )
+        )
+
+        async def classifier_preflight(provider: str, request: dict) -> None:
+            """Reserve the router call before it can spend part of this chat turn's cap."""
+            if self.pricing is None:
+                raise _ChatBudgetRefusal(
+                    "This chat is protected by a cost cap, but verified pricing for the routing "
+                    "classifier is unavailable. No model call was made."
+                )
+            model = request.get("model")
+            if not isinstance(model, str):
+                raise _ChatBudgetRefusal(
+                    "This chat is protected by a cost cap, but the routing model is invalid. "
+                    "No model call was made."
+                )
+            estimated = self.pricing.cost(
+                provider,
+                model,
+                Usage(
+                    input_tokens=_request_token_ceiling(
+                        system=str(request.get("system") or ""),
+                        messages=list(request.get("messages") or []),
+                        tools=list(request.get("tools") or []),
+                        margin=self.chat_limits.input_token_margin if self.chat_limits else 0,
+                    ),
+                    output_tokens=int(request.get("max_tokens") or 0),
+                ),
+            )
+            if estimated is None:
+                raise _ChatBudgetRefusal(
+                    "This chat is protected by a cost cap, but the routing classifier has no "
+                    "verified price. No model call was made."
+                )
+            if turn_cost_usd + estimated > (turn_budget_usd or 0.0):
+                raise _ChatBudgetRefusal(
+                    f"This chat turn reached its ${turn_budget_usd:.2f} cost cap before the "
+                    "routing classifier call. No model call was made."
+                )
+
+        async def classifier_account(provider: str, response: object) -> None:
+            """Add the classifier's exact ledger-price result to this one turn's total."""
+            nonlocal turn_cost_usd, pricing_known
+            if self.pricing is None:
+                pricing_known = False
+                return
+            model = getattr(response, "model", None)
+            usage = getattr(response, "usage", None)
+            if not isinstance(model, str) or not isinstance(usage, Usage):
+                pricing_known = False
+                return
+            cost = self.pricing.cost(provider, model, usage)
+            if cost is None:
+                pricing_known = False
+            else:
+                turn_cost_usd += cost
+
         if self.router is not None:
             # Phase 15.6 cost-aware Auto/Manual routing (interactive UI loop only). Classify the
             # latest user message → a RouteDecision (model/effort/mode/provider), then select the
             # ledgered client for the routed provider. The router enforces the private_ok gate +
             # fail-closed fallback; this loop just applies its decision for the whole turn.
-            decision = await self.router.route(_latest_user_text(messages))
-            turn_model = decision.model or self.config.models.main
-            turn_effort = decision.effort
-            turn_mode = decision.mode
-            turn_tools_enabled = getattr(decision, "tools_enabled", True)
-            if self.client_selector is not None:
-                turn_client = self.client_selector(decision) or self.client
-            if self.on_route is not None:
-                self.on_route(decision)
-            self.log.info(
-                "route_selected",
-                trace_id=trace_id,
-                provider=decision.provider,
-                model=turn_model,
-                tier=decision.tier,
-                mode=decision.mode,
-                reason=decision.reason,
-            )
+            try:
+                decision = await self.router.route(
+                    _latest_user_text(messages),
+                    **(
+                        {
+                            "before_classifier": classifier_preflight,
+                            "after_classifier": classifier_account,
+                        }
+                        if turn_budget_usd is not None
+                        else {}
+                    ),
+                )
+            except _ChatBudgetRefusal as exc:
+                router_budget_refusal = str(exc)
+            else:
+                turn_model = decision.model or self.config.models.main
+                turn_provider = decision.provider
+                turn_effort = decision.effort
+                turn_mode = decision.mode
+                turn_tools_enabled = getattr(decision, "tools_enabled", True)
+                if self.client_selector is not None:
+                    turn_client = self.client_selector(decision) or self.client
+                if self.on_route is not None:
+                    self.on_route(decision)
+                self.log.info(
+                    "route_selected",
+                    trace_id=trace_id,
+                    provider=decision.provider,
+                    model=turn_model,
+                    tier=decision.tier,
+                    mode=decision.mode,
+                    reason=decision.reason,
+                )
         else:
             # Legacy seam (REPL / tests): a manual model + effort override, or the config default.
             if self.model_override is not None:
                 turn_model = self.model_override() or self.config.models.main
             turn_effort = self.effort_override() if self.effort_override is not None else None
 
+        if turn_provider is None:
+            turn_provider = (
+                self.provider_override() if self.provider_override is not None else None
+            ) or getattr(turn_client, "_provider", None)
+
+        def budget_stop(message: str, *, iteration: int) -> TurnResult:
+            """End a capped turn as a normal assistant response, never a raw exception.
+
+            A capped tool-use response is intentionally omitted from history: leaving unmatched
+            tool_use blocks would make the next transcript invalid. No tools run after this stop.
+            """
+            messages.append({"role": "assistant", "content": [{"type": "text", "text": message}]})
+            emit(TextDelta(message))
+            emit(TurnCompleted(text=message, stop_reason="cost_cap"))
+            self.log.warning(
+                "turn_end",
+                stop_reason="cost_cap",
+                iterations=iteration,
+                cost_usd=round(turn_cost_usd, 6) if pricing_known else None,
+            )
+            return TurnResult(
+                message,
+                messages,
+                "cost_cap",
+                total,
+                iteration,
+                total_latency_ms,
+                turn_cost_usd if pricing_known else None,
+                turn_model,
+                turn_provider,
+                turn_budget_usd,
+            )
+
+        if router_budget_refusal is not None:
+            return budget_stop(router_budget_refusal, iteration=0)
+        if turn_budget_usd is not None and not pricing_known:
+            return budget_stop(
+                "The routing classifier returned without verified pricing. No further model "
+                "call was made.",
+                iteration=0,
+            )
+        if turn_budget_usd is not None and turn_cost_usd >= turn_budget_usd:
+            return budget_stop(
+                f"This chat turn reached its ${turn_budget_usd:.2f} cost cap at routing. No "
+                "further model call was made.",
+                iteration=0,
+            )
+
         self.log.info("turn_start", trace_id=trace_id, model=turn_model, effort=turn_effort)
 
-        # Snapshot the active project once per turn (a switch mid-conversation applies from
-        # the next turn, not mid-flight). None provider => global scope, no extra.
-        project = self.project() if self.project is not None else None
-        project_extra = project.system_extra if project is not None else None
-        # Bind the cost-ledger context for this turn: the loop OWNS purpose (from cost_purpose),
-        # trace_id, and — when it has a project layer — project_id. It MERGES over the current
-        # context so caller-set orchestration attribution (team / role / run / stage, set by
-        # SubAgentService before run_turn) is preserved, not wiped. A child loop has no project
-        # provider, so its run's project_id (set by the caller) rides through untouched.
+        # The classifier ran with the same session/project context above. Add the resolved
+        # routing mode now that it is known, while preserving any caller attribution.
         base = cost_context.get()
         cost_context.set(
             _dc_replace(
                 base,
-                purpose=self.cost_purpose,
-                project_id=(project.project_id if project is not None else base.project_id),
-                trace_id=trace_id,
                 mode=turn_mode,  # Phase 15.6: 'auto'|'manual'|None → model_calls.routing_mode
             )
         )
@@ -328,9 +498,54 @@ class AgentLoop:
                 # breakpoint and is never cached. Passed ONLY when caching is on ⇒ a flag-off
                 # turn's request is byte-identical to before the enable-step.
                 create_kwargs["stable_prefix"] = self.system
+            if turn_budget_usd is not None:
+                if self.pricing is None or turn_provider is None:
+                    return budget_stop(
+                        "This chat is protected by a cost cap, but verified pricing for the "
+                        "selected provider is unavailable. No model call was made.",
+                        iteration=iteration,
+                    )
+                estimated = self.pricing.cost(
+                    turn_provider,
+                    turn_model,
+                    Usage(
+                        input_tokens=_request_token_ceiling(
+                            system=create_kwargs["system"],
+                            messages=api_messages,
+                            tools=create_kwargs["tools"],
+                            margin=self.chat_limits.input_token_margin if self.chat_limits else 0,
+                        ),
+                        output_tokens=limits.max_output_tokens,
+                    ),
+                )
+                if estimated is None:
+                    pricing_known = False
+                    return budget_stop(
+                        "This chat is protected by a cost cap, but the selected model has no "
+                        "verified price. No model call was made.",
+                        iteration=iteration,
+                    )
+                if turn_cost_usd + estimated > turn_budget_usd:
+                    return budget_stop(
+                        f"This chat turn reached its ${turn_budget_usd:.2f} cost cap before "
+                        "the next model call. Try a shorter request or start a new turn.",
+                        iteration=iteration,
+                    )
             response = await turn_client.create(**create_kwargs)
             total = total + response.usage
             total_latency_ms += response.latency_ms or 0.0
+            call_cost = (
+                self.pricing.cost(turn_provider, response.model, response.usage)
+                if turn_budget_usd is not None
+                and self.pricing is not None
+                and turn_provider is not None
+                else None
+            )
+            if turn_budget_usd is not None:
+                if call_cost is None:
+                    pricing_known = False
+                else:
+                    turn_cost_usd += call_cost
             if self.context_manager is not None:
                 self.context_manager.observe(response.usage)
             self.log.info(
@@ -345,8 +560,24 @@ class AgentLoop:
                 latency_ms=(
                     round(response.latency_ms, 1) if response.latency_ms is not None else None
                 ),
-                cost_usd=round(cost_of(response.model, response.usage), 6),
+                cost_usd=(
+                    round(call_cost, 6)
+                    if turn_budget_usd is not None and call_cost is not None
+                    else round(cost_of(response.model, response.usage), 6)
+                ),
             )
+            if response.stop_reason == "tool_use" and (
+                not pricing_known
+                or (turn_budget_usd is not None and turn_cost_usd >= turn_budget_usd)
+            ):
+                reason = (
+                    "The selected model returned without verified pricing. No further model or "
+                    "tool calls were made."
+                    if not pricing_known
+                    else f"This chat turn reached its ${turn_budget_usd:.2f} cost cap. No further "
+                    "model or tool calls were made."
+                )
+                return budget_stop(reason, iteration=iteration + 1)
             messages.append({"role": "assistant", "content": response.content_blocks})
 
             tool_calls = response.tool_calls
@@ -362,6 +593,14 @@ class AgentLoop:
                     usage=total,
                     iterations=iteration + 1,
                     latency_ms=total_latency_ms,
+                    cost_usd=(
+                        turn_cost_usd
+                        if pricing_known and turn_budget_usd is not None
+                        else None
+                    ),
+                    model=response.model,
+                    provider=turn_provider,
+                    budget_usd=turn_budget_usd,
                 )
 
             results = await self._handle_tools(tool_calls, emit)
@@ -376,6 +615,10 @@ class AgentLoop:
             usage=total,
             iterations=limits.max_iterations,
             latency_ms=total_latency_ms,
+            cost_usd=turn_cost_usd if pricing_known and turn_budget_usd is not None else None,
+            model=turn_model,
+            provider=turn_provider,
+            budget_usd=turn_budget_usd,
         )
 
     async def _handle_tools(self, tool_calls: list[ToolCall], emit: EventSink) -> list[dict]:

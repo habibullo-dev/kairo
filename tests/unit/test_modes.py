@@ -313,7 +313,11 @@ def test_runner_reports_conversation_and_model_truth(tmp_path: Path) -> None:
         "/api/runner", headers={"cookie": f"{SESSION_COOKIE}={auth.mint_session()}"}
     ).json()
     # shape present (no session wired in this bare app ⇒ session_id/title are null)
-    assert set(body) >= {"session_id", "session_title", "model", "effort"}
+    assert set(body) >= {
+        "session_id", "session_title", "model", "effort", "chat_turn_budget_usd",
+        "last_turn_cost_usd", "last_turn_model", "last_turn_provider", "auto_may_classify",
+    }
     assert body["session_id"] is None and body["session_title"] is None
     assert body["model"] == cfg.models.main  # config default until Task 2's override state exists
     assert body["effort"] == cfg.limits.effort
+    assert body["chat_turn_budget_usd"] == cfg.chat.hard_stop_usd_per_turn

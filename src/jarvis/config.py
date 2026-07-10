@@ -135,6 +135,23 @@ class LimitsConfig(BaseModel):
     max_retries: int = 4  # SDK retries 429/5xx with exponential backoff
 
 
+class ChatConfig(BaseModel):
+    """Hard limits for attended, ordinary browser chat.
+
+    These are deliberately separate from :class:`LimitsConfig`: the general loop limits still
+    serve the REPL, voice, subagents, and orchestration, while the daily chat surface gets a
+    modest, priced, per-turn ceiling.  ``0`` disables the dollar cap only for an explicitly
+    configured deployment; the shipped default is on.
+    """
+
+    max_iterations: int = Field(default=8, ge=1, le=25)
+    max_output_tokens: int = Field(default=4_096, ge=1, le=32_000)
+    hard_stop_usd_per_turn: float = Field(default=0.75, ge=0.0)
+    # Covers provider-side message framing not represented in the JSON request body. It is used
+    # only for conservative preflight estimation and is never sent to a provider or ledger.
+    input_token_margin: int = Field(default=512, ge=0)
+
+
 class MemoryConfig(BaseModel):
     """Long-term memory (Phase 2) knobs. Thresholds are embedding-model-specific
     (tuned for voyage-3-large) — expect to adjust from real recall logs."""
@@ -515,6 +532,7 @@ class Config(BaseModel):
     root: Path
     models: ModelsConfig
     limits: LimitsConfig
+    chat: ChatConfig = Field(default_factory=ChatConfig)
     # Phase 2/3/4/6; default_factory keeps direct Config(...) callers simple.
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
@@ -607,6 +625,7 @@ def load_config(
             root=root,
             models=ModelsConfig(**data.get("models", {})),
             limits=LimitsConfig(**data.get("limits", {})),
+            chat=ChatConfig(**data.get("chat", {})),
             memory=MemoryConfig(**data.get("memory", {})),
             scheduler=SchedulerConfig(**data.get("scheduler", {})),
             knowledge=KnowledgeConfig(**data.get("knowledge", {})),

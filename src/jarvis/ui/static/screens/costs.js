@@ -112,7 +112,8 @@ export async function render(container, api) {
   container.innerHTML = `
     <div class="rise"><h1>Cost Center</h1>
       <div class="sub">LLM + service spend from the ledger (metadata only). Unpriced calls are
-        counted separately, never as $0.</div></div>
+        counted separately, never as $0. Chat, orchestration, and local services stay distinct
+        in the breakdowns below.</div></div>
     ${budgetBanner(c.budget_warning, lim.confirm_above_usd)}
     <div class="cost-row rise">${metric(c.today, "Today")}${metric(c.week, "This week")}${metric(c.month, "This month")}</div>
     ${roiBlock(roi, c.hourly_rate_usd)}
@@ -122,7 +123,7 @@ export async function render(container, api) {
     ${dimSection(c.by_team, "team", "By team")}
     ${dimSection(c.by_role, "agent_role", "By role")}
     ${dimSection(c.by_stage, "stage", "By stage")}
-    ${dimSection(c.by_purpose, "purpose", "By purpose")}
+    ${dimSection(c.by_purpose, "purpose", "Chat, orchestration, and other work")}
     ${dimSection(c.by_service, "service", "By service (local tools)")}
     ${contextReuseCard(c.context_reuse)}
     <div class="surface rise"><div class="panel-title"><h3>Limits</h3></div>
