@@ -7,6 +7,12 @@ Proposal-only dreaming (later tasks) writes here and nowhere risky.
 
 from __future__ import annotations
 
+from jarvis.attention.builders import (
+    JOBS,
+    DreamingJob,
+    DreamingResult,
+    run_dreaming_job,
+)
 from jarvis.attention.dreaming import (
     DREAMING_DEFAULT_MODEL,
     DREAMING_ESCALATION_MODEL,
@@ -63,4 +69,8 @@ __all__ = [
     "DREAMING_ESCALATION_MODEL",
     "DREAMING_ESCALATION_REASONS",
     "dreaming_model",
+    "JOBS",
+    "DreamingJob",
+    "DreamingResult",
+    "run_dreaming_job",
 ]
