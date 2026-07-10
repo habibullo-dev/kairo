@@ -17,6 +17,11 @@ from jarvis.core.events import (
     ToolStarted,
     TurnCompleted,
 )
+from jarvis.core.execution import (
+    ExecutionContext,
+    bind_execution_context,
+    current_execution_context,
+)
 from jarvis.core.prompts import build_system
 
 __all__ = [
@@ -25,6 +30,7 @@ __all__ = [
     "Approver",
     "Event",
     "EventSink",
+    "ExecutionContext",
     "FakeClient",
     "LLMClient",
     "ModelResponse",
@@ -35,6 +41,8 @@ __all__ = [
     "TurnCompleted",
     "TurnResult",
     "build_system",
+    "bind_execution_context",
+    "current_execution_context",
     "text_message",
     "to_model_response",
     "tool_use_message",

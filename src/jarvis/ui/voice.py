@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from jarvis.core.execution import current_execution_context
 from jarvis.observability import get_logger
 from jarvis.voice.render import VoiceRenderer, _mask_secrets
 
@@ -49,7 +50,9 @@ class UiVoiceRenderer(VoiceRenderer):
 
     async def _mirror(self, role: str, text: str) -> None:
         if text:
-            await self._conns.broadcast({"kind": "voice", "role": role, "text": text})
+            await self._conns.publish(
+                current_execution_context(), {"kind": "voice", "role": role, "text": text}
+            )
 
     async def on_heard(self, text: str) -> str:
         # Show the transcript as an untrusted user message (masked in case a secret was
@@ -112,7 +115,9 @@ class UiVoice:
             return
         try:
             task = asyncio.create_task(
-                self.connections.broadcast({"kind": "voice_state", "state": state})
+                self.connections.publish(
+                    current_execution_context(), {"kind": "voice_state", "state": state}
+                )
             )
             self._pushes.add(task)
             task.add_done_callback(self._pushes.discard)

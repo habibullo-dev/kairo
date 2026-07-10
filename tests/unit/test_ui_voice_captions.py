@@ -16,6 +16,7 @@ from jarvis.config import load_config
 from jarvis.core import AgentLoop, FakeClient, build_system, text_message
 from jarvis.core.client import ToolCall
 from jarvis.core.events import ToolStarted
+from jarvis.core.execution import ExecutionContext, bind_execution_context
 from jarvis.permissions import PermissionGate, Policy
 from jarvis.permissions.gate import Decision
 from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
@@ -23,6 +24,7 @@ from jarvis.ui.voice import UiVoiceRenderer
 from jarvis.voice import FakeSynthesizer, FakeTranscriber, VoiceApprover, VoiceSession
 
 ASK = Decision(Permission.ASK, "needs approval")
+_CONTEXT = ExecutionContext(session_id=101, project_id=None)
 _VOICE_STATES = {"idle", "listening", "capturing", "transcribing", "thinking", "speaking"}
 
 
@@ -32,8 +34,9 @@ class _Conns:
     def __init__(self) -> None:
         self.sent: list[dict] = []
 
-    async def broadcast(self, message: dict) -> None:
-        self.sent.append(message)
+    async def publish(self, context: ExecutionContext | None, message: dict) -> None:
+        if context == _CONTEXT:
+            self.sent.append({**message, **context.to_wire()})
 
 
 def _renderer() -> tuple[UiVoiceRenderer, _Conns]:
@@ -50,7 +53,8 @@ def _voice(msgs: list[dict], role: str) -> list[dict]:
 
 async def test_heard_transcript_is_mirrored_and_masked() -> None:
     r, conns = _renderer()
-    await r.on_heard("my api key is sk-abcdef1234567890 keep it safe")
+    with bind_execution_context(_CONTEXT):
+        await r.on_heard("my api key is sk-abcdef1234567890 keep it safe")
     heard = _voice(conns.sent, "heard")
     assert len(heard) == 1
     assert "sk-abcdef1234567890" not in heard[0]["text"]  # secret masked even on the screen echo
@@ -60,7 +64,8 @@ async def test_heard_transcript_is_mirrored_and_masked() -> None:
 
 async def test_reply_caption_equals_the_safe_spoken_text() -> None:
     r, conns = _renderer()
-    await r.on_result(SimpleNamespace(text="The token is sk-DEADBEEF12345678 — noted."))
+    with bind_execution_context(_CONTEXT):
+        await r.on_result(SimpleNamespace(text="The token is sk-DEADBEEF12345678 — noted."))
     reply = _voice(conns.sent, "reply")
     assert len(reply) == 1
     # the caption IS the post-mask/cap text that reached TTS — not the raw answer
@@ -70,7 +75,8 @@ async def test_reply_caption_equals_the_safe_spoken_text() -> None:
 
 async def test_long_answer_caption_is_capped_like_speech() -> None:
     r, conns = _renderer()
-    await r.on_result(SimpleNamespace(text="x" * 5000))
+    with bind_execution_context(_CONTEXT):
+        await r.on_result(SimpleNamespace(text="x" * 5000))
     reply = _voice(conns.sent, "reply")[0]["text"]
     assert (
         reply.endswith("the rest is on screen.") and len(reply) < 1000
@@ -80,7 +86,8 @@ async def test_long_answer_caption_is_capped_like_speech() -> None:
 async def test_escalation_caption_is_category_only_no_payload() -> None:
     r, conns = _renderer()
     call = ToolCall("c1", "write_file", {"path": "/etc/passwd", "content": "TOPSECRET-PAYLOAD"})
-    await r.announce_escalation(call, ASK)
+    with bind_execution_context(_CONTEXT):
+        await r.announce_escalation(call, ASK)
     reply = _voice(conns.sent, "reply")[0]["text"]
     assert "write a file" in reply and "on screen" in reply  # category + where
     assert "TOPSECRET-PAYLOAD" not in reply and "/etc/passwd" not in reply  # never the input
@@ -119,7 +126,8 @@ async def test_ui_voice_frames_transcript_untrusted_and_mirrors_roundtrip(tmp_pa
         stt=FakeTranscriber(scripted=["what is the answer"]),
         output=renderer,
     )
-    result = await session.handle_audio(b"audio")
+    with bind_execution_context(_CONTEXT):
+        result = await session.handle_audio(b"audio")
     assert result is not None and result.text == "The answer is 42."
     # 1) the model received the transcript wrapped as UNTRUSTED content (not raw)
     sent = client.calls[0]["messages"][0]["content"]
@@ -155,7 +163,8 @@ class _Player:
 async def test_played_audio_derives_only_from_safe_caption() -> None:
     tts, player = _RecordingTTS(), _Player()
     r = UiVoiceRenderer(tts, _Conns(), play=player)
-    await r.on_result(SimpleNamespace(text="the token is sk-DEADBEEF12345678, keep it"))
+    with bind_execution_context(_CONTEXT):
+        await r.on_result(SimpleNamespace(text="the token is sk-DEADBEEF12345678, keep it"))
     # synthesize was called ONLY with the safe (masked) caption — never the raw result.text
     assert tts.texts == r.spoken
     assert all("sk-DEADBEEF12345678" not in t for t in tts.texts)
@@ -168,7 +177,8 @@ async def test_played_escalation_audio_has_no_payload() -> None:
     tts, player = _RecordingTTS(), _Player()
     r = UiVoiceRenderer(tts, _Conns(), play=player)
     call = ToolCall("c1", "write_file", {"path": "/etc/passwd", "content": "TOPSECRET-PAYLOAD"})
-    await r.announce_escalation(call, ASK)
+    with bind_execution_context(_CONTEXT):
+        await r.announce_escalation(call, ASK)
     # the only thing synthesized (and thus played) is the category-only line — never the input
     assert tts.texts == r.spoken
     blob = b"".join(player.played)
@@ -184,8 +194,9 @@ async def test_voice_state_broadcast_is_state_only() -> None:
 
     conns = _Conns()
     voice = UiVoice(connections=conns)
-    for s in ("listening", "transcribing", "thinking", "speaking", "idle"):
-        voice.note_state(s)
+    with bind_execution_context(_CONTEXT):
+        for s in ("listening", "transcribing", "thinking", "speaking", "idle"):
+            voice.note_state(s)
     await __import__("asyncio").sleep(0)  # let the broadcast tasks run
     msgs = [m for m in conns.sent if m.get("kind") == "voice_state"]
     assert [m["state"] for m in msgs] == [
@@ -195,8 +206,9 @@ async def test_voice_state_broadcast_is_state_only() -> None:
         "speaking",
         "idle",
     ]
-    # each message carries ONLY {kind, state} — there is no field that could hold a
-    # transcript, an answer, or a tool payload
+    # Each message carries a fixed state plus its immutable routing context — never a
+    # transcript, answer, or tool payload.
     for m in msgs:
-        assert set(m) == {"kind", "state"}
+        assert set(m) == {"kind", "state", "session_id", "project_id"}
+        assert m["session_id"] == _CONTEXT.session_id and m["project_id"] is None
         assert m["state"] in _VOICE_STATES

@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from jarvis.core.client import ToolCall
+from jarvis.core.execution import ExecutionContext, bind_execution_context
 from jarvis.permissions.gate import Decision
 from jarvis.tools import Permission
 from jarvis.ui.approver import ApprovalManager, UIScreenApprover
@@ -22,6 +23,7 @@ from jarvis.ui.voice import UiVoice
 from jarvis.voice import FakeCapture, FakeTranscriber, MeetingCapture, VoiceApprover
 
 ASK = Decision(Permission.ASK, "risky")
+_CONTEXT = ExecutionContext(session_id=101, project_id=None)
 
 
 class _FakeWS:
@@ -34,9 +36,25 @@ class _FakeWS:
 
 def _live_gate_conn(cm: ConnectionManager):
     """A live connection with the Gate surface mounted — the only 'available' screen."""
-    conn = cm.register(_FakeWS())
+    conn = cm.register(_FakeWS(), owner_session="test")
+    cm.bind_workspace(
+        conn,
+        owner_session="test",
+        workspace_id="w" * 24,
+        context=_CONTEXT,
+    )
     cm.set_surface(conn, "gate", mounted=True)
     return conn
+
+
+def _in_context(awaitable):
+    with bind_execution_context(_CONTEXT):
+        return asyncio.create_task(awaitable)
+
+
+def _available(screen: UIScreenApprover) -> bool:
+    with bind_execution_context(_CONTEXT):
+        return screen.available()
 
 
 def _call() -> ToolCall:
@@ -49,15 +67,21 @@ def _call() -> ToolCall:
 def test_available_requires_live_and_mounted_gate_surface() -> None:
     cm = ConnectionManager(heartbeat_seconds=15.0, clock=lambda: 0.0)
     screen = UIScreenApprover(ApprovalManager(cm), cm)
-    assert screen.available() is False  # no clients at all
-    conn = cm.register(_FakeWS())
+    assert _available(screen) is False  # no clients at all
+    conn = cm.register(_FakeWS(), owner_session="test")
+    cm.bind_workspace(
+        conn,
+        owner_session="test",
+        workspace_id="w" * 24,
+        context=_CONTEXT,
+    )
     assert (
-        screen.available() is False
+        _available(screen) is False
     )  # connected but no Gate surface mounted (hello-claim ≠ watching)
     cm.set_surface(conn, "daily", mounted=True)
-    assert screen.available() is False  # a different surface doesn't count
+    assert _available(screen) is False  # a different surface doesn't count
     cm.set_surface(conn, "gate", mounted=True)
-    assert screen.available() is True  # live + Gate mounted ⇒ available
+    assert _available(screen) is True  # live + Gate mounted ⇒ available
 
 
 def test_available_false_when_client_heartbeat_stale() -> None:
@@ -65,9 +89,9 @@ def test_available_false_when_client_heartbeat_stale() -> None:
     cm = ConnectionManager(heartbeat_seconds=10.0, clock=lambda: now[0])
     screen = UIScreenApprover(ApprovalManager(cm), cm)
     _live_gate_conn(cm)
-    assert screen.available() is True
+    assert _available(screen) is True
     now[0] = 30.0  # heartbeat goes stale ⇒ not a watching screen
-    assert screen.available() is False
+    assert _available(screen) is False
 
 
 # --- the full VoiceApprover path: no voice-only approval --------------------
@@ -78,7 +102,8 @@ async def test_no_screen_means_voice_denies() -> None:
     # is unavailable ⇒ DENY. A spoken "yes" cannot substitute for a screen.
     cm = ConnectionManager(heartbeat_seconds=15.0, clock=lambda: 0.0)
     approver = VoiceApprover(UIScreenApprover(ApprovalManager(cm), cm))
-    assert await approver(_call(), ASK) is Permission.DENY
+    with bind_execution_context(_CONTEXT):
+        assert await approver(_call(), ASK) is Permission.DENY
 
 
 async def test_spoken_yes_cannot_approve_only_the_screen_click_can() -> None:
@@ -86,7 +111,7 @@ async def test_spoken_yes_cannot_approve_only_the_screen_click_can() -> None:
     approvals = ApprovalManager(cm)
     conn = _live_gate_conn(cm)
     approver = VoiceApprover(UIScreenApprover(approvals, cm))
-    task = asyncio.create_task(approver(_call(), ASK))
+    task = _in_context(approver(_call(), ASK))
     await asyncio.sleep(0)
     (pending,) = approvals.pending()  # escalated to the screen; awaiting a click
     assert not task.done()  # NO spoken-yes shortcut — it waits for the screen
@@ -102,7 +127,7 @@ async def test_screen_click_approves_through_the_full_path() -> None:
     approvals = ApprovalManager(cm)
     conn = _live_gate_conn(cm)
     approver = VoiceApprover(UIScreenApprover(approvals, cm))
-    task = asyncio.create_task(approver(_call(), ASK))
+    task = _in_context(approver(_call(), ASK))
     await asyncio.sleep(0)
     (pending,) = approvals.pending()
     nonce = await approvals.mint_nonce(pending.decision_id, conn)
@@ -117,7 +142,7 @@ async def test_fail_closed_when_surface_vanishes_mid_confirm() -> None:
     approvals = ApprovalManager(cm)
     conn = _live_gate_conn(cm)
     approver = VoiceApprover(UIScreenApprover(approvals, cm))
-    task = asyncio.create_task(approver(_call(), ASK))
+    task = _in_context(approver(_call(), ASK))
     await asyncio.sleep(0)
     assert approvals.pending()  # escalated, awaiting the screen
     cm.drop(conn)  # the watching client disconnects mid-confirmation
@@ -134,7 +159,8 @@ async def test_on_escalate_announcement_is_the_safe_line_not_the_input() -> None
         announced.append((call.name, decision.reason))
 
     approver = VoiceApprover(UIScreenApprover(ApprovalManager(cm), cm), on_escalate=on_escalate)
-    await approver(_call(), ASK)  # no screen ⇒ denies, but announces first
+    with bind_execution_context(_CONTEXT):
+        await approver(_call(), ASK)  # no screen ⇒ denies, but announces first
     assert announced == [("run_shell", "risky")]  # name + reason, NOT the command payload
 
 

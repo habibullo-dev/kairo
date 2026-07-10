@@ -46,6 +46,14 @@ def test_no_full_rerender_on_events() -> None:
     assert OFFICE_JS.count("api.get(") == 1  # exactly the initial load fetch, never on an event
 
 
+def test_live_events_are_scoped_to_the_mounted_project_and_remount_clears_frames() -> None:
+    # A project-A start event cannot make an Office mounted for project B adopt its run.  Any
+    # already-queued rAF work is cancelled and cleared before the next Office mount.
+    assert "msg.project_id !== _mounted.projectId" in OFFICE_JS
+    assert "function resetPending" in OFFICE_JS and "cancelAnimationFrame(_rafId)" in OFFICE_JS
+    assert "resetPending(); // an old project's scheduled rAF" in OFFICE_JS
+
+
 # --- accessibility --------------------------------------------------------
 def test_keyboard_roving_between_member_nodes() -> None:
     assert "function onFloorKeys" in OFFICE_JS

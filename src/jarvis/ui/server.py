@@ -20,6 +20,7 @@ from fastapi import FastAPI, Request, WebSocket, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
+from jarvis.core.execution import bind_execution_context
 from jarvis.graph.index import CostAwareEmbedder
 from jarvis.graph.review import approve as graph_approve
 from jarvis.graph.review import reject as graph_reject
@@ -88,6 +89,10 @@ _OPEN_PATHS = frozenset({"/api/health"})
 #: Hand-written frontend assets (no build step, no CDN) served from here.
 STATIC_DIR = Path(__file__).parent / "static"
 
+#: Browser-provided only as an opaque routing handle.  The server resolves it against the
+#: authenticated cookie and a currently-live WebSocket before it can select a UI workspace.
+WORKSPACE_HEADER = "x-kairo-workspace-id"
+
 #: Media types the artifact content route will serve — TEXT + IMAGES ONLY. No html/svg/js
 #: (script-injection surface); anything else is refused (415). nosniff + CSP are applied on the
 #: way out, so a served body can never be sniffed into an executable type.
@@ -139,12 +144,25 @@ def _unavailable(service: str) -> JSONResponse:
     return JSONResponse({"ok": False, "message": f"{service} unavailable"}, status_code=503)
 
 
-def _runner_status(runner: object | None, session: object | None) -> dict:
+def _workspace_required() -> JSONResponse:
+    """Refuse a context-sensitive request before its authenticated socket is bound."""
+    return JSONResponse(
+        {"ok": False, "message": "browser workspace is not connected"}, status_code=409
+    )
+
+
+def _runner_status(
+    runner: object | None, session: object | None, *, reveal_in_flight: bool = True
+) -> dict:
     """The status-bar view: is the background runner firing, what job is in flight, and is
     an interactive turn running. Read-only; the emergency stop toggles the first two."""
     return {
         "runner_running": bool(runner is not None and runner.is_running),
-        "in_flight": getattr(runner, "in_flight", None) if runner is not None else None,
+        "in_flight": (
+            getattr(runner, "in_flight", None)
+            if runner is not None and reveal_in_flight
+            else None
+        ),
         "turn_busy": bool(session is not None and session.busy),
     }
 
@@ -190,12 +208,24 @@ def create_app(
     # Phase 15.5: the interactive model selector state, set by build_ui_app; None ⇒ the config
     # default model + a picker whose current is that default (no runtime override).
     app.state.interactive_models = None
+    # Set by ``build_ui_app``.  Bare ``create_app`` tests retain the legacy injectable session
+    # path; production UI routes use only a live, server-owned workspace from this registry.
+    app.state.workspaces = None
     app.state.orchestrator = None  # an OrchestrationController, set by build_ui_app; None ⇒ 503
     # The UI is voice's fail-closed "screen": a VoiceApprover wired to this UIScreenApprover
     # resolves risky voice actions on the authenticated, live, watching Gate surface — or
     # denies. Composed here so the CLI host (Task 9) injects it into the voice VoiceApprover.
     app.state.ui_screen = UIScreenApprover(approvals, connections)
     app.state.config = config
+
+    def _workspace_for(request: Request):
+        registry = app.state.workspaces
+        if registry is None:
+            return None
+        return registry.resolve(
+            owner_session=request.cookies.get(SESSION_COOKIE),
+            workspace_id=request.headers.get(WORKSPACE_HEADER),
+        )
 
     @app.middleware("http")
     async def guard(request: Request, call_next):  # noqa: ANN001,ANN202 - framework signature
@@ -259,16 +289,31 @@ def create_app(
     # --- Gate: approvals (the crown jewels) + read-only policy/audit views -------------
 
     @app.get("/api/approvals")
-    async def list_approvals() -> dict:
-        return {"pending": [p.to_public() for p in approvals.pending()]}
+    async def list_approvals(request: Request) -> JSONResponse:
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is None:
+            # Bare test/legacy composition is intentionally empty rather than exposing every
+            # pending payload without a server-bound execution context.
+            return JSONResponse({"pending": []})
+        return JSONResponse(
+            {"pending": [p.to_public() for p in approvals.pending_for(workspace.context)]}
+        )
 
     @app.post("/api/approvals/{decision_id}/resolve")
     async def resolve_approval(decision_id: str, request: Request) -> JSONResponse:
         # Session + loopback-Origin already enforced by the guard (POST is mutating). The
         # nonce (single-use, bound to a live watching client) is the replay-proof credential.
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         body = await request.json()
         ok, message = approvals.resolve(
-            decision_id, str(body.get("nonce", "")), str(body.get("action", ""))
+            decision_id,
+            str(body.get("nonce", "")),
+            str(body.get("action", "")),
+            context=workspace.context if workspace is not None else None,
         )
         return JSONResponse({"ok": ok, "message": message}, status_code=200 if ok else 409)
 
@@ -284,35 +329,63 @@ def create_app(
 
     @app.post("/api/turn")
     async def submit_turn(request: Request) -> JSONResponse:
-        if app.state.session is None:
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        sess = workspace.session if workspace is not None else app.state.session
+        if sess is None:
             return JSONResponse({"ok": False, "message": "no session"}, status_code=503)
         body = await request.json()
         text = str(body.get("text", "")).strip()
         if not text:
             return JSONResponse({"ok": False, "message": "empty"}, status_code=400)
-        started = app.state.session.submit(text)
+        # A workspace always allocates before scheduling, so every emitted event has a real
+        # session id.  The legacy injectable session retains its historical lazy behavior.
+        if workspace is not None:
+            async with app.state.workspaces.transition_lock:
+                if workspace.voice_active:
+                    started = False
+                else:
+                    await sess.ensure_session()
+                    started = sess.submit(text)
+        else:
+            started = sess.submit(text)
         # 409 if a turn is already in flight (one interactive turn at a time, like the REPL).
         return JSONResponse({"ok": started}, status_code=200 if started else 409)
 
     @app.post("/api/turn/cancel")
-    async def cancel_turn() -> dict:
-        if app.state.session is None:
-            return {"cancelled": False}
-        return {"cancelled": app.state.session.cancel()}
+    async def cancel_turn(request: Request) -> JSONResponse:
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        sess = workspace.session if workspace is not None else app.state.session
+        if sess is None:
+            return JSONResponse({"cancelled": False})
+        return JSONResponse({"cancelled": sess.cancel()})
 
     # --- emergency stop: existing brakes only (Ctrl-C parity + runner stop) -------------
 
     @app.get("/api/runner")
-    async def runner_status() -> dict:
+    async def runner_status(request: Request) -> JSONResponse:
         # The status-strip feed: runner/turn state + mode + active project + today's spend +
         # pending approvals + cost-ledger health (A5). One calm surface; all read-only.
-        status = _runner_status(app.state.runner, app.state.session)
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        sess = workspace.session if workspace is not None else app.state.session
+        status = _runner_status(
+            app.state.runner, sess, reveal_in_flight=workspace is None
+        )
         modes = app.state.modes
         status["mode"] = modes.current().value if modes is not None else "approval"
         projects = app.state.projects
-        cur = projects.current() if projects is not None else None
+        cur = workspace.project if workspace is not None else (
+            projects.current() if projects is not None else None
+        )
         status["project"] = {"id": cur.project_id, "name": cur.name} if cur is not None else None
-        status["pending_approvals"] = len(app.state.approvals.pending())
+        status["pending_approvals"] = (
+            len(app.state.approvals.pending_for(workspace.context)) if workspace is not None else 0
+        )
         budgets = app.state.services.budgets
         status["today_spend_usd"] = (
             (await budgets.period_spend("day"))["cost_usd"] if budgets is not None else None
@@ -322,7 +395,6 @@ def create_app(
         # Phase 15.5 conversation truth: the active session + the interactive model/effort, so the
         # client can rehydrate the transcript it is IN (fixes the "No messages yet" reload) and
         # render honest composer chips. session_title is looked up fresh (a rename must show).
-        sess = app.state.session
         sstore = app.state.services.sessions
         status["session_id"] = sess.session_id if sess is not None else None
         status["session_title"] = None
@@ -340,7 +412,7 @@ def create_app(
         # show "Auto → Sonnet 5" vs a pinned manual model.
         status["routing"] = _routing_policy()
         status["routed"] = _routed_dict()
-        return status
+        return JSONResponse(status)
 
     @app.post("/api/budgets")
     async def set_budgets(request: Request) -> JSONResponse:
@@ -440,20 +512,34 @@ def create_app(
         return JSONResponse({"ok": True, "effort": ims.current_effort(), "efforts": ims.efforts()})
 
     @app.post("/api/runner/pause")
-    async def runner_pause() -> dict:
+    async def runner_pause(request: Request) -> JSONResponse:
         # Maps to BackgroundRunner.stop(): finish any in-flight job (never a torn write),
         # then stop firing. Also cancels the in-flight interactive turn. No new authority.
-        if app.state.session is not None:
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if app.state.workspaces is not None:
+            app.state.workspaces.cancel_all()
+        elif app.state.session is not None:
             app.state.session.cancel()
         if app.state.runner is not None and app.state.runner.is_running:
             await app.state.runner.stop()
-        return _runner_status(app.state.runner, app.state.session)
+        sess = workspace.session if workspace is not None else app.state.session
+        return JSONResponse(
+            _runner_status(app.state.runner, sess, reveal_in_flight=workspace is None)
+        )
 
     @app.post("/api/runner/resume")
-    async def runner_resume() -> dict:
+    async def runner_resume(request: Request) -> JSONResponse:
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         if app.state.runner is not None and not app.state.runner.is_running:
             app.state.runner.start()
-        return _runner_status(app.state.runner, app.state.session)
+        sess = workspace.session if workspace is not None else app.state.session
+        return JSONResponse(
+            _runner_status(app.state.runner, sess, reveal_in_flight=workspace is None)
+        )
 
     @app.get("/api/notices")
     async def notices() -> JSONResponse:
@@ -526,15 +612,16 @@ def create_app(
             "tools_enabled": getattr(d, "tools_enabled", True),
         }
 
-    def _capabilities() -> dict:
+    def _capabilities(workspace=None) -> dict:
         # THE one availability truth (Phase 15.5), computed from live state: connectors/providers/
         # services/voice/MCP with exposed_to_chat + plain reasons. Daily, Hub, Settings, and the
         # header all render THIS (embedded in their payloads + the dedicated route), so they can
         # never disagree. exposed_to_chat is exact when the live loop's tools are available.
         connectors = app.state.services.connectors
-        voice = app.state.voice.status() if app.state.voice is not None else {"enabled": False}
+        active_voice = workspace.voice if workspace is not None else app.state.voice
+        voice = active_voice.status() if active_voice is not None else {"enabled": False}
         registered: set[str] | None = None
-        sess = app.state.session
+        sess = workspace.session if workspace is not None else app.state.session
         if sess is not None and getattr(sess, "loop", None) is not None:
             registered = set(sess.loop.registry.names())
         return capability_truth(
@@ -545,17 +632,23 @@ def create_app(
         )
 
     @app.get("/api/capabilities")
-    async def capabilities() -> dict:
-        return _capabilities()
+    async def capabilities(request: Request) -> JSONResponse:
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        return JSONResponse(_capabilities(workspace))
 
     @app.get("/api/daily")
-    async def daily() -> JSONResponse:
+    async def daily(request: Request) -> JSONResponse:
         # Read-only Daily bootstrap (Phase 9). NOT a mutating route.
-        pending = len(app.state.approvals.pending())
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        pending = len(app.state.approvals.pending_for(workspace.context)) if workspace else 0
         data = await daily_overview(
             config, app.state.services, notices=app.state.notices, gate_pending=pending
         )
-        data["capabilities"] = _capabilities()  # Phase 15.5: the shared connector-truth
+        data["capabilities"] = _capabilities(workspace)  # Phase 15.5 shared connector truth
         return JSONResponse(data)
 
     @app.get("/api/lab")
@@ -620,8 +713,10 @@ def create_app(
 
     @app.get("/api/sessions")
     async def sessions_list(
-        query: str | None = None, pinned: bool | None = None,
-        project_id: int | None = None, limit: int = 50,
+        query: str | None = None,
+        pinned: bool | None = None,
+        project_id: int | None = None,
+        limit: int = 50,
     ) -> JSONResponse:
         svc = app.state.services.sessions
         if svc is None:
@@ -641,11 +736,17 @@ def create_app(
         return JSONResponse(await session_transcript(svc, session_id))
 
     @app.get("/api/projects")
-    async def projects_list() -> JSONResponse:
+    async def projects_list(request: Request) -> JSONResponse:
         svc = app.state.projects
         if svc is None:
             return _unavailable("projects")
-        return JSONResponse(await projects_view(svc))
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        view = await projects_view(svc)
+        if workspace is not None:
+            view["active_project_id"] = workspace.project.project_id
+        return JSONResponse(view)
 
     @app.get("/api/costs")
     async def costs(project_id: int | None = None) -> JSONResponse:
@@ -671,12 +772,17 @@ def create_app(
     # --- Studio (orchestration): catalog + runs + estimate (all read-only) -------------
 
     @app.get("/api/studio")
-    async def studio() -> JSONResponse:
+    async def studio(request: Request) -> JSONResponse:
         # The Studio bootstrap: team profiles + workflow templates (code constants) + service
         # availability + model routes — all presence/metadata only, no key value ever. Always
         # available (pure over config + constants); the run mutations are gated separately.
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         projects = app.state.projects
-        active = projects.current() if projects is not None else None
+        active = workspace.project if workspace is not None else (
+            projects.current() if projects is not None else None
+        )
         # Per-project narrowing (Phase 13): show the project's subset when it narrows, else the
         # full global availability. A project can only narrow (the write route enforces it).
         proj_services = (
@@ -689,37 +795,68 @@ def create_app(
                 "services": services_status(config, project_services=proj_services),
                 "model_routes": model_routes_status(config),
                 "providers": providers_status(config),
-                "active_project_id": (
-                    projects.current().project_id if projects is not None else None
+                "active_project_id": active.project_id if active is not None else None,
+                "busy": bool(
+                    app.state.orchestrator is not None
+                    and app.state.orchestrator.busy_for(
+                        workspace.context if workspace is not None else None
+                    )
                 ),
-                "busy": bool(app.state.orchestrator is not None and app.state.orchestrator.busy),
             }
         )
 
     @app.get("/api/orchestration")
-    async def orchestration_list(project_id: int | None = None) -> JSONResponse:
+    async def orchestration_list(request: Request, project_id: int | None = None) -> JSONResponse:
         store = app.state.services.orchestration
         if store is None:
             return _unavailable("orchestration")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            if project_id is not None and project_id != workspace.context.project_id:
+                return JSONResponse(
+                    {"ok": False, "message": "wrong project scope"}, status_code=404
+                )
+            project_id = workspace.context.project_id
         return JSONResponse(await orchestration_runs_view(store, project_id=project_id))
 
     @app.get("/api/orchestration/estimate")
     async def orchestration_estimate(
-        team: str, workflow: str, task: str = "", budget_usd: float | None = None
+        request: Request, team: str, workflow: str, task: str = "", budget_usd: float | None = None
     ) -> JSONResponse:
         # A GET (no state change) so the two-step confirm preview never touches the mutation
         # closed-set. Returns cost metadata only.
         orch = app.state.orchestrator
         if orch is None:
             return _unavailable("orchestration")
-        result = await orch.estimate(team, workflow, task=task, budget_usd=budget_usd)
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        result = await orch.estimate(
+            team,
+            workflow,
+            task=task,
+            budget_usd=budget_usd,
+            execution_context=workspace.context if workspace is not None else None,
+            project=workspace.project if workspace is not None else None,
+        )
         return JSONResponse(result, status_code=200 if result.get("ok") else 400)
 
     @app.get("/api/orchestration/{run_id}")
-    async def orchestration_detail(run_id: int) -> JSONResponse:
+    async def orchestration_detail(run_id: int, request: Request) -> JSONResponse:
         store = app.state.services.orchestration
         if store is None:
             return _unavailable("orchestration")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            run = await store.get(run_id)
+            if run is None or run.project_id != workspace.context.project_id:
+                return JSONResponse(
+                    {"ok": False, "message": "no such orchestration run"}, status_code=404
+                )
         return JSONResponse(
             await orchestration_run_detail(
                 store,
@@ -755,6 +892,9 @@ def create_app(
         svc = app.state.services.knowledge
         if svc is None:
             return _unavailable("knowledge")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         body = await request.json()
         path, url, text = body.get("path"), body.get("url"), body.get("text")
         title = body.get("title")
@@ -770,11 +910,26 @@ def create_app(
         # Tag the ingest with the active project (Phase 10 A1) so it's retrievable in that
         # scope and never leaked to another project; None (global) when no project is active.
         projects = app.state.projects
-        active_pid = projects.current().project_id if projects is not None else None
+        active_pid = (
+            workspace.context.project_id
+            if workspace is not None
+            else (projects.current().project_id if projects is not None else None)
+        )
         try:
-            result = await svc.ingest(
-                path=path, url=url, text=text, title=title, created_by="user", project_id=active_pid
+            scope = (
+                bind_execution_context(workspace.context)
+                if workspace is not None
+                else contextlib.nullcontext()
             )
+            with scope:
+                result = await svc.ingest(
+                    path=path,
+                    url=url,
+                    text=text,
+                    title=title,
+                    created_by="user",
+                    project_id=active_pid,
+                )
         except Exception as exc:
             return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
         return JSONResponse({"ok": True, "action": result.action, "source_id": result.source_id})
@@ -816,14 +971,25 @@ def create_app(
         svc = app.state.services.memory
         if svc is None:
             return _unavailable("memory")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         body = await request.json()
         content = str(body.get("content", "")).strip()
         if not content:
             return JSONResponse({"ok": False, "message": "content required"}, status_code=400)
         mem_type = body.get("type") if body.get("type") in _MEMORY_TYPES else "fact"
         projects = app.state.projects
-        pid = projects.current().project_id if projects is not None else None
-        result = await svc.remember(content, mem_type, source="user", project_id=pid)
+        pid = workspace.context.project_id if workspace is not None else (
+            projects.current().project_id if projects is not None else None
+        )
+        scope = (
+            bind_execution_context(workspace.context)
+            if workspace is not None
+            else contextlib.nullcontext()
+        )
+        with scope:
+            result = await svc.remember(content, mem_type, source="user", project_id=pid)
         return JSONResponse({"ok": True, "id": result.memory_id, "action": result.action})
 
     @app.post("/api/tasks/create")
@@ -832,19 +998,30 @@ def create_app(
         svc = app.state.services.tasks
         if svc is None:
             return _unavailable("tasks")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         body = await request.json()
         projects = app.state.projects
-        pid = projects.current().project_id if projects is not None else None
+        pid = workspace.context.project_id if workspace is not None else (
+            projects.current().project_id if projects is not None else None
+        )
         try:
-            task = await svc.schedule(
-                kind=str(body.get("kind", "reminder")),
-                title=str(body.get("title", "")).strip() or "reminder",
-                payload=str(body.get("payload", "")),
-                schedule_kind=str(body.get("schedule_kind", "once")),
-                schedule_spec=str(body.get("schedule_spec", "")),
-                created_by="user",
-                project_id=pid,  # a promoted task belongs to the active project
+            scope = (
+                bind_execution_context(workspace.context)
+                if workspace is not None
+                else contextlib.nullcontext()
             )
+            with scope:
+                task = await svc.schedule(
+                    kind=str(body.get("kind", "reminder")),
+                    title=str(body.get("title", "")).strip() or "reminder",
+                    payload=str(body.get("payload", "")),
+                    schedule_kind=str(body.get("schedule_kind", "once")),
+                    schedule_spec=str(body.get("schedule_spec", "")),
+                    created_by="user",
+                    project_id=pid,  # a promoted task belongs to the active project
+                )
         except Exception as exc:  # noqa: BLE001 - a bad schedule is a 400, not a 500
             return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
         return JSONResponse({"ok": True, "id": task.id})
@@ -860,28 +1037,57 @@ def create_app(
         return JSONResponse({"ok": ok})
 
     @app.post("/api/sessions/{session_id}/resume")
-    async def sessions_resume(session_id: int) -> JSONResponse:
+    async def sessions_resume(session_id: int, request: Request) -> JSONResponse:
         # Load a past chat into the live UI session (mirrors REPL --resume). 409 if a turn is
         # in flight (the loop state must not change mid-turn).
-        if app.state.session is None:
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        sess = workspace.session if workspace is not None else app.state.session
+        if sess is None:
             return _unavailable("sessions")
-        resumed = await app.state.session.resume(session_id)
+        if workspace is not None:
+            async with app.state.workspaces.transition_lock:
+                resumed = await workspace.resume(session_id)
+                if resumed:
+                    app.state.workspaces.refresh_context(workspace)
+                    await app.state.workspaces.publish_workspace(
+                        workspace,
+                        {
+                            "kind": "session_resumed",
+                            "name": workspace.project.name,
+                        },
+                    )
+        else:
+            resumed = await sess.resume(session_id)
         return JSONResponse({"ok": resumed}, status_code=200 if resumed else 409)
 
     @app.post("/api/sessions/new")
-    async def sessions_new() -> JSONResponse:
+    async def sessions_new(request: Request) -> JSONResponse:
         # Phase 15.5: start a FRESH conversation under the current project scope (exposes the
         # existing UiSession.start_new_session). 409 while a turn is in flight — the loop state
         # must not change mid-turn. No new authority: a new session is created lazily on its first
         # turn, exactly like the REPL.
-        sess = app.state.session
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        sess = workspace.session if workspace is not None else app.state.session
         if sess is None:
             return _unavailable("sessions")
         if sess.busy:
             return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
-        projects = app.state.projects
-        cur = projects.current() if projects is not None else None
-        sess.start_new_session(cur.project_id if cur is not None else None)
+        if workspace is not None:
+            async with app.state.workspaces.transition_lock:
+                await workspace.start_new_session()
+                app.state.workspaces.refresh_context(workspace)
+                await app.state.workspaces.publish_workspace(
+                    workspace,
+                    {"kind": "session_new", "name": workspace.project.name},
+                )
+        else:
+            projects = app.state.projects
+            cur = projects.current() if projects is not None else None
+            sess.start_new_session(cur.project_id if cur is not None else None)
         return JSONResponse({"ok": True})
 
     @app.post("/api/sessions/{session_id}/rename")
@@ -902,8 +1108,33 @@ def create_app(
         svc = app.state.services.sessions
         if svc is None:
             return _unavailable("sessions")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         archived = bool((await request.json()).get("archived", True))
-        ok = await svc.set_archived(session_id, archived)
+        if app.state.workspaces is not None:
+            async with app.state.workspaces.transition_lock:
+                affected = app.state.workspaces.for_session(session_id)
+                orchestrator = app.state.orchestrator
+                if archived and (
+                    any(item.attended_busy for item in affected)
+                    or any(
+                        orchestrator is not None and orchestrator.busy_for(item.context)
+                        for item in affected
+                    )
+                ):
+                    return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
+                ok = await svc.set_archived(session_id, archived)
+                if ok and archived:
+                    for item in affected:
+                        await item.start_new_session()
+                        app.state.workspaces.refresh_context(item)
+                        await app.state.workspaces.publish_workspace(
+                            item,
+                            {"kind": "session_new", "name": item.project.name},
+                        )
+        else:
+            ok = await svc.set_archived(session_id, archived)
         return JSONResponse({"ok": ok})
 
     @app.post("/api/projects")
@@ -940,15 +1171,36 @@ def create_app(
         return JSONResponse({"ok": ok})
 
     @app.post("/api/projects/{project_id}/archive")
-    async def projects_archive(project_id: int) -> JSONResponse:
+    async def projects_archive(project_id: int, request: Request) -> JSONResponse:
         svc = app.state.projects
         if svc is None:
             return _unavailable("projects")
-        archived = await svc.store.archive(project_id)
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if app.state.workspaces is not None:
+            async with app.state.workspaces.transition_lock:
+                affected = app.state.workspaces.for_project(project_id)
+                orchestrator = app.state.orchestrator
+                if any(item.attended_busy for item in affected) or (
+                    orchestrator is not None and orchestrator.busy_project(project_id)
+                ):
+                    return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
+                archived = await svc.store.archive(project_id)
+                if archived:
+                    for item in affected:
+                        await item.start_new_session(None)
+                        app.state.workspaces.refresh_context(item)
+                        await app.state.workspaces.publish_workspace(
+                            item,
+                            {"kind": "project_changed", "name": item.project.name},
+                        )
+        else:
+            archived = await svc.store.archive(project_id)
         # If the active project was archived, drop back to global scope + fresh chat.
         if archived and svc.current().project_id == project_id:
             await svc.activate(None)
-            if app.state.session is not None:
+            if app.state.workspaces is None and app.state.session is not None:
                 app.state.session.start_new_session(None)
         return JSONResponse({"ok": archived})
 
@@ -962,6 +1214,23 @@ def create_app(
             return _unavailable("projects")
         body = await request.json()
         pid = body.get("project_id")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            try:
+                async with app.state.workspaces.transition_lock:
+                    ctx = await workspace.select_project(pid)
+                    app.state.workspaces.refresh_context(workspace)
+                    await app.state.workspaces.publish_workspace(
+                        workspace,
+                        {"kind": "project_changed", "name": workspace.project.name},
+                    )
+            except RuntimeError as exc:
+                return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
+            except KeyError as exc:
+                return JSONResponse({"ok": False, "message": str(exc)}, status_code=404)
+            return JSONResponse({"ok": True, "active_project_id": ctx.project_id})
         try:
             ctx = await svc.activate(pid)
         except KeyError as exc:
@@ -1202,7 +1471,9 @@ def create_app(
 
     # --- Phase 16: the ONE attention queue (Notification Center) ---------------------------
     @app.get("/api/attention")
-    async def attention_index(project_id: int | None = None, limit: int = 200) -> JSONResponse:
+    async def attention_index(
+        request: Request, project_id: int | None = None, limit: int = 200
+    ) -> JSONResponse:
         # The unified open queue over live approvals + write-intents + graph suggestions + durable
         # attention rows. Read-only projection; each item points AT its source's existing route.
         from jarvis.attention.readmodel import attention_queue
@@ -1210,14 +1481,24 @@ def create_app(
         svc = app.state.services
         if svc.attention is None:
             return _unavailable("attention")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         pid = project_id
-        if pid is None and app.state.projects is not None:
+        if workspace is not None:
+            if pid is not None and pid != workspace.context.project_id:
+                return JSONResponse(
+                    {"ok": False, "message": "wrong project scope"}, status_code=404
+                )
+            pid = workspace.context.project_id
+        elif pid is None and app.state.projects is not None:
             pid = app.state.projects.current().project_id
         data = await attention_queue(
             attention=svc.attention,
             intents=svc.intents,
             graph=svc.graph,
             approvals=app.state.approvals,
+            approval_context=workspace.context if workspace is not None else None,
             project_id=pid,
             limit=limit,
         )
@@ -1312,10 +1593,15 @@ def create_app(
         return JSONResponse(await activity_feed(app.state.services, project_id))
 
     @app.get("/api/workspace/{project_id}/office")
-    async def workspace_office(project_id: int) -> JSONResponse:
+    async def workspace_office(project_id: int, request: Request) -> JSONResponse:
         # Phase 14: the AI Team Office projection (teams→rooms→nodes, head, stages, live run +
         # per-member overlay, recent runs, activity feed). Read-only ASSEMBLER over existing read
         # models — presence/metadata/summaries only, never a body or key value.
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None and project_id != workspace.context.project_id:
+            return JSONResponse({"ok": False, "message": "wrong project scope"}, status_code=404)
         return JSONResponse(await office_overview(config, app.state.services, project_id))
 
     @app.get("/api/workspace/{project_id}/graph")
@@ -1398,44 +1684,91 @@ def create_app(
         orch = app.state.orchestrator
         if orch is None:
             return _unavailable("orchestration")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         body = await request.json()
-        result, code = await orch.start(
-            team_id=str(body.get("team", "")),
-            workflow_id=str(body.get("workflow", "")),
-            task=str(body.get("task", "")),
-            budget_usd=body.get("budget_usd"),
-            confirmed=bool(body.get("confirmed", False)),
-        )
+        if workspace is not None:
+            async with app.state.workspaces.transition_lock:
+                result, code = await orch.start(
+                    team_id=str(body.get("team", "")),
+                    workflow_id=str(body.get("workflow", "")),
+                    task=str(body.get("task", "")),
+                    budget_usd=body.get("budget_usd"),
+                    confirmed=bool(body.get("confirmed", False)),
+                    execution_context=workspace.context,
+                    project=workspace.project,
+                )
+        else:
+            result, code = await orch.start(
+                team_id=str(body.get("team", "")),
+                workflow_id=str(body.get("workflow", "")),
+                task=str(body.get("task", "")),
+                budget_usd=body.get("budget_usd"),
+                confirmed=bool(body.get("confirmed", False)),
+            )
         return JSONResponse(result, status_code=code)
 
     @app.post("/api/orchestration/{run_id}/cancel")
-    async def orchestration_cancel(run_id: int) -> JSONResponse:
+    async def orchestration_cancel(run_id: int, request: Request) -> JSONResponse:
         orch = app.state.orchestrator
         if orch is None:
             return _unavailable("orchestration")
-        return JSONResponse({"cancelled": orch.cancel(run_id)})
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        return JSONResponse(
+            {
+                "cancelled": orch.cancel(
+                    run_id, execution_context=workspace.context if workspace else None
+                )
+            }
+        )
 
     # --- voice: status + push-to-talk + meeting capture (unreviewed source) ------------
 
     @app.get("/api/voice/status")
-    async def voice_status() -> dict:
-        v = app.state.voice
+    async def voice_status(request: Request) -> JSONResponse:
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        v = workspace.voice if workspace is not None else app.state.voice
         if v is not None:
-            return v.status()
+            return JSONResponse(v.status())
         # Off: report WHY in plain language (the Talk button hides + shows this reason).
-        return {
-            "enabled": False, "listening": "idle", "meeting": "idle", "playback": False,
-            "stt": config.voice.stt_provider, "tts": config.voice.tts_provider,
-            "reason": "Voice is off — set voice.enabled: true in settings.yaml (and install the "
-                      "voice extra).",
-        }
+        return JSONResponse(
+            {
+                "enabled": False,
+                "listening": "idle",
+                "meeting": "idle",
+                "playback": False,
+                "stt": config.voice.stt_provider,
+                "tts": config.voice.tts_provider,
+                "reason": (
+                    "Voice is off — set voice.enabled: true in settings.yaml (and install the "
+                    "voice extra)."
+                ),
+            }
+        )
 
     @app.post("/api/voice/listen")
-    async def voice_listen() -> JSONResponse:
-        v = app.state.voice
+    async def voice_listen(request: Request) -> JSONResponse:
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        v = workspace.voice if workspace is not None else app.state.voice
         if v is None or v.listener is None:
             return _unavailable("voice")
-        heard = await v.listen_once()  # server-mic fallback: one push-to-talk utterance → one turn
+        if workspace is None:
+            heard = await v.listen_once()
+        else:
+            try:
+                async with app.state.workspaces.voice_activity(workspace):
+                    with bind_execution_context(workspace.context):
+                        heard = await v.listen_once()
+            except RuntimeError:
+                return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
+        # server-mic fallback: one push-to-talk utterance → one turn
         return JSONResponse({"ok": True, "heard": heard})
 
     @app.post("/api/voice/utterance")
@@ -1443,13 +1776,24 @@ def create_app(
         # Phase 15.5: a BROWSER-captured utterance (raw audio body) → the SAME voice session the
         # server-mic path uses (STT → framed untrusted turn → safe caption) through the unchanged
         # VoiceApprover. The screen stays the ONLY approval surface; no new authority.
-        v = app.state.voice
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        v = workspace.voice if workspace is not None else app.state.voice
         if v is None or v.listener is None:
             return _unavailable("voice")
         audio = await request.body()
         if not audio:
             return JSONResponse({"ok": False, "message": "empty audio"}, status_code=400)
-        ran = await v.handle_utterance(audio)
+        if workspace is None:
+            ran = await v.handle_utterance(audio)
+        else:
+            try:
+                async with app.state.workspaces.voice_activity(workspace):
+                    with bind_execution_context(workspace.context):
+                        ran = await v.handle_utterance(audio)
+            except RuntimeError:
+                return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
         return JSONResponse({"ok": True, "ran": ran})
 
     @app.post("/api/voice/tts")
@@ -1457,7 +1801,10 @@ def create_app(
         # Phase 15.5: synthesize the SAFE caption for browser playback. The text is masked + capped
         # server-side before it reaches TTS, so a raw answer / payload / secret can never be voiced.
         # Local/subtitle TTS ⇒ 204 (no audio; the browser keeps captions as text).
-        v = app.state.voice
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        v = workspace.voice if workspace is not None else app.state.voice
         if v is None or v.tts is None:
             return _unavailable("voice")
         text = str((await request.json()).get("text", ""))
@@ -1468,11 +1815,22 @@ def create_app(
 
     @app.post("/api/voice/meeting")
     async def voice_meeting(request: Request) -> JSONResponse:
-        v = app.state.voice
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        v = workspace.voice if workspace is not None else app.state.voice
         if v is None or v.meeting is None:
             return _unavailable("voice")
         body = await request.json()
-        result = await v.capture_meeting(title=body.get("title"))
+        if workspace is None:
+            result = await v.capture_meeting(title=body.get("title"))
+        else:
+            try:
+                async with app.state.workspaces.voice_activity(workspace):
+                    with bind_execution_context(workspace.context):
+                        result = await v.capture_meeting(title=body.get("title"))
+            except RuntimeError:
+                return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
         # A meeting is untrusted content: it lands UNREVIEWED, never an auto-action.
         status = getattr(result, "review_status", None) if result is not None else None
         return JSONResponse({"ok": result is not None, "review_status": status})
@@ -1492,8 +1850,9 @@ def create_app(
         ):
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
+        owner_session = websocket.cookies.get(SESSION_COOKIE)
         await websocket.accept()
-        conn = connections.register(websocket)
+        conn = connections.register(websocket, owner_session=owner_session)
         try:
             await websocket.send_json(
                 {"type": "hello", "heartbeat_seconds": connections.heartbeat_seconds}
@@ -1503,14 +1862,37 @@ def create_app(
                     msg = await websocket.receive_json()
                 except ValueError:
                     continue  # skip a malformed frame; don't tear down the socket
+                if msg.get("type") == "hello":
+                    _handle_ws_message(connections, conn, msg)
+                    registry = app.state.workspaces
+                    if registry is not None and owner_session is not None:
+                        workspace = await registry.attach(
+                            conn,
+                            owner_session=owner_session,
+                            requested_workspace_id=msg.get("workspace_id"),
+                        )
+                        await websocket.send_json(
+                            {
+                                "type": "workspace",
+                                "workspace_id": workspace.workspace_id,
+                                **workspace.context.to_wire(),
+                            }
+                        )
+                    continue
                 # approval_shown: the client proves the modal is on screen ⇒ mint a
                 # single-use nonce bound to THIS live connection (amendment 3/4).
                 if msg.get("type") == "approval_shown":
                     did = msg.get("decision_id")
                     nonce = await approvals.mint_nonce(did, conn) if did else None
                     if nonce is not None:
+                        pending = approvals.get(did)
                         await websocket.send_json(
-                            {"type": "approval_nonce", "decision_id": did, "nonce": nonce}
+                            {
+                                "type": "approval_nonce",
+                                "decision_id": did,
+                                "nonce": nonce,
+                                **(pending.context.to_wire() if pending is not None else {}),
+                            }
                         )
                     continue
                 _handle_ws_message(connections, conn, msg)

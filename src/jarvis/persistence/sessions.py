@@ -144,10 +144,14 @@ class SessionStore:
         return [{"role": role, "content": json.loads(content)} for role, content in rows]
 
     async def latest_session_id(self) -> int | None:
-        """Most recently updated *interactive* session — task sessions are invisible
-        here so ``--resume`` never lands inside a background job's transcript."""
+        """Most recent non-empty interactive session suitable for ``--resume``.
+
+        Task sessions and eagerly allocated browser-workspace rows with no messages are
+        invisible, so opening a fresh UI tab cannot displace the user's last real chat.
+        """
         cursor = await self.db.execute(
             "SELECT id FROM sessions WHERE kind = 'interactive' AND archived = 0 "
+            "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.id) "
             "ORDER BY updated_at DESC, id DESC LIMIT 1"
         )
         row = await cursor.fetchone()

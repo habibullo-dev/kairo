@@ -310,6 +310,12 @@ function pushFeed(root, e) {
 // if a flush is delayed (e.g. a backgrounded tab). Feed history beyond the cap lives in recent_runs.
 const _pending = { stages: false, live: false, rooms: new Set(), nodes: new Map(), feed: [] };
 let _rafId = 0;
+function resetPending() {
+  if (_rafId) cancelAnimationFrame(_rafId);
+  _rafId = 0;
+  _pending.stages = false; _pending.live = false;
+  _pending.rooms.clear(); _pending.nodes.clear(); _pending.feed.length = 0;
+}
 function queueFeed(e) {
   _pending.feed.push(e);
   if (_pending.feed.length > FEED_CAP) _pending.feed.shift(); // bound the buffer, not just the DOM
@@ -336,6 +342,9 @@ function flushPending() {
 // the model + the bounded pending buffers, then schedules the coalesced flush.
 function onOrchestration(msg) {
   if (!officeRoot() || !msg || !msg.kind) return;
+  // The server targets this workspace's session, and the Office independently checks the
+  // project before it can adopt a start event.  This guards stale/queued frames too.
+  if (msg.project_id !== _mounted.projectId) return;
   const k = msg.kind;
   if (k === "orchestration_started") {
     _mounted.runId = msg.run_id;
@@ -458,6 +467,7 @@ function build(data, api, collapsed) {
 }
 
 export async function render(container, api, ctx) {
+  resetPending(); // an old project's scheduled rAF must never repaint this new Office mount
   container.textContent = "";
   if (_closeInspect) _closeInspect();
   const data = await api.get("/api/workspace/" + ctx.projectId + "/office");

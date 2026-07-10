@@ -92,6 +92,7 @@ class OrchestrationStore:
         context_manifest: list,
         estimated_cost_usd: float | None,
         budget_usd: float | None,
+        session_id: int | None = None,
         trace_id: str | None = None,
     ) -> int:
         """Open a ``running`` run row (title is already sanitized by the caller — never raw
@@ -101,8 +102,8 @@ class OrchestrationStore:
             cursor = await self.db.execute(
                 "INSERT INTO orchestration_runs "
                 "(project_id, workflow, title, config_json, context_manifest_json, status, "
-                "estimated_cost_usd, budget_usd, trace_id, started_at, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)",
+                "estimated_cost_usd, budget_usd, session_id, trace_id, started_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)",
                 (
                     project_id,
                     workflow,
@@ -111,6 +112,7 @@ class OrchestrationStore:
                     json.dumps(context_manifest),
                     estimated_cost_usd,
                     budget_usd,
+                    session_id,
                     trace_id,
                     now,
                     now,

@@ -39,6 +39,7 @@ from jarvis.config import Config
 from jarvis.core.agent import AgentLoop, Approver, EventSink
 from jarvis.core.client import LLMClient
 from jarvis.core.events import SubAgentCompleted, SubAgentEvent
+from jarvis.core.execution import current_execution_context
 from jarvis.core.prompts import build_system
 from jarvis.observability import get_logger, get_trace_id
 from jarvis.observability.cost import Usage, cost_of, price_for
@@ -309,8 +310,15 @@ class SubAgentService:
         orchestration_run_id: int | None = None,
         project_id: int | None = None,
     ) -> ToolResult | str:
+        execution_context = current_execution_context()
         run_id = await self.run_store.begin_run(
-            parent_session_id=self.bound_session_id,
+            # The UI's source session is task-local.  ``bound_session_id`` remains the REPL
+            # fallback, but it must not let another browser workspace overwrite child provenance.
+            parent_session_id=(
+                execution_context.session_id
+                if execution_context is not None
+                else self.bound_session_id
+            ),
             parent_trace_id=parent_trace_id,
             title=title,
             prompt=prompt,

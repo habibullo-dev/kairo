@@ -17,6 +17,7 @@ from httpx import ASGITransport
 
 from jarvis.config import load_config
 from jarvis.core.client import ToolCall
+from jarvis.core.execution import ExecutionContext, bind_execution_context
 from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.gate import Decision
 from jarvis.tools import Permission
@@ -26,6 +27,7 @@ from jarvis.ui.connections import ConnectionManager
 from jarvis.ui.server import create_app
 
 ASK = Decision(Permission.ASK, "needs approval")
+_CONTEXT = ExecutionContext(session_id=101, project_id=None)
 
 
 class _FakeWS:
@@ -41,13 +43,29 @@ def _cm() -> ConnectionManager:
     return ConnectionManager(heartbeat_seconds=15.0, clock=lambda: 0.0)
 
 
+def _conn(cm: ConnectionManager):
+    conn = cm.register(_FakeWS(), owner_session="test")
+    cm.bind_workspace(
+        conn,
+        owner_session="test",
+        workspace_id="w" * 24,
+        context=_CONTEXT,
+    )
+    return conn
+
+
+def _task(awaitable):
+    with bind_execution_context(_CONTEXT):
+        return asyncio.create_task(awaitable)
+
+
 def _call(name: str = "read_file", **inp) -> ToolCall:
     return ToolCall("c1", name, inp or {"path": "notes.txt"})
 
 
 async def _start(approvals: ApprovalManager, call: ToolCall, on_always=lambda: None):
     """Kick off request() as a task and let it register + broadcast; return the task."""
-    task = asyncio.create_task(
+    task = _task(
         approvals.request(call, ASK, kind="turn", title=None, on_always=on_always)
     )
     await asyncio.sleep(0)
@@ -59,7 +77,7 @@ async def _start(approvals: ApprovalManager, call: ToolCall, on_always=lambda: N
 
 async def test_approve_once_resolves_allow() -> None:
     cm = _cm()
-    conn = cm.register(_FakeWS())
+    conn = _conn(cm)
     approvals = ApprovalManager(cm)
     task = await _start(approvals, _call())
     (pending,) = approvals.pending()
@@ -73,7 +91,7 @@ async def test_approve_once_resolves_allow() -> None:
 
 async def test_deny_resolves_deny() -> None:
     cm = _cm()
-    conn = cm.register(_FakeWS())
+    conn = _conn(cm)
     approvals = ApprovalManager(cm)
     task = await _start(approvals, _call())
     (pending,) = approvals.pending()
@@ -84,7 +102,7 @@ async def test_deny_resolves_deny() -> None:
 
 async def test_always_runs_on_always_and_allows() -> None:
     cm = _cm()
-    conn = cm.register(_FakeWS())
+    conn = _conn(cm)
     approvals = ApprovalManager(cm)
     marker: list[str] = []
     task = await _start(approvals, _call(), on_always=lambda: marker.append("persisted") or "did")
@@ -102,7 +120,7 @@ _TAINTED = Decision(Permission.ASK, "private data was read this turn", persistab
 
 async def test_to_public_carries_persistable_flag() -> None:
     cm = _cm()
-    conn = cm.register(_FakeWS())
+    conn = _conn(cm)
     approvals = ApprovalManager(cm)
     # A persistable ASK advertises persistable: true.
     task = await _start(approvals, _call())
@@ -112,7 +130,7 @@ async def test_to_public_carries_persistable_flag() -> None:
     approvals.resolve(pending.decision_id, nonce, "deny")
     await task
     # A tainted-egress ASK advertises persistable: false (client hides "Always allow").
-    t2 = asyncio.create_task(
+    t2 = _task(
         approvals.request(
             _call("web_fetch", url="http://x"),
             _TAINTED,
@@ -132,10 +150,10 @@ async def test_always_on_non_persistable_does_not_persist() -> None:
     # Structural guarantee: even if a crafted client sends "always" on a non-persistable
     # decision, on_always never runs — it degrades to approve-once (ALLOW, nothing persisted).
     cm = _cm()
-    conn = cm.register(_FakeWS())
+    conn = _conn(cm)
     approvals = ApprovalManager(cm)
     marker: list[str] = []
-    task = asyncio.create_task(
+    task = _task(
         approvals.request(
             _call("web_fetch", url="http://x"),
             _TAINTED,
@@ -157,7 +175,7 @@ async def test_always_on_non_persistable_does_not_persist() -> None:
 
 async def test_resolve_without_nonce_refused() -> None:
     cm = _cm()
-    cm.register(_FakeWS())
+    _conn(cm)
     approvals = ApprovalManager(cm)
     task = await _start(approvals, _call())
     (pending,) = approvals.pending()
@@ -169,7 +187,7 @@ async def test_resolve_without_nonce_refused() -> None:
 
 async def test_nonce_is_single_use() -> None:
     cm = _cm()
-    conn = cm.register(_FakeWS())
+    conn = _conn(cm)
     approvals = ApprovalManager(cm)
     task = await _start(approvals, _call())
     (pending,) = approvals.pending()
@@ -184,7 +202,7 @@ async def test_nonce_is_single_use() -> None:
 async def test_nonce_from_dead_connection_refused() -> None:
     now = [0.0]
     cm = ConnectionManager(heartbeat_seconds=10.0, clock=lambda: now[0])
-    conn = cm.register(_FakeWS())
+    conn = _conn(cm)
     approvals = ApprovalManager(cm)
     task = await _start(approvals, _call())
     (pending,) = approvals.pending()
@@ -198,7 +216,7 @@ async def test_nonce_from_dead_connection_refused() -> None:
 
 async def test_invalidate_connection_drops_its_nonces() -> None:
     cm = _cm()
-    conn = cm.register(_FakeWS())
+    conn = _conn(cm)
     approvals = ApprovalManager(cm)
     task = await _start(approvals, _call())
     (pending,) = approvals.pending()
@@ -212,7 +230,7 @@ async def test_invalidate_connection_drops_its_nonces() -> None:
 async def test_mint_nonce_requires_pending_and_live() -> None:
     now = [0.0]
     cm = ConnectionManager(heartbeat_seconds=10.0, clock=lambda: now[0])
-    conn = cm.register(_FakeWS())
+    conn = _conn(cm)
     approvals = ApprovalManager(cm)
     assert await approvals.mint_nonce("no-such-decision", conn) is None  # nothing pending
     task = await _start(approvals, _call())
@@ -224,7 +242,7 @@ async def test_mint_nonce_requires_pending_and_live() -> None:
 
 async def test_fail_closed_denies_without_a_click() -> None:
     cm = _cm()
-    cm.register(_FakeWS())
+    _conn(cm)
     approvals = ApprovalManager(cm)
     task = await _start(approvals, _call())
     (pending,) = approvals.pending()
@@ -239,10 +257,10 @@ async def test_ui_approver_always_persists_shell_prefix(tmp_path: Path) -> None:
     config = load_config(root=tmp_path, env_file=None)
     gate = PermissionGate(load_policy(tmp_path / "config" / "permissions.yaml"), config.root)
     cm = _cm()
-    conn = cm.register(_FakeWS())
+    conn = _conn(cm)
     approvals = ApprovalManager(cm)
     approver = UIApprover(approvals, gate, config)
-    task = asyncio.create_task(approver(_call("run_shell", command="git status"), ASK))
+    task = _task(approver(_call("run_shell", command="git status"), ASK))
     await asyncio.sleep(0)
     (pending,) = approvals.pending()
     nonce = await approvals.mint_nonce(pending.decision_id, conn)
@@ -262,10 +280,10 @@ async def test_ui_subagent_approver_labels_and_grants(tmp_path: Path) -> None:
     parent = PermissionGate(load_policy(tmp_path / "config" / "permissions.yaml"), config.root)
     sub_gate = SubAgentGate(parent, scope=frozenset({"web_fetch"}), project_root=config.root)
     cm = _cm()
-    conn = cm.register(_FakeWS())
+    conn = _conn(cm)
     approvals = ApprovalManager(cm)
     approver = make_ui_subagent_approver(approvals, sub_gate, "a1", "researcher")
-    task = asyncio.create_task(approver(_call("web_fetch", url="https://x.test"), ASK))
+    task = _task(approver(_call("web_fetch", url="https://x.test"), ASK))
     await asyncio.sleep(0)
     (pending,) = approvals.pending()
     assert pending.kind == "subagent" and pending.title == "researcher"
@@ -293,20 +311,18 @@ def test_list_approvals_requires_session(tmp_path: Path) -> None:
     assert client.get("/api/approvals").status_code == 401
 
 
-def test_list_approvals_serializes_pending(tmp_path: Path) -> None:
+def test_list_approvals_without_workspace_hides_pending_payloads(tmp_path: Path) -> None:
     client, app, auth = _client(tmp_path)
     # seed a pending approval directly (to_public doesn't touch the future)
     fut: asyncio.Future = asyncio.get_event_loop_policy().new_event_loop().create_future()
     from jarvis.ui.approver import PendingApproval
 
     app.state.approvals._pending["D1"] = PendingApproval(
-        "D1", _call("write_file", path="a.txt"), ASK, "turn", None, fut, lambda: None
+        "D1", _call("write_file", path="a.txt"), ASK, "turn", None, fut, lambda: None, _CONTEXT
     )
     r = client.get("/api/approvals", headers=_auth(auth))
     assert r.status_code == 200
-    (item,) = r.json()["pending"]
-    assert item["decision_id"] == "D1" and item["tool"] == "write_file"
-    assert item["input"] == {"path": "a.txt"}  # full payload shown
+    assert r.json()["pending"] == []  # no server-bound workspace => no Gate payload disclosure
 
 
 def test_resolve_requires_session_and_origin(tmp_path: Path) -> None:
@@ -362,8 +378,8 @@ async def test_resolve_route_happy_path(tmp_path: Path) -> None:
     auth = AuthManager(token="tok")
     app = create_app(config, auth=auth)
     approvals, cm = app.state.approvals, app.state.connections
-    conn = cm.register(_FakeWS())
-    task = asyncio.create_task(
+    conn = _conn(cm)
+    task = _task(
         approvals.request(_call(), ASK, kind="turn", title=None, on_always=lambda: None)
     )
     await asyncio.sleep(0)

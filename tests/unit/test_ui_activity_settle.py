@@ -22,6 +22,7 @@ from rich.console import Console
 from jarvis.cli.repl import Repl, build_ui_app
 from jarvis.config import load_config
 from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
+from jarvis.core.execution import ExecutionContext, bind_execution_context
 from jarvis.ui.server import STATIC_DIR
 
 
@@ -53,10 +54,18 @@ async def test_denied_gated_turn_settles_to_idle(tmp_path: Path) -> None:
     repl = Repl(config, client=client, console=_console())
     app = build_ui_app(config, repl=repl)
     session, approvals, cm = app.state.session, app.state.approvals, app.state.connections
-    conn = cm.register(_FakeWS())
+    context = ExecutionContext(session_id=101, project_id=None)
+    conn = cm.register(_FakeWS(), owner_session="test")
+    cm.bind_workspace(
+        conn,
+        owner_session="test",
+        workspace_id="w" * 24,
+        context=context,
+    )
 
     # submit the gated action (fire-and-forget task, like the /api/turn route)
-    assert session.submit("write notes.txt please") is True
+    with bind_execution_context(context):
+        assert session.submit("write notes.txt please") is True
     await _settle(lambda: bool(approvals.pending()))
     assert session.busy is True  # working while it waits at the Gate
 

@@ -25,6 +25,7 @@ from jarvis.core.events import (
     ToolStarted,
     TurnCompleted,
 )
+from jarvis.core.execution import ExecutionContext
 from jarvis.observability.cost import Usage
 from jarvis.permissions import PermissionGate, Policy
 from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
@@ -97,7 +98,14 @@ async def test_turn_streams_events_to_ring_and_clients(tmp_path: Path) -> None:
         async def send_json(self, m: dict) -> None:
             self.sent.append(m)
 
-    conn = cm.register(_WS())
+    conn = cm.register(_WS(), owner_session="test-auth")
+    context = ExecutionContext(session_id=101, project_id=None)
+    cm.bind_workspace(
+        conn,
+        owner_session="test-auth",
+        workspace_id="w" * 24,
+        context=context,
+    )
     client = FakeClient(
         [
             tool_use_message([ToolCall("t1", "read_file", {"path": "notes.txt"})]),
@@ -105,12 +113,14 @@ async def test_turn_streams_events_to_ring_and_clients(tmp_path: Path) -> None:
         ]
     )
     session = UiSession(loop=_loop(tmp_path, client, _deny), connections=cm)
+    session.session_id = context.session_id
     result = await session.handle_text("read notes.txt")
     await _drain(session)
     assert result.text == "The file says hello."
     kinds = [e["type"] for e in session.ring]
     assert "tool_decision" in kinds and "tool_started" in kinds and "tool_finished" in kinds
-    assert any(m.get("kind") == "event" for m in conn.ws.sent)  # pushed to the live client
+    pushed = [m for m in conn.ws.sent if m.get("kind") == "event"]
+    assert pushed and all(m["session_id"] == 101 and m["project_id"] is None for m in pushed)
     assert session.messages  # conversation accumulated
 
 

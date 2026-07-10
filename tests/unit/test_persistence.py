@@ -267,6 +267,8 @@ async def test_create_and_latest_session(tmp_path: Path) -> None:
     try:
         assert await store.latest_session_id() is None
         sid = await store.create_session(title="first")
+        assert await store.latest_session_id() is None
+        await store.save_messages(sid, [{"role": "user", "content": "hello"}])
         assert await store.latest_session_id() == sid
     finally:
         await store.close()
@@ -304,8 +306,9 @@ async def test_latest_session_tracks_most_recent_update(tmp_path: Path) -> None:
         second = await store.create_session()
         # touching `first` makes it the most recently updated
         await store.save_messages(first, [{"role": "user", "content": "x"}])
+        empty_newest = await store.create_session()
         assert await store.latest_session_id() == first
-        assert second != first
+        assert second != first and empty_newest != first
     finally:
         await store.close()
 

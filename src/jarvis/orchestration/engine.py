@@ -27,6 +27,7 @@ from dataclasses import dataclass
 
 from jarvis.config import BudgetsConfig
 from jarvis.core.client import LLMClient
+from jarvis.core.execution import ExecutionContext
 from jarvis.models.providers import provider_spec
 from jarvis.models.registry import ModelRegistry
 from jarvis.observability import get_logger
@@ -158,6 +159,7 @@ class OrchestrationEngine:
         self.project_routes = project_routes
         self.artifacts = artifacts  # Phase 11: optional ArtifactStore (None ⇒ no indexing)
         self._on_event: Callable[[dict], Awaitable[None]] | None = None  # set per run()
+        self._execution_context: ExecutionContext | None = None
         self.log = get_logger("jarvis.orchestration")
 
     async def _emit(self, kind: str, **fields: object) -> None:
@@ -166,7 +168,10 @@ class OrchestrationEngine:
         if self._on_event is None:
             return
         try:
-            await self._on_event({"kind": kind, "schema_version": 2, **fields})
+            payload = {"kind": kind, "schema_version": 2, **fields}
+            if self._execution_context is not None:
+                payload.update(self._execution_context.to_wire())
+            await self._on_event(payload)
         except Exception as exc:  # noqa: BLE001 - a UI sink hiccup must not fail the run
             self.log.warning("orchestration_event_sink_error", error=repr(exc))
 
@@ -430,6 +435,7 @@ class OrchestrationEngine:
         estimated_cost_usd: float | None = None,
         budget_usd: float | None = None,
         confirmed: bool = False,
+        execution_context: ExecutionContext | None = None,
         on_event: Callable[[dict], Awaitable[None]] | None = None,
     ) -> int:
         """Execute the workflow and return the run id. Off any turn lock except the brief
@@ -442,7 +448,10 @@ class OrchestrationEngine:
         raised with no row opened (the caller re-invokes with ``confirmed=True``); ``block`` ⇒ an
         auditable ``budget_stopped`` row is recorded and returned; nothing spawns in either case.
         """
+        if execution_context is not None and execution_context.project_id != project_id:
+            raise ValueError("orchestration execution context/project mismatch")
         self._on_event = on_event
+        self._execution_context = execution_context
         # Provider privacy (constraint #3): refuse a PRIVATE bundle routed to a non-trusted
         # provider BEFORE any row opens — same pre-begin_run seam as the two-step confirm.
         self.check_provider_context(team, context)
@@ -461,6 +470,7 @@ class OrchestrationEngine:
             context_manifest=context.manifest(),
             estimated_cost_usd=estimated_cost_usd,
             budget_usd=budget_usd,
+            session_id=execution_context.session_id if execution_context is not None else None,
         )
         await self._emit(
             "orchestration_started",

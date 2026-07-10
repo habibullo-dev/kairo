@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from jarvis.attention import AttentionKind, AttentionPriority, AttentionStore
 from jarvis.attention.readmodel import attention_queue
 from jarvis.config import load_config
+from jarvis.core.execution import ExecutionContext
 from jarvis.persistence.db import connect
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
 from jarvis.ui.readmodels import UiServices
@@ -58,6 +59,7 @@ class _FakeGraph:
 class _FakeApprovals:
     def __init__(self, rows): self._rows = rows
     def pending(self): return self._rows
+    def pending_for(self, context): return [row for row in self._rows if row.context == context]
 
 
 def _intent(iid, summary="Send draft", priority="normal", project_id=None):
@@ -71,8 +73,9 @@ def _sugg(sid, kind="memory", project_id=1):
                            created_at="2026-07-10T02:00:00+00:00", trust_class="model_generated")
 
 
-def _ask(did="d1", tool="send_notification"):
+def _ask(did="d1", tool="send_notification", context=None):
     return SimpleNamespace(decision_id=did, call=SimpleNamespace(name=tool),
+                           context=context,
                            to_public=lambda: {"tool": tool, "input": {"text": "hi"}})
 
 
@@ -116,6 +119,18 @@ async def test_project_scoping(tmp_path: Path) -> None:
     await s.create(kind=AttentionKind.PROPOSAL, source="dreaming", title="p2", project_id=2)
     q1 = await attention_queue(attention=s, project_id=1)
     assert q1["total"] == 1 and q1["items"][0]["project_id"] == 1
+
+
+async def test_gate_items_use_exact_execution_context(tmp_path: Path) -> None:
+    s = await _store(tmp_path)
+    context_a = ExecutionContext(session_id=11, project_id=1)
+    context_b = ExecutionContext(session_id=22, project_id=2)
+    q = await attention_queue(
+        attention=s,
+        approvals=_FakeApprovals([_ask("a", context=context_a), _ask("b", context=context_b)]),
+        approval_context=context_a,
+    )
+    assert [item["ref"] for item in q["items"]] == ["a"]
 
 
 # --- the resolve route (metadata-only; no authority) ---

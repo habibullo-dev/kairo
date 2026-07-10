@@ -301,6 +301,9 @@ class Repl:
         self.session_id = session_id
         self.memory = memory
         self.context_manager = context_manager
+        # UI workspaces need a fresh compaction manager per live chat.  Retain the factory the
+        # host already supplies for sub-agents/jobs rather than sharing this REPL instance.
+        self.make_context_manager = make_context_manager
         self.tasks = tasks
         self.knowledge = knowledge
         self.runner = runner
@@ -1360,6 +1363,62 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
     app.state.projects = repl.projects
     app.state.modes = repl.modes
     app.state.interactive_models = model_state
+
+    # Phase 16.5: a browser workspace is no longer the process-wide ``UiSession`` above.
+    # Keep that default session for direct/legacy composition tests, but every authenticated UI
+    # route resolves a server-owned live workspace with its own messages, compaction manager, and
+    # project provider.  Shared collaborators remain deliberately shared: gate/registry/executor,
+    # turn lock, routing policy, and model availability all retain their existing safety floors.
+    from jarvis.ui.workspaces import UiWorkspaceRegistry
+
+    def _make_workspace_session(workspace):
+        workspace_context = (
+            repl.make_context_manager() if repl.make_context_manager is not None else None
+        )
+        workspace_loop = AgentLoop(
+            client=repl.client,
+            registry=repl.registry,
+            executor=repl.executor,
+            gate=repl.gate,
+            config=config,
+            approver=app.state.ui_approver,
+            context_manager=workspace_context,
+            memory=repl.memory,
+            project=lambda: workspace.project,
+            mode=repl.modes.current,
+            model_override=model_state.current,
+            effort_override=model_state.current_effort,
+            router=router,
+            client_selector=_client_selector,
+            on_route=_on_route,
+            add_time_context=repl.tasks is not None,
+            system=build_system(
+                memory_enabled=repl.memory is not None,
+                tasks_enabled=repl.tasks is not None,
+                knowledge_enabled=repl.knowledge is not None,
+                delegation_enabled=repl.agents is not None,
+            ),
+        )
+        return UiSession(
+            loop=workspace_loop,
+            connections=app.state.connections,
+            turn_lock=repl.turn_lock,
+            ring_buffer_events=config.ui.ring_buffer_events,
+            sessions=repl.store,
+            context_manager=workspace_context,
+            project_id=workspace.project.project_id,
+        )
+
+    app.state.workspaces = UiWorkspaceRegistry(
+        connections=app.state.connections,
+        make_session=_make_workspace_session,
+        projects=repl.projects,
+        on_context_replaced=app.state.approvals.fail_context,
+        context_busy=lambda context: bool(
+            app.state.orchestrator is not None
+            and app.state.orchestrator.busy_for(context)
+        ),
+    )
     run_store = repl.agents.run_store if repl.agents is not None else None
     # Phase 10B: the orchestration store (Studio history/detail read models) exists whenever the
     # DB does; the engine + controller are wired only when delegation (spawn) is available.
@@ -1397,7 +1456,12 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
             config, repl=repl, app=app, store=orch_store, artifacts=artifacts
         )
     if config.voice.enabled:
-        app.state.voice = _build_ui_voice(config, repl=repl, app=app, artifacts=artifacts)
+        # Voice carries mutable transcript/state just like chat, so create it per browser
+        # workspace.  The legacy ``app.state.voice`` remains unset in production; server routes
+        # resolve the workspace-local controller from the authenticated live socket.
+        app.state.workspaces.make_voice = lambda workspace: _build_ui_voice(
+            config, repl=repl, app=app, artifacts=artifacts, workspace=workspace
+        )
     return app
 
 
@@ -1438,7 +1502,7 @@ def _build_orchestrator(config: Config, *, repl: Repl, app, store, artifacts=Non
     )
 
 
-def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None):
+def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None, workspace=None):
     """Wire the UI's voice surface: a push-to-talk listener whose risky actions escalate to
     the UI screen (``app.state.ui_screen``, fail-closed), and meeting capture → an unreviewed
     KB source. Reuses the Phase-7 pieces with the workstation as the screen."""
@@ -1473,6 +1537,7 @@ def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None):
     stt = build_stt(config.voice, openai_key=config.secrets.openai_api_key)
     # The screen is the workstation (not the terminal): fail-closed, modal-bound.
     approver = VoiceApprover(app.state.ui_screen, on_escalate=renderer.announce_escalation)
+    voice_context = repl.make_context_manager() if repl.make_context_manager is not None else None
     loop = AgentLoop(
         client=repl.client,
         registry=repl.registry,
@@ -1480,8 +1545,11 @@ def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None):
         gate=repl.gate,
         config=config,
         approver=approver,
-        context_manager=repl.context_manager,
+        context_manager=voice_context,
         memory=repl.memory,
+        project=(lambda: workspace.project) if workspace is not None else (
+            repl.projects.current if repl.projects is not None else None
+        ),
         add_time_context=repl.tasks is not None,
         system=build_system(
             memory_enabled=repl.memory is not None,
@@ -1495,7 +1563,14 @@ def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None):
     # on_state → note_state streams the read-only state pill (listening/transcribing/thinking/
     # speaking/idle) to the browser — never any content.
     voice_session = VoiceSession(
-        loop=loop, stt=stt, output=renderer, turn_lock=repl.turn_lock, on_state=voice.note_state
+        loop=loop,
+        stt=stt,
+        output=renderer,
+        turn_lock=repl.turn_lock,
+        on_state=voice.note_state,
+        project=(lambda: workspace.project) if workspace is not None else (
+            repl.projects.current if repl.projects is not None else None
+        ),
     )
     voice.listener = PushToTalkListener(capture, voice_session, on_state=voice.note_state)
     voice.capture = capture

@@ -28,6 +28,7 @@ from jarvis.core.events import (
     ToolStarted,
     TurnCompleted,
 )
+from jarvis.core.execution import ExecutionContext, bind_execution_context
 from jarvis.observability import get_logger
 
 if TYPE_CHECKING:
@@ -143,16 +144,42 @@ class UiSession:
         self.project_id = project_id
         self.session_id: int | None = None
 
-    def _emit(self, event: Event) -> None:
-        """EventSink: record to the ring buffer and best-effort push to live clients. Sync
-        (the loop calls it synchronously); the broadcast is scheduled as a task."""
+    def _context(self) -> ExecutionContext | None:
+        """Return this chat's persisted delivery identity, never a wildcard selector."""
+        if self.session_id is None:
+            return None
+        return ExecutionContext(session_id=self.session_id, project_id=self.project_id)
+
+    async def ensure_session(self) -> int | None:
+        """Allocate the durable row before attended work begins.
+
+        Empty rows remain hidden in chat lists, but their stable ids prevent fresh chats from
+        sharing the unsafe ``(None, project_id)`` delivery key while an async task is starting.
+        """
+        if self.sessions is None:
+            return None
+        async with self.turn_lock:
+            if self.session_id is None:
+                self.session_id = await self.sessions.create_session(project_id=self.project_id)
+            return self.session_id
+
+    def _emit(self, event: Event, context: ExecutionContext | None = None) -> None:
+        """Record an event and schedule delivery to its exact persisted context.
+
+        A bare in-process session can still retain its ring buffer, but no event without an
+        execution context is allowed to fan out to browser sockets.
+        """
         payload = serialize_event(event)
         self.ring.append(payload)
-        task = asyncio.create_task(self.connections.broadcast({"kind": "event", **payload}))
+        task = asyncio.create_task(
+            self.connections.publish(context or self._context(), {"kind": "event", **payload})
+        )
         self._pushes.add(task)
         task.add_done_callback(self._pushes.discard)
 
-    async def handle_text(self, text: str) -> TurnResult:
+    async def handle_text(
+        self, text: str, *, context: ExecutionContext | None = None
+    ) -> TurnResult:
         """Run one turn to completion under the turn lock. Deterministic entry point for
         tests; the route uses :meth:`submit` to fire-and-forget.
 
@@ -162,22 +189,32 @@ class UiSession:
         async with self.turn_lock:
             if self.sessions is not None and self.session_id is None:
                 self.session_id = await self.sessions.create_session(project_id=self.project_id)
+            context = context or self._context()
             turn_messages = [*self.messages, {"role": "user", "content": text}]
-            result = await self.loop.run_turn(turn_messages, on_event=self._emit)
+            if context is None:
+                # No persisted context means no socket delivery.  This is only the bare/test
+                # composition; the workstation registry eagerly calls ensure_session().
+                result = await self.loop.run_turn(turn_messages, on_event=self._emit)
+            else:
+                with bind_execution_context(context):
+                    result = await self.loop.run_turn(
+                        turn_messages, on_event=lambda event: self._emit(event, context)
+                    )
             self.messages = result.messages
-            await self._persist()
+            await self._persist(context)
             return result
 
-    async def _persist(self) -> None:
+    async def _persist(self, context: ExecutionContext | None = None) -> None:
         """Save the conversation + frozen compaction state for the current session. A save
         failure is logged, never fatal — mirrors ``Repl._persist``."""
-        if self.sessions is None or self.session_id is None:
+        session_id = context.session_id if context is not None else self.session_id
+        if self.sessions is None or session_id is None:
             return
         try:
-            await self.sessions.save_messages(self.session_id, self.messages)
+            await self.sessions.save_messages(session_id, self.messages)
             if self.context_manager is not None:
                 summary, cut = self.context_manager.state()
-                await self.sessions.save_compaction(self.session_id, summary, cut)
+                await self.sessions.save_compaction(session_id, summary, cut)
         except Exception as exc:  # noqa: BLE001 - a save failure must not kill the session
             self.log.warning("ui_persist_failed", error=str(exc))
 
@@ -188,11 +225,17 @@ class UiSession:
         if self.sessions is None or self.busy:
             return False
         async with self.turn_lock:
+            meta = await self.sessions.get_meta(session_id)
+            if meta is None or meta.kind != "interactive":
+                return False
             history = await self.sessions.load_messages(session_id)
             if not history:
                 return False
             self.messages = history
             self.session_id = session_id
+            # The durable row is the source of truth: resuming cannot retain the previous
+            # workspace's project and misattribute subsequent events or tool activity.
+            self.project_id = meta.project_id
             if self.context_manager is not None:
                 summary, cut = await self.sessions.load_compaction(session_id)
                 self.context_manager.restore(summary, cut)
@@ -203,18 +246,20 @@ class UiSession:
         already in flight — one interactive turn at a time, like the REPL prompt."""
         if self._current is not None and not self._current.done():
             return False
-        self._current = asyncio.create_task(self._run(text))
+        # Freeze scope before yielding.  A route must not be able to retag a queued turn by
+        # switching projects or resuming a different chat while this task is underway.
+        self._current = asyncio.create_task(self._run(text, self._context()))
         return True
 
-    async def _run(self, text: str) -> None:
+    async def _run(self, text: str, context: ExecutionContext | None) -> None:
         try:
-            await self.handle_text(text)
+            await self.handle_text(text, context=context)
         except asyncio.CancelledError:
-            await self.connections.broadcast({"kind": "turn_cancelled"})
+            await self.connections.publish(context, {"kind": "turn_cancelled"})
             raise
         except Exception as exc:  # noqa: BLE001 - a crashed turn is a message, not a dead server
             self.log.warning("ui_turn_error", error=repr(exc))
-            await self.connections.broadcast({"kind": "turn_error", "error": str(exc)})
+            await self.connections.publish(context, {"kind": "turn_error", "error": str(exc)})
 
     def start_new_session(self, project_id: int | None) -> None:
         """Begin a fresh conversation under a (possibly new) project scope. A session is
@@ -223,6 +268,9 @@ class UiSession:
         self.messages = []
         self.session_id = None
         self.project_id = project_id
+        if self.context_manager is not None:
+            # A compaction summary belongs to one conversation.  It must not survive a new chat.
+            self.context_manager.restore(None, 0)
 
     def cancel(self) -> bool:
         """Cancel the in-flight turn (Ctrl-C parity). Returns True if one was cancelled."""

@@ -55,6 +55,7 @@ async def attention_queue(
     intents: Any = None,
     graph: Any = None,
     approvals: Any = None,
+    approval_context: Any = None,
     project_id: int | None = None,
     limit: int = 200,
 ) -> dict:
@@ -67,7 +68,12 @@ async def attention_queue(
     # 1. Live Gate ASKs — ephemeral, in-memory; they BLOCK a turn, so they're urgent. Not project-
     #    scoped (a turn's ASK isn't durable). Resolved via /api/approvals/{id}/resolve.
     if approvals is not None:
-        for p in approvals.pending():
+        pending = (
+            approvals.pending_for(approval_context)
+            if approval_context is not None
+            else approvals.pending()
+        )
+        for p in pending:
             items.append(
                 _item(
                     "gate",

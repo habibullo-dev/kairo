@@ -20,6 +20,7 @@ from jarvis.config import BudgetsConfig, load_config
 from jarvis.orchestration import WORKFLOWS, OrchestrationStore, estimate_run, resolve_team
 from jarvis.orchestration.estimate import RunEstimate
 from jarvis.persistence.db import connect
+from jarvis.persistence.sessions import SessionStore
 from jarvis.projects import ProjectStore
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
 from jarvis.ui.orchestration import OrchestrationController, serialize_estimate
@@ -89,7 +90,7 @@ class FakeConn:
     def __init__(self) -> None:
         self.sent: list[dict] = []
 
-    async def broadcast(self, payload: dict) -> None:
+    async def publish(self, _context, payload: dict) -> None:
         self.sent.append(payload)
 
 
@@ -259,6 +260,23 @@ async def test_runs_view_lists_summaries(tmp_path: Path) -> None:
     )
     view = await orchestration_runs_view(store, project_id=1)
     assert len(view["runs"]) == 1 and view["runs"][0]["team"] == "research"
+
+
+async def test_run_store_records_source_interactive_session(tmp_path: Path) -> None:
+    store, _rs = await _stores(tmp_path)
+    session_id = await SessionStore(store.db, store.lock).create_session(project_id=1)
+    rid = await store.begin_run(
+        project_id=1,
+        workflow="research",
+        title="Research · research",
+        config={"team": "research"},
+        context_manifest=[],
+        estimated_cost_usd=None,
+        budget_usd=None,
+        session_id=session_id,
+    )
+    run = await store.get(rid)
+    assert run is not None and run.session_id == session_id
 
 
 def test_catalog_read_models_are_complete() -> None:

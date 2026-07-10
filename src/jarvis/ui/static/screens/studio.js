@@ -90,6 +90,8 @@ export async function render(container, api) {
 export function onEvent(state, evt) {
   const k = evt.kind;
   if (!k || !k.startsWith("orchestration_")) return false;
+  const ctx = state && state.context;
+  if (!ctx || evt.session_id !== ctx.session_id || evt.project_id !== ctx.project_id) return false;
   if (k === "orchestration_started") {
     S.live = { run_id: evt.run_id, team: evt.team, workflow: evt.workflow, title: evt.title,
                stage: "starting", agents: [], status: "running", est: evt.estimated_cost_usd };

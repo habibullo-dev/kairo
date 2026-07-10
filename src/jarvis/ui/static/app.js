@@ -33,21 +33,30 @@ const state = {
   voice: { enabled: false },
   trace: [],           // raw events (Debug/Trace)
   notices: [],         // background job/reminder/digest notices (Phase 9)
+  context: null,       // server-owned {session_id, project_id}; never inferred from a hash
   route: "daily",
   routeArgs: [],       // positional hash args after the screen name (#workspace/{id})
 };
+
+const WORKSPACE_KEY = "kairo:workspace-id";
+let workspaceId = null;
+try { workspaceId = sessionStorage.getItem(WORKSPACE_KEY); } catch { /* storage unavailable */ }
+
+function workspaceHeaders(base = {}) {
+  return workspaceId ? { ...base, "x-kairo-workspace-id": workspaceId } : base;
+}
 
 // --- tiny API helper (same-origin; cookie carried automatically) ---
 export const api = {
   state,
   async get(path) {
-    const r = await fetch(path, { headers: { "accept": "application/json" } });
+    const r = await fetch(path, { headers: workspaceHeaders({ "accept": "application/json" }) });
     return r.ok ? r.json() : null;
   },
   async post(path, body) {
     const r = await fetch(path, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: workspaceHeaders({ "content-type": "application/json" }),
       body: JSON.stringify(body || {}),
     });
     return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
@@ -85,7 +94,7 @@ function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onopen = () => {
-    wsSend({ type: "hello", surfaces: [...mounted] });
+    wsSend({ type: "hello", surfaces: [...mounted], workspace_id: workspaceId });
     setInterval(() => wsSend({ type: "heartbeat" }), 5000);
   };
   ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
@@ -93,6 +102,20 @@ function connect() {
 }
 
 function handleMessage(msg) {
+  if (msg.type === "workspace") {
+    workspaceId = msg.workspace_id || null;
+    try {
+      if (workspaceId) sessionStorage.setItem(WORKSPACE_KEY, workspaceId);
+      else sessionStorage.removeItem(WORKSPACE_KEY);
+    } catch { /* storage unavailable — this socket remains usable */ }
+    state.context = { session_id: msg.session_id, project_id: msg.project_id };
+    pollStatus();
+    renderRoute();
+    return;
+  }
+  const lifecycle = ["project_changed", "session_new", "session_resumed"].includes(msg.kind);
+  if (msg.workspace_id && msg.workspace_id !== workspaceId) return;
+  if (msg.session_id != null && !acceptsContext(msg) && !(lifecycle && msg.workspace_id === workspaceId)) return;
   if (msg.type === "approval") { onApproval(msg); return; }
   if (msg.type === "approval_nonce") { onNonce(msg); return; }
   if (msg.kind && msg.kind.startsWith("orchestration_")) {
@@ -116,9 +139,17 @@ function handleMessage(msg) {
   }
   if (msg.kind === "project_changed") {
     // A scope switch started a fresh scoped conversation server-side — clear the local view.
+    clearPendingApprovals();
     if (state.runner) state.runner.project = { id: msg.project_id, name: msg.name };
+    state.context = { session_id: msg.session_id, project_id: msg.project_id };
     state.chat = [];
     renderRunnerState(); refreshHeader(); refreshIfActive("daily"); return;
+  }
+  if (msg.kind === "session_new" || msg.kind === "session_resumed") {
+    clearPendingApprovals();
+    state.context = { session_id: msg.session_id, project_id: msg.project_id };
+    if (msg.kind === "session_new") state.chat = [];
+    pollStatus(); refreshHeader(); refreshIfActive("daily"); return;
   }
   if (msg.kind === "event") { onEvent(msg); return; }
   if (msg.kind === "notice") { onNotice(msg.notice); return; }
@@ -131,6 +162,13 @@ function handleMessage(msg) {
     refreshIfActive("daily");
     renderRunnerState();
   }
+}
+
+// The server already targets exact contexts.  This is a consumer-side backstop: a stale queued
+// frame, reconnect, or future emitter cannot mutate this tab from another chat/project.
+function acceptsContext(msg) {
+  const c = state.context;
+  return !!c && msg.session_id === c.session_id && msg.project_id === c.project_id;
 }
 
 // Background notices (job/reminder/digest) reach the browser here — the calm, non-modal
@@ -262,6 +300,13 @@ function hideApproval() {
   if (state.route !== "gate") setSurface("gate", false); // stop advertising the screen
 }
 
+function clearPendingApprovals() {
+  state.pending.clear();
+  hideApproval();
+  updateGateBadge();
+  refreshIfActive("gate");
+}
+
 function updateGateBadge() {
   const badge = document.getElementById("gate-badge");
   const n = state.pending.size;
@@ -382,7 +427,13 @@ async function rehydrateConversation() {
 
 async function pollStatus() {
   const s = await api.get("/api/runner");
-  if (s) { state.runner = s; renderRunnerState(); rehydrateConversation(); }
+  if (s) {
+    state.runner = s;
+    if (s.session_id != null) {
+      state.context = { session_id: s.session_id, project_id: s.project ? s.project.id : null };
+    }
+    renderRunnerState(); rehydrateConversation();
+  }
   // Default to OFF when the status can't be read (v null), so the mic is ALWAYS gated — never left
   // at the CSP-blocked HTML default (which would leave Talk visible while voice is off, blocker 4).
   const v = (await api.get("/api/voice/status")) || { enabled: false, reason: "" };
