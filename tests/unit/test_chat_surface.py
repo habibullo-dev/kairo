@@ -54,7 +54,7 @@ def test_chat_has_readable_full_height_composer_and_context_controls() -> None:
 
 
 def test_chat_message_rendering_remains_text_only() -> None:
-    assert "textContent = part" in CONVERSATION
+    assert "document.createTextNode" in CONVERSATION
     assert "code.textContent" in CONVERSATION
     assert "innerHTML" not in CONVERSATION
 

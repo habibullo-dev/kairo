@@ -1,24 +1,154 @@
 // Shared attended-conversation rendering. Both Chat and Daily consume the same state reducer and
-// POST /api/turn path; this module deliberately owns no authority and never renders model text as
-// HTML.
+// POST /api/turn path; this module deliberately owns no authority. The small Markdown subset
+// below creates every node itself and places all dynamic text with textContent: raw HTML, SVG,
+// images, event handlers, and unsupported syntax remain inert text rather than markup.
 
-function messageBody(text) {
-  const fragment = document.createDocumentFragment();
-  const parts = String(text || "").split(/(```[\s\S]*?```)/g);
-  for (const part of parts) {
-    if (!part) continue;
-    if (part.startsWith("```") && part.endsWith("```")) {
-      const code = document.createElement("pre");
-      code.className = "message-code";
-      code.textContent = part.slice(3, -3).replace(/^\w*\n/, "");
-      fragment.appendChild(code);
-    } else {
-      const block = document.createElement("div");
-      block.className = "message-text";
-      block.textContent = part;
-      fragment.appendChild(block);
-    }
+const FENCE = /^```\s*([A-Za-z0-9_+-]*)\s*$/;
+const BULLET = /^[-*+]\s+(.+)$/;
+const NUMBERED = /^\d+[.)]\s+(.+)$/;
+const QUOTE = /^>\s?(.*)$/;
+const INLINE = /`([^`\n]+)`|(?<!\!)\[([^\]\n]+)\]\(([^()\s]+)\)/g;
+
+function safeHref(value) {
+  try {
+    const url = new URL(value);
+    return ["https:", "http:"].includes(url.protocol) ? url.href : null;
+  } catch {
+    return null;
   }
+}
+
+function appendInline(parent, text) {
+  const source = String(text || "");
+  let cursor = 0;
+  INLINE.lastIndex = 0;
+  for (const match of source.matchAll(INLINE)) {
+    const index = match.index || 0;
+    if (index > cursor) parent.appendChild(document.createTextNode(source.slice(cursor, index)));
+    if (match[1] != null) {
+      const code = document.createElement("code");
+      code.className = "message-inline-code";
+      code.textContent = match[1];
+      parent.appendChild(code);
+    } else {
+      const href = safeHref(match[3]);
+      if (!href) {
+        parent.appendChild(document.createTextNode(match[0]));
+      } else {
+        const link = document.createElement("a");
+        link.className = "message-link";
+        link.href = href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = match[2];
+        parent.appendChild(link);
+      }
+    }
+    cursor = index + match[0].length;
+  }
+  if (cursor < source.length) parent.appendChild(document.createTextNode(source.slice(cursor)));
+}
+
+function copyText(text) {
+  navigator.clipboard?.writeText(text);
+}
+
+function codeBlock(language, text) {
+  const wrap = document.createElement("section");
+  wrap.className = "message-code-block";
+  const head = document.createElement("div");
+  head.className = "message-code-head";
+  const label = document.createElement("span");
+  label.className = "message-code-language";
+  label.textContent = language || "text";
+  const copy = document.createElement("button");
+  copy.className = "message-code-copy";
+  copy.type = "button";
+  copy.textContent = "Copy code";
+  copy.addEventListener("click", () => copyText(text));
+  head.append(label, copy);
+  const pre = document.createElement("pre");
+  pre.className = "message-code";
+  const code = document.createElement("code");
+  code.textContent = text;
+  pre.appendChild(code);
+  wrap.append(head, pre);
+  return wrap;
+}
+
+function paragraph(lines) {
+  const node = document.createElement("p");
+  node.className = "message-paragraph";
+  appendInline(node, lines.join("\n"));
+  return node;
+}
+
+// This is intentionally a narrow, line-oriented subset. Tables, headings, images, HTML, and
+// extensions are plain text. Keeping the grammar small makes each allowed output explicit.
+export function renderMarkdown(text) {
+  const fragment = document.createDocumentFragment();
+  const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+  const root = document.createElement("div");
+  root.className = "message-markdown";
+  let i = 0;
+  while (i < lines.length) {
+    if (!lines[i].trim()) { i += 1; continue; }
+    const fence = lines[i].match(FENCE);
+    if (fence) {
+      const start = i;
+      const code = [];
+      i += 1;
+      while (i < lines.length && !FENCE.test(lines[i])) { code.push(lines[i]); i += 1; }
+      if (i < lines.length) {
+        root.appendChild(codeBlock(fence[1], code.join("\n")));
+        i += 1;
+        continue;
+      }
+      // An unfinished streamed fence is ordinary text until the closing fence arrives.
+      root.appendChild(paragraph(lines.slice(start)));
+      break;
+    }
+    const bullet = lines[i].match(BULLET);
+    const numbered = lines[i].match(NUMBERED);
+    if (bullet || numbered) {
+      const list = document.createElement(bullet ? "ul" : "ol");
+      list.className = "message-list";
+      const pattern = bullet ? BULLET : NUMBERED;
+      while (i < lines.length) {
+        const item = lines[i].match(pattern);
+        if (!item) break;
+        const li = document.createElement("li");
+        appendInline(li, item[1]);
+        list.appendChild(li);
+        i += 1;
+      }
+      root.appendChild(list);
+      continue;
+    }
+    const quote = lines[i].match(QUOTE);
+    if (quote) {
+      const block = document.createElement("blockquote");
+      block.className = "message-quote";
+      const quoteLines = [];
+      while (i < lines.length) {
+        const line = lines[i].match(QUOTE);
+        if (!line) break;
+        quoteLines.push(line[1]);
+        i += 1;
+      }
+      appendInline(block, quoteLines.join("\n"));
+      root.appendChild(block);
+      continue;
+    }
+    const plain = [];
+    while (i < lines.length && lines[i].trim() && !FENCE.test(lines[i])
+      && !BULLET.test(lines[i]) && !NUMBERED.test(lines[i]) && !QUOTE.test(lines[i])) {
+      plain.push(lines[i]);
+      i += 1;
+    }
+    root.appendChild(paragraph(plain));
+  }
+  fragment.appendChild(root);
   return fragment;
 }
 
@@ -46,7 +176,13 @@ export function renderConversation(host, state, { emptyHeading, emptyHint } = {}
     }
     const message = document.createElement("article");
     message.className = "msg " + item.role;
-    message.appendChild(messageBody(item.text));
+    if (item.role === "assistant") message.appendChild(renderMarkdown(item.text));
+    else {
+      const body = document.createElement("div");
+      body.className = "message-text";
+      body.textContent = item.text || "";
+      message.appendChild(body);
+    }
     if (item.role === "assistant" && item.text) {
       const copy = document.createElement("button");
       copy.className = "message-copy";

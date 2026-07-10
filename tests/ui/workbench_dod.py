@@ -141,6 +141,18 @@ _COSTS = {
     "by_provider": [], "by_team": [], "by_role": [], "by_stage": [], "by_purpose": [],
     "by_service": [],
 }
+_MARKDOWN_MESSAGE = """Here is the release checklist:
+
+- Verify the Gate flow
+- Run the focused tests
+
+> Keep approval on screen.
+
+```sh
+uv run pytest tests/unit -q
+```
+
+Read the [release notes](https://example.com/release-notes)."""
 
 
 def _base() -> dict:
@@ -228,6 +240,16 @@ def _seed_for(state: str) -> dict:
             {"role": "assistant", "text": "Three findings: a hardcoded token, TLS verification "
                                           "disabled, and a credential-shaped literal. Details on "
                                           "screen; none exfiltrated."}]}
+    elif state == "chat-markdown":
+        s["_hash"] = "chat"
+        r["project"] = {"id": 1, "name": "Kairo"}
+        r["session_id"] = 5
+        r["session_title"] = "Release checklist"
+        s["/api/projects"]["active_project_id"] = 1
+        s["/api/sessions/5"] = {"messages": [
+            {"role": "user", "text": "What should ship with the release?"},
+            {"role": "assistant", "text": _MARKDOWN_MESSAGE},
+        ]}
     elif state == "model-selector":
         r["project"] = {"id": 1, "name": "Kairo"}
         s["/api/projects"]["active_project_id"] = 1
@@ -251,9 +273,11 @@ def _seed_for(state: str) -> dict:
     return s
 
 
-STATES = ["daily-empty", "daily-populated", "chat-fresh", "chat-project", "projects",
-          "workspace-overview", "studio", "costs", "settings", "model-selector", "palette",
-          "hub-truth", "graph-discovery", "voice"]
+STATES = [
+    "daily-empty", "daily-populated", "chat-fresh", "chat-project", "chat-markdown", "projects",
+    "workspace-overview", "studio", "costs", "settings", "model-selector", "palette",
+    "hub-truth", "graph-discovery", "voice",
+]
 
 HARNESS = """<!doctype html><html lang="en" data-theme="noir" data-density="comfortable"
 data-layout="focused"><head><meta charset="utf-8">
