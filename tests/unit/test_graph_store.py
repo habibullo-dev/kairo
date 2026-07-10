@@ -39,7 +39,7 @@ async def _store(tmp_path: Path) -> GraphStore:
 async def test_migration_v12_applied_and_tables_exist(tmp_path: Path) -> None:
     db = await connect(tmp_path / "g.db")
     _OPEN.append(db)
-    assert (await (await db.execute("PRAGMA user_version")).fetchone())[0] == 14
+    assert (await (await db.execute("PRAGMA user_version")).fetchone())[0] == 15
     names = {
         r[0] for r in await (await db.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
@@ -54,7 +54,7 @@ async def test_migration_v12_script_is_idempotent(tmp_path: Path) -> None:
     # migrate() itself is a no-op once at v12.
     await db.executescript(_SCHEMA_V12)
     await db.executescript(_SCHEMA_V12)
-    assert await migrate(db) == 14
+    assert await migrate(db) == 15
 
 
 # --- asserted nodes: never-DELETE (retract) --------------------------------

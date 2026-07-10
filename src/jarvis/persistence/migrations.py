@@ -951,6 +951,41 @@ async def _migrate_v14(db: aiosqlite.Connection) -> None:
         await db.execute("ALTER TABLE model_calls ADD COLUMN routing_mode TEXT")
 
 
+# Phase 16: the ONE attention queue. A durable row per item wanting the human's judgment — a live
+# Gate ASK, a write-intent, a graph suggestion, a dreaming proposal, or a system alert. It UNIFIES
+# those sources (source + source_ref point at them; it never duplicates their authority — approve/
+# reject still hit the existing gated routes). payload_json is NEVER auto-injected into any model
+# context (self-injection quarantine, the graph_suggestions precedent); dreaming rows default to the
+# untrusted trust_class. dedupe_key is UNIQUE (SQLite treats NULLs as distinct, so ad-hoc items
+# without a key coexist while a re-run of a keyed producer is idempotent).
+_SCHEMA_V15 = """
+CREATE TABLE IF NOT EXISTS attention_items (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind          TEXT NOT NULL CHECK (kind IN ('approval','review','proposal','alert')),
+    source        TEXT NOT NULL,                 -- intent|graph_suggestion|dreaming|gate|system
+    source_ref    TEXT,                          -- pointer into the source (bodies-free)
+    project_id    INTEGER REFERENCES projects(id),
+    priority      TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','normal','low')),
+    state         TEXT NOT NULL DEFAULT 'open'
+                     CHECK (state IN ('open','done','dismissed','snoozed','expired')),
+    trust_class   TEXT NOT NULL DEFAULT 'model_generated'
+                     CHECK (trust_class IN
+                        ('trusted_local','reviewed','untrusted_external','model_generated')),
+    title         TEXT NOT NULL,                 -- short + safe: what a minimized push may show
+    category      TEXT,                          -- routing category (title/count/category only)
+    payload_json  TEXT NOT NULL DEFAULT '{}',    -- detail; NEVER auto-injected into model context
+    evidence_json TEXT NOT NULL DEFAULT '[]',    -- pointers only, bodies-free
+    dedupe_key    TEXT UNIQUE,                   -- idempotent producer re-runs
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    resolved_at   TEXT,
+    snooze_until  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_attention_queue ON attention_items(state, priority, project_id, id);
+CREATE INDEX IF NOT EXISTS idx_attention_source ON attention_items(source, source_ref);
+"""
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -971,6 +1006,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (12, _SCHEMA_V12),
     (13, _migrate_v13),
     (14, _migrate_v14),
+    (15, _SCHEMA_V15),
 ]
 
 

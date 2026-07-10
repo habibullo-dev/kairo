@@ -32,7 +32,7 @@ async def _build_v10(path: Path) -> aiosqlite.Connection:
 async def test_v10_to_v11_adds_normalized_cache_columns() -> None:
     db = await _build_v10(":memory:")
     try:
-        assert await migrate(db) == 14
+        assert await migrate(db) == 15
         cur = await db.execute("PRAGMA table_info(model_calls)")
         cols = {r[1] for r in await cur.fetchall()}
         assert {
@@ -54,7 +54,7 @@ async def test_v11_is_rerunnable() -> None:
         await migrate(db)  # -> 11
         await db.execute("PRAGMA user_version = 10")  # simulate a crash before the bump
         await db.commit()
-        assert await migrate(db) == 14  # guarded ADD COLUMN ⇒ clean no-op re-run
+        assert await migrate(db) == 15  # guarded ADD COLUMN ⇒ clean no-op re-run
     finally:
         await db.close()
     # (that the new columns accept NULL when caching is off AND real values when on is exercised
