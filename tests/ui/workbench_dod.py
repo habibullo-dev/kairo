@@ -23,6 +23,7 @@ import http.server
 import json
 import shutil
 import socket
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -38,6 +39,13 @@ from jarvis.ui.server import STATIC_DIR
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "screenshots" / "workbench"
+
+
+class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    """Keep the visual DoD progress readable; each shot otherwise logs several asset requests."""
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
 
 _MODELS = {
     "current": "claude-opus-4-8",
@@ -97,6 +105,42 @@ _ARTIFACTS = [
 ]
 _RUN = {"title": "Security · review", "workflow": "security_review", "team": "security",
         "status": "ok", "actual_cost_usd": 0.42, "finished_at": "2026-07-08T10:00:00+00:00"}
+_PROJECT = {"id": 1, "name": "Kairo", "slug": "kairo", "description": "Local-first AI workstation",
+            "icon": "K", "color": "#7cc4ff", "status": "active", "pinned": True}
+_PROJECT_OVERVIEW = {
+    "projects": [{**_PROJECT, "label": "Coding", "health": {
+        "open_tasks": 3, "sessions_week": 5, "month_spend_usd": 2.4,
+        "last_run": {"status": "ok", "verdict": "PASS"},
+    }}],
+    "archived": [], "active_project_id": 1,
+}
+_WORKSPACE = {
+    "project": _PROJECT, "health": {"month_spend_usd": 2.4},
+    "recent_artifacts": _ARTIFACTS,
+    "recent_runs": [_RUN],
+}
+_STUDIO = {
+    "active_project_id": 1,
+    "teams": [{"id": "security", "name": "Security", "icon": "◈",
+               "description": "Review changes and risk.", "default_workflows": ["security_review"],
+               "members": [{"name": "Security Lead", "role": "lead", "route_role": "reviewer",
+                            "tools": ["search"], "services": []}]}],
+    "workflows": [{"id": "security_review", "title": "Security review", "teams": ["security"]}],
+    "model_routes": [{"role": "planner", "model": "claude-fable-5", "provider": "anthropic"},
+                     {"role": "reviewer", "model": "claude-sonnet-5", "provider": "anthropic"}],
+    "services": [],
+}
+_COSTS = {
+    "today": {"cost_usd": 0.42, "calls": 4}, "week": {"cost_usd": 1.2, "calls": 14},
+    "month": {"cost_usd": 2.4, "calls": 28},
+    "limits": {"soft_warn_usd_per_run": 1, "hard_stop_usd_per_run": 5,
+               "confirm_above_usd": 2, "project_monthly_usd": 25},
+    "budget_warning": {"cap_usd": 25, "month_spend_usd": 2.4, "level": "ok"},
+    "by_project": [{"project": "Kairo", "cost_usd": 2.4, "calls": 28}],
+    "by_model": [{"model": "claude-sonnet-5", "cost_usd": 2.4, "calls": 28}],
+    "by_provider": [], "by_team": [], "by_role": [], "by_stage": [], "by_purpose": [],
+    "by_service": [],
+}
 
 
 def _base() -> dict:
@@ -116,6 +160,14 @@ def _base() -> dict:
         "/api/capabilities": _CAPS,
         "/api/projects": {"projects": [{"id": 1, "name": "Kairo"}, {"id": 2, "name": "Website"}],
                           "active_project_id": None},
+        "/api/projects/overview": _PROJECT_OVERVIEW,
+        "/api/views": {"views": []},
+        "/api/workspace/1": _WORKSPACE,
+        "/api/studio": _STUDIO,
+        "/api/orchestration": {"runs": [_RUN]},
+        "/api/costs": _COSTS,
+        "/api/roi": {"roi": [], "hourly_rate_usd": 75},
+        "/api/settings": {},
         "/api/sessions": {"sessions": [
             {"id": 5, "title": "Design review", "updated_at": "2026-07-09T09:00:00+00:00",
              "pinned": False},
@@ -149,6 +201,22 @@ def _seed_for(state: str) -> dict:
         s["/api/sessions"] = {"sessions": []}
     elif state == "chat-fresh":
         s["_hash"] = "chat"
+    elif state == "projects":
+        s["_hash"] = "projects"
+        r["project"] = {"id": 1, "name": "Kairo"}
+    elif state == "workspace-overview":
+        s["_hash"] = "workspace/1"
+        r["project"] = {"id": 1, "name": "Kairo"}
+        s["/api/projects"]["active_project_id"] = 1
+    elif state == "studio":
+        s["_hash"] = "studio"
+        r["project"] = {"id": 1, "name": "Kairo"}
+        s["/api/projects"]["active_project_id"] = 1
+    elif state == "costs":
+        s["_hash"] = "costs"
+        r["project"] = {"id": 1, "name": "Kairo"}
+    elif state == "settings":
+        s["_hash"] = "settings"
     elif state == "chat-project":
         s["_hash"] = "chat"
         r["project"] = {"id": 1, "name": "Kairo"}
@@ -183,8 +251,9 @@ def _seed_for(state: str) -> dict:
     return s
 
 
-STATES = ["daily-empty", "daily-populated", "chat-fresh", "chat-project", "model-selector",
-          "palette", "hub-truth", "graph-discovery", "voice"]
+STATES = ["daily-empty", "daily-populated", "chat-fresh", "chat-project", "projects",
+          "workspace-overview", "studio", "costs", "settings", "model-selector", "palette",
+          "hub-truth", "graph-discovery", "voice"]
 
 HARNESS = """<!doctype html><html lang="en" data-theme="noir" data-density="comfortable"
 data-layout="focused"><head><meta charset="utf-8">
@@ -241,17 +310,22 @@ def _free_port() -> int:
     return port
 
 
-async def _capture(base: str, out: Path) -> int:
+async def _capture(
+    base: str,
+    out: Path,
+    themes: tuple[str, ...] = THEMES,
+    viewports: tuple[tuple[int, int], ...] = VIEWPORTS,
+) -> int:
     from playwright.async_api import async_playwright
 
     problems: list[str] = []
     shots = 0
-    total = len(THEMES) * len(VIEWPORTS) * len(STATES)
+    total = len(themes) * len(viewports) * len(STATES)
     async with async_playwright() as pw:
         browser = await asyncio.wait_for(pw.chromium.launch(), timeout=60)
         try:
-            for theme in THEMES:
-                for width, height in VIEWPORTS:
+            for theme in themes:
+                for width, height in viewports:
                     for state in STATES:
                         print(f"  shot {shots + 1}/{total}: {theme} {width}w {state}", flush=True)
                         ctx = await browser.new_context(viewport={"width": width, "height": height})
@@ -279,11 +353,25 @@ async def _capture(base: str, out: Path) -> int:
             print(f"  - {p}")
         return 1
     print(f"GREEN: no layout violations across states x themes x viewports "
-          f"({len(STATES)} x {len(THEMES)} x {len(VIEWPORTS)})")
+          f"({len(STATES)} x {len(themes)} x {len(viewports)})")
     return 0
 
 
 async def main() -> int:
+    raw_args = tuple(sys.argv[1:])
+    width_args = tuple(
+        arg.removeprefix("--width=") for arg in raw_args if arg.startswith("--width=")
+    )
+    requested = tuple(arg for arg in raw_args if not arg.startswith("--width="))
+    unknown = set(requested).difference(THEMES)
+    if unknown:
+        raise SystemExit(f"unknown theme(s): {', '.join(sorted(unknown))}")
+    known_widths = {str(width) for width, _height in VIEWPORTS}
+    invalid_widths = set(width_args).difference(known_widths)
+    if invalid_widths:
+        raise SystemExit(f"unknown viewport width(s): {', '.join(sorted(invalid_widths))}")
+    themes = requested or THEMES
+    viewports = tuple(v for v in VIEWPORTS if not width_args or str(v[0]) in width_args)
     work = Path(tempfile.mkdtemp(prefix="workbench-dod-"))
     try:
         static = work / "static"
@@ -297,11 +385,11 @@ async def main() -> int:
         for st in STATES:
             (static / f"__wb_{st}.json").write_text(json.dumps(_seed_for(st)), encoding="utf-8")
         port = _free_port()
-        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(static))
+        handler = functools.partial(_QuietHandler, directory=str(static))
         httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         try:
-            return await _capture(f"http://127.0.0.1:{port}", OUT)
+            return await _capture(f"http://127.0.0.1:{port}", OUT, themes, viewports)
         finally:
             httpd.shutdown()
     finally:

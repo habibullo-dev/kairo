@@ -17,27 +17,37 @@
     </div>
     <!-- Primary rail: the places you live in. Workspace deep-links to the ACTIVE project (hidden
          in global scope); Vault/Tasks/Memory are Workspace tabs + palette-reachable. -->
-    <a href="#chat" data-screen="chat"><span class="dot"></span><span class="label">Chat</span></a>
-    <a href="#daily" data-screen="daily"><span class="dot"></span><span class="label">Daily</span></a>
-    <a href="#projects" data-screen="projects"><span class="dot"></span><span class="label">Projects</span></a>
-    <a href="#projects" data-screen="workspace" id="rail-workspace" class="is-hidden"><span class="dot"></span><span class="label">Workspace</span></a>
-    <a href="#artifacts" data-screen="artifacts"><span class="dot"></span><span class="label">Artifacts</span></a>
-    <a href="#studio" data-screen="studio"><span class="dot"></span><span class="label">Studio</span></a>
-    <a href="#costs" data-screen="costs"><span class="dot"></span><span class="label">Costs</span></a>
-    <a href="#settings" data-screen="settings"><span class="dot"></span><span class="label">Settings</span></a>
+    <a href="#chat" data-screen="chat"><span class="nav-icon" aria-hidden="true">◌</span><span class="label">Chat</span></a>
+    <a href="#daily" data-screen="daily"><span class="nav-icon" aria-hidden="true">☀</span><span class="label">Daily</span></a>
+    <a href="#projects" data-screen="projects"><span class="nav-icon" aria-hidden="true">▦</span><span class="label">Projects</span></a>
+    <a href="#projects" data-screen="workspace" id="rail-workspace" class="is-hidden"><span class="nav-icon" aria-hidden="true">⌂</span><span class="label">Workspace</span></a>
+    <a href="#studio" data-screen="studio"><span class="nav-icon" aria-hidden="true">◇</span><span class="label">Studio</span></a>
+    <a href="#artifacts" data-screen="artifacts" class="mobile-secondary"><span class="nav-icon" aria-hidden="true">▤</span><span class="label">Artifacts</span></a>
+    <a href="#vault" data-screen="vault" class="mobile-secondary"><span class="nav-icon" aria-hidden="true">⌕</span><span class="label">Knowledge</span></a>
+    <a href="#costs" data-screen="costs" class="mobile-secondary"><span class="nav-icon" aria-hidden="true">◫</span><span class="label">Costs</span></a>
     <button class="rail-search" id="rail-search" aria-label="Search (Ctrl/Cmd-K)"><span class="dot"></span><span class="label">⌘K Search</span></button>
     <div class="spacer"></div>
     <!-- Utility area: tools and surfaces you dip into. Gate keeps its persistent pending badge. -->
     <div class="rail-cap">Tools</div>
-    <a href="#gate" data-screen="gate"><span class="dot"></span><span class="label">Notifications</span><span class="badge" id="gate-badge">0</span></a>
-    <a href="#trace" data-screen="trace" class="debug-only"><span class="dot"></span><span class="label">Trace</span></a>
-    <a href="#hub" data-screen="hub"><span class="dot"></span><span class="label">Hub</span></a>
-    <a href="#lab" data-screen="lab" class="debug-only"><span class="dot"></span><span class="label">Lab</span></a>
-    <a href="#meetings" data-screen="meetings"><span class="dot"></span><span class="label">Meetings</span><span class="rec-dot" id="rec-dot"></span></a>
+    <a href="#gate" data-screen="gate" class="mobile-secondary"><span class="nav-icon" aria-hidden="true">!</span><span class="label">Notifications</span><span class="badge" id="gate-badge">0</span></a>
+    <a href="#hub" data-screen="hub" class="mobile-secondary"><span class="nav-icon" aria-hidden="true">⌘</span><span class="label">Connectors</span></a>
+    <a href="#settings" data-screen="settings" class="mobile-secondary"><span class="nav-icon" aria-hidden="true">⚙</span><span class="label">Settings</span></a>
+    <a href="#meetings" data-screen="meetings" class="mobile-secondary"><span class="nav-icon" aria-hidden="true">◉</span><span class="label">Meetings</span><span class="rec-dot" id="rec-dot"></span></a>
+    <a href="#trace" data-screen="trace" class="debug-only mobile-secondary"><span class="nav-icon" aria-hidden="true">›</span><span class="label">Trace</span></a>
+    <a href="#lab" data-screen="lab" class="debug-only mobile-secondary"><span class="nav-icon" aria-hidden="true">⌁</span><span class="label">Lab</span></a>
+    <details class="mobile-more">
+      <summary><span class="nav-icon" aria-hidden="true">•••</span><span>More</span></summary>
+      <div class="mobile-more-menu">
+        <a href="#artifacts">Artifacts</a><a href="#vault">Knowledge</a><a href="#costs">Costs</a>
+        <a href="#gate">Notifications</a><a href="#hub">Connectors</a><a href="#settings">Settings</a>
+        <a href="#meetings">Meetings</a><a href="#trace" class="debug-only">Trace</a><a href="#lab" class="debug-only">Lab</a>
+      </div>
+    </details>
     <div class="foot">Local AI Workstation</div>
   </nav>
 
   <header class="status">
+    <div class="status-location" id="st-location" aria-live="polite">Chat</div>
     <div class="runner">
       <span class="runner-dot" id="runner-dot"></span>
       <span class="label" id="st-runner">Kairo is idle</span>
@@ -49,6 +59,7 @@
       <span class="chip" id="st-spend" title="Today's LLM spend">$0.0000</span>
       <span class="chip warn is-hidden" id="st-ledger" title="Cost tracking degraded">cost ⚠</span>
     </div>
+    <a class="status-attention is-hidden" id="st-attention" href="#gate" aria-label="Open pending approvals">0 approvals</a>
     <span class="grow"></span>
     <div class="voice">voice <b id="st-voice">off</b></div>
     <button id="st-mic" class="is-hidden">🎤 Talk</button>

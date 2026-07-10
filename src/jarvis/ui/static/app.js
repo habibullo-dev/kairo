@@ -321,6 +321,11 @@ function updateGateBadge() {
   const n = state.pending.size;
   badge.textContent = String(n);
   badge.classList.toggle("show", n > 0);
+  const attention = document.getElementById("st-attention");
+  if (attention) {
+    attention.textContent = `${n} approval${n === 1 ? "" : "s"}`;
+    attention.classList.toggle("is-hidden", n === 0);
+  }
 }
 
 // --- router ---
@@ -330,6 +335,18 @@ const screens = {
   costs: renderCosts, lab: renderLab, meetings: renderMeetings, trace: renderTrace,
   settings: renderSettings, workspace: renderWorkspace, artifacts: renderArtifacts,
 };
+const DEBUG_ROUTES = new Set(["trace", "lab"]);
+const ROUTE_LABELS = {
+  chat: "Chat", daily: "Daily", projects: "Projects", workspace: "Workspace",
+  studio: "Studio", artifacts: "Artifacts", vault: "Knowledge", costs: "Costs",
+  gate: "Notifications", hub: "Connectors", settings: "Settings", meetings: "Meetings",
+  trace: "Trace", lab: "Lab", tasks: "Tasks", memory: "Memory",
+};
+const WORKSPACE_LABELS = {
+  overview: "Overview", chats: "Chats", artifacts: "Artifacts", memory: "Memory",
+  tasks: "Tasks", vault: "Vault", studio: "Studio", office: "Office", graph: "Graph",
+  costs: "Costs", activity: "Activity",
+};
 
 function refreshIfActive(name) { if (state.route === name) renderRoute(); }
 function refreshConversation() { refreshIfActive("chat"); refreshIfActive("daily"); }
@@ -337,6 +354,20 @@ function refreshConversation() { refreshIfActive("chat"); refreshIfActive("daily
 function renderRoute() {
   const container = document.getElementById("screen");
   container.className = "screen";
+  if (DEBUG_ROUTES.has(state.route) && !document.body.classList.contains("debug")) {
+    container.textContent = "";
+    const h = document.createElement("h1");
+    h.textContent = "Debug is off";
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    sub.textContent = "Trace and Lab stay hidden until Debug is enabled in Settings.";
+    const link = document.createElement("a");
+    link.className = "plain-button";
+    link.href = "#settings";
+    link.textContent = "Open Settings";
+    container.append(h, sub, link);
+    return;
+  }
   // Own-property lookup only: state.route is hash-derived, so "#__proto__" etc. must fall
   // through to the safe unknown-route branch, never resolve an inherited Object member.
   const fn = Object.hasOwn(screens, state.route) ? screens[state.route] : null;
@@ -371,11 +402,24 @@ function navigate() {
   clearScope();                                      // a screen's local keys never leak forward
   setSurface(name, true);
   if (name === "gate") setSurface("gate", true);
+  document.querySelector(".mobile-more")?.removeAttribute("open");
   for (const a of document.querySelectorAll(".rail a")) a.classList.toggle("active", a.dataset.screen === name);
+  renderLocation();
   renderRoute();
 }
 
 function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+function renderLocation() {
+  const location = document.getElementById("st-location");
+  if (!location) return;
+  const tab = state.route === "workspace" && state.routeArgs[1]
+    ? WORKSPACE_LABELS[state.routeArgs[1]] : "";
+  const base = tab ? `Workspace · ${tab}` : (ROUTE_LABELS[state.route] || cap(state.route));
+  const project = state.runner && state.runner.project && state.runner.project.name;
+  location.textContent = project && ["chat", "workspace", "studio", "artifacts", "costs"].includes(state.route)
+    ? `${base} · ${project}` : base;
+}
 
 // --- status bar ---
 // Write BOTH the status bar and the Daily current-activity card from the same settled
@@ -409,6 +453,7 @@ function renderRunnerState() {
   }
   if (typeof s.today_spend_usd === "number") setText("st-spend", `$${s.today_spend_usd.toFixed(4)}`);
   const led = document.getElementById("st-ledger"); if (led) led.classList.toggle("is-hidden", !s.ledger_degraded);
+  renderLocation();
   // Daily's quiet briefing line (if mounted) shares the settled runner state, but Chat remains
   // the only place to send a message. Keep this copy/format aligned with Daily's initial render.
   if (document.getElementById("daily-now-lead")) {
@@ -501,6 +546,7 @@ function init() {
     document.body.classList.toggle("debug", debug);
     document.getElementById("mode-debug").classList.toggle("active", debug);
     document.getElementById("mode-daily").classList.toggle("active", !debug);
+    if (!debug && DEBUG_ROUTES.has(state.route)) renderRoute();
   };
   document.getElementById("mode-daily").addEventListener("click", () => setMode(false));
   document.getElementById("mode-debug").addEventListener("click", () => setMode(true));

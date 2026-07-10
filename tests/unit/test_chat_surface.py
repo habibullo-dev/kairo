@@ -12,8 +12,8 @@ CSS = (STATIC_DIR / "kairo.css").read_text(encoding="utf-8")
 
 def test_chat_is_the_default_primary_route_with_a_clear_nav_entry() -> None:
     assert 'href="#chat" data-screen="chat"' in HTML
-    assert 'href="#trace" data-screen="trace" class="debug-only"' in HTML
-    assert 'href="#lab" data-screen="lab" class="debug-only"' in HTML
+    assert 'href="#trace" data-screen="trace"' in HTML and 'debug-only' in HTML
+    assert 'href="#lab" data-screen="lab"' in HTML and 'debug-only' in HTML
     assert 'route: "chat"' in APP
     assert 'name: parts[0] || "chat"' in APP
     assert "chat: renderChat" in APP

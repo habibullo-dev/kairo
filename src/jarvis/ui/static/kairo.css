@@ -157,6 +157,9 @@ nav.rail {
 .rail a.active { background: var(--panel-2); color: var(--cyan); }
 .rail a .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: transparent; transition: background .16s; }
 .rail a.active .dot { background: var(--cyan); }
+.rail a .nav-icon { width: 15px; flex: none; display: grid; place-items: center; color: var(--subtle);
+  font: 700 14px/1 var(--mono); }
+.rail a.active .nav-icon { color: var(--accent); }
 .rail a .label { flex: 1; }
 /* Phase 15.5: the ⌘K Search rail affordance — a button styled as a rail link (opens the palette) */
 .rail .rail-search { width: 100%; display: flex; align-items: center; gap: 11px; padding: 9px 12px;
@@ -177,10 +180,17 @@ nav.rail {
 .rail .foot { color: var(--dim); font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase; font-weight: 600; padding: 8px; }
 .rail .rail-cap { color: var(--dim); font-size: 9.5px; letter-spacing: 1.6px; text-transform: uppercase;
   font-weight: 700; padding: 6px 12px 4px; }
+.mobile-more { display: none; }
 
 /* --- status bar --- */
 .status { grid-area: status; border-bottom: 1px solid var(--nav-line); display: flex; align-items: center;
   gap: 14px; padding: 9px 18px; background: var(--bg); min-width: 0; flex-wrap: wrap; row-gap: 8px; }
+.status-location { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--ink); font-size: 13px; font-weight: 650; }
+.status-attention { display: inline-flex; align-items: center; min-height: 28px; padding: 4px 9px;
+  border: 1px solid rgba(var(--attention-rgb), .5); border-radius: 999px; color: var(--attention);
+  background: rgba(var(--attention-rgb), .1); font: 600 11px var(--font); white-space: nowrap; }
+.status-attention:hover { color: var(--attention); border-color: var(--attention); }
 /* the dense status row WRAPS onto extra (auto-height) rows at narrow widths so no control ever
    extends past the viewport — paired with the minmax(0,1fr) main column + minmax(56px,auto) row. */
 .runner { display: flex; align-items: center; gap: 9px; flex-shrink: 0; white-space: nowrap; }
@@ -343,7 +353,7 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 
 /* --- Chat: the primary full-height talking surface --- */
 .screen.chat-screen { max-width: none; min-height: 100%; padding: 0; }
-.chat-shell { width: min(100%, 980px); min-height: calc(100vh - 56px); margin: 0 auto; padding: 34px 32px 18px; display: grid; grid-template-rows: auto auto auto minmax(260px, 1fr) auto; }
+.chat-shell { width: min(100%, 980px); min-height: calc(100vh - 56px); margin: 0 auto; padding: 34px 32px 18px; display: grid; grid-template-rows: auto auto auto minmax(260px, 1fr) auto; align-content: start; }
 .chat-intro { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 22px; }
 .chat-kicker { color: var(--accent); text-transform: uppercase; font-size: 10px; font-weight: 750; letter-spacing: .16em; margin-bottom: 2px; }
 .chat-intro h1 { font-size: 28px; line-height: 1.15; letter-spacing: -.03em; }
@@ -361,7 +371,7 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 .message-code { margin: 10px 0 2px; padding: 12px; overflow-x: auto; white-space: pre; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); color: var(--ink); font: 12px/1.55 var(--mono); }
 .message-copy { position: absolute; top: 0; right: 0; background: transparent; color: var(--subtle); border: 1px solid transparent; border-radius: 7px; padding: 3px 7px; font: 11px var(--font); cursor: pointer; opacity: 0; }
 .msg.assistant:hover .message-copy, .message-copy:focus-visible { opacity: 1; border-color: var(--line); }
-.chat-composer { position: sticky; bottom: 0; border: 1px solid var(--line-strong); border-radius: 16px; background: var(--panel-strong); padding: 12px 13px 10px; box-shadow: var(--shadow-soft); margin-top: 12px; }
+.chat-composer { position: sticky; bottom: 0; align-self: start; border: 1px solid var(--line-strong); border-radius: 16px; background: var(--canvas); padding: 12px 13px 10px; box-shadow: var(--shadow-soft); margin-top: 12px; }
 .chat-composer:focus-within { border-color: rgba(var(--accent-rgb), .65); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .08), var(--shadow-soft); }
 .chat-composer textarea { display: block; width: 100%; max-height: 200px; resize: none; overflow-y: auto; color: var(--ink); background: transparent; border: 0; outline: 0; font: 15px/1.55 var(--font); padding: 2px 2px 8px; }
 .chat-composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -380,7 +390,7 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 .chat-composer .live-chips span { padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; }
 .chat-send { border: 0; border-radius: 10px; background: var(--accent); color: #07111d; padding: 8px 13px; font: 700 13px var(--font); cursor: pointer; }
 .chat-send:hover { filter: brightness(1.08); }
-@media (max-width: 720px) { .chat-shell { min-height: calc(100vh - 56px); padding: 22px 16px 12px; } .chat-intro { align-items: start; margin-bottom: 16px; } .chat-turn-meta { text-align: left; white-space: normal; } .chat-thread { padding: 20px 2px 10px; } .chat-thread .msg { max-width: 94%; } }
+@media (max-width: 720px) { .chat-shell { min-height: calc(100dvh - 118px); padding: 22px 16px 12px; } .chat-intro { align-items: start; margin-bottom: 16px; } .chat-turn-meta { text-align: left; white-space: normal; } .chat-thread { padding: 20px 2px 10px; } .chat-thread .msg { max-width: 94%; } }
 @media (max-width: 600px) { .chat-composer-foot { align-items: flex-end; } .chat-composer-tools { flex-wrap: wrap; } .chat-voice-status { display: none; } }
 @media (max-width: 480px) { .chat-intro { display: block; } .chat-turn-meta { margin-top: 7px; } .chat-composer .live-chips { display: none; } .voice-mode button { padding: 5px 6px; } .chat-send span { display: none; } }
 .graph-empty-actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
@@ -650,16 +660,46 @@ tr.clickable:hover td { color: var(--cyan); }
   background: var(--panel-soft); color: var(--ink); font: 12px var(--mono); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .art-img { max-width: 100%; border-radius: 8px; border: 1px solid var(--line); }
 
-/* narrow / mobile (T10 responsive pass): collapse the rail to an icon strip so the content column
-   gets real room, and let the screen padding tighten. The command palette (Ctrl/Cmd-K) stays the
-   fast nav; a fuller mobile nav is later polish. */
+/* Narrow/mobile: the desktop rail becomes a labeled bottom navigation. The previous dot-only
+   strip made routes impossible to identify; this preserves every navigation-only destination
+   without crowding the header or stealing composer space. */
 @media (max-width: 720px) {
-  :root { --nav: 58px; }
-  .rail { padding: 16px 8px 12px; }
-  .rail a { justify-content: center; padding: 10px 0; gap: 0; }
-  .rail a .label, .rail .rail-cap, .rail .foot, .brand .name { display: none; }
-  .rail a .badge { position: absolute; top: 3px; right: 8px; }
-  .screen { padding: 22px 16px 0; }
+  body { grid-template-columns: minmax(0, 1fr); grid-template-rows: 52px minmax(0, 1fr);
+    grid-template-areas: "status" "main"; height: 100dvh; padding-bottom: 66px; }
+  nav.rail { position: fixed; inset: auto 0 0; z-index: 80; height: 66px; padding: 7px 10px;
+    flex-direction: row; align-items: stretch; gap: 4px; overflow: visible;
+    border: 0; border-top: 1px solid var(--nav-line); background: var(--nav-bg);
+    backdrop-filter: blur(18px); }
+  .rail .brand, .rail .rail-cap, .rail .foot, .rail .spacer, .rail .rail-search { display: none; }
+  .rail > a.mobile-secondary { display: none !important; }
+  .rail a { flex: 1 1 0; min-width: 0; justify-content: center; flex-direction: column; gap: 3px;
+    padding: 5px 9px; font-size: 10px; line-height: 1.1; text-align: center; }
+  .rail a .label { display: block; flex: initial; max-width: 76px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .rail a .nav-icon { width: auto; font-size: 14px; }
+  .rail a .badge { position: absolute; top: 1px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; }
+  .rail .rec-dot { position: absolute; top: 7px; right: 8px; }
+  .mobile-more { position: relative; display: block; flex: 1 1 0; min-width: 0; }
+  .mobile-more summary { height: 100%; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 3px; color: var(--muted); font-size: 10px; line-height: 1.1;
+    text-align: center; cursor: pointer; list-style: none; }
+  .mobile-more summary::-webkit-details-marker { display: none; }
+  .mobile-more summary .nav-icon { font: 700 12px/1 var(--mono); color: var(--subtle); }
+  .mobile-more[open] summary { color: var(--ink); }
+  .mobile-more-menu { position: fixed; right: 10px; bottom: 74px; z-index: 81; width: min(238px, calc(100vw - 20px));
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 8px;
+    border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel-strong);
+    box-shadow: var(--shadow); }
+  .mobile-more-menu a { display: block; min-width: 0; padding: 9px 10px; border-radius: 8px;
+    color: var(--muted); font-size: 12px; text-align: left; }
+  .mobile-more-menu a:hover { color: var(--ink); background: var(--panel-soft); }
+  .status { min-width: 0; min-height: 52px; padding: 8px 14px; gap: 10px; flex-wrap: nowrap; }
+  .status-location { display: block; flex: 1; }
+  .status .runner, .status .statusline, .status .voice, .status .grow, .status .ctx,
+  #st-mic, #st-play, #theme-toggle, .mode-toggle, .stop-btn { display: none !important; }
+  .status-attention { flex: none; }
+  main { min-height: 0; }
+  .screen { padding: 20px 14px 88px; }
 }
 
 /* segmented / filter / tab buttons */
