@@ -18,6 +18,7 @@ from jarvis.ui.auth import SESSION_COOKIE, AuthManager
 from jarvis.ui.server import STATIC_DIR, create_app
 
 STATIC_FILES = sorted(STATIC_DIR.rglob("*.*"))
+TEXT_ASSET_SUFFIXES = {".css", ".html", ".js", ".json", ".svg", ".txt"}
 
 
 def _client(tmp_path: Path):
@@ -41,11 +42,15 @@ def test_index_served_authenticated_under_csp(tmp_path: Path) -> None:
 
 def test_static_assets_served_and_gated(tmp_path: Path) -> None:
     client, auth = _client(tmp_path)
-    for path in ("/static/kairo.css", "/static/app.js", "/static/screens/gate.js"):
+    for path in (
+        "/static/kairo.css", "/static/app.js", "/static/screens/gate.js",
+        "/static/assets/kairo-v2-bg-noir.jpg",
+    ):
         assert client.get(path).status_code == 401, path  # no session ⇒ refused
         r = client.get(path, headers=_cookie(auth))
         assert r.status_code == 200, path
         assert r.headers.get("referrer-policy") == "no-referrer"
+    assert r.headers.get("content-type", "").startswith("image/jpeg")
 
 
 def test_static_path_traversal_refused(tmp_path: Path) -> None:
@@ -61,6 +66,8 @@ def test_no_external_resources_in_any_asset() -> None:
     assert STATIC_FILES, "expected static assets on disk"
     url = re.compile(r"https?://[^\s\"')]+")
     for f in STATIC_FILES:
+        if f.suffix.lower() not in TEXT_ASSET_SUFFIXES:
+            continue  # local binary assets are served/gated, but cannot contain text URLs to scan
         for match in url.findall(f.read_text(encoding="utf-8")):
             assert match.startswith("http://www.w3.org/"), f"{f.name}: external ref {match!r}"
 
