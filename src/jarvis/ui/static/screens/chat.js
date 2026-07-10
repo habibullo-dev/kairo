@@ -20,8 +20,16 @@ export function render(container, api) {
         <form class="chat-composer" id="chat-composer">
           <textarea id="chat-input" rows="1" placeholder="Message Kairo…" autocomplete="off" aria-label="Message Kairo"></textarea>
           <div class="chat-composer-foot">
-            <div class="live-chips"><span id="chat-model"></span><span id="chat-mode"></span></div>
-            <button class="chat-send" type="submit">Send <span aria-hidden="true">↵</span></button>
+            <div class="chat-composer-tools">
+              <div class="voice-mode" aria-label="Voice mode">
+                <button type="button" data-voice-mode="dictation">Dictate</button>
+                <button type="button" data-voice-mode="conversation">Conversation</button>
+              </div>
+              <button class="chat-mic" id="chat-mic" type="button" aria-label="Start voice capture">🎙</button>
+              <button class="chat-voice-cancel is-hidden" id="chat-voice-cancel" type="button">Cancel</button>
+              <div class="live-chips"><span id="chat-model"></span><span id="chat-mode"></span></div>
+            </div>
+            <div class="chat-composer-actions"><span class="chat-voice-status" id="chat-voice-status"></span><button class="chat-send" type="submit">Send <span aria-hidden="true">↵</span></button></div>
           </div>
         </form>
       </section>`;
@@ -39,11 +47,61 @@ export function render(container, api) {
       input.style.height = "auto";
       input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
     });
+    for (const button of container.querySelectorAll("[data-voice-mode]")) {
+      button.addEventListener("click", () => {
+        api.state.voice.mode = button.dataset.voiceMode;
+        renderVoiceControls(container, api);
+      });
+    }
+    container.querySelector("#chat-mic").addEventListener("click", async () => {
+      const mode = api.state.voice.mode || "dictation";
+      await api.toggleVoiceCapture(mode, (transcript) => {
+        input.value = input.value ? `${input.value} ${transcript}` : transcript;
+        input.dispatchEvent(new Event("input"));
+        input.focus();
+      });
+    });
+    container.querySelector("#chat-voice-cancel").addEventListener("click", () => api.cancelVoiceCapture());
     mountHeader(container.querySelector("#chat-convo-header"), api, { onChanged: () => redraw() });
   }
   renderPending(container, api);
   renderThread(container, api);
   renderMeta(container, api);
+  renderVoiceControls(container, api);
+}
+
+const VOICE_STATES = {
+  idle: "Voice ready",
+  listening: "Listening…",
+  capturing: "Listening…",
+  transcribing: "Transcribing…",
+  thinking: "Thinking…",
+  speaking: "Speaking safe reply…",
+  error: "Voice unavailable",
+};
+
+function renderVoiceControls(container, api) {
+  const voice = api.state.voice || {};
+  const mode = voice.mode || "dictation";
+  const state = voice.listening || "idle";
+  const disabled = !voice.enabled || voice.browserCapture === false;
+  const mic = container.querySelector("#chat-mic");
+  const cancel = container.querySelector("#chat-voice-cancel");
+  const status = container.querySelector("#chat-voice-status");
+  if (!mic || !cancel || !status) return;
+  for (const button of container.querySelectorAll("[data-voice-mode]")) {
+    button.classList.toggle("active", button.dataset.voiceMode === mode);
+    button.disabled = disabled || ["listening", "capturing", "transcribing", "thinking", "speaking"].includes(state);
+  }
+  mic.disabled = disabled || ["transcribing", "thinking", "speaking"].includes(state);
+  mic.textContent = state === "listening" || state === "capturing" ? "■ Stop" : "🎙";
+  mic.title = disabled ? (voice.reason || "Voice is unavailable.")
+    : (state === "listening" || state === "capturing" ? "Stop and continue" : `Start ${mode}`);
+  const cancellable = ["listening", "capturing", "speaking"].includes(state);
+  cancel.classList.toggle("is-hidden", !cancellable);
+  status.textContent = disabled ? `Voice unavailable: ${voice.reason || "not enabled"}`
+    : (state === "error" ? `Voice error: ${voice.reason || "try again"}` : (VOICE_STATES[state] || "Voice ready"));
+  status.classList.toggle("error", disabled || state === "error");
 }
 
 function renderPending(container, api) {

@@ -344,13 +344,24 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 .chat-composer:focus-within { border-color: rgba(var(--accent-rgb), .65); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .08), var(--shadow-soft); }
 .chat-composer textarea { display: block; width: 100%; max-height: 200px; resize: none; overflow-y: auto; color: var(--ink); background: transparent; border: 0; outline: 0; font: 15px/1.55 var(--font); padding: 2px 2px 8px; }
 .chat-composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.chat-composer-tools, .chat-composer-actions { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.voice-mode { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-soft); }
+.voice-mode button, .chat-mic, .chat-voice-cancel { border: 0; background: transparent; color: var(--subtle); border-radius: 7px; padding: 5px 8px; font: 600 11px var(--font); cursor: pointer; }
+.voice-mode button.active { background: rgba(var(--accent-rgb), .16); color: var(--ink); }
+.voice-mode button:disabled, .chat-mic:disabled { cursor: not-allowed; opacity: .5; }
+.chat-mic { border: 1px solid var(--line); color: var(--ink); min-width: 34px; }
+.chat-mic:not(:disabled):hover { border-color: rgba(var(--accent-rgb), .7); background: rgba(var(--accent-rgb), .09); }
+.chat-voice-cancel { border: 1px solid var(--line); color: var(--attention); }
+.chat-voice-status { color: var(--subtle); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 25ch; }
+.chat-voice-status.error { color: var(--attention); }
 .chat-composer .live-chips { display: flex; gap: 6px; color: var(--subtle); font: 11px var(--mono); }
 .chat-composer .live-chips span:empty { display: none; }
 .chat-composer .live-chips span { padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; }
 .chat-send { border: 0; border-radius: 10px; background: var(--accent); color: #07111d; padding: 8px 13px; font: 700 13px var(--font); cursor: pointer; }
 .chat-send:hover { filter: brightness(1.08); }
 @media (max-width: 720px) { .chat-shell { min-height: calc(100vh - 56px); padding: 22px 16px 12px; } .chat-intro { align-items: start; margin-bottom: 16px; } .chat-turn-meta { text-align: left; white-space: normal; } .chat-thread { padding: 20px 2px 10px; } .chat-thread .msg { max-width: 94%; } }
-@media (max-width: 480px) { .chat-intro { display: block; } .chat-turn-meta { margin-top: 7px; } .chat-composer .live-chips { display: none; } .chat-send span { display: none; } }
+@media (max-width: 600px) { .chat-composer-foot { align-items: flex-end; } .chat-composer-tools { flex-wrap: wrap; } .chat-voice-status { display: none; } }
+@media (max-width: 480px) { .chat-intro { display: block; } .chat-turn-meta { margin-top: 7px; } .chat-composer .live-chips { display: none; } .voice-mode button { padding: 5px 6px; } .chat-send span { display: none; } }
 .graph-empty-actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
 /* Phase 15.5: CSP-safe hide toggle. The strict CSP (style-src 'self') blocks inline
    style="display:none", so elements that must start hidden use this CLASS (toggled via classList,
@@ -400,8 +411,11 @@ tr:last-child td { border-bottom: none; }
 .stat .l { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
 
 /* --- debug separation --- */
-.debug-only { display: none; }
+/* The rail's link rule is more specific than a bare utility class; keep diagnostic routes out
+   of the normal navigation until Focus is explicitly switched to Debug. */
+.debug-only, .rail .debug-only { display: none; }
 body.debug .debug-only { display: revert; }
+body.debug .rail .debug-only { display: flex; }
 .debug-banner { display: none; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; padding: 11px 16px; margin-bottom: 16px; color: var(--cyan-soft); font-size: 12.5px; align-items: center; gap: 10px; }
 body.debug .debug-banner { display: flex; }
 

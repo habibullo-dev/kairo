@@ -158,6 +158,24 @@ class UiVoice:
         result = await self.listener.session.handle_audio(audio)
         return result is not None
 
+    async def transcribe_utterance(self, audio: bytes) -> str:
+        """Return a finalized browser transcript for user review without starting an agent turn.
+
+        Dictation intentionally does not call the renderer, loop, approver, or TTS: it merely
+        gives the authenticated speaker editable text in their own composer. The text becomes a
+        normal attended turn only if that person presses the existing screen Send control.
+        """
+        session = getattr(self.listener, "session", None) if self.listener is not None else None
+        stt = getattr(session, "stt", None)
+        if not audio or stt is None:
+            return ""
+        self.note_state("transcribing")
+        try:
+            transcript = await stt.transcribe(audio)
+            return transcript.text.strip() if transcript.is_final else ""
+        finally:
+            self.note_state(IDLE)
+
     async def synthesize_caption(self, text: str) -> bytes | None:
         """Synthesize ONLY a safe caption for browser playback: mask secret shapes + cap length,
         then hand it to the existing TTS provider. Because the input is masked + capped here, a raw

@@ -25,7 +25,7 @@ import { initKeys, clearScope, pushEscape } from "./ui/keys.js";
 import { emit as busEmit, on as busOn } from "./ui/bus.js";
 import { init as initPalette, openPalette } from "./ui/palette.js";
 import { refreshHeader } from "./ui/header.js";
-import { canCapture, playCaption, playbackOn, recording, setPlayback, toggleTalk } from "./ui/voice.js";
+import { canCapture, cancelCapture, playCaption, playbackOn, recording, setPlayback, stopCaption, toggleTalk } from "./ui/voice.js";
 import { money } from "./ui/format.js";
 
 const state = {
@@ -67,6 +67,17 @@ export const api = {
   reviewPending() {
     const next = [...state.pending.values()][0];
     if (next) { next._shown = false; showTopApproval(); }
+  },
+  async toggleVoiceCapture(mode, onTranscript) {
+    if (!state.voice.enabled) {
+      onVoiceState("error", state.voice.reason || "Voice is unavailable.");
+      return;
+    }
+    await toggleTalk({ mode, headers: workspaceHeaders(), onState: onVoiceState, onTranscript });
+  },
+  cancelVoiceCapture() {
+    if (cancelCapture(onVoiceState)) return;
+    if (stopCaption()) onVoiceState("idle");
   },
   // Resume a past chat into the live session AND load its transcript into the Daily conversation
   // view (so resuming actually shows the conversation). Returns false if a turn is in flight (409).
@@ -190,7 +201,7 @@ function onVoice(msg) {
   refreshConversation();
   // Optional playback: speak the SAFE reply caption (the server masks + caps before TTS). The
   // caption is always on screen too, so playback is a best-effort enhancement, never the record.
-  if (msg.role !== "heard") playCaption(msg.text);
+  if (msg.role !== "heard") playCaption(msg.text, workspaceHeaders(), onVoiceState);
 }
 
 // Read-only voice state pill (idle/listening/transcribing/thinking/speaking/error) — content-free.
@@ -198,25 +209,21 @@ const VOICE_LABELS = {
   listening: "⏹ Stop", capturing: "🎤 Capturing…", transcribing: "🎤 Transcribing…",
   thinking: "🎤 Thinking…", speaking: "🎤 Speaking…", error: "🎤 Talk",
 };
-function onVoiceState(s) {
+function onVoiceState(s, reason = "") {
   state.voice.listening = s;
+  state.voice.reason = reason || (s === "error" ? state.voice.reason : "");
   const voiceEl = document.getElementById("st-voice");
   if (voiceEl) { voiceEl.textContent = s; if (s !== "error") voiceEl.title = ""; }
   const mic = document.getElementById("st-mic");
   if (mic) mic.textContent = VOICE_LABELS[s] || (recording() ? "⏹ Stop" : "🎤 Talk");
+  refreshConversation();
 }
 
 // The Talk button: browser push-to-talk. First press captures (mic permission prompt); second
 // press stops + sends the utterance to the server voice session. A failure (denied mic / no
 // audio / turn error) shows a plain reason on the pill — never a raw error body.
 async function talk() {
-  await toggleTalk((s, reason) => {
-    onVoiceState(s);
-    if (s === "error") {
-      const voiceEl = document.getElementById("st-voice");
-      if (voiceEl) { voiceEl.textContent = "error"; voiceEl.title = reason || ""; }
-    }
-  });
+  await api.toggleVoiceCapture("conversation");
 }
 
 function onEvent(evt) {
@@ -441,6 +448,17 @@ async function pollStatus() {
   // Default to OFF when the status can't be read (v null), so the mic is ALWAYS gated — never left
   // at the CSP-blocked HTML default (which would leave Talk visible while voice is off, blocker 4).
   const v = (await api.get("/api/voice/status")) || { enabled: false, reason: "" };
+  const previousVoice = state.voice;
+  const currentVoiceState = state.voice.listening || "idle";
+  const unavailableReason = !v.enabled ? (v.reason || "Voice is unavailable.")
+    : (!canCapture() ? "This browser can't record audio." : "");
+  state.voice = {
+    ...state.voice, ...v,
+    listening: (!v.enabled || currentVoiceState === "idle" || currentVoiceState === "error")
+      ? (v.listening || "idle") : currentVoiceState,
+    reason: unavailableReason || (currentVoiceState === "error" ? state.voice.reason : ""),
+    browserCapture: canCapture(),
+  };
   const voiceEl = document.getElementById("st-voice");
   if (voiceEl) {
     voiceEl.textContent = v.enabled ? (v.listening || "ready") : "off";
@@ -460,6 +478,9 @@ async function pollStatus() {
     play.classList.toggle("active", playbackOn());
     play.title = playbackOn() ? "Spoken replies: on" : "Spoken replies: off";
   }
+  if (previousVoice.enabled !== state.voice.enabled
+      || previousVoice.reason !== state.voice.reason
+      || previousVoice.browserCapture !== state.voice.browserCapture) refreshConversation();
 }
 
 // --- wire up ---

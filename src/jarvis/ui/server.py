@@ -1785,6 +1785,22 @@ def create_app(
         audio = await request.body()
         if not audio:
             return JSONResponse({"ok": False, "message": "empty audio"}, status_code=400)
+        mode = request.query_params.get("mode", "conversation")
+        if mode not in {"conversation", "dictation"}:
+            return JSONResponse({"ok": False, "message": "invalid voice mode"}, status_code=422)
+        if mode == "dictation":
+            # Review-first dictation: the same authenticated, scoped audio surface performs STT
+            # only. It never creates a model turn, tool call, approval, renderer event, or TTS.
+            if workspace is None:
+                transcript = await v.transcribe_utterance(audio)
+            else:
+                try:
+                    async with app.state.workspaces.voice_activity(workspace):
+                        with bind_execution_context(workspace.context):
+                            transcript = await v.transcribe_utterance(audio)
+                except RuntimeError:
+                    return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
+            return JSONResponse({"ok": True, "transcript": transcript})
         if workspace is None:
             ran = await v.handle_utterance(audio)
         else:

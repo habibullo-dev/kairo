@@ -17,6 +17,7 @@ def test_chat_is_the_default_primary_route_with_a_clear_nav_entry() -> None:
     assert 'route: "chat"' in APP
     assert 'name: parts[0] || "chat"' in APP
     assert "chat: renderChat" in APP
+    assert ".rail .debug-only { display: none; }" in CSS
 
 
 def test_chat_reuses_existing_turn_and_conversation_state() -> None:
@@ -36,6 +37,10 @@ def test_chat_has_readable_full_height_composer_and_context_controls() -> None:
         'id="chat-model"',
         'id="chat-mode"',
         'id="chat-pending"',
+        'id="chat-mic"',
+        'id="chat-voice-cancel"',
+        'data-voice-mode="dictation"',
+        'data-voice-mode="conversation"',
     ):
         assert token in CHAT
     for token in (".screen.chat-screen", ".chat-shell", ".chat-thread", ".chat-composer"):
@@ -52,3 +57,11 @@ def test_chat_message_rendering_remains_text_only() -> None:
     assert "textContent = part" in CONVERSATION
     assert "code.textContent" in CONVERSATION
     assert "innerHTML" not in CONVERSATION
+
+
+def test_chat_voice_is_review_first_and_uses_the_existing_safe_controller() -> None:
+    assert "api.toggleVoiceCapture" in CHAT
+    assert "api.cancelVoiceCapture" in CHAT
+    assert 'mode || "dictation"' in CHAT
+    assert "Voice unavailable:" in CHAT
+    assert "/api/turn" not in CHAT

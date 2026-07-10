@@ -16,11 +16,13 @@ from jarvis.config import load_config
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
 from jarvis.ui.server import STATIC_DIR, create_app
 from jarvis.ui.voice import UiVoice
+from jarvis.voice.protocols import FakeTranscriber
 
 
 class _FakeSession:
     def __init__(self) -> None:
         self.audio: bytes | None = None
+        self.stt = FakeTranscriber(scripted=["dictated words"])
 
     async def handle_audio(self, audio: bytes):
         self.audio = audio
@@ -95,6 +97,19 @@ def test_utterance_unavailable_without_voice(tmp_path: Path) -> None:
     assert r.status_code == 503
 
 
+def test_dictation_returns_editable_text_without_starting_a_voice_turn(tmp_path: Path) -> None:
+    v, sess, _tts = _wired()
+    client, auth = _client(tmp_path, voice=v)
+    r = client.post("/api/voice/utterance?mode=dictation", content=b"webm-audio-bytes",
+                    headers=_hdr(auth, post=True))
+    assert r.status_code == 200 and r.json() == {"ok": True, "transcript": "dictated words"}
+    assert sess.audio is None  # dictation is review-only: it never calls VoiceSession.handle_audio
+    bad = client.post(
+        "/api/voice/utterance?mode=unknown", content=b"x", headers=_hdr(auth, post=True)
+    )
+    assert bad.status_code == 422
+
+
 # --- TTS playback synthesizes ONLY the safe caption ------------------------
 def test_tts_masks_secrets_before_synthesis(tmp_path: Path) -> None:
     v, _sess, tts = _wired()
@@ -120,6 +135,7 @@ def test_client_voice_module_is_safe_and_complete() -> None:
     assert "NotAllowedError" in js  # permission-denied handling
     assert "innerHTML" not in js and " onclick=" not in js  # moves audio + fixed states only
     assert "/api/approvals" not in js and "/api/turn" not in js  # never approves/commits
+    assert "mode === \"dictation\"" in js and "cancelCapture" in js
 
 
 def test_talk_button_and_playback_wired_in_shell() -> None:
