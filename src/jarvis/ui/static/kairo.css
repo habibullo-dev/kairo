@@ -837,6 +837,7 @@ tr.clickable:hover td { color: var(--cyan); }
 .room-caret:hover { color: var(--ink); }
 .node-grid { display: grid; gap: 8px; }
 .room-card.collapsed .node-grid { display: none; }
+.scene-station { display: none; }
 
 .office-node { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border-radius: 8px;
   border: 1px solid var(--line); background: var(--panel-soft); cursor: pointer; }
@@ -848,12 +849,13 @@ tr.clickable:hover td { color: var(--cyan); }
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 .node-ring { width: 36px; height: 36px; border-radius: 50%; flex: none; display: grid; place-items: center;
-  border: 2px solid var(--subtle); color: var(--muted); }
+  border: 2px solid var(--subtle); color: var(--muted); position: relative; overflow: hidden; }
 .node-ring.busy { border-color: var(--accent); color: var(--ink); animation: office-pulse 1.8s ease-in-out infinite; }
 .node-ring.good { border-color: var(--good); }
 .node-ring.attention { border-color: var(--attention); }
 .node-ring.danger { border-color: var(--danger); }
-.node-mono { font: 600 12px var(--mono); }
+.agent-figure { display: none; }
+.node-mono { font: 600 12px var(--mono); position: relative; z-index: 1; }
 .node-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .node-title { font-weight: 600; font-size: 13px; }
 .node-route { font-size: 11px; }
@@ -881,10 +883,55 @@ tr.clickable:hover td { color: var(--cyan); }
   cursor: pointer; width: 28px; height: 28px; flex: none; }
 .icon-button:hover { color: var(--ink); border-color: var(--line-strong); }
 
-/* Office (roomier) mode: same DOM, more space + presence */
+/* Office (roomier) mode: same metadata-only DOM, expressed as an operations floor. The stations
+   and tiny CSS avatars are presentational only; dynamic labels remain safe text nodes. */
 .office-full .office-floor { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
-.office-full .room-card { padding: 16px; gap: 14px; }
-.office-full .node-ring { width: 44px; height: 44px; }
+.office-full .room-card { padding: 16px; gap: 14px; min-height: 190px; overflow: hidden; position: relative; }
+.office-full .scene-station { min-height: 54px; display: flex; align-items: center; gap: 9px; padding: 9px 11px;
+  border: 1px dashed var(--room-accent, var(--accent)); border-radius: 10px;
+  background: var(--panel-soft); }
+.station-glyph { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px;
+  color: var(--room-accent, var(--accent)); background: var(--panel); font: 700 16px var(--mono); }
+.station-label { color: var(--subtle); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.office-full .room-card[data-room="research"] .scene-station::after { content: "notes · search"; }
+.office-full .room-card[data-room="frontend"] .scene-station::after { content: "screens · palette"; }
+.office-full .room-card[data-room="backend"] .scene-station::after { content: "data · pipelines"; }
+.office-full .room-card[data-room="security"] .scene-station::after { content: "review · shield"; }
+.office-full .room-card[data-room="qa"] .scene-station::after { content: "checks · evals"; }
+.office-full .room-card[data-room="pm"] .scene-station::after { content: "roadmap · brief"; }
+.office-full .room-card[data-room="ops"] .scene-station::after { content: "budget · telemetry"; }
+.office-full .room-card[data-room="lounge"] .scene-station::after { content: "available · recharge"; }
+.office-full .scene-station::after { margin-left: auto; color: var(--dimmer); font: 10px var(--mono); }
+.office-full .node-ring { width: 46px; height: 46px; background: var(--panel); }
+.office-full .agent-figure { position: absolute; inset: 5px; display: block; opacity: .92; }
+.office-full .agent-head { position: absolute; width: 13px; height: 13px; top: 2px; left: 50%; transform: translateX(-50%);
+  border-radius: 50%; background: currentColor; }
+.office-full .agent-body { position: absolute; width: 22px; height: 18px; bottom: 1px; left: 50%; transform: translateX(-50%);
+  border-radius: 10px 10px 5px 5px; background: currentColor; opacity: .72; }
+.office-full .office-node[data-scene-state="thinking"] .agent-figure { animation: office-think 1.8s ease-in-out infinite; }
+.office-full .office-node[data-scene-state="researching"] .agent-figure,
+.office-full .office-node[data-scene-state="coding"] .agent-figure { animation: office-type .7s steps(2, end) infinite; }
+.office-full .office-node[data-scene-state="reviewing"] .agent-figure { animation: office-review 1.4s ease-in-out infinite; }
+.office-full .office-node[data-scene-state="idle"] .agent-figure { animation: office-chill 2.4s ease-in-out infinite; }
+.office-full .office-node[data-scene-state="done"] .node-ring { border-color: var(--good); }
+.office-full .office-node[data-scene-state="waiting_for_approval"] .node-ring { border-color: var(--attention); animation: office-pulse 1.3s ease-in-out infinite; }
+.office-full .office-node[data-scene-state="blocked"] .node-ring { border-color: var(--danger); animation: office-blocked 1.4s ease-in-out infinite; }
+.office-full .office-node[data-scene-state="waiting_for_approval"]::after { content: "Gate"; }
+.office-full .office-node[data-scene-state="blocked"]::after { content: "Blocked"; }
+.office-full .office-node[data-scene-state="waiting_for_approval"]::after,
+.office-full .office-node[data-scene-state="blocked"]::after { margin-left: auto; align-self: center; color: var(--attention); font: 10px var(--mono); }
+.office-full .office-node[data-scene-state="blocked"]::after { color: var(--danger); }
+.office-full .room-card[data-room="lounge"] { grid-column: 1 / -1; min-height: 0; }
+.office-full .room-card[data-room="lounge"] .node-grid { grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); }
+.office-full .room-card[data-room="lounge"] .office-node { gap: 7px; padding: 7px; }
+.office-full .room-card[data-room="lounge"] .node-ring { width: 34px; height: 34px; }
+.office-full .room-card[data-room="lounge"] .agent-figure { inset: 3px; }
+.office-full .room-card[data-room="lounge"] .agent-head { width: 10px; height: 10px; }
+.office-full .room-card[data-room="lounge"] .agent-body { width: 17px; height: 14px; }
+.office-full .room-card[data-room="lounge"] .node-route,
+.office-full .room-card[data-room="lounge"] .node-chips { display: none; }
+.office-full .room-card[data-room="lounge"] .node-title { font-size: 12px; }
+.office-full .room-card[data-room="lounge"] .node-foot { gap: 5px; }
 .office-full .office-flow { padding: 14px 16px; }
 .office-full .stage-pip { padding: 6px 14px; font-size: 12.5px; }
 
@@ -892,7 +939,16 @@ tr.clickable:hover td { color: var(--cyan); }
   0%, 100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0); }
   50% { box-shadow: 0 0 0 5px rgba(var(--accent-rgb), .16); }
 }
-@media (prefers-reduced-motion: reduce) { .live-dot.on, .node-ring.busy { animation: none; } }
+@keyframes office-think { 50% { transform: translateY(-2px); } }
+@keyframes office-type { 50% { transform: translateX(2px) rotate(2deg); } }
+@keyframes office-review { 50% { transform: translateX(2px); } }
+@keyframes office-chill { 50% { transform: translateY(2px) rotate(-2deg); } }
+@keyframes office-blocked { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) {
+  .live-dot.on, .node-ring.busy, .office-full .agent-figure,
+  .office-full .office-node[data-scene-state="waiting_for_approval"] .node-ring,
+  .office-full .office-node[data-scene-state="blocked"] .node-ring { animation: none !important; }
+}
 
 @media (max-width: 900px) { .office-main { grid-template-columns: 1fr; } }
 @media (max-width: 720px) {

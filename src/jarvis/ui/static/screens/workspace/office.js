@@ -3,16 +3,16 @@
 // rail, Fable is the head "chair". It composes ONE assembler read model (/api/workspace/{id}/office)
 // and patches live updates from the orchestration WS bus (a module-singleton listener guarded on the
 // office root's DOM presence — surgical repaint of only the affected stage/room/node/feed, never a
-// full re-render or refreshIfActive). It mints no authority: "Launch" deep-links to #studio, "Cancel"
-// POSTs the existing /api/orchestration/{id}/cancel, approvals surface through the app's global amber
-// overlay, and inspect only navigates (GET) to Trace/Artifacts/Costs. The calm #studio timeline stays
+// full re-render or refreshIfActive). It mints no authority: every action is a navigation link;
+// approvals surface only through the app's global Gate overlay, and inspect navigates to existing
+// Studio / Gate / Project / Costs screens. The calm #studio timeline stays
 // the app default; this is an opt-in tab. All text is set via el() text children (textContent), so any
 // model/service/member string is inert. Compact mode is the default; Office mode + toggle arrive next.
 import { el } from "../../ui/dom.js";
 import { money, relTime } from "../../ui/format.js";
 import { on as busOn } from "../../ui/bus.js";
 import { pushEscape } from "../../ui/keys.js";
-import { actionButton, chip, emptyState, section, statusPill } from "./_util.js";
+import { chip, emptyState, section, statusPill } from "./_util.js";
 
 const STAGE_LABEL = {
   council: "Council", synthesis: "Synthesis", execution: "Execution",
@@ -22,6 +22,26 @@ const STAGE_LABEL = {
 const NODE_TONE = { idle: "", running: "busy", ok: "good", denied: "attention", error: "danger" };
 const FEED_ICON = { artifact: "📄", run: "🧩", chat: "💬", agent: "◆", stage: "▸", done: "✓" };
 const FEED_CAP = 50; // the live feed is bounded; long history lives in recent_runs / the Activity tab
+const SCENE_ROOM = {
+  research: { label: "Library desk", glyph: "⌕" }, frontend: { label: "Design board", glyph: "◫" },
+  backend: { label: "Server rack", glyph: "▦" }, security: { label: "Shield console", glyph: "◈" },
+  qa: { label: "Test station", glyph: "✓" }, pm: { label: "Planning table", glyph: "⌘" },
+  ops: { label: "Cost console", glyph: "▤" }, custom: { label: "Team table", glyph: "◇" },
+  lounge: { label: "Lounge", glyph: "☕" },
+};
+
+function sceneState(n, team) {
+  if (["waiting_for_approval", "needs_approval", "approval_required"].includes(n.status)) return "waiting_for_approval";
+  if (["error", "denied", "blocked", "rejected", "aborted", "budget_stopped"].includes(n.status)) return "blocked";
+  if (["ok", "done", "completed"].includes(n.status)) return "done";
+  if (n.status === "running") {
+    if (team === "research") return "researching";
+    if (["frontend", "backend"].includes(team)) return "coding";
+    if (["security", "qa"].includes(team)) return "reviewing";
+    return "thinking";
+  }
+  return "idle";
+}
 
 // Module-singleton mount state: the CURRENT office instance the bus handler patches, or null when
 // the tab is not open. Guarding on this (+ the live root) keeps the once-registered listener inert
@@ -95,6 +115,7 @@ function stageRail(stages, activeStage) {
 // attributes so a live agent event can find + repaint it without a stale ref map.
 function memberNode(n, roomTeam) {
   const tone = NODE_TONE[n.status] || "";
+  const visualState = sceneState(n, n.source_team || roomTeam);
   const chips = [
     ...(n.tools || []).map((t) => chip(t, "tool")),
     ...(n.services || []).map((s) => chip(s.name, "svc " + (s.state || "unknown"))),
@@ -102,9 +123,12 @@ function memberNode(n, roomTeam) {
   const node = el("div", {
     class: "office-node", tabindex: "0", role: "button",
     "aria-label": `${n.title || n.role || "member"} — inspect`,
-    dataset: { nodeTeam: roomTeam, nodeRole: n.role || "" },
+    dataset: { nodeTeam: n.source_team || roomTeam, nodeRole: n.role || "", sceneState: visualState },
   }, [
     el("div", { class: "node-ring " + (tone || "idle"), dataset: { ring: "1" } }, [
+      el("span", { class: "agent-figure", "aria-hidden": "true" }, [
+        el("span", { class: "agent-head" }, []), el("span", { class: "agent-body" }, []),
+      ]),
       el("span", { class: "node-mono" }, [initials(n.title || n.role)]),
     ]),
     el("div", { class: "node-body" }, [
@@ -114,12 +138,12 @@ function memberNode(n, roomTeam) {
       ]),
       chips.length ? el("div", { class: "node-chips" }, chips) : null,
       el("div", { class: "node-foot" }, [
-        statusPill(n.status || "idle", tone),
+        statusPill(visualState.replaceAll("_", " "), tone),
         el("span", { class: "node-cost mono dim" }, [money(n.cost_usd)]),
       ]),
     ]),
   ]);
-  const open = () => openInspect(n);
+  const open = () => openInspect({ ...n, team: n.source_team || roomTeam, visualState });
   node.addEventListener("click", open);
   node.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
@@ -157,6 +181,11 @@ function room(r, live, collapsed) {
     ]),
     el("div", { class: "node-grid" }, (r.nodes || []).map((n) => memberNode(n, r.team))),
   ]);
+  const scene = SCENE_ROOM[r.team] || SCENE_ROOM.custom;
+  card.insertBefore(el("div", { class: "scene-station", dataset: { station: r.team } }, [
+    el("span", { class: "station-glyph", "aria-hidden": "true" }, [scene.glyph]),
+    el("span", { class: "station-label" }, [scene.label]),
+  ]), card.querySelector(".node-grid"));
   caret.addEventListener("click", () => toggleRoomCollapse(r.team, card, caret));
   if (r.accent) card.style.setProperty("--room-accent", r.accent);
   return card;
@@ -186,7 +215,7 @@ function feedRow(e) {
   ]);
 }
 
-function liveStrip(live, api) {
+function liveStrip(live) {
   if (!live) return el("div", { class: "office-live idle", dataset: { officeLive: "1" } }, [
     el("span", { class: "live-dot idle" }, []),
     el("div", { class: "live-text dim" }, ["No run in flight — launch one from Studio."]),
@@ -200,15 +229,7 @@ function liveStrip(live, api) {
       `${parts} · ${money(live.actual_cost_usd)} / ${money(live.estimated_cost_usd)}`,
     ]),
   ];
-  if (live.status === "running" && (live.id != null) && api) {
-    kids.push(actionButton("Cancel", () => cancelRun(api, live.id), "danger"));
-  }
   return el("div", { class: "office-live", dataset: { officeLive: "1" } }, kids);
-}
-
-// --- actions (existing routes only) ---------------------------------------
-async function cancelRun(api, runId) {
-  try { await api.post(`/api/orchestration/${runId}/cancel`, {}); } catch { /* WS reflects state */ }
 }
 
 // --- inspect drawer (GET/navigate only) -----------------------------------
@@ -219,8 +240,8 @@ function openInspect(n) {
   if (!root) return;
   const pid = _mounted.projectId;
   const links = [
-    ["Trace", "#trace"], ["Artifacts", `#workspace/${pid}/artifacts`],
-    ["Costs", `#workspace/${pid}/costs`], ["Graph", `#workspace/${pid}/graph`],
+    ["Studio", `#workspace/${pid}/studio`], ["Notifications", "#gate"],
+    ["Project", `#workspace/${pid}`], ["Costs", `#workspace/${pid}/costs`],
   ].map(([label, href]) => el("a", { href, class: "plain-button ghost" }, [label]));
   const chips = [
     ...(n.tools || []).map((t) => chip(t, "tool")),
@@ -232,10 +253,10 @@ function openInspect(n) {
       el("div", { class: "inspect-title" }, [n.title || "(member)"]), closeBtn,
     ]),
     el("div", { class: "inspect-route mono dim" }, [
-      `${n.role || "—"} · ${n.model || "—"}·${n.provider || "—"} · ${n.capability || ""}`,
+      `${n.team || "—"} · ${n.role || "—"} · ${n.model || "—"}·${n.provider || "—"}`,
     ]),
     el("div", { class: "inspect-foot" }, [
-      statusPill(n.status || "idle", NODE_TONE[n.status] || ""),
+      statusPill((n.visualState || n.status || "idle").replaceAll("_", " "), NODE_TONE[n.status] || ""),
       el("span", { class: "mono dim" }, [`stage ${n.stage || "—"} · ${money(n.cost_usd)}`]),
     ]),
     chips.length ? el("div", { class: "node-chips" }, chips) : null,
@@ -269,7 +290,7 @@ function repaintStages(root, activeStage) {
 
 function repaintLive(root) {
   const strip = root.querySelector('[data-office-live]');
-  if (strip) strip.replaceWith(liveStrip(_mounted.live, _mounted.api));
+  if (strip) strip.replaceWith(liveStrip(_mounted.live));
 }
 
 function repaintRoom(root, team, live) {
@@ -289,7 +310,9 @@ function repaintAgentNodes(root, team, role, status, stage) {
     const ring = node.querySelector('[data-ring]');
     if (ring) ring.className = "node-ring " + (tone || "idle");
     const pill = node.querySelector(".status-pill");
-    if (pill) { pill.textContent = status || "idle"; pill.className = "status-pill" + (tone ? " " + tone : ""); }
+    const visualState = sceneState({ status }, team);
+    if (pill) { pill.textContent = visualState.replaceAll("_", " "); pill.className = "status-pill" + (tone ? " " + tone : ""); }
+    node.dataset.sceneState = visualState;
     node.title = `${role} · stage ${stage || "—"}`;
   });
 }
@@ -429,7 +452,21 @@ function onFloorKeys(ev) {
 function build(data, api, collapsed) {
   const stages = data.stages || [];
   const live = data.live || null;
-  const rooms = (data.rooms || []).map((r) => room(r, live, collapsed));
+  const sourceRooms = data.rooms || [];
+  const lounge = [];
+  const sceneRooms = sourceRooms.map((r) => {
+    if (_mode !== "office") return r;
+    const nodes = (r.nodes || []).filter((n) => {
+      if (sceneState(n, r.team) !== "idle") return true;
+      lounge.push({ ...n, source_team: r.team });
+      return false;
+    });
+    return { ...r, nodes };
+  });
+  if (_mode === "office" && lounge.length) {
+    sceneRooms.push({ team: "lounge", name: "Lounge / idle", icon: "☕", accent: "#64748b", nodes: lounge });
+  }
+  const rooms = sceneRooms.map((r) => room(r, live, collapsed));
   const recent = (data.recent_runs || []).map((rn) =>
     el("div", { class: "office-recent-row" }, [
       el("span", {}, [(rn.team || "") + " · " + (rn.workflow || "")]),
@@ -461,7 +498,7 @@ function build(data, api, collapsed) {
     ]),
     // The workflow as a calm flow terminating at Fable's "chair" (synthesis + verdict engine stage).
     el("div", { class: "office-flow" }, [stageRail(stages, live && live.stage), headChair(data.head)]),
-    liveStrip(live, api),
+    liveStrip(live),
     el("div", { class: "office-main" }, [floor, side]),
   ]);
 }

@@ -67,7 +67,7 @@ PANEL_ROUTES = {
     "vault": ["/api/vault/sources/"],
     "overview": [],
     "studio": [],
-    "office": ["/api/orchestration/"],  # Task 3 wires launch/cancel to the existing run routes
+    "office": [],  # render-only: Studio owns orchestration mutations
     "graph": [],  # Phase 15: read/navigate-only canvas (GET subgraph + node card; no mutations)
     "costs": [],
     "activity": [],

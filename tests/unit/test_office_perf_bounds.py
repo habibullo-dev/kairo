@@ -65,9 +65,11 @@ def test_aria_and_non_color_status() -> None:
     assert '"aria-live": "polite"' in OFFICE_JS  # live feed announces politely
     assert 'role: "region"' in OFFICE_JS  # each room is a labelled region
     assert 'role: "list"' in OFFICE_JS and 'role: "listitem"' in OFFICE_JS  # stage map is a list
-    assert "statusPill(n.status" in OFFICE_JS  # status carries a TEXT label, not color alone
+    # Scene status still carries a text label, never color alone.
+    assert "statusPill(visualState" in OFFICE_JS
 
 
 def test_motion_is_gated_for_reduced_motion() -> None:
     assert "@media (prefers-reduced-motion: reduce)" in CSS_BLOCK
     assert "animation: none" in CSS_BLOCK
+    assert "animation: none !important" in CSS_BLOCK

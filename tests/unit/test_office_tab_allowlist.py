@@ -28,6 +28,7 @@ def test_office_reads_the_readonly_assembler_get() -> None:
     # Composes the office projection scoped to the project; never the agent turn path.
     assert "/office" in OFFICE_JS and "/api/workspace/" in OFFICE_JS
     assert "/api/turn" not in OFFICE_JS
+    assert "api.post(" not in OFFICE_JS
 
 
 def test_office_builds_without_innerhtml() -> None:
@@ -59,3 +60,13 @@ def test_office_has_compact_and_office_view_modes() -> None:
     assert "office-compact" in OFFICE_JS and "office-full" in OFFICE_JS
     assert "root.className = rootClass()" in OFFICE_JS  # toggle relayouts via the root class only
     assert "refreshIfActive(" not in OFFICE_JS  # the Office never CALLS a shell re-render
+
+
+def test_office_scene_maps_metadata_to_rooms_and_safe_visual_states() -> None:
+    for team in ("research", "frontend", "backend", "security", "qa", "pm", "ops", "lounge"):
+        assert team in OFFICE_JS
+    states = ("thinking", "researching", "coding", "reviewing", "waiting_for_approval",
+              "blocked", "done", "idle")
+    for state in states:
+        assert state in OFFICE_JS
+    assert "sceneState" in OFFICE_JS and "source_team" in OFFICE_JS
