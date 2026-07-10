@@ -17,6 +17,7 @@
     </div>
     <!-- Primary rail: the places you live in. Workspace deep-links to the ACTIVE project (hidden
          in global scope); Vault/Tasks/Memory are Workspace tabs + palette-reachable. -->
+    <a href="#chat" data-screen="chat"><span class="dot"></span><span class="label">Chat</span></a>
     <a href="#daily" data-screen="daily"><span class="dot"></span><span class="label">Daily</span></a>
     <a href="#projects" data-screen="projects"><span class="dot"></span><span class="label">Projects</span></a>
     <a href="#projects" data-screen="workspace" id="rail-workspace" class="is-hidden"><span class="dot"></span><span class="label">Workspace</span></a>
@@ -29,9 +30,9 @@
     <!-- Utility area: tools and surfaces you dip into. Gate keeps its persistent pending badge. -->
     <div class="rail-cap">Tools</div>
     <a href="#gate" data-screen="gate"><span class="dot"></span><span class="label">Notifications</span><span class="badge" id="gate-badge">0</span></a>
-    <a href="#trace" data-screen="trace"><span class="dot"></span><span class="label">Trace</span></a>
+    <a href="#trace" data-screen="trace" class="debug-only"><span class="dot"></span><span class="label">Trace</span></a>
     <a href="#hub" data-screen="hub"><span class="dot"></span><span class="label">Hub</span></a>
-    <a href="#lab" data-screen="lab"><span class="dot"></span><span class="label">Lab</span></a>
+    <a href="#lab" data-screen="lab" class="debug-only"><span class="dot"></span><span class="label">Lab</span></a>
     <a href="#meetings" data-screen="meetings"><span class="dot"></span><span class="label">Meetings</span><span class="rec-dot" id="rec-dot"></span></a>
     <div class="foot">Local AI Workstation</div>
   </nav>
@@ -58,7 +59,7 @@
       <button data-theme-choice="neon">Neon</button>
     </div>
     <div class="mode-toggle">
-      <button id="mode-daily" class="active">Daily</button>
+      <button id="mode-daily" class="active">Focus</button>
       <button id="mode-debug"><span class="dbg-dot"></span>Debug</button>
     </div>
     <button class="stop-btn" id="st-stop">Stop</button>

@@ -8,6 +8,7 @@
 import { esc } from "../ui/dom.js";
 import { money, relTime } from "../ui/format.js";
 import { mountHeader } from "../ui/header.js";
+import { renderConversation, submitConversationTurn } from "./conversation.js";
 
 // Workflow chips are prepared prompts submitted through the SAME gated POST /api/turn — the
 // single action path (no new authority). Two are navigation only.
@@ -50,7 +51,7 @@ export function render(container, api) {
       </section>
       <div id="daily-zones"></div>`;
     const input = container.querySelector("#composer-input");
-    const send = () => submitText(container, api, input.value.trim(), input);
+    const send = () => submitConversationTurn(api, input, () => renderChat(container, api));
     container.querySelector("#composer-send").addEventListener("click", send);
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
     mountHeader(container.querySelector("#daily-convo-header"), api,
@@ -77,19 +78,6 @@ function renderPending(container, api) {
     </div>
     <button class="btn btn-amber" id="daily-review">Review</button></div>`;
   host.querySelector("#daily-review").addEventListener("click", () => api.reviewPending());
-}
-
-// Submit a prepared/typed prompt through the one gated turn path.
-async function submitText(container, api, text, input) {
-  if (!text) return;
-  if (input) input.value = "";
-  api.state.chat.push({ role: "user", text });
-  renderChat(container, api);
-  const res = await api.post("/api/turn", { text });
-  if (!res.ok) {
-    api.state.chat.push({ role: "assistant", text: `— ${res.data.message || "busy"} —` });
-    renderChat(container, api);
-  }
 }
 
 // A designed empty state: heading + a line that teaches the next action.
@@ -235,7 +223,9 @@ function renderWorkflows(container, api) {
         const input = container.querySelector("#composer-input");
         input.value = wf.prefill; input.focus(); return;
       }
-      submitText(container, api, wf.prompt);
+      const input = container.querySelector("#composer-input");
+      input.value = wf.prompt;
+      submitConversationTurn(api, input, () => renderChat(container, api));
     });
     row.appendChild(b);
   }
@@ -522,25 +512,10 @@ function fillChanged(container, data) {
 
 function renderChat(container, api) {
   const chat = container.querySelector("#daily-chat");
-  if (!chat) return;
-  chat.innerHTML = "";
-  if (!api.state.chat.length) {
-    chat.appendChild(emptyState("No messages yet",
-      "Ask Kairo anything, or pick a workflow below to get started."));
-    return;
-  }
-  for (const item of api.state.chat) {
-    const div = document.createElement("div");
-    if (item.tool) {
-      div.className = "toolline" + (item.resolution === "denied" ? " deny" : "");
-      div.textContent = `${item.tool} · ${item.resolution}`;
-    } else {
-      div.className = "msg " + item.role;
-      div.textContent = item.text;
-    }
-    chat.appendChild(div);
-  }
-  chat.scrollTop = chat.scrollHeight;  // keep the newest message in view in the bounded pane
+  renderConversation(chat, api.state, {
+    emptyHeading: "No messages yet",
+    emptyHint: "Ask Kairo anything, or pick a workflow below to get started.",
+  });
 }
 
 async function fillToday(container, api) {
@@ -569,23 +544,4 @@ function shortTime(iso) {
   if (!iso) return "—";
   const m = /T(\d{2}:\d{2})/.exec(iso);
   return m ? m[1] : iso.slice(0, 10);
-}
-
-// Called by app.js for every streamed loop event; keeps Daily quiet (summary lines only).
-export function onEvent(state, evt) {
-  if (evt.type === "text_delta") {
-    let last = state.chat[state.chat.length - 1];
-    if (!last || last.role !== "assistant" || !last.live) {
-      last = { role: "assistant", text: "", live: true };
-      state.chat.push(last);
-    }
-    last.text += evt.text;
-  } else if (evt.type === "tool_started") {
-    state.chat.push({ tool: evt.name, resolution: "allow" });
-  } else if (evt.type === "tool_decision" && evt.resolution === "deny") {
-    state.chat.push({ tool: evt.name, resolution: "denied" });
-  } else if (evt.type === "turn_completed") {
-    const last = state.chat[state.chat.length - 1];
-    if (last && last.role === "assistant") last.live = false;
-  }
 }

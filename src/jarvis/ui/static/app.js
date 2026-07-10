@@ -3,7 +3,9 @@
 // is minted only over the live socket after the modal is shown; the server validates every
 // resolve). Per-screen rendering lives in ./screens/*.js.
 
-import { render as renderDaily, onEvent as dailyOnEvent } from "./screens/daily.js";
+import { render as renderDaily } from "./screens/daily.js";
+import { render as renderChat } from "./screens/chat.js";
+import { onConversationEvent } from "./screens/conversation.js";
 import { render as renderProjects } from "./screens/projects.js";
 import { render as renderStudio, onEvent as studioOnEvent } from "./screens/studio.js";
 import { render as renderGate } from "./screens/gate.js";
@@ -34,7 +36,7 @@ const state = {
   trace: [],           // raw events (Debug/Trace)
   notices: [],         // background job/reminder/digest notices (Phase 9)
   context: null,       // server-owned {session_id, project_id}; never inferred from a hash
-  route: "daily",
+  route: "chat",
   routeArgs: [],       // positional hash args after the screen name (#workspace/{id})
 };
 
@@ -143,13 +145,13 @@ function handleMessage(msg) {
     if (state.runner) state.runner.project = { id: msg.project_id, name: msg.name };
     state.context = { session_id: msg.session_id, project_id: msg.project_id };
     state.chat = [];
-    renderRunnerState(); refreshHeader(); refreshIfActive("daily"); return;
+    renderRunnerState(); refreshHeader(); refreshConversation(); return;
   }
   if (msg.kind === "session_new" || msg.kind === "session_resumed") {
     clearPendingApprovals();
     state.context = { session_id: msg.session_id, project_id: msg.project_id };
     if (msg.kind === "session_new") state.chat = [];
-    pollStatus(); refreshHeader(); refreshIfActive("daily"); return;
+    pollStatus(); refreshHeader(); refreshConversation(); return;
   }
   if (msg.kind === "event") { onEvent(msg); return; }
   if (msg.kind === "notice") { onNotice(msg.notice); return; }
@@ -159,7 +161,7 @@ function handleMessage(msg) {
     if (state.runner) state.runner.turn_busy = false;  // settle: the turn ended
     const text = msg.kind === "turn_cancelled" ? "— turn cancelled —" : `— error: ${msg.error} —`;
     state.chat.push({ role: "assistant", text });
-    refreshIfActive("daily");
+    refreshConversation();
     renderRunnerState();
   }
 }
@@ -178,14 +180,14 @@ function onNotice(notice) {
   state.notices.unshift(notice);
   if (state.notices.length > 50) state.notices.pop();
   busEmit("notice", notice);
-  if (notice.kind === "digest") refreshIfActive("daily");
+  if (notice.kind === "digest") refreshConversation();
 }
 
 // Voice round-trip, made visible in Daily (one heard bubble + one safe caption). The reply
 // text is the renderer's post-privacy output — the UI never sees a raw answer or a payload.
 function onVoice(msg) {
   state.chat.push(msg.role === "heard" ? { role: "heard", text: msg.text } : { role: "assistant", text: msg.text });
-  refreshIfActive("daily");
+  refreshConversation();
   // Optional playback: speak the SAFE reply caption (the server masks + caps before TTS). The
   // caption is always on screen too, so playback is a best-effort enhancement, never the record.
   if (msg.role !== "heard") playCaption(msg.text);
@@ -224,8 +226,8 @@ function onEvent(evt) {
   // A completed turn settles the runner state immediately — don't wait for the next poll,
   // or the Daily card lingers on "working" after the turn (incl. a denied one) ends.
   if (evt.type === "turn_completed" && state.runner) state.runner.turn_busy = false;
-  dailyOnEvent(state, evt);
-  refreshIfActive("daily");
+  onConversationEvent(state, evt);
+  refreshConversation();
   refreshIfActive("trace");
   if (evt.type === "turn_completed") { renderRunnerState(); pollStatus(); }
 }
@@ -316,16 +318,18 @@ function updateGateBadge() {
 
 // --- router ---
 const screens = {
-  daily: renderDaily, projects: renderProjects, studio: renderStudio, gate: renderGate,
+  chat: renderChat, daily: renderDaily, projects: renderProjects, studio: renderStudio, gate: renderGate,
   vault: renderVault, tasks: renderTasks, memory: renderMemory, hub: renderHub,
   costs: renderCosts, lab: renderLab, meetings: renderMeetings, trace: renderTrace,
   settings: renderSettings, workspace: renderWorkspace, artifacts: renderArtifacts,
 };
 
 function refreshIfActive(name) { if (state.route === name) renderRoute(); }
+function refreshConversation() { refreshIfActive("chat"); refreshIfActive("daily"); }
 
 function renderRoute() {
   const container = document.getElementById("screen");
+  container.className = "screen";
   // Own-property lookup only: state.route is hash-derived, so "#__proto__" etc. must fall
   // through to the safe unknown-route branch, never resolve an inherited Object member.
   const fn = Object.hasOwn(screens, state.route) ? screens[state.route] : null;
@@ -349,7 +353,7 @@ function renderRoute() {
 // args:["12"]}. Args let a screen deep-link (the project Workspace, T10) with no new route.
 function parseHash() {
   const parts = location.hash.replace(/^#/, "").split("/").filter((s) => s !== "");
-  return { name: parts[0] || "daily", args: parts.slice(1) };
+  return { name: parts[0] || "chat", args: parts.slice(1) };
 }
 
 function navigate() {
@@ -387,8 +391,8 @@ function renderRunnerState() {
   setText("st-mode", s.mode || "approval");
   // Phase 15.5: the composer's always-visible live model + mode readout (real server state, not
   // the old debug-only fake chips). The full selectors live in the conversation header.
-  setText("composer-model", s.model || "");
-  setText("composer-mode", s.mode ? `mode ${s.mode}` : "");
+  for (const id of ["composer-model", "chat-model"]) setText(id, s.model || "");
+  for (const id of ["composer-mode", "chat-mode"]) setText(id, s.mode ? `mode ${s.mode}` : "");
   // The rail's Workspace entry deep-links to the ACTIVE project (hidden in global scope).
   const ws = document.getElementById("rail-workspace");
   if (ws) {
@@ -421,7 +425,7 @@ async function rehydrateConversation() {
   const t = await api.get(`/api/sessions/${sid}`);
   if (t && Array.isArray(t.messages)) {
     state.chat = t.messages.map((m) => ({ role: m.role, text: m.text }));
-    refreshIfActive("daily");
+    refreshConversation();
   }
 }
 

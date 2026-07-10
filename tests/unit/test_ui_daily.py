@@ -12,6 +12,7 @@ from __future__ import annotations
 from jarvis.ui.server import STATIC_DIR
 
 DAILY_JS = (STATIC_DIR / "screens" / "daily.js").read_text(encoding="utf-8")
+CONVERSATION_JS = (STATIC_DIR / "screens" / "conversation.js").read_text(encoding="utf-8")
 APP_JS = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 
 
@@ -39,10 +40,12 @@ def test_every_card_has_a_designed_empty_state() -> None:
 
 
 def test_daily_reads_and_navigates_only() -> None:
-    # Daily's direct mutations are the gated turn + run-digest; everything else reads/navigates.
-    # (Resuming a chat moved to the conversation header in Phase 15.5.)
-    assert DAILY_JS.count("api.post(") == 2
-    assert "/api/turn" in DAILY_JS and "/api/digest/run" in DAILY_JS
+    # Daily's only direct mutation is run-digest. Typed turns now use the shared conversation
+    # module, which retains the existing gated /api/turn path for both Daily and Chat.
+    assert DAILY_JS.count("api.post(") == 1
+    assert "/api/digest/run" in DAILY_JS
+    assert 'from "./conversation.js"' in DAILY_JS
+    assert CONVERSATION_JS.count('api.post("/api/turn"') == 1
     # Artifacts open the hardened read-only content GET; runs navigate to Studio (hash).
     assert "/api/artifacts/" in DAILY_JS and "/content" in DAILY_JS and "noopener" in DAILY_JS
 

@@ -101,7 +101,7 @@ _RUN = {"title": "Security · review", "workflow": "security_review", "team": "s
 
 def _base() -> dict:
     return {
-        "_hash": "daily",
+        "_hash": "chat",
         "/api/runner": {
             "runner_running": True, "turn_busy": False, "mode": "approval",
             "project": None, "today_spend_usd": 0.42, "ledger_degraded": False,
@@ -140,13 +140,15 @@ def _seed_for(state: str) -> dict:
     s = _base()
     r = s["/api/runner"]
     if state == "daily-empty":
+        s["_hash"] = "daily"
         s["/api/daily"] = {"digest": None, "recent_artifacts": [], "latest_run": None,
                            "repos": [], "evals": {"ever_run": False}, "demo": False,
                            "capabilities": _CAPS}
         s["/api/sessions"] = {"sessions": []}
     elif state == "chat-fresh":
-        s["_hash"] = "daily"
+        s["_hash"] = "chat"
     elif state == "chat-project":
+        s["_hash"] = "chat"
         r["project"] = {"id": 1, "name": "Kairo"}
         r["session_id"] = 5
         r["session_title"] = "Design review"
@@ -213,7 +215,7 @@ data-layout="focused"><head><meta charset="utf-8">
   var q = new URLSearchParams(location.search);
   var state = q.get('state') || 'daily-populated';
   window.__SEED__ = await (await fetch('./__wb_' + state + '.json')).json();
-  location.hash = window.__SEED__._hash || 'daily';
+  location.hash = window.__SEED__._hash || 'chat';
   await import('/static/app.js');
   await new Promise(function (r) { setTimeout(r, 500); });
   var trigger = window.__SEED__._trigger;
