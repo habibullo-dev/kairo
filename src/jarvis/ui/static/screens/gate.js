@@ -1,19 +1,22 @@
-// Gate — approvals + today's decisions. The clearest priority surface (amber = needs you).
-// Pending approvals confirm in the amber modal (auto-raised); this screen also shows the
-// audit trail and, in Debug, the read-only policy snapshot.
+// Notifications — the ONE attention surface (Phase 16). It renders the unified queue
+// (GET /api/attention): live Gate ASKs, write-intents awaiting approval, pending graph
+// suggestions, and dreaming proposals / system alerts — each acted on through its source's
+// EXISTING gated route (the center adds no authority). Below it: recent writes (undo) + the
+// audit trail + a read-only policy snapshot (Debug). No raw-HTML sink — user/model text is set
+// via textContent only.
 
 export async function render(container, api) {
   container.innerHTML = `
     <div class="rise">
-      <h1>Gate</h1>
-      <div class="sub">Approvals, and today's decisions. Amber means Kairo is waiting on you.</div>
+      <h1>Notifications</h1>
+      <div class="sub">Everything waiting on you, in one place. Amber means Kairo is blocked on you.</div>
     </div>
     <div class="card rise" id="gate-pending-card">
-      <div class="card-label amber">Pending</div>
-      <div id="gate-pending"></div>
+      <div class="card-label amber">Needs you</div>
+      <div id="gate-pending" class="dim">loading…</div>
     </div>
-    <div class="card rise" id="gate-writes-card">
-      <div class="card-label amber">Pending writes · review &amp; approve to send</div>
+    <div class="card rise">
+      <div class="card-label">Recent writes · undo</div>
       <div id="gate-writes" class="dim">loading…</div>
     </div>
     <div class="card rise">
@@ -26,86 +29,132 @@ export async function render(container, api) {
     </div>`;
 
   const pend = container.querySelector("#gate-pending");
-  const items = [...api.state.pending.values()];
-  if (!items.length) {
-    pend.innerHTML = `<div class="dim">Nothing waiting. You're clear.</div>`;
-  } else {
+
+  // The unified attention queue. Each item's action dispatches to its SOURCE's own route; only
+  // 'attention' rows (proposals/alerts/reviews) use the new metadata resolve route.
+  async function fillQueue() {
+    const q = await api.get("/api/attention");
+    pend.className = "";
     pend.innerHTML = "";
-    for (const p of items) {
-      const row = document.createElement("div");
-      row.className = "zone-now";
-      row.innerHTML = `<span class="runner-dot" style="background:var(--amber)"></span>
-        <div class="body">
-          <div class="lead"><span class="mono">${esc(p.tool)}</span>${p.title ? " — " + esc(p.title) : ""}</div>
-          <div class="desc">${esc(p.reason || "")}</div>
-        </div>`;
-      const btn = document.createElement("button");
-      btn.className = "btn btn-amber";
-      btn.textContent = "Review";
-      btn.addEventListener("click", () => api.reviewPending());
-      row.appendChild(btn);
-      pend.appendChild(row);
+    const items = (q && q.items) || [];
+    if (!q) {
+      pend.className = "dim";
+      pend.textContent = "Attention queue unavailable.";
+      return;
     }
+    if (!items.length) {
+      pend.className = "dim";
+      pend.textContent = "Nothing waiting. You're clear.";
+      return;
+    }
+    for (const it of items) pend.appendChild(queueRow(it));
   }
 
-  // Pending writes: outward connector-write proposals awaiting approval, plus recent writes with
-  // undo. Approve here EXECUTES the stored write (the only path that does); reject/undo close it.
+  function queueRow(it) {
+    const row = document.createElement("div");
+    row.className = "zone-now";
+    const dot = document.createElement("span");
+    dot.className = "runner-dot";
+    if (it.priority === "urgent") dot.style.background = "var(--amber)";
+    row.appendChild(dot);
+
+    const body = document.createElement("div");
+    body.className = "body";
+    const lead = document.createElement("div");
+    lead.className = "lead";
+    lead.textContent = it.title || it.kind;
+    body.appendChild(lead);
+    const meta = document.createElement("div");
+    meta.className = "desc";
+    meta.textContent = [labelFor(it.source), it.kind, it.priority].filter(Boolean).join(" · ");
+    body.appendChild(meta);
+    // Untrusted (dreaming/agent-generated) content is badged so it never reads as fact.
+    if (it.trust_class && it.trust_class !== "trusted_local" && it.trust_class !== "reviewed") {
+      const t = document.createElement("div");
+      t.className = "desc";
+      t.textContent = "⚠ proposal — untrusted, review before acting";
+      body.appendChild(t);
+    }
+    if (it.detail && it.detail.preview) body.appendChild(renderPreview(it.detail.preview));
+    row.appendChild(body);
+
+    for (const a of actionsFor(it)) row.appendChild(a);
+    return row;
+  }
+
+  // Source → its label + the existing routes its actions hit (never a new authority path).
+  function labelFor(source) {
+    return {
+      gate: "Tool approval", intent: "Outward write", graph_suggestion: "Memory suggestion",
+      attention: "Proposal", system: "Alert",
+    }[source] || source;
+  }
+
+  function actionsFor(it) {
+    if (it.source === "gate") {
+      return [actionBtn("Review", "btn-amber", () => api.reviewPending())];
+    }
+    if (it.source === "intent") {
+      return [
+        actionBtn("Approve & send", "btn-amber", () => act(`/api/intents/${it.ref}/approve`)),
+        actionBtn("Reject", "btn", () => act(`/api/intents/${it.ref}/reject`)),
+      ];
+    }
+    if (it.source === "graph_suggestion") {
+      return [
+        actionBtn("Approve", "btn-amber", () => act(`/api/graph/suggestions/${it.ref}/approve`)),
+        actionBtn("Reject", "btn", () => act(`/api/graph/suggestions/${it.ref}/reject`)),
+      ];
+    }
+    // attention rows (proposals / alerts / reviews): metadata-only resolve. A proposal's real
+    // acceptance is the human acting on its source elsewhere — never a hidden action here.
+    return [
+      actionBtn("Done", "btn", () => act(`/api/attention/${it.ref}/resolve`, { action: "done" })),
+      actionBtn("Dismiss", "btn", () => act(`/api/attention/${it.ref}/resolve`, { action: "dismiss" })),
+    ];
+  }
+
+  async function act(path, body) {
+    await api.post(path, body || {});
+    await fillQueue();
+  }
+
+  // Recent writes with undo (history, not a competing pending surface).
   const writes = container.querySelector("#gate-writes");
   async function fillWrites() {
     const q = await api.get("/api/intents");
     writes.className = "";
     writes.innerHTML = "";
-    const pending = (q && q.pending) || [];
     const recent = (q && q.recent) || [];
-    if (!pending.length && !recent.length) {
+    if (!recent.length) {
       writes.className = "dim";
-      writes.textContent = "No outward writes proposed.";
+      writes.textContent = "No recent writes.";
       return;
     }
-    for (const it of pending) writes.appendChild(writeRow(it, true));
-    if (recent.length) {
-      const h = document.createElement("div");
-      h.className = "card-label";
-      h.style.marginTop = "12px";
-      h.textContent = "Recent writes";
-      writes.appendChild(h);
-      for (const it of recent) writes.appendChild(writeRow(it, false));
-    }
-  }
-  function writeRow(it, pendingRow) {
-    const row = document.createElement("div");
-    row.className = "zone-now";
-    const body = document.createElement("div");
-    body.className = "body";
-    const lead = document.createElement("div");
-    lead.className = "lead";
-    lead.textContent = (it.preview && it.preview.title) || it.summary || it.kind;
-    body.appendChild(lead);
-    if (it.preview) body.appendChild(renderPreview(it.preview));
-    if (!pendingRow) {
+    for (const it of recent) {
+      const row = document.createElement("div");
+      row.className = "zone-now";
+      const body = document.createElement("div");
+      body.className = "body";
+      const lead = document.createElement("div");
+      lead.className = "lead";
+      lead.textContent = (it.preview && it.preview.title) || it.summary || it.kind;
+      body.appendChild(lead);
       const st = document.createElement("div");
       st.className = "desc";
       st.textContent = "state: " + it.state + (it.error ? " — " + it.error : "");
       body.appendChild(st);
+      row.appendChild(body);
+      if (it.state === "executed") {
+        row.appendChild(actionBtn("Undo", "btn", async () => {
+          await api.post(`/api/intents/${it.id}/undo`, {});
+          await fillWrites();
+        }));
+      }
+      writes.appendChild(row);
     }
-    row.appendChild(body);
-    if (pendingRow) {
-      row.appendChild(actionBtn("Approve & send", "btn-amber", async () => {
-        await api.post(`/api/intents/${it.id}/approve`, {});
-        await fillWrites();
-      }));
-      row.appendChild(actionBtn("Reject", "btn", async () => {
-        await api.post(`/api/intents/${it.id}/reject`, {});
-        await fillWrites();
-      }));
-    } else if (it.state === "executed") {
-      row.appendChild(actionBtn("Undo", "btn", async () => {
-        await api.post(`/api/intents/${it.id}/undo`, {});
-        await fillWrites();
-      }));
-    }
-    return row;
   }
+
   function actionBtn(label, cls, onClick) {
     const b = document.createElement("button");
     b.className = "btn " + cls;
@@ -135,6 +184,8 @@ export async function render(container, api) {
     el.textContent = t;
     return el;
   }
+
+  await fillQueue();
   await fillWrites();
 
   const audit = await api.get("/api/audit/today");
@@ -156,5 +207,3 @@ export async function render(container, api) {
   const pre = container.querySelector("#gate-policy");
   if (pre) pre.textContent = pol ? JSON.stringify(pol.policy, null, 2) : "";
 }
-
-function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
