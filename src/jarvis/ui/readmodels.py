@@ -804,6 +804,171 @@ def _empty_connectors() -> dict:
     return {"demo": False, "google": None, "notifiers": {}}
 
 
+_GOOGLE_SCOPE_LABELS = {
+    "https://www.googleapis.com/auth/calendar.readonly": "Read calendar events",
+    "https://www.googleapis.com/auth/calendar.events": "Create and update calendar events",
+    "https://www.googleapis.com/auth/gmail.readonly": "Read Gmail",
+    "https://www.googleapis.com/auth/gmail.compose": "Create and update Gmail drafts",
+    "https://www.googleapis.com/auth/drive.readonly": "Read Drive files",
+    "https://www.googleapis.com/auth/drive.file": "Create and update Kairo-created Docs",
+}
+
+_PROVIDER_LABELS = {
+    "anthropic": "Anthropic", "openai": "OpenAI", "gemini": "Gemini",
+    "qwen": "Qwen", "deepseek": "DeepSeek", "zai": "Z.ai",
+}
+
+
+def _hub_state(value: str) -> str:
+    """Normalize catalog state into the small, user-facing Hub vocabulary.
+
+    The returned values are display labels only. They deliberately do not surface a provider
+    exception, token metadata beyond the existing safe snapshot, or the name/value of a secret.
+    """
+    return {
+        "missing_credentials": "missing_key",
+        "not_configured": "disabled",
+        "unpriced": "deferred",
+    }.get(value, value)
+
+
+def connector_hub_overview(config: Config, *, connectors: dict | None = None) -> dict:
+    """Actionable, read-only connector status for the Hub.
+
+    This is intentionally an assembler over configuration presence and ``ConnectorRegistry``'s
+    existing safe snapshot. It does not probe an account, read a token file directly, initiate
+    OAuth, or add an execution path. Secret values, recipient/chat IDs, provider bodies, and
+    token values are excluded structurally.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    from jarvis.config import resolve_kakao_redirect_uri, resolve_telegram_chat_id
+
+    snapshot = connectors or _empty_connectors()
+    google = snapshot.get("google") if isinstance(snapshot, dict) else None
+    notifiers = snapshot.get("notifiers") if isinstance(snapshot, dict) else {}
+    notifiers = notifiers if isinstance(notifiers, dict) else {}
+    sec = config.secrets
+
+    if isinstance(google, dict) and google.get("needs_reconnect"):
+        google_state = "needs_reconnect"
+    elif isinstance(google, dict) and google.get("connected"):
+        google_state = "connected"
+    elif config.connectors.google.enabled:
+        has_google_client = bool(sec.google_client_id and sec.google_client_secret)
+        google_state = "configured" if has_google_client else "missing_key"
+    else:
+        google_state = "disabled"
+
+    raw_scopes = google.get("scopes", []) if isinstance(google, dict) else []
+    google_scopes = [
+        {"name": _GOOGLE_SCOPE_LABELS.get(str(scope), "Additional approved scope")}
+        for scope in raw_scopes if isinstance(scope, str)
+    ]
+    # The configured loopback URI is helpful setup context, but a query/fragment is not needed to
+    # register it and could accidentally carry sensitive data. Display only the safe URI identity.
+    kakao_redirect = urlsplit(resolve_kakao_redirect_uri(config))
+    kakao_redirect_display = urlunsplit(
+        (kakao_redirect.scheme, kakao_redirect.netloc, kakao_redirect.path, "", "")
+    )
+
+    def notifier(name: str) -> dict:
+        status = notifiers.get(name)
+        enabled = bool(getattr(config.connectors, name).enabled)
+        chat_id_set = (
+            bool(
+                status.get("chat_id_set")
+                if isinstance(status, dict)
+                else resolve_telegram_chat_id(config)
+            )
+            if name == "telegram"
+            else False
+        )
+        if isinstance(status, dict) and status.get("needs_reconnect"):
+            state = "needs_reconnect"
+        elif isinstance(status, dict) and status.get("connected", status.get("configured", False)):
+            state = "connected" if name == "kakao" else "configured"
+        elif not enabled:
+            state = "disabled"
+        elif name == "telegram" and not sec.telegram_bot_token:
+            state = "missing_key"
+        elif name == "telegram" and not resolve_telegram_chat_id(config):
+            # A destination is required but never disclosed in the UI.
+            state = "configured"
+        elif name == "kakao" and not sec.kakao_rest_api_key:
+            state = "missing_key"
+        else:
+            state = "configured"
+        if name == "telegram":
+            return {"state": state, "chat_id_set": chat_id_set}
+        return {"state": state}
+
+    return {
+        "google": {
+            "state": google_state,
+            "scopes": google_scopes,
+            "services": [
+                {
+                    "name": "Calendar",
+                    "state": google_state,
+                    "can": "Read calendar; create and update events; create Meet links.",
+                    "cannot": "Writes always require a preview and on-screen approval.",
+                },
+                {
+                    "name": "Gmail",
+                    "state": google_state,
+                    "can": "Read Gmail; create and update drafts.",
+                    "cannot": "Kairo cannot send email.",
+                },
+                {
+                    "name": "Drive & Docs",
+                    "state": google_state,
+                    "can": "Read Drive; create and update Kairo-created Docs.",
+                    "cannot": "Kairo has no broad Drive access.",
+                },
+            ],
+            "command": "uv run jarvis connect google",
+            "status_command": "uv run jarvis connect status",
+            "disconnect_note": (
+                "Disconnect is intentionally not a UI action. Revoke Kairo in your Google account "
+                "permissions, then use the status command to confirm."
+            ),
+        },
+        "telegram": {**notifier("telegram"), "command": "uv run jarvis connect telegram --test"},
+        "kakao": {
+            **notifier("kakao"),
+            "redirect_uri": kakao_redirect_display,
+            "command": "uv run jarvis connect kakao",
+            "test_command": "uv run jarvis connect kakao --test",
+        },
+        "providers": [
+            {
+                "id": row["name"],
+                "name": _PROVIDER_LABELS.get(row["name"], row["name"]),
+                "state": _hub_state(row["state"]),
+                "enabled": bool(row["enabled"]),
+                "key_present": bool(row["credentials_present"]),
+                "priced": bool(row["priced"]),
+                # Only the trusted Anthropic manual picker is selectable today. Auto routing is
+                # surfaced elsewhere and remains subject to the same private-context gate.
+                "selectable": row["name"] == "anthropic" and row["state"] == "available",
+                "private_ok": bool(row["private_ok"]),
+                "trusted_authority": bool(row["trusted_authority"]),
+                "note": row["note"],
+            }
+            for row in providers_status(config)
+        ],
+        "services": [
+            {
+                "name": row["name"], "state": _hub_state(row["state"]),
+                "kind": row["kind"], "note": row["note"],
+                "local": not bool(row["egress"]),
+            }
+            for row in services_status(config)
+        ],
+    }
+
+
 def hub_status(
     config: Config,
     *,
@@ -831,6 +996,9 @@ def hub_status(
         },
         "egress": egress or {"audio_bytes": 0, "text_chars": 0},
         "connectors": connectors or _empty_connectors(),
+        # Hub-specific readable connector/provider/service cards. Same source-of-truth inputs as
+        # the raw status above; all information remains presence/state/policy-only.
+        "connector_overview": connector_hub_overview(config, connectors=connectors),
         "mcp": {"connected": False, "note": "not connected — future phase"},
         "model_routes": model_routes_status(config),
         "services": services_status(config),

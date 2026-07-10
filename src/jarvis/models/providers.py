@@ -271,6 +271,8 @@ class ProviderRegistry:
                     "trusted_authority": spec.trusted_authority,
                     "private_ok": spec.private_ok,
                     "core": spec.core,
+                    "enabled": spec.core or name in self.enabled,
+                    "priced": name in self.priced_providers,
                     "default_models": list(spec.default_models),
                     "state": self.state(name).value,
                     "credentials_present": self._creds_present(spec),

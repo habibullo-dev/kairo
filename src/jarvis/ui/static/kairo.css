@@ -1024,3 +1024,63 @@ tr.clickable:hover td { color: var(--cyan); }
 .graph-card-title { font-weight: 600; }
 .graph-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 @media (max-width: 900px) { .graph-main { grid-template-columns: 1fr; } }
+
+/* --- Connector Hub ----------------------------------------------------------
+   Read-only setup guidance. Status is intentionally text + shape, never colour alone; terminal
+   commands are copy-only helpers, not hidden connector actions. */
+.hub-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px;
+  margin-bottom: 18px; }
+.hub-hero h1 { margin: 2px 0 7px; }
+.hub-hero-note { max-width: 285px; color: var(--muted); font: 11px/1.45 var(--mono); text-align: right; }
+.hub-boundaries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0;
+  margin-bottom: 18px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  background: var(--panel); }
+.hub-boundaries > div { padding: 14px 16px; }
+.hub-boundaries > div + div { border-left: 1px solid var(--line); }
+.hub-boundaries h2, .hub-section-head h2 { margin: 0; font-size: 15px; }
+.hub-boundaries p, .hub-section-head p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.hub-section { margin-bottom: 18px; }
+.hub-section-head { display: flex; gap: 14px; align-items: baseline; justify-content: space-between;
+  margin-bottom: 10px; }
+.hub-section-head p { max-width: 460px; text-align: right; }
+.hub-grid { display: grid; gap: 10px; }
+.hub-connectors { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.hub-providers { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.hub-services { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+.hub-card { min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 13px;
+  background: var(--panel-soft); }
+.hub-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.hub-card h3 { margin: 0; font-size: 14px; }
+.hub-state { flex: none; border: 1px solid var(--line-strong); border-radius: 999px; padding: 3px 7px;
+  color: var(--muted); font: 600 10px var(--font); white-space: nowrap; }
+.hub-state.good { color: var(--good); border-color: rgba(var(--good-rgb), .45); }
+.hub-state.warn { color: var(--attention); border-color: rgba(var(--attention-rgb), .52); }
+.hub-copy-text, .hub-muted { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.hub-service-list { display: grid; gap: 10px; }
+.hub-service-line { display: grid; gap: 4px; padding-top: 9px; border-top: 1px solid var(--line); font-size: 12px; }
+.hub-service-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hub-rule { display: flex; gap: 7px; color: var(--muted); line-height: 1.45; }
+.hub-rule-label { color: var(--good); font: 600 10px var(--mono); text-transform: uppercase; }
+.hub-rule.cannot .hub-rule-label { color: var(--attention); }
+.hub-detail-label { margin: 12px 0 5px; color: var(--subtle); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.hub-scope-list { display: flex; gap: 5px; flex-wrap: wrap; }
+.hub-command { display: flex; align-items: center; gap: 7px; min-width: 0; margin-top: 6px; }
+.hub-command code, .hub-inline-code { min-width: 0; overflow-x: auto; color: var(--ink-2); font: 11px/1.45 var(--mono); }
+.hub-command code { flex: 1; padding: 7px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); }
+.hub-inline-code { display: block; padding: 7px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); }
+.hub-copy { flex: none; min-height: 28px; padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: 7px;
+  background: transparent; color: var(--muted); font: 600 11px var(--font); cursor: pointer; }
+.hub-copy:hover, .hub-copy:focus-visible { color: var(--ink); border-color: var(--accent); }
+.hub-provider-facts { display: flex; gap: 5px; flex-wrap: wrap; }
+.hub-provider-facts span { border: 1px solid var(--line); border-radius: 999px; padding: 3px 6px;
+  color: var(--muted); font: 10px var(--font); }
+.hub-provider-card .hub-muted, .hub-service-card .hub-muted { margin-top: 10px; }
+.hub-empty { padding: 12px; color: var(--muted); font-size: 12px; }
+@media (max-width: 900px) { .hub-connectors { grid-template-columns: 1fr; } }
+@media (max-width: 720px) {
+  .hub-hero, .hub-section-head { align-items: flex-start; flex-direction: column; }
+  .hub-hero-note, .hub-section-head p { max-width: none; text-align: left; }
+  .hub-boundaries { grid-template-columns: 1fr; }
+  .hub-boundaries > div + div { border-left: 0; border-top: 1px solid var(--line); }
+  .hub-providers, .hub-services { grid-template-columns: 1fr; }
+}
