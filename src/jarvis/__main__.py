@@ -47,6 +47,13 @@ def main() -> None:
 
         sys.exit(connect_cli(argv[1:]))
 
+    # ``jarvis backup create|verify`` is an explicit local recovery ritual. It has no model,
+    # connector, scheduler, or restore-overwrite path.
+    if argv and argv[0] == "backup":
+        from jarvis.cli.backup import backup_cli
+
+        sys.exit(backup_cli(argv[1:]))
+
     # `jarvis graph <cmd>` — memory-graph rituals (rebuild the derived edge cache, …). Derive/
     # read-only; a thin delegate imported on demand.
     if argv and argv[0] == "graph":

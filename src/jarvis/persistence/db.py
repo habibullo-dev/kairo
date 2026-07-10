@@ -22,13 +22,23 @@ from pathlib import Path
 
 import aiosqlite
 
-from jarvis.persistence.migrations import migrate
+from jarvis.persistence.backup import create_pre_migration_snapshot, existing_database_version
+from jarvis.persistence.migrations import latest_version, migrate
 
 
 async def connect(path: Path) -> aiosqlite.Connection:
     """Open the database at ``path`` (creating parent dirs), enable foreign keys,
     and run migrations. Returns a ready-to-use connection."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    # A real, older database is snapshotted before any DDL. The online SQLite backup API makes
+    # this safe even if another Kairo process currently has the database open. Snapshot failure
+    # intentionally blocks migration rather than risking the only copy of user state.
+    current_version = existing_database_version(path)
+    target_version = latest_version()
+    if current_version is not None and current_version < target_version:
+        create_pre_migration_snapshot(
+            path, current_version=current_version, target_version=target_version
+        )
     db = await aiosqlite.connect(path)
     await db.execute("PRAGMA foreign_keys = ON")
     await migrate(db)

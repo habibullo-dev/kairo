@@ -1010,6 +1010,11 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
 ]
 
 
+def latest_version() -> int:
+    """The target schema version, exposed so startup can snapshot before a real upgrade."""
+    return MIGRATIONS[-1][0] if MIGRATIONS else 0
+
+
 async def migrate(db: aiosqlite.Connection) -> int:
     """Apply pending migrations. Returns the resulting schema version."""
     cursor = await db.execute("PRAGMA user_version")
