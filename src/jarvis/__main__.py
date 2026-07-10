@@ -54,6 +54,13 @@ def main() -> None:
 
         sys.exit(graph_cli(argv[1:]))
 
+    # `jarvis dream run <job>` — run ONE proposal-only dreaming job ATTENDED (Phase 16). Never
+    # schedules; the output is a proposal reviewed in the Notification Center. On-demand delegate.
+    if argv and argv[0] == "dream":
+        from jarvis.cli.dream import dream_cli
+
+        sys.exit(dream_cli(argv[1:]))
+
     parser = argparse.ArgumentParser(prog="jarvis", description="A from-scratch agentic assistant.")
     parser.add_argument("--version", action="version", version=f"jarvis {__version__}")
     parser.add_argument(

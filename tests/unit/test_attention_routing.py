@@ -104,6 +104,20 @@ async def test_router_sends_minimized_only_for_urgent_enabled(tmp_path: Path) ->
     assert len(n.sent) == 1
 
 
+async def test_default_config_never_pushes_fatigue_safe(tmp_path: Path) -> None:
+    # Priority discipline / notification fatigue: with the DEFAULT config (urgent_channels empty),
+    # NOTHING is pushed — even an urgent item stays center-only. Egress is a deliberate opt-in.
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.attention.urgent_channels == []
+    n = _FakeNotifier()
+    router = NotificationRouter(cfg, _FakeConnectors(n))
+    for priority in ("urgent", "normal", "low"):
+        await router.notify(
+            priority=priority, project_id=None, open_counts={"approval": 5}, hour=12
+        )
+    assert n.sent == []  # zero pushes by default — the human is never spammed out of the box
+
+
 def test_config_rejects_unknown_urgent_channel() -> None:
     # Construct directly so the field_validator runs (model_copy skips validation). An unknown
     # channel is refused ⇒ no accidental egress to an unsupported sink.
