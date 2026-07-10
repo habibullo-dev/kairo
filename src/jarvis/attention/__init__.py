@@ -33,6 +33,7 @@ from jarvis.attention.routing import (
     minimized_push,
     route_notification,
 )
+from jarvis.attention.runner import collect, dream_run
 from jarvis.attention.store import (
     ALLOWED_TRANSITIONS,
     TRUST_CLASSES,
@@ -73,4 +74,6 @@ __all__ = [
     "DreamingJob",
     "DreamingResult",
     "run_dreaming_job",
+    "collect",
+    "dream_run",
 ]
