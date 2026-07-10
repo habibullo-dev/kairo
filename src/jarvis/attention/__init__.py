@@ -7,6 +7,15 @@ Proposal-only dreaming (later tasks) writes here and nowhere risky.
 
 from __future__ import annotations
 
+from jarvis.attention.dreaming import (
+    DREAMING_TOOLS,
+    FORBIDDEN_TOOLS,
+    DreamingBudget,
+    DreamingCageError,
+    assert_caged,
+    build_dreaming_registry,
+    emit_budget_halt_alert,
+)
 from jarvis.attention.routing import (
     NotificationRouter,
     NotifyDecision,
@@ -39,4 +48,11 @@ __all__ = [
     "in_quiet_hours",
     "minimized_push",
     "route_notification",
+    "DREAMING_TOOLS",
+    "FORBIDDEN_TOOLS",
+    "DreamingBudget",
+    "DreamingCageError",
+    "assert_caged",
+    "build_dreaming_registry",
+    "emit_budget_halt_alert",
 ]

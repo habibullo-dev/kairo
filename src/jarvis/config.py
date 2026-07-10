@@ -495,6 +495,9 @@ class AttentionConfig(BaseModel):
     quiet_hours_start: int | None = None  # local hour [0-23] inclusive; None = no quiet window
     quiet_hours_end: int | None = None  # local hour [0-23] exclusive
     muted_projects: list[int] = Field(default_factory=list)  # project ids that never push
+    # Phase 16 dreaming: the hard per-run spend cap. Cap-hit halts the run + emits ONE alert.
+    # 0 disables dreaming (fail-closed until a positive cap is set). Never scheduled before K.
+    dreaming_budget_usd: float = 1.5
 
     @field_validator("urgent_channels")
     @classmethod
