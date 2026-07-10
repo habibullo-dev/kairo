@@ -277,11 +277,11 @@ async def test_ui_subagent_approver_labels_and_grants(tmp_path: Path) -> None:
 # --- Gate routes: auth + wiring --------------------------------------------
 
 
-def _client(tmp_path: Path):
+def _client(tmp_path: Path, *, base_url: str = "http://127.0.0.1"):
     config = load_config(root=tmp_path, env_file=None)
     auth = AuthManager(token="tok")
     app = create_app(config, auth=auth)
-    return TestClient(app, base_url="http://127.0.0.1"), app, auth
+    return TestClient(app, base_url=base_url), app, auth
 
 
 def _auth(auth: AuthManager) -> dict[str, str]:
@@ -325,6 +325,14 @@ def test_resolve_requires_session_and_origin(tmp_path: Path) -> None:
         headers={**_auth(auth), "origin": "http://evil.com"},
     )
     assert r.status_code == 403
+    # Another loopback port is also foreign to this exact UI origin. SameSite cookies are not
+    # port-scoped, so this must stop before the Gate's resolve route sees the request.
+    r = client.post(
+        "/api/approvals/D1/resolve",
+        json={"nonce": "n", "action": "approve"},
+        headers={**_auth(auth), "origin": "http://127.0.0.1:3000"},
+    )
+    assert r.status_code == 403
 
 
 def test_resolve_bad_nonce_returns_409(tmp_path: Path) -> None:
@@ -333,6 +341,16 @@ def test_resolve_bad_nonce_returns_409(tmp_path: Path) -> None:
         "/api/approvals/nope/resolve",
         json={"nonce": "bogus", "action": "approve"},
         headers={**_auth(auth), "origin": "http://127.0.0.1"},
+    )
+    assert r.status_code == 409 and r.json()["ok"] is False
+
+
+def test_gate_resolve_exact_loopback_origin_with_port_reaches_handler(tmp_path: Path) -> None:
+    client, _app_, auth = _client(tmp_path, base_url="http://127.0.0.1:8787")
+    r = client.post(
+        "/api/approvals/nope/resolve",
+        json={"nonce": "bogus", "action": "approve"},
+        headers={**_auth(auth), "origin": "http://127.0.0.1:8787"},
     )
     assert r.status_code == 409 and r.json()["ok"] is False
 

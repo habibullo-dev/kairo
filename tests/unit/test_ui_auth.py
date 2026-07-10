@@ -25,18 +25,39 @@ def test_host_rejected_foreign() -> None:
         assert not host_allowed(h), h
 
 
+def test_host_rejected_malformed_authority() -> None:
+    for h in ("localhost:abc", "127.0.0.1:", "[::1]evil", "[::1]:abc", "127.0.0.1:0"):
+        assert not host_allowed(h), h
+
+
 # --- Origin check (anti-CSRF) ----------------------------------------------
 
 
-def test_origin_allowed_loopback() -> None:
-    assert origin_allowed("http://127.0.0.1:8787")
-    assert origin_allowed("http://localhost:8787")
+def test_origin_allowed_exact_target() -> None:
+    assert origin_allowed(
+        "http://127.0.0.1:8787", host_header="127.0.0.1:8787", scheme="http"
+    )
+    assert origin_allowed("http://localhost:8787", host_header="localhost:8787", scheme="http")
+    assert origin_allowed("https://127.0.0.1", host_header="127.0.0.1", scheme="https")
+    assert origin_allowed("http://127.0.0.1:80", host_header="127.0.0.1", scheme="http")
+    assert origin_allowed("https://127.0.0.1:443", host_header="127.0.0.1", scheme="https")
+    assert origin_allowed("http://[::1]:8787", host_header="[::1]:8787", scheme="ws")
+    assert origin_allowed("http://[::1]", host_header="::1", scheme="http")
 
 
-def test_origin_rejected_foreign_or_empty() -> None:
-    assert not origin_allowed("")  # empty ⇒ refused (fail-closed) for the calls that need it
-    assert not origin_allowed("http://evil.com")
-    assert not origin_allowed("https://attacker.test:8787")
+def test_origin_rejected_when_not_exact_target_or_malformed() -> None:
+    target = {"host_header": "127.0.0.1:8787", "scheme": "http"}
+    assert not origin_allowed("", **target)  # empty ⇒ refused (fail-closed)
+    assert not origin_allowed("http://evil.com", **target)
+    assert not origin_allowed("https://127.0.0.1:8787", **target)  # scheme mismatch
+    assert not origin_allowed("http://localhost:8787", **target)  # alias mismatch
+    assert not origin_allowed("http://127.0.0.1:3000", **target)  # port mismatch
+    assert not origin_allowed("http://127.0.0.1:0", **target)  # port zero never defaults
+    assert not origin_allowed("http://127.0.0.1:8787/path", **target)
+    assert not origin_allowed("http://127.0.0.1:8787?", **target)
+    assert not origin_allowed("http://127.0.0.1:8787#", **target)
+    assert not origin_allowed("http://user@127.0.0.1:8787", **target)
+    assert not origin_allowed("http://127.0.0.1:8787", host_header="127.0.0.1:8787", scheme="ftp")
 
 
 # --- token / session -------------------------------------------------------

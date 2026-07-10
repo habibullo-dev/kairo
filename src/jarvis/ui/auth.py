@@ -22,17 +22,40 @@ from jarvis.config import _LOOPBACK_HOSTS
 SESSION_COOKIE = "kairo_session"
 
 
-def _host_only(authority: str) -> str:
-    """Strip an optional ``:port`` (and IPv6 brackets) from a Host authority.
+def _parse_host_authority(host_header: str) -> tuple[str, int | None] | None:
+    """Parse a Host authority into ``(host, explicit_port)`` without guessing a scheme.
 
-    ``127.0.0.1:8787`` -> ``127.0.0.1`` · ``[::1]:8787`` -> ``::1`` · ``localhost`` -> as-is.
+    Bracketed IPv6 is handled explicitly; a bare IPv6 loopback remains accepted for compatibility
+    with the existing local-host contract, but only bracketed IPv6 may carry a port. Invalid ports
+    and malformed suffixes are rejected at the common Host boundary.
     """
-    authority = authority.strip()
-    if authority.startswith("["):  # bracketed IPv6, e.g. [::1]:8787
-        return authority[1:].split("]", 1)[0]
-    if authority.count(":") == 1:  # host:port (IPv4 or hostname) — strip the port
-        return authority.rsplit(":", 1)[0]
-    return authority  # bare host, or bare IPv6 (multiple colons, no port) — leave as-is
+    authority = host_header.strip()
+    if not authority:
+        return None
+    if authority.startswith("["):
+        end = authority.find("]")
+        if end < 1:
+            return None
+        host, rest = authority[1:end], authority[end + 1 :]
+        if not rest:
+            return host.lower(), None
+        if not rest.startswith(":"):
+            return None
+        port_text = rest[1:]
+    elif authority.count(":") == 0:
+        return authority.lower(), None
+    elif authority.count(":") == 1:
+        host, port_text = authority.rsplit(":", 1)
+    else:
+        # A bare IPv6 address has no port. Brackets are required when a port is present.
+        return authority.lower(), None
+
+    if not host or not port_text.isdecimal():
+        return None
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        return None
+    return host.lower(), port
 
 
 def host_allowed(host_header: str) -> bool:
@@ -40,16 +63,78 @@ def host_allowed(host_header: str) -> bool:
 
     This is the DNS-rebinding defense: a page at ``http://attacker.test`` that has rebound
     its name to 127.0.0.1 still sends ``Host: attacker.test``, which is refused here."""
-    return bool(host_header) and _host_only(host_header) in _LOOPBACK_HOSTS
+    parsed = _parse_host_authority(host_header)
+    return parsed is not None and parsed[0] in _LOOPBACK_HOSTS
 
 
-def origin_allowed(origin_header: str) -> bool:
-    """True iff the Origin is loopback. Empty Origin ⇒ False (fail-closed) — the calls that
-    require an Origin (mutations, the WS handshake) must present a loopback one; this is the
-    CSRF defense even if a cookie's scope somehow leaks."""
-    if not origin_header:
+def _http_scheme(scheme: str) -> str | None:
+    """Normalize an HTTP or WebSocket request scheme to its Origin scheme."""
+    return {"http": "http", "ws": "http", "https": "https", "wss": "https"}.get(
+        scheme.lower()
+    )
+
+
+def _target_authority(host_header: str, scheme: str) -> tuple[str, int] | None:
+    """Parse the actual request authority into a normalized ``(host, port)`` pair.
+
+    ``Host`` is an HTTP authority rather than a URL, so parse bracketed IPv6 explicitly and
+    preserve the existing acceptance of a bare IPv6 loopback address. Invalid or non-loopback
+    authorities fail closed here even though ``host_allowed`` remains the first perimeter check.
+    """
+    target_scheme = _http_scheme(scheme)
+    if target_scheme is None:
+        return None
+    default_port = 443 if target_scheme == "https" else 80
+    parsed = _parse_host_authority(host_header)
+    if parsed is None:
+        return None
+    host, port = parsed
+    return host, port if port is not None else default_port
+
+
+def origin_allowed(origin_header: str, *, host_header: str, scheme: str) -> bool:
+    """True iff ``Origin`` is the exact loopback origin serving this request.
+
+    The session cookie is ``SameSite=Strict``, whose browser notion of a site does not isolate
+    ports. Accepting any loopback Origin would therefore let a page on another local port drive
+    an authenticated Gate request. Mutations and WebSocket handshakes instead require the same
+    scheme, host, and normalized port as the request's own Host authority. Malformed or
+    path-bearing Origins are refused rather than normalized.
+    """
+    if (
+        not origin_header
+        or "?" in origin_header
+        or "#" in origin_header
+        or not host_allowed(host_header)
+    ):
         return False
-    return (urlsplit(origin_header).hostname or "") in _LOOPBACK_HOSTS
+    target_scheme = _http_scheme(scheme)
+    target = _target_authority(host_header, scheme)
+    if target_scheme is None or target is None:
+        return False
+    target_host, _target_port = target
+    if target_host not in _LOOPBACK_HOSTS:
+        return False
+    try:
+        origin = urlsplit(origin_header)
+        origin_port = origin.port
+    except ValueError:
+        return False
+    if (
+        origin.scheme != target_scheme
+        or not origin.netloc
+        or origin.username is not None
+        or origin.password is not None
+        or origin.path
+        or origin.query
+        or origin.fragment
+    ):
+        return False
+    origin_host = (origin.hostname or "").lower()
+    if origin_host not in _LOOPBACK_HOSTS:
+        return False
+    default_port = 443 if origin.scheme == "https" else 80
+    return (origin_host, origin_port if origin_port is not None else default_port) == target
 
 
 class AuthManager:

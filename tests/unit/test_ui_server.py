@@ -23,11 +23,11 @@ from jarvis.ui.server import _handle_ws_message, create_app
 TOKEN = "tok-GOOD-canary"
 
 
-def _app(tmp_path: Path, *, token: str = TOKEN):
+def _app(tmp_path: Path, *, token: str = TOKEN, base_url: str = "http://127.0.0.1"):
     config = load_config(root=tmp_path, env_file=None)
     auth = AuthManager(token=token)
     app = create_app(config, auth=auth)
-    client = TestClient(app, base_url="http://127.0.0.1")
+    client = TestClient(app, base_url=base_url)
     return client, app, auth
 
 
@@ -116,6 +116,24 @@ def test_mutation_foreign_origin_rejected(tmp_path: Path) -> None:
     _assert_hardened(r)
 
 
+def test_mutation_same_loopback_host_different_port_rejected(tmp_path: Path) -> None:
+    # SameSite cookies are not port-scoped, so another local port must not drive a Gate mutation.
+    client, _app_, auth = _app(tmp_path)
+    r = client.post(
+        "/api/anything", headers={**_cookie(auth), "origin": "http://127.0.0.1:3000"}
+    )
+    assert r.status_code == 403
+
+
+def test_mutation_exact_loopback_origin_with_port_reaches_route(tmp_path: Path) -> None:
+    client, _app_, auth = _app(tmp_path, base_url="http://127.0.0.1:8787")
+    r = client.post(
+        "/api/turn/cancel",
+        headers={**_cookie(auth), "origin": "http://127.0.0.1:8787"},
+    )
+    assert r.status_code == 200
+
+
 def test_mutation_loopback_origin_but_no_session(tmp_path: Path) -> None:
     client, _app_, _auth = _app(tmp_path)
     r = client.post("/api/anything", headers={"origin": "http://127.0.0.1"})
@@ -170,6 +188,25 @@ def test_ws_foreign_origin_refused(tmp_path: Path) -> None:
     with pytest.raises(WebSocketDisconnect):  # noqa: SIM117
         with client.websocket_connect("/ws", headers=bad) as ws:
             ws.receive_json()
+
+
+def test_ws_same_loopback_host_different_port_refused(tmp_path: Path) -> None:
+    client, _app_, auth = _app(tmp_path)
+    bad = {**_ws_headers(auth), "origin": "http://127.0.0.1:3000"}
+    with pytest.raises(WebSocketDisconnect):  # noqa: SIM117
+        with client.websocket_connect("/ws", headers=bad) as ws:
+            ws.receive_json()
+
+
+def test_ws_exact_loopback_origin_with_port_gets_hello(tmp_path: Path) -> None:
+    client, _app_, auth = _app(tmp_path, base_url="http://127.0.0.1:8787")
+    headers = {
+        "host": "127.0.0.1:8787",
+        "origin": "http://127.0.0.1:8787",
+        "cookie": f"{SESSION_COOKIE}={auth.mint_session()}",
+    }
+    with client.websocket_connect("/ws", headers=headers) as ws:
+        assert ws.receive_json()["type"] == "hello"
 
 
 def test_ws_foreign_host_refused(tmp_path: Path) -> None:

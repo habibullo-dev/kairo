@@ -203,7 +203,11 @@ def create_app(
         if not host_allowed(request.headers.get("host", "")):
             return _deny(status.HTTP_400_BAD_REQUEST, "bad host")
         # 2. Origin check on mutations — anti-CSRF (a cross-site POST carries a foreign Origin).
-        if request.method in _MUTATING and not origin_allowed(request.headers.get("origin", "")):
+        if request.method in _MUTATING and not origin_allowed(
+            request.headers.get("origin", ""),
+            host_header=request.headers.get("host", ""),
+            scheme=request.url.scheme,
+        ):
             return _deny(status.HTTP_403_FORBIDDEN, "bad origin")
         # 3. Token exchange at `/?token=…`: mint a session, redirect CLEAN (no token in the
         #    served url / history), no-store. The token is never echoed back.
@@ -1479,7 +1483,11 @@ def create_app(
         # (anti-rebinding), Origin (anti-CSRF), and a valid session cookie — else refuse.
         if (
             not host_allowed(websocket.headers.get("host", ""))
-            or not origin_allowed(websocket.headers.get("origin", ""))
+            or not origin_allowed(
+                websocket.headers.get("origin", ""),
+                host_header=websocket.headers.get("host", ""),
+                scheme=websocket.url.scheme,
+            )
             or not auth.is_valid_session(websocket.cookies.get(SESSION_COOKIE))
         ):
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
