@@ -164,6 +164,11 @@ function handleMessage(msg) {
     if (msg.kind === "session_new") state.chat = [];
     pollStatus(); refreshHeader(); refreshConversation(); return;
   }
+  if (msg.kind === "session_persistence") {
+    if (state.runner) state.runner.session_save_state = msg.state;
+    refreshConversation();
+    return;
+  }
   if (msg.kind === "event") { onEvent(msg); return; }
   if (msg.kind === "notice") { onNotice(msg.notice); return; }
   if (msg.kind === "voice") { onVoice(msg); return; }

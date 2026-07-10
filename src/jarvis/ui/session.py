@@ -143,6 +143,9 @@ class UiSession:
         self.context_manager = context_manager
         self.project_id = project_id
         self.session_id: int | None = None
+        # Persistence is an explicit user-facing lifecycle, not an assumption. The value is a
+        # small safe vocabulary for the UI; database/OS error details stay in local logs.
+        self.persistence_state = "new"  # new | saving | saved | failed
 
     def _context(self) -> ExecutionContext | None:
         """Return this chat's persisted delivery identity, never a wildcard selector."""
@@ -204,19 +207,29 @@ class UiSession:
             await self._persist(context)
             return result
 
+    async def _set_persistence_state(
+        self, state: str, context: ExecutionContext | None
+    ) -> None:
+        self.persistence_state = state
+        if context is not None:
+            await self.connections.publish(context, {"kind": "session_persistence", "state": state})
+
     async def _persist(self, context: ExecutionContext | None = None) -> None:
         """Save the conversation + frozen compaction state for the current session. A save
         failure is logged, never fatal — mirrors ``Repl._persist``."""
         session_id = context.session_id if context is not None else self.session_id
         if self.sessions is None or session_id is None:
             return
+        await self._set_persistence_state("saving", context)
         try:
             await self.sessions.save_messages(session_id, self.messages)
             if self.context_manager is not None:
                 summary, cut = self.context_manager.state()
                 await self.sessions.save_compaction(session_id, summary, cut)
+            await self._set_persistence_state("saved", context)
         except Exception as exc:  # noqa: BLE001 - a save failure must not kill the session
             self.log.warning("ui_persist_failed", error=str(exc))
+            await self._set_persistence_state("failed", context)
 
     async def resume(self, session_id: int) -> bool:
         """Load a past session's messages + frozen compaction into the live loop (mirrors
@@ -226,7 +239,7 @@ class UiSession:
             return False
         async with self.turn_lock:
             meta = await self.sessions.get_meta(session_id)
-            if meta is None or meta.kind != "interactive":
+            if meta is None or meta.kind != "interactive" or meta.archived:
                 return False
             history = await self.sessions.load_messages(session_id)
             if not history:
@@ -239,6 +252,7 @@ class UiSession:
             if self.context_manager is not None:
                 summary, cut = await self.sessions.load_compaction(session_id)
                 self.context_manager.restore(summary, cut)
+            self.persistence_state = "saved"
         return True
 
     def submit(self, text: str) -> bool:
@@ -268,6 +282,7 @@ class UiSession:
         self.messages = []
         self.session_id = None
         self.project_id = project_id
+        self.persistence_state = "new"
         if self.context_manager is not None:
             # A compaction summary belongs to one conversation.  It must not survive a new chat.
             self.context_manager.restore(None, 0)

@@ -253,6 +253,25 @@ async def test_context_replacement_blocks_active_run_and_archived_resume(tmp_pat
     assert not await workspace_b.resume(blocked_context.session_id)
 
 
+async def test_resume_moves_session_and_project_together(tmp_path: Path) -> None:
+    registry, connections, projects = await _registry(tmp_path)
+    project_a = await projects.store.create(name="Project A")
+    project_b = await projects.store.create(name="Project B")
+    workspace = await registry.attach(
+        connections.register(_Socket(), owner_session="same-browser"),
+        owner_session="same-browser",
+    )
+    await workspace.select_project(project_a)
+    target = await workspace.session.sessions.create_session(project_id=project_b)
+    await workspace.session.sessions.save_messages(
+        target, [{"role": "user", "content": "project B only"}]
+    )
+
+    assert await workspace.resume(target)
+    assert workspace.context == ExecutionContext(session_id=target, project_id=project_b)
+    assert workspace.session.project_id == project_b
+
+
 async def test_voice_activity_blocks_context_replacement(tmp_path: Path) -> None:
     registry, connections, projects = await _registry(tmp_path)
     project_id = await projects.store.create(name="Voice Project")
@@ -337,6 +356,24 @@ async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
             ).json()
             assert after_a["project"]["id"] == project_a
             assert after_b["project"]["id"] is None
+
+            # A different live workspace may not inspect or mutate Project A's transcript just
+            # by knowing its numeric id. Resume below is the sole deliberate cross-project path.
+            foreign_get = client.get(
+                f"/api/sessions/{after_a['session_id']}",
+                headers={"cookie": cookie, WORKSPACE_HEADER: hello_b["workspace_id"]},
+            )
+            assert foreign_get.status_code == 404
+            foreign_pin = client.post(
+                f"/api/sessions/{after_a['session_id']}/pin",
+                json={"pinned": True},
+                headers={
+                    "cookie": cookie,
+                    "origin": "http://127.0.0.1",
+                    WORKSPACE_HEADER: hello_b["workspace_id"],
+                },
+            )
+            assert foreign_pin.status_code == 404
 
             for workspace_id in (hello_a["workspace_id"], hello_b["workspace_id"]):
                 created = client.post(

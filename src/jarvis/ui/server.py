@@ -227,6 +227,16 @@ def create_app(
             workspace_id=request.headers.get(WORKSPACE_HEADER),
         )
 
+    def _session_in_workspace(meta, workspace) -> bool:
+        """A session metadata mutation/read stays inside its live workspace project.
+
+        Resume is intentionally handled separately because it performs the atomic project+session
+        transition. Every other session endpoint is a same-context operation.
+        """
+        return meta is not None and (
+            workspace is None or meta.project_id == workspace.context.project_id
+        )
+
     @app.middleware("http")
     async def guard(request: Request, call_next):  # noqa: ANN001,ANN202 - framework signature
         # 1. Host allowlist FIRST — anti DNS-rebinding (a rebound name still sends its Host).
@@ -398,9 +408,17 @@ def create_app(
         sstore = app.state.services.sessions
         status["session_id"] = sess.session_id if sess is not None else None
         status["session_title"] = None
+        status["session_save_state"] = getattr(sess, "persistence_state", "new")
+        status["session_created_at"] = None
+        status["session_updated_at"] = None
+        status["session_pinned"] = False
         if sess is not None and sess.session_id is not None and sstore is not None:
             meta = await sstore.get_meta(sess.session_id)
-            status["session_title"] = meta.title if meta is not None else None
+            if meta is not None:
+                status["session_title"] = meta.title
+                status["session_created_at"] = meta.created_at
+                status["session_updated_at"] = meta.updated_at
+                status["session_pinned"] = meta.pinned
         # model reflects the interactive override once Task 2 wires it; here it is the config
         # default (byte-identical to today). effort is the loop's output-config effort.
         models = getattr(app.state, "interactive_models", None)
@@ -729,10 +747,20 @@ def create_app(
         )
 
     @app.get("/api/sessions/{session_id}")
-    async def sessions_get(session_id: int) -> JSONResponse:
+    async def sessions_get(session_id: int, request: Request) -> JSONResponse:
         svc = app.state.services.sessions
         if svc is None:
             return _unavailable("sessions")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        meta = await svc.get_meta(session_id)
+        if meta is None:
+            return JSONResponse({"ok": False, "message": "no such session"}, status_code=404)
+        # A transcript is private to its project context. Resume handles the deliberate
+        # cross-project transition atomically; arbitrary GETs do not get that privilege.
+        if workspace is not None and meta.project_id != workspace.context.project_id:
+            return JSONResponse({"ok": False, "message": "wrong project scope"}, status_code=404)
         return JSONResponse(await session_transcript(svc, session_id))
 
     @app.get("/api/projects")
@@ -1032,6 +1060,12 @@ def create_app(
         svc = app.state.services.sessions
         if svc is None:
             return _unavailable("sessions")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        meta = await svc.get_meta(session_id)
+        if not _session_in_workspace(meta, workspace):
+            return JSONResponse({"ok": False, "message": "wrong project scope"}, status_code=404)
         body = await request.json()
         ok = await svc.set_pinned(session_id, bool(body.get("pinned", True)))
         return JSONResponse({"ok": ok})
@@ -1096,6 +1130,12 @@ def create_app(
         svc = app.state.services.sessions
         if svc is None:
             return _unavailable("sessions")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        meta = await svc.get_meta(session_id)
+        if not _session_in_workspace(meta, workspace):
+            return JSONResponse({"ok": False, "message": "wrong project scope"}, status_code=404)
         title = str((await request.json()).get("title", "")).strip()
         if not title:
             return JSONResponse({"ok": False, "message": "title required"}, status_code=400)
@@ -1111,6 +1151,9 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
+        meta = await svc.get_meta(session_id)
+        if not _session_in_workspace(meta, workspace):
+            return JSONResponse({"ok": False, "message": "wrong project scope"}, status_code=404)
         archived = bool((await request.json()).get("archived", True))
         if app.state.workspaces is not None:
             async with app.state.workspaces.transition_lock:

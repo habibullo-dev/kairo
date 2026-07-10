@@ -14,6 +14,7 @@ export function render(container, api) {
           <div><div class="chat-kicker">Kairo</div><h1>Chat</h1></div>
           <div class="chat-turn-meta" id="chat-turn-meta"></div>
         </div>
+        <div class="chat-lifecycle-status" id="chat-lifecycle-status"></div>
         <div id="chat-convo-header"></div>
         <div id="chat-pending"></div>
         <div class="chat-thread" id="chat-thread"></div>
@@ -67,6 +68,7 @@ export function render(container, api) {
   renderPending(container, api);
   renderThread(container, api);
   renderMeta(container, api);
+  renderLifecycle(container, api);
   renderVoiceControls(container, api);
 }
 
@@ -133,4 +135,29 @@ function renderMeta(container, api) {
   const title = runner.session_title || "New chat";
   const spend = typeof runner.today_spend_usd === "number" ? `$${runner.today_spend_usd.toFixed(4)} today` : "";
   meta.textContent = [project, title, spend].filter(Boolean).join(" · ");
+}
+
+function saveLabel(state) {
+  return {
+    new: "New chat · unsaved", saving: "Saving…", saved: "Saved", failed: "Save failed",
+  }[state] || "New chat · unsaved";
+}
+
+function formatTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function renderLifecycle(container, api) {
+  const runner = api.state.runner || {};
+  const state = runner.session_save_state || "new";
+  const status = container.querySelector("#chat-lifecycle-status");
+  if (status) {
+    const time = formatTime(runner.session_updated_at || runner.session_created_at);
+    status.textContent = state === "failed"
+      ? "Save failed — this chat is still open in this tab. Keep it open and copy anything important before switching."
+      : [saveLabel(state), time ? `Updated ${time}` : ""].filter(Boolean).join(" · ");
+    status.classList.toggle("error", state === "failed");
+  }
 }

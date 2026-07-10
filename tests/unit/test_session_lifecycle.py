@@ -108,6 +108,16 @@ async def test_new_chat_409_while_a_turn_is_in_flight(tmp_path: Path) -> None:
     assert r.status_code == 409
 
 
+async def test_runner_exposes_safe_persistence_lifecycle(tmp_path: Path) -> None:
+    client, auth, _store, _sid = await _client(tmp_path)
+    live = client.app.state.session
+    live.persistence_state = "failed"
+    status = client.get("/api/runner", headers=_hdr(auth)).json()
+    assert status["session_save_state"] == "failed"
+    # The status is a safe lifecycle enum only — no persistence exception/body reaches the UI.
+    assert "error" not in status
+
+
 # --- rename / archive (metadata; archive never deletes) --------------------
 async def test_rename_route(tmp_path: Path) -> None:
     client, auth, store, sid = await _client(tmp_path)

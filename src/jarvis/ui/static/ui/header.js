@@ -169,6 +169,9 @@ function actions(runner, sessions) {
   const row = [];
   const newBtn = el("button", { class: "plain-button" }, ["＋ New"]);
   newBtn.addEventListener("click", async () => {
+    if (runner.session_save_state === "failed" && !window.confirm(
+      "Kairo could not save this chat. Start a new chat anyway? The current transcript remains only in this open tab."
+    )) return;
     const res = await _api.post("/api/sessions/new", {});
     if (res.ok) { resetChat(); await refreshHeader(); _onChanged(); }
   });
@@ -187,13 +190,22 @@ function actions(runner, sessions) {
   if (sid) {
     const meta = (sessions.sessions || []).find((s) => s.id === sid);
     const pinned = !!(meta && meta.pinned);
-    const rename = el("button", { class: "plain-button ghost" }, ["Rename"]);
+    const rename = el("button", { class: "hdr-menu-button" }, ["Rename"]);
     rename.addEventListener("click", () => { _renaming = true; refreshHeader(); });
-    const pin = el("button", { class: "plain-button ghost" }, [pinned ? "Unpin" : "Pin"]);
+    const pin = el("button", { class: "hdr-menu-button" }, [pinned ? "Unpin" : "Pin"]);
     pin.addEventListener("click", () => post(`/api/sessions/${sid}/pin`, { pinned: !pinned }));
-    const arch = el("button", { class: "plain-button ghost" }, ["Archive"]);
-    arch.addEventListener("click", () => post(`/api/sessions/${sid}/archive`, { archived: true }));
-    row.push(rename, pin, arch);
+    const arch = el("button", { class: "hdr-menu-button danger" }, ["Archive"]);
+    arch.addEventListener("click", async () => {
+      const failed = runner.session_save_state === "failed";
+      const warning = failed
+        ? "Kairo could not save this chat. Archive anyway? The current transcript remains only in this open tab."
+        : "Archive this chat? Kairo will open a new chat in the same project.";
+      if (window.confirm(warning)) await post(`/api/sessions/${sid}/archive`, { archived: true });
+    });
+    row.push(el("details", { class: "hdr-menu" }, [
+      el("summary", { "aria-label": "Chat actions" }, ["•••"]),
+      el("div", { class: "hdr-menu-items" }, [rename, pin, arch]),
+    ]));
   }
   return el("div", { class: "hdr-actions" }, row);
 }

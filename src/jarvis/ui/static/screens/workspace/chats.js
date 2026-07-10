@@ -16,7 +16,23 @@ export async function render(container, api, ctx) {
     "aria-label": "Search chats",
     oninput: (ev) => loadList(ev.target.value),
   });
-  container.appendChild(search);
+  const activeProjectId = api.state.runner && api.state.runner.project && api.state.runner.project.id;
+  const newChat = actionButton(
+    activeProjectId === ctx.projectId ? "New chat in this project" : "Work in this project",
+    async () => {
+      if (activeProjectId !== ctx.projectId) {
+        const selected = await api.post("/api/projects/select", { project_id: ctx.projectId });
+        if (!selected.ok) return;
+      } else {
+        const created = await api.post("/api/sessions/new", {});
+        if (!created.ok) return;
+      }
+      api.state.chat = [];
+      location.hash = "chat";
+    },
+    "primary",
+  );
+  container.append(el("div", { class: "ws-chats-head" }, [newChat]), search);
   container.appendChild(listRegion);
 
   let seq = 0;
@@ -40,6 +56,7 @@ export async function render(container, api, ctx) {
       return;
     }
     for (const s of sessions) {
+      const active = s.id === api.state.runner?.session_id;
       const acts = el("div", { class: "ws-rowacts" }, [
         actionButton("Resume", async () => {
           // Loads the chat + its transcript into the Daily view (via the shared helper).
@@ -50,8 +67,11 @@ export async function render(container, api, ctx) {
           loadList(search.value);
         }, "ghost"),
       ]);
-      const sub = relTime(s.updated_at) + (s.pinned ? " · pinned" : "");
-      listRegion.appendChild(row("💬", s.title, sub, { trailing: acts }));
+      const sub = [relTime(s.updated_at), active ? "active" : "", s.pinned ? "pinned" : ""]
+        .filter(Boolean).join(" · ");
+      const item = row("💬", s.title, sub, { trailing: acts });
+      item.classList.toggle("active-chat", active);
+      listRegion.appendChild(item);
     }
   }
 

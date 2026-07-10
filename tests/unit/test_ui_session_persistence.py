@@ -16,6 +16,7 @@ import pytest
 
 from jarvis.config import load_config
 from jarvis.core import AgentLoop, FakeClient, build_system, text_message
+from jarvis.core.context import ContextManager
 from jarvis.permissions import PermissionGate, Policy
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
@@ -144,6 +145,47 @@ async def test_resume_unknown_session_is_false(tmp_path: Path) -> None:
     )
     assert await session.resume(999) is False
     assert session.session_id is None  # unchanged
+
+
+async def test_new_chat_clears_compacted_context_and_archived_chat_cannot_resume(
+    tmp_path: Path,
+) -> None:
+    store = await _store(tmp_path)
+    old = await store.create_session()
+    await store.save_messages(old, [{"role": "user", "content": "old project summary source"}])
+    await store.save_compaction(old, "old compacted summary", 1)
+    context = ContextManager()
+    session = UiSession(
+        loop=_loop(tmp_path, FakeClient([])),
+        connections=ConnectionManager(clock=lambda: 0.0),
+        sessions=store,
+        context_manager=context,
+    )
+    assert await session.resume(old)
+    assert context.state() == ("old compacted summary", 1)
+    session.start_new_session(None)
+    assert session.messages == []
+    assert session.session_id is None
+    assert context.state() == (None, 0)  # old summary cannot leak into a fresh chat
+
+    await store.set_archived(old, True)
+    assert not await session.resume(old)
+
+
+async def test_persistence_failure_has_a_safe_visible_state(tmp_path: Path, monkeypatch) -> None:
+    store = await _store(tmp_path)
+    session = UiSession(
+        loop=_loop(tmp_path, FakeClient([text_message("reply")])),
+        connections=ConnectionManager(clock=lambda: 0.0),
+        sessions=store,
+    )
+
+    async def fail_save(*_args, **_kwargs) -> None:
+        raise OSError("database path and secret-shaped provider detail")
+
+    monkeypatch.setattr(store, "save_messages", fail_save)
+    await session.handle_text("hello")
+    assert session.persistence_state == "failed"
 
 
 async def test_no_store_is_ephemeral_and_safe(tmp_path: Path) -> None:
