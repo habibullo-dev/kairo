@@ -30,6 +30,7 @@ import { money } from "./ui/format.js";
 
 const state = {
   chat: [],            // Daily conversation items {role, text} | {tool, resolution}
+  chatAttachments: [], // local user-selected sources persisted into this chat/project knowledge scope
   pending: new Map(),  // decision_id -> approval payload (+ nonce once minted)
   runner: {},          // last /api/runner status
   voice: { enabled: false },
@@ -63,6 +64,28 @@ export const api = {
     });
     return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
   },
+  async upload(path, body) {
+    // FormData lets the browser set its own multipart boundary. The server still receives the
+    // same authenticated, server-owned workspace handle as every other attended UI action.
+    const r = await fetch(path, { method: "POST", headers: workspaceHeaders(), body });
+    return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
+  },
+  async download(path, filename) {
+    // Keep the opaque, server-owned workspace handle on downloads too.  This avoids opening a
+    // new unbound tab just to fetch an output from another chat/project.
+    const r = await fetch(path, { headers: workspaceHeaders() });
+    if (!r.ok) return false;
+    const url = URL.createObjectURL(await r.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename || "kairo-output";
+    link.hidden = true;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    return true;
+  },
   // Re-open the amber approval modal for the oldest pending item (Daily "Review" button).
   reviewPending() {
     const next = [...state.pending.values()][0];
@@ -88,6 +111,7 @@ export const api = {
     if (t && Array.isArray(t.messages)) {
       state.chat = t.messages.map((m) => ({ role: m.role, text: m.text }));
     }
+    state.chatAttachments = [];
     return true;
   },
 };
@@ -156,12 +180,14 @@ function handleMessage(msg) {
     if (state.runner) state.runner.project = { id: msg.project_id, name: msg.name };
     state.context = { session_id: msg.session_id, project_id: msg.project_id };
     state.chat = [];
+    state.chatAttachments = [];
     renderRunnerState(); refreshHeader(); refreshConversation(); return;
   }
   if (msg.kind === "session_new" || msg.kind === "session_resumed") {
     clearPendingApprovals();
     state.context = { session_id: msg.session_id, project_id: msg.project_id };
     if (msg.kind === "session_new") state.chat = [];
+    state.chatAttachments = [];
     pollStatus(); refreshHeader(); refreshConversation(); return;
   }
   if (msg.kind === "session_persistence") {
@@ -253,15 +279,42 @@ function onApproval(msg) {
   refreshIfActive("gate");
 }
 
+function approvalCopy(next) {
+  const tool = String(next.tool || "").toLowerCase();
+  if (tool === "gmail_create_draft") return ["Gmail", "Kairo wants to create a Gmail draft."];
+  if (tool === "gmail_update_draft") return ["Gmail", "Kairo wants to update a Gmail draft."];
+  if (tool.includes("gmail")) return ["Gmail", "Kairo wants to read Gmail."];
+  if (tool === "calendar_create_event") return ["Calendar", "Kairo wants to create a calendar event."];
+  if (tool === "calendar_update_event") return ["Calendar", "Kairo wants to update a calendar event."];
+  if (tool === "calendar_cancel_event") return ["Calendar", "Kairo wants to cancel a calendar event."];
+  if (tool.includes("calendar")) return ["Calendar", "Kairo wants to read your calendar."];
+  if (tool === "drive_create_doc") return ["Google Drive", "Kairo wants to create a Google Doc."];
+  if (tool === "drive_update_doc") return ["Google Drive", "Kairo wants to update a Google Doc."];
+  if (tool.includes("drive") || tool.includes("doc")) return ["Google Drive", "Kairo wants to read Google Drive."];
+  if (tool === "write_file") return ["Files", "Kairo wants to write a local file."];
+  if (tool === "send_notification") return ["Notifications", "Kairo wants to send a notification."];
+  if (tool.includes("shell") || tool.includes("terminal") || tool.includes("command")) {
+    return ["Terminal", "Kairo wants to use your terminal."];
+  }
+  if (tool === "web_search") return ["Web", "Kairo wants to search the web."];
+  if (tool.includes("web")) return ["Web", "Kairo wants to access a website."];
+  if (tool.includes("file") || tool.includes("directory")) return ["Files", "Kairo wants to access local files."];
+  const label = String(next.tool || "an action").replace(/[_-]+/g, " ");
+  return [label, `Kairo wants to use ${label}.`];
+}
+
 function showTopApproval() {
   const next = [...state.pending.values()].find((p) => !p._shown);
   if (!next) return;
   const overlay = document.getElementById("overlay");
   if (overlay.classList.contains("show")) return; // one attention surface at a time
   next._shown = true;
+  const [label, request] = approvalCopy(next);
   document.getElementById("ap-kind").textContent =
-    next.kind === "voice" ? "Confirm on screen (voice)" : "Approval required";
-  document.getElementById("ap-tool").textContent = next.title ? `${next.tool} — ${next.title}` : next.tool;
+    next.kind === "voice" ? "Confirm on screen (voice)" : "Kairo needs your approval";
+  document.getElementById("ap-tool").textContent = label;
+  document.getElementById("ap-request").textContent = request;
+  document.getElementById("ap-details").open = false;
   document.getElementById("ap-payload").textContent = JSON.stringify(next.input, null, 2);
   document.getElementById("ap-reason").textContent = next.reason || "";
   document.getElementById("ap-waiting").textContent = "Preparing secure confirmation…";
@@ -331,6 +384,19 @@ function updateGateBadge() {
     attention.textContent = `${n} approval${n === 1 ? "" : "s"}`;
     attention.classList.toggle("is-hidden", n === 0);
   }
+  const runner = state.runner || {};
+  syncStatusChrome(!!runner.turn_busy, runner.runner_running === false);
+}
+
+function syncStatusChrome(busy, paused = false) {
+  const status = document.querySelector(".status");
+  if (!status) return;
+  // Idle is not a user task. Keep the global chrome out of the way unless work is active or a
+  // non-Chat surface needs an approval shortcut; Chat already owns its own approval pill.
+  const attentionElsewhere = state.pending.size > 0 && state.route !== "chat";
+  status.classList.toggle("status-active", !!busy || !!paused || attentionElsewhere);
+  status.classList.toggle("is-working", !!busy);
+  status.classList.toggle("is-paused", !!paused);
 }
 
 // --- router ---
@@ -358,6 +424,7 @@ function refreshConversation() { refreshIfActive("chat"); refreshIfActive("daily
 
 function renderRoute() {
   const container = document.getElementById("screen");
+  document.body.dataset.route = state.route;
   container.className = "screen";
   if (DEBUG_ROUTES.has(state.route) && !document.body.classList.contains("debug")) {
     container.textContent = "";
@@ -440,8 +507,8 @@ function renderRunnerState() {
   setText("st-runner", busy ? "Kairo is working" : (s.runner_running ? "Kairo is idle" : "Kairo is paused"));
   setClass("runner-dot", dotClass);
   setText("st-turn", busy ? "working" : "ready");
-  const stop = document.getElementById("st-stop"); if (stop) stop.classList.toggle("is-hidden", !s.runner_running);
-  const resume = document.getElementById("st-resume"); if (resume) resume.classList.toggle("is-hidden", !!s.runner_running);
+  const stop = document.getElementById("st-stop"); if (stop) stop.classList.toggle("is-hidden", !busy);
+  const resume = document.getElementById("st-resume"); if (resume) resume.classList.toggle("is-hidden", s.runner_running !== false);
   // Phase 10 status strip: active project, run mode, today's spend, cost-ledger health.
   setText("st-project", s.project && s.project.name ? s.project.name : "global");
   setText("st-mode", s.mode || "approval");
@@ -468,6 +535,7 @@ function renderRunnerState() {
     setText("daily-cost-today", typeof s.today_spend_usd === "number"
       ? `${money(s.today_spend_usd)} today` : "Cost unavailable");
   }
+  syncStatusChrome(busy, s.runner_running === false);
 }
 
 let _rehydrated = false;

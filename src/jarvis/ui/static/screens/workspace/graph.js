@@ -7,7 +7,7 @@ import { mountGraph } from "../../ui/graphview.js";
 import { chip, emptyState, row, section } from "./_util.js";
 
 const KIND_ICON = {
-  project: "📁", run: "🧩", member: "◆", source: "📄", artifact: "🗎", memory: "🧠",
+  project: "📁", folder: "📂", run: "🧩", member: "◆", source: "📄", artifact: "🗎", memory: "🧠",
   task: "✓", team: "👥", wiki: "🔗", digest: "📰", person: "🧑", decision: "⚖️", topic: "🏷️",
 };
 

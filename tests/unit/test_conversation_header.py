@@ -26,18 +26,22 @@ def test_header_renders_from_server_state_not_fake_chips() -> None:
     assert "/api/runner" in HDR and "/api/models" in HDR and "/api/capabilities" in HDR
     assert "opus-4-8" not in DAILY  # the hardcoded fake model chip was removed
     assert "opus-4-8" not in HDR  # the header never hardcodes a model id
-    assert 'id="chat-model"' in CHAT  # Chat owns the live model/mode readout
+    assert "hdr-model-menu" in HDR  # model/effort/mode live in one quiet composer popover
     assert 'id="chat-convo-header"' in CHAT  # the header is mounted once, persistently
-    assert 'daily-convo-header' not in DAILY
+    assert "daily-convo-header" not in DAILY
 
 
 def test_header_writes_only_allowlisted_ui_state_routes() -> None:
-    # The header mutates ONLY the UI-state route families — never the agent turn, never an approval.
+    # The composer header mutates ONLY its small UI-state family. History mutations live in the
+    # chat-side drawer, never the agent turn or an approval surface.
     assert "/api/turn" not in HDR
     assert "/api/approvals" not in HDR
-    for route in ("/api/projects/select", "/api/sessions/new", "/rename", "/archive", "/pin",
-                  "/api/model", "/api/mode"):
+    for route in ("/api/projects/select", "/api/model", "/api/mode"):
         assert route in HDR, route
+    assert "kairo:chat-history" not in HDR
+    assert "☰" not in HDR
+    for route in ("/rename", "/archive", "/pin"):
+        assert route in CHAT, route
 
 
 def test_header_is_textcontent_only() -> None:

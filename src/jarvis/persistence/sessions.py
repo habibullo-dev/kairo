@@ -294,6 +294,22 @@ class SessionStore:
             await self.db.commit()
         return cursor.rowcount > 0
 
+    async def set_title_if_missing(self, session_id: int, title: str) -> bool:
+        """Set a generated first-turn title without racing or replacing a human rename.
+
+        The first message gives a new chat a useful label, but a user can rename the chat at
+        any time.  Keeping the blank-title condition in SQL means a concurrent rename always
+        wins; this helper can never overwrite it on the way out of a turn.
+        """
+        async with self.lock:
+            cursor = await self.db.execute(
+                "UPDATE sessions SET title = ? WHERE id = ? "
+                "AND (title IS NULL OR trim(title) = '')",
+                (title, session_id),
+            )
+            await self.db.commit()
+        return cursor.rowcount > 0
+
     async def set_archived(self, session_id: int, archived: bool) -> bool:
         """Archive/unarchive a chat — a display-status flip (never a delete); archived chats
         drop out of the default lists but keep their full transcript for audit/resume."""

@@ -11,7 +11,7 @@ import { el } from "./dom.js";
 const KIND_TOKEN = {
   project: "--accent", run: "--accent-2", member: "--subtle", source: "--cost",
   artifact: "--accent-3", memory: "--good", task: "--muted", team: "--attention",
-  wiki: "--muted", digest: "--muted", person: "--accent-2", decision: "--attention",
+  wiki: "--muted", folder: "--accent", digest: "--muted", person: "--accent-2", decision: "--attention",
   topic: "--accent-3", external_ref: "--cost",
 };
 const NODE_CAP = 150; // the calm ceiling; the read model already bounds the subgraph

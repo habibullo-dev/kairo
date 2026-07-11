@@ -87,21 +87,25 @@
       <div class="head">
         <div class="ico">⚠</div>
         <div>
-          <div class="k" id="ap-kind">Approval required</div>
+          <div class="k" id="ap-kind">Kairo needs your approval</div>
           <div class="tool" id="ap-tool"></div>
         </div>
       </div>
       <div class="bd">
-        <div class="label">Exact action · exact payload</div>
-        <pre id="ap-payload"></pre>
-        <div class="label">Why Kairo wants this</div>
-        <div class="reason" id="ap-reason"></div>
+        <div class="approval-request" id="ap-request"></div>
+        <details class="approval-details" id="ap-details">
+          <summary>Review technical details</summary>
+          <div class="label">Exact action · exact payload</div>
+          <pre id="ap-payload"></pre>
+          <div class="label">Why Kairo wants this</div>
+          <div class="reason" id="ap-reason"></div>
+        </details>
       </div>
       <div class="waiting"><span class="spin" id="ap-spin"></span><span id="ap-waiting">Preparing secure confirmation…</span></div>
       <div class="actions">
-        <button class="btn-approve" id="ap-approve" disabled>Approve once</button>
+        <button class="btn-approve" id="ap-approve" disabled>Allow once</button>
         <button class="btn-always" id="ap-always" disabled>Always allow</button>
-        <button class="btn-deny" id="ap-deny">Deny</button>
+        <button class="btn-deny" id="ap-deny">Don't allow</button>
       </div>
     </div>
   </div>

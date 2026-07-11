@@ -1,8 +1,9 @@
 // Conversation header (Phase 15.5) — the calm control bar above the chat. It answers, at a glance:
-// what SCOPE am I in (Global / a project), which CHAT, on which MODEL, in which MODE, and what is
-// available. Every value is real server state (the runner / models / capabilities / projects /
-// sessions read models); the controls POST only to the enumerated UI-state routes (projects-select,
-// sessions new|rename|archive|pin, model, effort, mode) — never the agent-turn or approval routes. All text
+// which project (if any), which chat, on which model, in which mode, and what is
+// available. Every value is real server state (the runner / models / capabilities / projects read
+// models); the controls POST only to the enumerated UI-state routes (projects-select, model,
+// effort, mode) — never the agent-turn or approval routes. The chat shelf lives at the page edge,
+// not in this compact composer control. All text
 // is set via el()/textContent (chat titles + project names are user/model text) — no raw-HTML sink.
 import { el } from "./dom.js";
 
@@ -11,7 +12,6 @@ const MODES = [["plan", "Planning"], ["approval", "Approval"], ["auto", "Auto"]]
 let _host = null;
 let _api = null;
 let _onChanged = () => {};
-let _renaming = false;
 
 export async function mountHeader(host, api, opts = {}) {
   _host = host;
@@ -24,11 +24,11 @@ export async function mountHeader(host, api, opts = {}) {
 // model/mode/project echo while another screen is open costs nothing).
 export async function refreshHeader() {
   if (!_host || !_host.isConnected) return;
-  const [runner, models, caps, projects, sessions] = await Promise.all([
+  const [runner, models, caps, projects] = await Promise.all([
     _api.get("/api/runner"), _api.get("/api/models"), _api.get("/api/capabilities"),
-    _api.get("/api/projects"), _api.get("/api/sessions?limit=8"),
+    _api.get("/api/projects"),
   ]);
-  render(runner || {}, models || {}, caps || {}, projects || {}, sessions || {});
+  render(runner || {}, models || {}, caps || {}, projects || {});
 }
 
 // POST a UI-state change, then refresh. `conversation` also tells Daily to reload the chat view
@@ -40,21 +40,25 @@ async function post(path, body) {
 }
 
 function resetChat() {
-  if (_api.state) _api.state.chat = [];
-}
-
-function labeled(key, control) {
-  return el("label", { class: "hdr-field" }, [el("span", { class: "hdr-k" }, [key]), control]);
+  if (_api.state) {
+    _api.state.chat = [];
+    _api.state.chatAttachments = [];
+  }
 }
 
 function scopeSelect(runner, projects) {
   const activeId = (runner.project && runner.project.id) ?? null;
-  const opts = [el("option", { value: "" }, ["Global"])];
+  const opts = [el("option", { value: "" }, ["No project"])];
   for (const p of projects.projects || []) {
     opts.push(el("option", { value: String(p.id), selected: p.id === activeId },
       [p.name || `Project ${p.id}`]));
   }
-  const sel = el("select", { class: "hdr-select", "aria-label": "Chat scope" }, opts);
+  const sel = el("select", {
+    class: "hdr-select hdr-scope", "aria-label": "Project for this chat",
+    title: activeId == null
+      ? "No project selected: this is an unassigned personal chat."
+      : "Project for this chat",
+  }, opts);
   sel.value = activeId == null ? "" : String(activeId);
   sel.addEventListener("change", async () => {
     // Switching scope starts a FRESH scoped conversation server-side (a session is bound to one
@@ -63,7 +67,7 @@ function scopeSelect(runner, projects) {
       { project_id: sel.value === "" ? null : Number(sel.value) });
     if (res.ok) { resetChat(); await refreshHeader(); _onChanged(); }
   });
-  return labeled("Scope", sel);
+  return sel;
 }
 
 // Phase 15.6: the routing selector. "Auto" (recommended, default) is cost-aware per-message
@@ -95,42 +99,30 @@ function modelSelect(models) {
   sel.value = policy === "auto" ? "auto" : (models.current || "auto");
   sel.title = auto.description || "uses cheap models first, escalates only when needed";
   sel.addEventListener("change", () => { if (sel.value) post("/api/model", { model: sel.value }); });
-  const field = labeled("Model", sel);
-  const routed = models.routed;
-  if (policy === "auto" && routed && routed.model) {
-    field.appendChild(el("span", { class: "hdr-routed", title: routed.reason || "" },
-      [`→ ${routed.model}`]));
-  }
-  return field;
+  return sel;
 }
 
 // Per-model effort (cost control): lower effort ⇒ fewer output tokens ⇒ lower cost. The chosen
 // level is remembered per model server-side, so switching model re-renders this with that model's
-// effort. Degrades to nothing if the read model predates effort (never a broken control). The
-// Haiku tier has NO effort knob (the API rejects it), so the control is disabled + labeled there.
+// effort. When a route manages effort itself or a model does not support it, omit the control
+// entirely — a disabled "n/a" selector is visual noise, not useful information.
 function effortSelect(models) {
   const levels = models.effort_levels || [];
   if (!levels.length) return null;
   const cur = models.current_effort || "high";
   const curRow = (models.models || []).find((m) => m.current);
-  // Auto manages effort per tier (client default); the manual per-model knob is disabled then.
+  // Auto manages effort per tier. Haiku-like economy models do not accept an effort parameter.
   const isAuto = (models.policy || "manual") === "auto";
   const supported = !isAuto && (!curRow || curRow.supports_effort !== false);
+  if (!supported) return null;
   const opts = levels.map((lv) => el("option", { value: lv.id, selected: lv.id === cur }, [lv.label]));
-  const disabledLabel = isAuto ? "Auto-managed" : "n/a for this model";
-  if (!supported) opts.push(el("option", { value: "", selected: true }, [disabledLabel]));
-  const sel = el("select",
-    { class: "hdr-select", "aria-label": "Effort (cost)", disabled: !supported }, opts);
-  if (supported) sel.value = cur;
-  sel.title = supported
-    ? "Lower effort spends fewer tokens (cheaper); higher is more thorough."
-    : isAuto
-      ? "Auto picks the model AND effort per turn (cheap-first). Switch to a manual model to tune effort."
-      : "This economy model has no effort control (and no extended thinking) — already the cheapest tier.";
+  const sel = el("select", { class: "hdr-select hdr-effort", "aria-label": "Effort (cost)" }, opts);
+  sel.value = cur;
+  sel.title = "Lower effort spends fewer tokens (cheaper); higher is more thorough.";
   sel.addEventListener("change", () => {
-    if (sel.value && supported) post("/api/effort", { effort: sel.value, model: models.current });
+    if (sel.value) post("/api/effort", { effort: sel.value, model: models.current });
   });
-  return labeled("Effort", sel);
+  return sel;
 }
 
 function modeSelect(runner) {
@@ -139,87 +131,40 @@ function modeSelect(runner) {
     MODES.map(([v, label]) => el("option", { value: v, selected: v === cur }, [label])));
   sel.value = cur;
   sel.addEventListener("change", () => post("/api/mode", { mode: sel.value }));
-  return labeled("Mode", sel);
+  return sel;
 }
 
 function titleCluster(runner) {
-  const sid = runner.session_id;
-  const title = runner.session_title || (sid ? `Chat ${sid}` : "New chat");
-  if (_renaming && sid) {
-    const input = el("input", { class: "hdr-rename", value: title, "aria-label": "Rename chat" });
-    const commit = async () => {
-      const v = input.value.trim();
-      _renaming = false;
-      if (v) await post(`/api/sessions/${sid}/rename`, { title: v });
-      else await refreshHeader();
-    };
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") commit();
-      else if (e.key === "Escape") { _renaming = false; refreshHeader(); }
-    });
-    input.addEventListener("blur", commit);
-    setTimeout(() => input.focus(), 0);
-    return input;
-  }
+  const title = runner.session_title || "Untitled";
   return el("span", { class: "hdr-title", title }, [title]);
 }
 
-function actions(runner, sessions) {
-  const sid = runner.session_id;
-  const row = [];
-  const newBtn = el("button", { class: "plain-button" }, ["＋ New"]);
-  newBtn.addEventListener("click", async () => {
-    if (runner.session_save_state === "failed" && !window.confirm(
-      "Kairo could not save this chat. Start a new chat anyway? The current transcript remains only in this open tab."
-    )) return;
-    const res = await _api.post("/api/sessions/new", {});
-    if (res.ok) { resetChat(); await refreshHeader(); _onChanged(); }
-  });
-  row.push(newBtn);
-  const chats = (sessions.sessions || []).filter((s) => s.id !== sid);
-  if (chats.length) {
-    const sel = el("select", { class: "hdr-select", "aria-label": "Resume a chat" },
-      [el("option", { value: "" }, ["Resume…"]),
-       ...chats.map((s) => el("option", { value: String(s.id) }, [s.title || `Chat ${s.id}`]))]);
-    sel.addEventListener("change", async () => {
-      if (!sel.value) return;
-      if (await _api.resumeChat(Number(sel.value))) { await refreshHeader(); _onChanged(); }
-    });
-    row.push(sel);
-  }
-  if (sid) {
-    const meta = (sessions.sessions || []).find((s) => s.id === sid);
-    const pinned = !!(meta && meta.pinned);
-    const rename = el("button", { class: "hdr-menu-button" }, ["Rename"]);
-    rename.addEventListener("click", () => { _renaming = true; refreshHeader(); });
-    const pin = el("button", { class: "hdr-menu-button" }, [pinned ? "Unpin" : "Pin"]);
-    pin.addEventListener("click", () => post(`/api/sessions/${sid}/pin`, { pinned: !pinned }));
-    const arch = el("button", { class: "hdr-menu-button danger" }, ["Archive"]);
-    arch.addEventListener("click", async () => {
-      const failed = runner.session_save_state === "failed";
-      const warning = failed
-        ? "Kairo could not save this chat. Archive anyway? The current transcript remains only in this open tab."
-        : "Archive this chat? Kairo will open a new chat in the same project.";
-      if (window.confirm(warning)) await post(`/api/sessions/${sid}/archive`, { archived: true });
-    });
-    row.push(el("details", { class: "hdr-menu" }, [
-      el("summary", { "aria-label": "Chat actions" }, ["•••"]),
-      el("div", { class: "hdr-menu-items" }, [rename, pin, arch]),
-    ]));
-  }
-  return el("div", { class: "hdr-actions" }, row);
+function modelMenu(runner, models) {
+  const policy = models.policy || "manual";
+  const current = (models.models || []).find((m) => m.current);
+  const model = policy === "auto" ? (models.auto?.label || "Auto")
+    : (current?.label || models.current || "Model");
+  const effort = effortSelect(models);
+  const effortLabel = effort
+    ? ((models.effort_levels || []).find((item) => item.id === models.current_effort)?.label || "")
+    : "";
+  const mode = MODES.find(([id]) => id === (runner.mode || "approval"))?.[1] || "Approval";
+  const summary = [model, effortLabel, mode].filter(Boolean).join(" · ");
+  const fields = [
+    el("label", { class: "hdr-model-field" }, [el("span", {}, ["Model"]), modelSelect(models)]),
+    ...(effort ? [el("label", { class: "hdr-model-field" }, [el("span", {}, ["Effort"]), effort])] : []),
+    el("label", { class: "hdr-model-field" }, [el("span", {}, ["Mode"]), modeSelect(runner)]),
+  ];
+  return el("details", { class: "hdr-model-menu" }, [
+    el("summary", { "aria-label": "Model, effort, and mode", title: "Model, effort, and mode" }, [summary]),
+    el("div", { class: "hdr-model-menu-items" }, fields),
+  ]);
 }
 
-function render(runner, models, caps, projects, sessions) {
+function render(runner, models, caps, projects) {
   _host.textContent = "";
-  const caph = el("button", { class: "hdr-caps", "aria-label": "Capabilities — open the Hub" },
-    [caps.summary || "capabilities"]);
-  caph.addEventListener("click", () => { location.hash = "hub"; });
-  _host.appendChild(el("div", { class: "convo-header" }, [
-    el("div", { class: "hdr-left" }, [
-      scopeSelect(runner, projects), titleCluster(runner), actions(runner, sessions),
-    ]),
-    el("div", { class: "hdr-right" },
-      [modelSelect(models), effortSelect(models), modeSelect(runner), caph].filter(Boolean)),
+  _host.appendChild(el("div", { class: "convo-header compact" }, [
+    el("div", { class: "hdr-context" }, [scopeSelect(runner, projects), titleCluster(runner)]),
+    el("div", { class: "hdr-controls" }, [modelMenu(runner, models)]),
   ]));
 }

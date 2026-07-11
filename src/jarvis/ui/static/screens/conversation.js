@@ -4,10 +4,11 @@
 // images, event handlers, and unsupported syntax remain inert text rather than markup.
 
 const FENCE = /^```\s*([A-Za-z0-9_+-]*)\s*$/;
+const HEADING = /^(#{1,3})\s+(.+?)\s*#*\s*$/;
 const BULLET = /^[-*+]\s+(.+)$/;
 const NUMBERED = /^\d+[.)]\s+(.+)$/;
 const QUOTE = /^>\s?(.*)$/;
-const INLINE = /`([^`\n]+)`|(?<!\!)\[([^\]\n]+)\]\(([^()\s]+)\)/g;
+const INLINE = /`([^`\n]+)`|(?<!\!)\[([^\]\n]+)\]\(([^()\s]+)\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|(?<![\w*])\*([^\s*\n](?:[^*\n]*[^\s*\n])?)\*(?![\w*])|(?<![\w_])_([^\s_\n](?:[^_\n]*[^\s_\n])?)_(?![\w_])/g;
 
 function safeHref(value) {
   try {
@@ -30,7 +31,7 @@ function appendInline(parent, text) {
       code.className = "message-inline-code";
       code.textContent = match[1];
       parent.appendChild(code);
-    } else {
+    } else if (match[2] != null) {
       const href = safeHref(match[3]);
       if (!href) {
         parent.appendChild(document.createTextNode(match[0]));
@@ -43,6 +44,16 @@ function appendInline(parent, text) {
         link.textContent = match[2];
         parent.appendChild(link);
       }
+    } else if (match[4] != null || match[5] != null) {
+      const strong = document.createElement("strong");
+      strong.className = "message-strong";
+      strong.textContent = match[4] || match[5];
+      parent.appendChild(strong);
+    } else {
+      const emph = document.createElement("em");
+      emph.className = "message-emphasis";
+      emph.textContent = match[6] || match[7] || "";
+      parent.appendChild(emph);
     }
     cursor = index + match[0].length;
   }
@@ -83,8 +94,15 @@ function paragraph(lines) {
   return node;
 }
 
-// This is intentionally a narrow, line-oriented subset. Tables, headings, images, HTML, and
-// extensions are plain text. Keeping the grammar small makes each allowed output explicit.
+function heading(level, text) {
+  const node = document.createElement(level === 1 ? "h2" : level === 2 ? "h3" : "h4");
+  node.className = `message-heading h${level}`;
+  appendInline(node, text);
+  return node;
+}
+
+// This is intentionally a narrow, line-oriented subset. Tables, images, HTML, and extensions are
+// plain text. Keeping the grammar small makes each allowed output explicit.
 export function renderMarkdown(text) {
   const fragment = document.createDocumentFragment();
   const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
@@ -107,6 +125,12 @@ export function renderMarkdown(text) {
       // An unfinished streamed fence is ordinary text until the closing fence arrives.
       root.appendChild(paragraph(lines.slice(start)));
       break;
+    }
+    const head = lines[i].match(HEADING);
+    if (head) {
+      root.appendChild(heading(head[1].length, head[2]));
+      i += 1;
+      continue;
     }
     const bullet = lines[i].match(BULLET);
     const numbered = lines[i].match(NUMBERED);
@@ -142,6 +166,7 @@ export function renderMarkdown(text) {
     }
     const plain = [];
     while (i < lines.length && lines[i].trim() && !FENCE.test(lines[i])
+      && !HEADING.test(lines[i])
       && !BULLET.test(lines[i]) && !NUMBERED.test(lines[i]) && !QUOTE.test(lines[i])) {
       plain.push(lines[i]);
       i += 1;

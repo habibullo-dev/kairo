@@ -7,11 +7,27 @@ CSS = (STATIC_DIR / "kairo.css").read_text(encoding="utf-8")
 
 
 def test_renderer_creates_an_explicit_safe_markdown_subset_without_html_sink() -> None:
-    for token in ("renderMarkdown", "appendInline", "codeBlock", "message-list", "message-quote"):
+    for token in (
+        "renderMarkdown", "appendInline", "codeBlock", "heading(",
+        "message-heading", "message-strong", "message-emphasis",
+        "message-list", "message-quote",
+    ):
         assert token in CONVERSATION
     assert "innerHTML" not in CONVERSATION
     assert "document.createElement" in CONVERSATION
     assert "textContent" in CONVERSATION
+
+
+def test_common_chat_markdown_does_not_leak_raw_hashes_or_stars() -> None:
+    assert "const HEADING =" in CONVERSATION
+    assert 'document.createElement(level === 1 ? "h2"' in CONVERSATION
+    assert 'document.createElement("strong")' in CONVERSATION
+    assert 'document.createElement("em")' in CONVERSATION
+    assert ".message-heading" in CSS
+    assert ".message-strong" in CSS
+    assert ".message-emphasis" in CSS
+    # Intraword underscores belong to identifiers, not markdown emphasis.
+    assert "(?<![\\w_])" in CONVERSATION and "(?![\\w_])" in CONVERSATION
 
 
 def test_links_are_allowlisted_to_http_and_https_and_images_are_not_markdown() -> None:

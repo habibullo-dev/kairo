@@ -6,15 +6,29 @@ from jarvis.ui.server import STATIC_DIR
 def test_chat_shows_identity_save_state_and_existing_lifecycle_actions() -> None:
     source = (STATIC_DIR / "screens" / "chat.js").read_text(encoding="utf-8")
     for text in (
-        "New chat · unsaved", "Saving…", "Save failed", "Updated ${time}",
+        "Saving…",
+        "Save failed",
+        "Updated ${time}",
+        'if (state === "new")',
     ):
         assert text in source
-    # The compact action menu lives in the shared conversation header. It uses only the existing
-    # lifecycle routes and warns before replacing a failed-save chat.
+    # The quiet edge shelf, rather than the composer header, owns lifecycle actions and uses an
+    # in-app dialog before replacing a failed-save chat.
     header = (STATIC_DIR / "ui" / "header.js").read_text(encoding="utf-8")
-    for text in ("/api/sessions/new", "/rename", "/pin", "/archive", "hdr-menu", "window.confirm"):
-        assert text in header
-    assert "api.post(\"/api/turn" not in source and "api.post(\"/api/turn" not in header
+    assert "kairo:chat-history" not in header
+    for text in (
+        "/api/sessions/new",
+        "/rename",
+        "/pin",
+        "/archive",
+        "chat-history-panel",
+        "chat-context-handle",
+        "confirmDialog",
+        "showToast",
+    ):
+        assert text in source
+    assert "window.confirm" not in source and "window.prompt" not in source
+    assert 'api.post("/api/turn' not in source and 'api.post("/api/turn' not in header
     app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     assert 'msg.kind === "session_persistence"' in app
 

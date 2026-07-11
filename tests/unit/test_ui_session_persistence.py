@@ -24,7 +24,7 @@ from jarvis.persistence.sessions import INTERACTIVE_ONLY
 from jarvis.projects import ProjectStore
 from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
 from jarvis.ui.connections import ConnectionManager
-from jarvis.ui.session import UiSession
+from jarvis.ui.session import UiSession, initial_chat_title
 
 _OPEN: list = []
 
@@ -80,6 +80,35 @@ async def test_turn_persists_and_creates_one_session(tmp_path: Path) -> None:
     session.loop.client = FakeClient([text_message("again")])
     await session.handle_text("more")
     assert len(await store.list_sessions()) == 1
+
+
+def test_initial_chat_title_is_descriptive_and_never_numeric() -> None:
+    assert (
+        initial_chat_title("Can you make a project release plan?") == "make a project release plan"
+    )
+    assert initial_chat_title("# Review the architecture for the local agent workstation") == (
+        "Review the architecture for the local agent workstation"
+    )
+    assert initial_chat_title("   ") is None
+
+
+async def test_first_turn_titles_a_blank_chat_without_overwriting_a_human_title(
+    tmp_path: Path,
+) -> None:
+    store = await _store(tmp_path)
+    session = UiSession(
+        loop=_loop(tmp_path, FakeClient([text_message("done")])),
+        connections=ConnectionManager(clock=lambda: 0.0),
+        sessions=store,
+    )
+    await session.handle_text("Could you plan our release checklist?")
+    meta = await store.get_meta(session.session_id)
+    assert meta is not None and meta.title == "plan our release checklist"
+
+    assert await store.set_title(session.session_id, "Human chosen title")
+    session.loop.client = FakeClient([text_message("done again")])
+    await session.handle_text("A later question must not replace the title.")
+    assert (await store.get_meta(session.session_id)).title == "Human chosen title"
 
 
 async def test_ui_session_is_reflectable(tmp_path: Path) -> None:

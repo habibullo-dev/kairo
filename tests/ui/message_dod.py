@@ -27,10 +27,10 @@ class _QuietHandler(http.server.SimpleHTTPRequestHandler):
 
 HTML = r"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/kairo.css"></head><body>
+<link rel="stylesheet" href="/static/kairo.css"></head><body>
 <main><section class="chat-shell"><div class="chat-thread" id="messages"></div></section></main>
 <script type="module">
-  import { renderConversation } from "/screens/conversation.js";
+  import { renderConversation } from "/static/screens/conversation.js";
   window.__pwned = 0; window.__copied = "";
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
     writeText: (text) => { window.__copied = text; return Promise.resolve(); },
@@ -40,7 +40,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8">
     "<svg onload=\"window.__pwned=3\"></svg>\n[bad](javascript:evil)\n![image](https://example.test/x.png)";
   const longCode = "x".repeat(900);
   const answer = [
-    "A paragraph with `inline code` and a [safe link](https://example.com/docs).",
+    "## A readable answer", "A paragraph with **important text**, `inline code` and a [safe link](https://example.com/docs).",
     "- first\n- second", "1. one\n2. two", "> quoted text",
     `\`\`\`js\nconst veryLong = "${longCode}";\n\`\`\``, hostile,
   ].join("\n\n");
@@ -54,6 +54,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8">
     svgs: document.querySelectorAll("svg").length,
     unsafeLinks: [...document.querySelectorAll(".message-link")].filter((a) => !a.href.startsWith("https://")).length,
     safeLinks: document.querySelectorAll(".message-link").length,
+    headings: document.querySelectorAll(".message-heading").length,
+    strong: document.querySelectorAll(".message-strong").length,
     copied: window.__copied,
     code: document.querySelector(".message-code code").textContent,
   };
@@ -76,9 +78,9 @@ async def main() -> int:
     try:
         static = work / "static"
         shutil.copytree(STATIC_DIR, static)
-        (static / "__message.html").write_text(HTML, encoding="utf-8")
+        (work / "__message.html").write_text(HTML, encoding="utf-8")
         port = _free_port()
-        handler = functools.partial(_QuietHandler, directory=str(static))
+        handler = functools.partial(_QuietHandler, directory=str(work))
         server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
@@ -101,6 +103,7 @@ async def main() -> int:
         assert result["scripts"] == 1  # only this harness module; hostile text created no node
         assert result["images"] == result["svgs"] == result["unsafeLinks"] == 0
         assert result["safeLinks"] == 1
+        assert result["headings"] == 1 and result["strong"] == 1
         assert result["copied"] == result["code"] and "veryLong" in result["copied"]
         assert code_scrolls
         assert not problems, problems

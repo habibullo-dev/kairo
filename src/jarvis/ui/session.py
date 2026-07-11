@@ -42,6 +42,42 @@ EVENT_SCHEMA_VERSION = 2  # v2: Phase-10B orchestration lifecycle events (starte
 #                                round/completed), broadcast by the OrchestrationController.
 
 
+def initial_chat_title(text: str) -> str | None:
+    """Return a compact, local first-message title, never a numeric chat placeholder.
+
+    This deliberately avoids a hidden second provider request merely to name a chat: it would
+    add cost and send the first message to a model before the user has chosen to run a turn.  A
+    later explicit AI-title refinement can build on this stable, human-editable baseline.
+    """
+    value = " ".join(text.split()).lstrip("# ").strip()
+    if not value:
+        return None
+    lowered = value.casefold()
+    for prefix in (
+        "please ",
+        "can you ",
+        "could you ",
+        "help me ",
+        "i need to ",
+        "i want to ",
+        "let's ",
+        "lets ",
+    ):
+        if lowered.startswith(prefix):
+            value = value[len(prefix) :].strip()
+            break
+    # A first sentence is usually the request; avoiding a long pasted prompt keeps the shelf
+    # skimmable.  Preserve the user's spelling/case and never derive a title from tool output.
+    for separator in ("?", "!", ".", "\n"):
+        head = value.split(separator, 1)[0].strip()
+        if head:
+            value = head
+            break
+    if not value:
+        return None
+    return value if len(value) <= 72 else f"{value[:71].rstrip()}…"
+
+
 def serialize_event(event: Event) -> dict:
     """Map a loop ``Event`` to a versioned JSON payload. Unknown events degrade to a typed
     stub rather than raising — the stream must never crash a turn."""
@@ -216,17 +252,17 @@ class UiSession:
             self.last_turn_model = getattr(result, "model", None)
             self.last_turn_provider = getattr(result, "provider", None)
             self.turn_budget_usd = getattr(result, "budget_usd", self.turn_budget_usd)
-            await self._persist(context)
+            await self._persist(context, initial_title=initial_chat_title(text))
             return result
 
-    async def _set_persistence_state(
-        self, state: str, context: ExecutionContext | None
-    ) -> None:
+    async def _set_persistence_state(self, state: str, context: ExecutionContext | None) -> None:
         self.persistence_state = state
         if context is not None:
             await self.connections.publish(context, {"kind": "session_persistence", "state": state})
 
-    async def _persist(self, context: ExecutionContext | None = None) -> None:
+    async def _persist(
+        self, context: ExecutionContext | None = None, *, initial_title: str | None = None
+    ) -> None:
         """Save the conversation + frozen compaction state for the current session. A save
         failure is logged, never fatal — mirrors ``Repl._persist``."""
         session_id = context.session_id if context is not None else self.session_id
@@ -238,6 +274,14 @@ class UiSession:
             if self.context_manager is not None:
                 summary, cut = self.context_manager.state()
                 await self.sessions.save_compaction(session_id, summary, cut)
+            if initial_title:
+                # Atomic blank-only update: a person may rename while a turn is saving, and
+                # their chosen title must win.  A failure here is non-fatal because the transcript
+                # has already been durably saved.
+                try:
+                    await self.sessions.set_title_if_missing(session_id, initial_title)
+                except Exception as exc:  # noqa: BLE001 - title polish must not invalidate a save
+                    self.log.warning("ui_initial_title_failed", error=str(exc))
             await self._set_persistence_state("saved", context)
         except Exception as exc:  # noqa: BLE001 - a save failure must not kill the session
             self.log.warning("ui_persist_failed", error=str(exc))
