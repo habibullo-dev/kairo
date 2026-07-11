@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -68,8 +69,15 @@ def _post(auth: AuthManager) -> dict[str, str]:
 async def test_content_serves_valid_in_root_file(tmp_path: Path) -> None:
     client, auth, _db, _lock, store, _cfg, pid, art_root = await _setup(tmp_path)
     (art_root / "note.md").write_text("hello artifact body", encoding="utf-8")
-    aid = await store.register(origin_type="wiki", origin_id="w1", kind="wiki_page", title="Note",
-                               local_path=art_root / "note.md", created_by="agent", project_id=pid)
+    aid = await store.register(
+        origin_type="wiki",
+        origin_id="w1",
+        kind="wiki_page",
+        title="Note",
+        local_path=art_root / "note.md",
+        created_by="agent",
+        project_id=pid,
+    )
     r = client.get(f"/api/artifacts/{aid}/content", headers=_get(auth))
     assert r.status_code == 200
     assert "hello artifact body" in r.text
@@ -78,17 +86,29 @@ async def test_content_serves_valid_in_root_file(tmp_path: Path) -> None:
 
 async def test_content_refuses_external_uri_artifact(tmp_path: Path) -> None:
     client, auth, _db, _lock, store, _cfg, _pid, _root = await _setup(tmp_path)
-    aid = await store.register(origin_type="digest", origin_id="d1", kind="digest", title="D",
-                               external_uri="kairo://digest/1", created_by="system")
+    aid = await store.register(
+        origin_type="digest",
+        origin_id="d1",
+        kind="digest",
+        title="D",
+        external_uri="kairo://digest/1",
+        created_by="system",
+    )
     assert client.get(f"/api/artifacts/{aid}/content", headers=_get(auth)).status_code == 404
 
 
 async def test_content_refuses_quarantined_artifact(tmp_path: Path) -> None:
     client, auth, _db, _lock, store, _cfg, _pid, art_root = await _setup(tmp_path)
     (art_root / "q.md").write_text("quarantined body", encoding="utf-8")
-    aid = await store.register(origin_type="meeting", origin_id="m1", kind="meeting_note",
-                               title="M", local_path=art_root / "q.md", created_by="user",
-                               sensitivity="quarantined")
+    aid = await store.register(
+        origin_type="meeting",
+        origin_id="m1",
+        kind="meeting_note",
+        title="M",
+        local_path=art_root / "q.md",
+        created_by="user",
+        sensitivity="quarantined",
+    )
     r = client.get(f"/api/artifacts/{aid}/content", headers=_get(auth))
     assert r.status_code == 404 and "quarantined body" not in r.text
 
@@ -96,8 +116,14 @@ async def test_content_refuses_quarantined_artifact(tmp_path: Path) -> None:
 async def test_content_refuses_unsupported_type(tmp_path: Path) -> None:
     client, auth, _db, _lock, store, _cfg, _pid, art_root = await _setup(tmp_path)
     (art_root / "x.exe").write_text("MZ", encoding="utf-8")
-    aid = await store.register(origin_type="x", origin_id="e1", kind="blob", title="E",
-                               local_path=art_root / "x.exe", created_by="system")
+    aid = await store.register(
+        origin_type="x",
+        origin_id="e1",
+        kind="blob",
+        title="E",
+        local_path=art_root / "x.exe",
+        created_by="system",
+    )
     assert client.get(f"/api/artifacts/{aid}/content", headers=_get(auth)).status_code == 415
 
 
@@ -134,12 +160,65 @@ async def test_content_unknown_id_is_404(tmp_path: Path) -> None:
     assert client.get("/api/artifacts/99999/content", headers=_get(auth)).status_code == 404
 
 
+async def test_chat_outputs_are_project_scoped_and_download_as_attachments(tmp_path: Path) -> None:
+    client, auth, _db, _lock, store, _cfg, pid_a, art_root = await _setup(tmp_path)
+    pid_b = await client.app.state.projects.store.create(name="Other project")
+    (art_root / "a.pdf").write_bytes(b"%PDF-a")
+    (art_root / "b.pdf").write_bytes(b"%PDF-b")
+    aid_a = await store.register(
+        origin_type="report",
+        origin_id="a",
+        kind="report",
+        title="A report",
+        local_path=art_root / "a.pdf",
+        created_by="agent",
+        project_id=pid_a,
+    )
+    aid_b = await store.register(
+        origin_type="report",
+        origin_id="b",
+        kind="report",
+        title="B report",
+        local_path=art_root / "b.pdf",
+        created_by="agent",
+        project_id=pid_b,
+    )
+    quarantined = await store.register(
+        origin_type="report",
+        origin_id="q",
+        kind="report",
+        title="Quarantined report",
+        local_path=art_root / "b.pdf",
+        created_by="agent",
+        project_id=pid_a,
+        sensitivity="quarantined",
+    )
+    client.app.state.session = SimpleNamespace(session_id=91, project_id=pid_a)
+    listed = client.get("/api/chat/outputs", headers=_get(auth)).json()
+    assert [artifact["id"] for artifact in listed["artifacts"]] == [aid_a]
+    assert "local_path" not in listed["artifacts"][0]
+    assert quarantined not in {artifact["id"] for artifact in listed["artifacts"]}
+    download = client.get(f"/api/chat/outputs/{aid_a}/content", headers=_get(auth))
+    assert download.status_code == 200
+    assert download.headers["content-disposition"].startswith("attachment;")
+    assert download.headers["content-type"].startswith("application/pdf")
+    denied = client.get(f"/api/chat/outputs/{aid_b}/content", headers=_get(auth))
+    assert denied.status_code == 404 and "PDF-b" not in denied.text
+
+
 # --- artifacts list / detail / pin / label -------------------------------------------
 async def test_artifacts_list_detail_pin_label(tmp_path: Path) -> None:
     client, auth, _db, _lock, store, _cfg, pid, art_root = await _setup(tmp_path)
     (art_root / "a.md").write_text("x", encoding="utf-8")
-    aid = await store.register(origin_type="wiki", origin_id="w1", kind="wiki_page", title="A",
-                               local_path=art_root / "a.md", created_by="agent", project_id=pid)
+    aid = await store.register(
+        origin_type="wiki",
+        origin_id="w1",
+        kind="wiki_page",
+        title="A",
+        local_path=art_root / "a.md",
+        created_by="agent",
+        project_id=pid,
+    )
     listed = client.get("/api/artifacts", headers=_get(auth)).json()
     assert [a["id"] for a in listed["artifacts"]] == [aid]
     assert listed["artifacts"][0]["has_content"] is True
@@ -150,8 +229,9 @@ async def test_artifacts_list_detail_pin_label(tmp_path: Path) -> None:
 
     r_pin = client.post(f"/api/artifacts/{aid}/pin", json={"pinned": True}, headers=_post(auth))
     assert r_pin.json()["ok"]
-    r_lbl = client.post(f"/api/artifacts/{aid}/label", json={"labels": ["coding", "review"]},
-                        headers=_post(auth))
+    r_lbl = client.post(
+        f"/api/artifacts/{aid}/label", json={"labels": ["coding", "review"]}, headers=_post(auth)
+    )
     assert r_lbl.json()["ok"]
     again = client.get(f"/api/artifacts/{aid}", headers=_get(auth)).json()
     assert again["pinned"] is True and again["labels"] == ["coding", "review"]
@@ -160,8 +240,14 @@ async def test_artifacts_list_detail_pin_label(tmp_path: Path) -> None:
 async def test_artifacts_label_rejects_non_list(tmp_path: Path) -> None:
     client, auth, _db, _lock, store, _cfg, _pid, art_root = await _setup(tmp_path)
     (art_root / "a.md").write_text("x", encoding="utf-8")
-    aid = await store.register(origin_type="x", origin_id="w1", kind="doc", title="A",
-                               local_path=art_root / "a.md", created_by="agent")
+    aid = await store.register(
+        origin_type="x",
+        origin_id="w1",
+        kind="doc",
+        title="A",
+        local_path=art_root / "a.md",
+        created_by="agent",
+    )
     r = client.post(f"/api/artifacts/{aid}/label", json={"labels": "nope"}, headers=_post(auth))
     assert r.status_code == 400
 
@@ -169,8 +255,11 @@ async def test_artifacts_label_rejects_non_list(tmp_path: Path) -> None:
 # --- saved views: save / list / delete -----------------------------------------------
 async def test_views_save_list_delete(tmp_path: Path) -> None:
     client, auth, *_ = await _setup(tmp_path)
-    saved = client.post("/api/views/save", json={"name": "Recent", "scope": "artifacts",
-                                                 "query": {"pinned": True}}, headers=_post(auth))
+    saved = client.post(
+        "/api/views/save",
+        json={"name": "Recent", "scope": "artifacts", "query": {"pinned": True}},
+        headers=_post(auth),
+    )
     vid = saved.json()["id"]
     assert saved.json()["ok"]
     listed = client.get("/api/views", headers=_get(auth)).json()
@@ -189,8 +278,15 @@ async def test_views_save_rejects_bad_scope(tmp_path: Path) -> None:
 async def test_search_route(tmp_path: Path) -> None:
     client, auth, _db, _lock, store, _cfg, pid, art_root = await _setup(tmp_path)
     (art_root / "a.md").write_text("x", encoding="utf-8")
-    await store.register(origin_type="x", origin_id="w1", kind="doc", title="searchroutecanary",
-                         local_path=art_root / "a.md", created_by="agent", project_id=pid)
+    await store.register(
+        origin_type="x",
+        origin_id="w1",
+        kind="doc",
+        title="searchroutecanary",
+        local_path=art_root / "a.md",
+        created_by="agent",
+        project_id=pid,
+    )
     hits = client.get("/api/search", params={"q": "searchroutecanary"}, headers=_get(auth)).json()
     assert any(r["domain"] == "artifacts" for r in hits["results"])
     assert client.get("/api/search", params={"q": ""}, headers=_get(auth)).json()["results"] == []
@@ -215,8 +311,15 @@ async def test_no_secret_on_parameterized_gets(tmp_path: Path) -> None:
         tmp_path, auth_token="SECRET-CANARY-TOKEN", secret_update=canaries
     )
     (art_root / "a.md").write_text("ordinary body text", encoding="utf-8")
-    aid = await store.register(origin_type="x", origin_id="w1", kind="doc", title="A",
-                               local_path=art_root / "a.md", created_by="agent", project_id=pid)
+    aid = await store.register(
+        origin_type="x",
+        origin_id="w1",
+        kind="doc",
+        title="A",
+        local_path=art_root / "a.md",
+        created_by="agent",
+        project_id=pid,
+    )
     sid = auth.mint_session()
     needles = [*canaries.values(), "SECRET-CANARY-TOKEN", sid]
     # Parameterized GETs (auto-sweep skips {param}) PLUS the content-bearing non-parameterized

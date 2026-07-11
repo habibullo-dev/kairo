@@ -9,7 +9,7 @@ import numpy as np
 
 from jarvis.memory.store import MemoryStore, Provenance
 from jarvis.persistence.db import connect
-from jarvis.persistence.migrations import _SCHEMA_V1, migrate
+from jarvis.persistence.migrations import _SCHEMA_V1, latest_version, migrate
 
 MODEL = "voyage-3-large"
 
@@ -49,7 +49,7 @@ async def test_v1_to_v2_migration_preserves_sessions_and_messages(tmp_path: Path
         )
         await db.commit()
 
-        assert await migrate(db) == 15  # migrate() applies ALL pending onto a populated v1 db
+        assert await migrate(db) == latest_version()
 
         cur = await db.execute("SELECT title FROM sessions WHERE id=1")
         assert (await cur.fetchone())[0] == "kept"

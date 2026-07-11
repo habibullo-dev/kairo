@@ -40,7 +40,19 @@ import trafilatura
 from jarvis import net
 from jarvis.paths import is_sensitive_path
 
-_PASSTHROUGH_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".text"})
+# Source code and project configuration are inert text inputs.  Passing them through avoids
+# needlessly invoking an office/document parser for every file in a folder import, while the
+# caller's byte cap and path-sensitive checks remain in force.
+_PASSTHROUGH_SUFFIXES = frozenset(
+    {
+        ".md", ".markdown", ".txt", ".text", ".csv", ".json", ".jsonl",
+        ".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx",
+        ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".css", ".scss",
+        ".html", ".htm", ".xml", ".sql", ".sh", ".ps1", ".bat", ".cmd",
+        ".go", ".rs", ".java", ".kt", ".c", ".h", ".cc", ".cpp", ".hpp",
+        ".cs", ".rb", ".php", ".swift", ".vue", ".svelte",
+    }
+)
 # Office/EPUB/ZIP formats are all zip containers — a tiny archive can decompress to
 # gigabytes of XML (a "zip bomb"), so their *uncompressed* size is pre-scanned.
 _ARCHIVE_SUFFIXES = frozenset({".docx", ".xlsx", ".pptx", ".zip", ".epub"})

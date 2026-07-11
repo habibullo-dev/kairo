@@ -95,6 +95,24 @@ async def test_trust_and_kind_filters(tmp_path: Path) -> None:
     assert {n["kind"] for n in only_src["nodes"]} == {"source"}
 
 
+async def test_rejected_source_is_not_resolved_even_if_a_stale_edge_survives(
+    tmp_path: Path,
+) -> None:
+    store, _ = await _seed(tmp_path)
+    # Simulate an interrupted lifecycle action: graph edge still exists, but the source
+    # itself was rejected.  The read model must not turn that stale edge back into a card.
+    await store.db.execute("UPDATE kb_sources SET status='rejected' WHERE project_id=1")
+    await store.db.commit()
+
+    sg = await subgraph(store, 1, depth=2)
+
+    assert all(node["kind"] != "source" for node in sg["nodes"])
+    assert all(
+        ":source:" not in edge["src"] and ":source:" not in edge["dst"]
+        for edge in sg["edges"]
+    )
+
+
 async def test_empty_project_degrades_to_focus_only(tmp_path: Path) -> None:
     store, _ = await _seed(tmp_path)
     # project 2 (Bravo) has a chat edge; a project with NO edges returns just its focus node.

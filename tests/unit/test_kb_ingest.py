@@ -15,6 +15,7 @@ from jarvis.knowledge.service import IngestResult, KnowledgeError, KnowledgeServ
 from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory.embeddings import FakeEmbedder
 from jarvis.persistence.db import connect
+from jarvis.projects import ProjectStore
 
 _OPEN_DBS: list = []
 
@@ -100,6 +101,62 @@ async def test_sensitive_path_refused(tmp_path: Path) -> None:
     svc = await _service(tmp_path)
     with pytest.raises(KnowledgeError, match="sensitive"):
         await svc.ingest(path=".env")
+
+
+async def test_browser_upload_uses_the_existing_ingest_pipeline_without_retaining_staging(
+    tmp_path: Path,
+) -> None:
+    svc = await _service(tmp_path)
+    result = await svc.ingest_uploaded(
+        "design-notes.md", b"# Design notes\n\nKeep the approval screen visible."
+    )
+    source = await svc.store.get_source(result.source_id)
+    assert result.action == "ingested" and source.project_id is None
+    assert source.origin == "chat-upload:global:design-notes.md"
+    assert (svc.knowledge_dir / source.raw_path).exists()
+    staging = svc.knowledge_dir / "staging"
+    assert not staging.exists() or not list(staging.iterdir())
+
+
+async def test_browser_upload_refuses_unknown_type_before_any_converter(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    with pytest.raises(KnowledgeError, match="unsupported upload type"):
+        await svc.ingest_uploaded("payload.exe", b"not a document")
+
+
+@pytest.mark.parametrize("name", ["src/main.py", "pyproject.toml", "web/site.css", "ops/run.ps1"])
+async def test_browser_upload_accepts_project_code_and_config_as_safe_text(
+    tmp_path: Path, name: str
+) -> None:
+    svc = await _service(tmp_path)
+    result = await svc.ingest_uploaded(name, b"# local project source\n", relative_path=name)
+    source = await svc.store.get_source(result.source_id)
+    assert source is not None and source.title == name
+    assert source.converter == "passthrough"
+
+
+async def test_detached_folder_can_be_reattached_and_identical_files_keep_paths(
+    tmp_path: Path,
+) -> None:
+    svc = await _service(tmp_path)
+    project_id = await ProjectStore(svc.store.db, svc.store.lock).create(name="Project")
+    first = await svc.ingest_uploaded(
+        "a.py", b"same boilerplate", project_id=project_id, relative_path="wrong/a.py"
+    )
+    second = await svc.ingest_uploaded(
+        "b.py", b"same boilerplate", project_id=project_id, relative_path="wrong/b.py"
+    )
+    assert first.source_id != second.source_id
+    detached = await svc.store.reject_project_folder_import(project_id=project_id, root="wrong")
+    assert detached.sources_rejected == 2
+    assert (await svc.store.get_source(first.source_id)).status == "rejected"
+
+    replacement = await svc.ingest_uploaded(
+        "a.py", b"same boilerplate", project_id=project_id, relative_path="right/a.py"
+    )
+    replacement_source = await svc.store.get_source(replacement.source_id)
+    assert replacement_source is not None and replacement_source.status == "live"
+    assert replacement_source.title == "right/a.py"
 
 
 async def test_exactly_one_source_required(tmp_path: Path) -> None:

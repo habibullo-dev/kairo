@@ -985,6 +985,41 @@ CREATE INDEX IF NOT EXISTS idx_attention_queue ON attention_items(state, priorit
 CREATE INDEX IF NOT EXISTS idx_attention_source ON attention_items(source, source_ref);
 """
 
+# Project-folder imports may contain identical files (LICENSE, shared config, templates).  The
+# raw SHA remains an integrity value, but dedupe must be exact-project so one project's source can
+# never become another project's retrieval result merely because their bytes match.
+_SCHEMA_V16 = """
+DROP INDEX IF EXISTS idx_kb_sources_hash;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_sources_scope_hash
+    ON kb_sources(content_hash, COALESCE(project_id, -1));
+"""
+
+# A folder import's source identity is its scoped logical origin, not its raw bytes: two different
+# files may legitimately contain the same boilerplate, and a user must be able to reject a wrong
+# import then attach that file again.  Content hashes remain integrity metadata, never identity.
+_SCHEMA_V17 = """
+DROP INDEX IF EXISTS idx_kb_sources_scope_hash;
+CREATE INDEX IF NOT EXISTS idx_kb_sources_scope_origin_live
+    ON kb_sources(project_id, origin, status);
+"""
+
+# Source records are immutable audit/provenance.  Their chunks are a derived retrieval cache, so
+# terminal source lifecycle states must not retain old vector/FTS rows.  This repairs databases
+# created before folder detach performed the cache invalidation itself.  The table-existence guard
+# lets a deliberately skeletal older-version database advance safely; real v17 databases have the
+# tables and the external-content FTS delete trigger keeps kb_chunks_fts in sync.
+async def _migrate_v18(db: aiosqlite.Connection) -> None:
+    tables = await (
+        await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='kb_chunks'")
+    ).fetchone()
+    if tables is None:
+        return
+    await db.execute(
+        "DELETE FROM kb_chunks WHERE source_id IN ("
+        "SELECT id FROM kb_sources WHERE status != 'live'"
+        ")"
+    )
+
 
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
@@ -1007,6 +1042,9 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (13, _migrate_v13),
     (14, _migrate_v14),
     (15, _SCHEMA_V15),
+    (16, _SCHEMA_V16),
+    (17, _SCHEMA_V17),
+    (18, _migrate_v18),
 ]
 
 

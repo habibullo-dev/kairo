@@ -6,9 +6,9 @@ Three tables, two trust levels:
   changed content ``supersede``s the prior row (lineage kept); a rejected
   unattended ingest is marked ``rejected`` (kept for audit, invisible to search).
 * ``kb_chunks`` and ``kb_wiki_links`` are **derived indexes** — rebuildable caches
-  over the markdown artifacts and wiki files, and the one deliberate exception to
-  the never-DELETE rule: :meth:`replace_chunks` / :meth:`replace_links` delete and
-  re-insert per owner inside a single ``transaction()`` (see docs/decisions/0004-*).
+  over the markdown artifacts and wiki files, and the deliberate exception to the
+  never-DELETE rule: replacement and source lifecycle transitions remove obsolete
+  index rows inside one ``transaction()`` (see docs/decisions/0004-*).
 
 Vectors follow the memory store exactly: unit-normalized ``float32`` BLOBs, cosine
 = one numpy matmul over the candidate matrix, filtered by ``embedding_model`` so a
@@ -143,6 +143,18 @@ class WikiLink:
     link_kind: str  # 'wikilink' | 'markdown'
 
 
+@dataclass(frozen=True)
+class FolderDetachResult:
+    """Audit-preserving folder detach result.
+
+    Source rows remain as rejected provenance records; their derived retrieval
+    chunks are removed so an old folder cannot remain in FTS/vector cache.
+    """
+
+    sources_rejected: int
+    chunks_cleared: int
+
+
 @dataclass
 class KnowledgeStore:
     db: aiosqlite.Connection
@@ -208,33 +220,47 @@ class KnowledgeStore:
         row = await cursor.fetchone()
         return _row_to_source(row) if row else None
 
-    async def find_by_hash(self, content_hash: str) -> Source | None:
-        """The source with this exact raw-bytes hash, if already ingested (any status)."""
+    async def find_by_hash(
+        self, content_hash: str, *, project_id: int | None = None
+    ) -> Source | None:
+        """One live source with these bytes in one exact project scope (diagnostic only).
+
+        A content hash is deliberately not source identity: a project may contain several files
+        with the same content but distinct logical paths.
+        """
         cursor = await self.db.execute(
-            f"SELECT {_SOURCE_COLUMNS} FROM kb_sources WHERE content_hash=?", (content_hash,)
+            f"SELECT {_SOURCE_COLUMNS} FROM kb_sources "
+            "WHERE content_hash=? AND project_id IS ? AND status='live' ORDER BY id LIMIT 1",
+            (content_hash, project_id),
         )
         row = await cursor.fetchone()
         return _row_to_source(row) if row else None
 
-    async def find_live_by_origin(self, origin: str) -> Source | None:
-        """The current live source for an origin (for re-ingest supersede)."""
+    async def find_live_by_origin(
+        self, origin: str, *, project_id: int | None = None
+    ) -> Source | None:
+        """The current live source for one exact scoped origin (for re-ingest supersede)."""
         cursor = await self.db.execute(
             f"SELECT {_SOURCE_COLUMNS} FROM kb_sources WHERE origin=? AND status='live' "
-            "ORDER BY id DESC LIMIT 1",
-            (origin,),
+            "AND project_id IS ? ORDER BY id DESC LIMIT 1",
+            (origin, project_id),
         )
         row = await cursor.fetchone()
         return _row_to_source(row) if row else None
 
     async def supersede_source(self, old_id: int, new_id: int) -> None:
-        """Mark ``old_id`` superseded by ``new_id`` (keeps lineage; drops from search)."""
-        async with self.lock:
+        """Mark ``old_id`` superseded by ``new_id`` and clear its derived chunks.
+
+        The source row remains for lineage, while its obsolete retrieval/FTS cache
+        is removed atomically with the status transition.
+        """
+        async with transaction(self.db, self.lock):
             await self.db.execute(
                 "UPDATE kb_sources SET status='superseded', superseded_by=?, updated_at=? "
                 "WHERE id=?",
                 (new_id, _now(), old_id),
             )
-            await self.db.commit()
+            await self.db.execute("DELETE FROM kb_chunks WHERE source_id=?", (old_id,))
 
     async def set_review_status(self, source_id: int, review_status: str) -> None:
         """Promote a source to 'reviewed' (or back to 'unreviewed')."""
@@ -246,21 +272,85 @@ class KnowledgeStore:
             await self.db.commit()
 
     async def reject_source(self, source_id: int) -> bool:
-        """Mark a source 'rejected' (kept for audit, invisible to search). Returns
-        True if a non-terminal source was rejected."""
-        async with self.lock:
+        """Reject a source while preserving audit data and clearing derived chunks.
+
+        Returns True if a non-terminal source was rejected.  The chunk delete
+        also updates the external-content FTS index through its SQLite trigger.
+        """
+        async with transaction(self.db, self.lock):
             cursor = await self.db.execute(
                 "UPDATE kb_sources SET status='rejected', updated_at=? "
                 "WHERE id=? AND status != 'rejected'",
                 (_now(), source_id),
             )
-            await self.db.commit()
+            if cursor.rowcount > 0:
+                await self.db.execute("DELETE FROM kb_chunks WHERE source_id=?", (source_id,))
         return cursor.rowcount > 0
 
+    async def reject_project_folder_import(
+        self, *, project_id: int, root: str
+    ) -> FolderDetachResult:
+        """Detach one browser-folder import from a project without deleting audit records.
+
+        Browser folder uploads use ``chat-upload:{project}:{root}/...`` as a logical origin.
+        The root was selected by the user and is validated by the UI route; this store method still
+        uses equality over a fixed prefix rather than caller-controlled SQL patterns.
+        """
+        prefix = f"chat-upload:{project_id}:{root}/"
+        now = _now()
+        async with transaction(self.db, self.lock):
+            rows = await (
+                await self.db.execute(
+                    "SELECT id FROM kb_sources WHERE project_id=? AND status='live' "
+                    "AND substr(origin, 1, ?) = ? ORDER BY id",
+                    (project_id, len(prefix), prefix),
+                )
+            ).fetchall()
+            chunks_cursor = await self.db.execute(
+                "SELECT COUNT(*) FROM kb_chunks c JOIN kb_sources s ON s.id=c.source_id "
+                "WHERE s.project_id=? AND substr(s.origin, 1, ?) = ?",
+                (project_id, len(prefix), prefix),
+            )
+            (chunks_cleared,) = await chunks_cursor.fetchone()
+            if not rows and not chunks_cleared:
+                return FolderDetachResult(sources_rejected=0, chunks_cleared=0)
+            # Keep this set-based rather than expanding one SQL parameter per file: folder
+            # imports permit thousands of source files, while SQLite parameter limits vary.
+            # Reject first so retrieval fails closed even if another coroutine reads during
+            # this transaction, then purge chunks for every terminal revision of this folder.
+            await self.db.execute(
+                "UPDATE kb_sources SET status='rejected', updated_at=? WHERE project_id=? "
+                "AND status='live' AND substr(origin, 1, ?) = ?",
+                (now, project_id, len(prefix), prefix),
+            )
+            # kb_fts is external-content FTS; its delete trigger removes the same
+            # rows before this transaction commits, so no rejected folder text is
+            # left searchable or counted as live derived knowledge.
+            await self.db.execute(
+                "DELETE FROM kb_chunks WHERE source_id IN ("
+                "SELECT id FROM kb_sources WHERE project_id=? AND status != 'live' "
+                "AND substr(origin, 1, ?) = ?"
+                ")",
+                (project_id, len(prefix), prefix),
+            )
+        return FolderDetachResult(
+            sources_rejected=len(rows), chunks_cleared=int(chunks_cleared)
+        )
+
     async def list_sources(
-        self, *, status: str | None = "live", review_status: str | None = None
+        self,
+        *,
+        status: str | None = "live",
+        review_status: str | None = None,
+        source_session_id: int | None = None,
+        project_id: object = ANY_PROJECT,
     ) -> list[Source]:
-        """List sources, filtered by status (default live) and/or review_status."""
+        """List sources, optionally narrowed to one exact chat and project.
+
+        ``source_session_id`` is intentionally an equality-only selector: the chat shelf never
+        falls back to a project's other files.  ``project_id`` mirrors retrieval's sentinel
+        contract, where ``None`` means Global-only and ``ANY_PROJECT`` means no project filter.
+        """
         clauses, params = [], []
         if status is not None:
             clauses.append("status=?")
@@ -268,6 +358,15 @@ class KnowledgeStore:
         if review_status is not None:
             clauses.append("review_status=?")
             params.append(review_status)
+        if source_session_id is not None:
+            clauses.append("source_session_id=?")
+            params.append(source_session_id)
+        if project_id is not ANY_PROJECT:
+            if project_id is None:
+                clauses.append("project_id IS NULL")
+            else:
+                clauses.append("project_id=?")
+                params.append(project_id)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         cursor = await self.db.execute(
             f"SELECT {_SOURCE_COLUMNS} FROM kb_sources {where} ORDER BY id", params

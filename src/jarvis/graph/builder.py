@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from pathlib import PurePosixPath
 
 from jarvis.graph.store import GraphStore
 
@@ -50,6 +51,27 @@ def _artifact_trust(provenance_class: str | None) -> str:
     if provenance_class in ("untrusted_model_generated", "derived_summary"):
         return "model_generated"
     return "trusted_local"
+
+
+def _source_folder_parts(title: str | None) -> tuple[str, ...]:
+    """Return a browser-supplied *logical* source path's folder components.
+
+    Chat folder ingestion stores a relative path as the source title.  It is useful
+    structure, but it is not a server filesystem path and must never be treated as
+    one.  Single-file uploads and malformed/legacy titles simply have no folders.
+    """
+    raw = str(title or "").replace("\\", "/").strip("/")
+    if not raw:
+        return ()
+    path = PurePosixPath(raw)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return ()
+    return tuple(path.parts[:-1])
+
+
+def _folder_ref(project_id: int, parts: tuple[str, ...]) -> str:
+    """A project-qualified, stable derived-folder endpoint (never a disk path)."""
+    return f"{project_id}:{'/'.join(parts)}"
 
 
 async def rebuild(store: GraphStore) -> dict[str, int]:
@@ -110,13 +132,27 @@ async def rebuild(store: GraphStore) -> dict[str, int]:
     ):
         await edge("project", pid, "memory", mid, "has_memory", ts, project_id=pid)
 
-    # 7. project -> source (live only; edge carries the source's provenance-mapped trust)
-    for sid, pid, kind, review, ts in await rows(
-        "SELECT id, project_id, kind, review_status, created_at FROM kb_sources "
+    # 7. project -> source, with a deterministic folder hierarchy for browser folder imports.
+    # Every edge is a rebuildable structural cache.  ``folder`` endpoints are logical labels from
+    # the user-selected relative path, not real filesystem paths and not inferred dependencies.
+    for sid, pid, title, kind, review, ts in await rows(
+        "SELECT id, project_id, title, kind, review_status, created_at FROM kb_sources "
         "WHERE status='live' AND project_id IS NOT NULL ORDER BY id"
     ):
-        await edge("project", pid, "source", sid, "has_source", ts,
-                   trust=_source_trust(kind, review), project_id=pid)
+        source_trust = _source_trust(kind, review)
+        folders = _source_folder_parts(title)
+        if not folders:
+            await edge("project", pid, "source", sid, "has_source", ts,
+                       trust=source_trust, project_id=pid)
+            continue
+        parent_kind, parent_id = "project", str(pid)
+        for index in range(1, len(folders) + 1):
+            folder_id = _folder_ref(pid, folders[:index])
+            await edge(parent_kind, parent_id, "folder", folder_id, "contains", ts,
+                       project_id=pid)
+            parent_kind, parent_id = "folder", folder_id
+        await edge("folder", parent_id, "source", sid, "contains", ts,
+                   trust=source_trust, project_id=pid)
 
     # 8. project -> artifact   9. artifact -> origin (produced_by, for mapped producers)
     for aid, pid, otype, oid, prov, ts in await rows(

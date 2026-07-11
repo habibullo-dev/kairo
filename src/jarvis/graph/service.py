@@ -25,7 +25,9 @@ MAX_NODES = 300
 _MEM_LABEL = 80  # truncate a memory/source snippet to a short label (bodies-free)
 
 # Endpoint kinds whose trust is trusted_local structure (first-party rows / code constants).
-_LOCAL_KINDS = {"project", "chat", "run", "member", "task", "digest", "wiki", "team", "service"}
+_LOCAL_KINDS = {
+    "project", "chat", "run", "member", "task", "digest", "wiki", "team", "service", "folder",
+}
 _ASSERTED_KINDS = {"person", "decision", "topic", "external_ref", "custom"}
 
 
@@ -83,7 +85,9 @@ async def _resolve(store: GraphStore, endpoints: set[tuple[str, str]]) -> dict[t
         card("memory", str(mid), (content or "")[:_MEM_LABEL], "trusted_local")
     for sid, title, origin, kind, review in await int_rows(
         "source",
-        "SELECT id, title, origin, kind, review_status FROM kb_sources WHERE id IN ({marks})"):
+        "SELECT id, title, origin, kind, review_status FROM kb_sources "
+        "WHERE id IN ({marks}) AND status='live'",
+    ):
         card("source", str(sid), title or (origin or "")[:_MEM_LABEL], _source_trust(kind, review))
     for aid, title, prov, sens in await int_rows(
         "artifact",
@@ -100,6 +104,11 @@ async def _resolve(store: GraphStore, endpoints: set[tuple[str, str]]) -> dict[t
         card("team", rid, rid.replace("_", " ").title(), "trusted_local")
     for rid in by_kind.get("service", []):
         card("service", rid, rid.replace("_", " ").title(), "trusted_local")
+    for rid in by_kind.get("folder", []):
+        # A folder ref is ``{project_id}:{relative/logical/path}``, constructed by the derived
+        # graph builder.  Show only its final segment; its parent connection supplies context.
+        logical = rid.split(":", 1)[-1]
+        card("folder", rid, logical.rsplit("/", 1)[-1], "trusted_local")
 
     # Asserted graph_nodes (people/decisions/topics/refs) — trust from the row, live only.
     asserted_ids = [rid for k in _ASSERTED_KINDS for rid in by_kind.get(k, []) if rid.isdigit()]

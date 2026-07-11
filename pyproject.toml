@@ -38,6 +38,7 @@ voice = [
 ]
 ui = [
     "fastapi>=0.115",
+    "python-multipart>=0.0.20,<0.1",  # browser-selected chat document uploads
     "uvicorn>=0.30",
 ]
 # Inspect-only browser QA + the screenshot definition-of-done harness. Optional: without it,
@@ -63,6 +64,7 @@ dev = [
     # this keeps `uv run pytest` self-contained without needing --extra ui. (httpx is now a
     # core dependency — connectors REST — so it's no longer listed here.)
     "fastapi>=0.115",
+    "python-multipart>=0.0.20,<0.1",  # multipart parsing for chat upload route tests
     # Voice cloud SDKs: the "needs a key" adapter tests exercise the lazy-import + key-check
     # path, which requires the SDK present to reach the key branch. Runtime dep is the
     # `voice` extra; here so `uv run pytest` is self-contained. (sounddevice omitted — no

@@ -20,6 +20,7 @@ from jarvis.persistence.migrations import (
     _SCHEMA_V2,
     _SCHEMA_V3,
     _SCHEMA_V4,
+    latest_version,
     migrate,
 )
 from jarvis.persistence.sessions import REFLECTABLE_KINDS, reflectable_kinds
@@ -49,7 +50,7 @@ async def test_migrations_set_user_version(tmp_path: Path) -> None:
     cursor = await db.execute("PRAGMA user_version")
     (version,) = await cursor.fetchone()
     await db.close()
-    assert version == 15  # Phase 15.6: model_calls.routing_mode
+    assert version == 18  # Derived KB chunks are purged when their source is no longer live.
 
 
 async def test_v2_to_v3_migration_preserves_data(tmp_path: Path) -> None:
@@ -75,7 +76,7 @@ async def test_v2_to_v3_migration_preserves_data(tmp_path: Path) -> None:
         )
         await db.commit()
 
-        assert await migrate(db) == 15  # migrate() applies ALL pending (v3..v14) onto a v2 db
+        assert await migrate(db) == latest_version()
 
         cur = await db.execute("SELECT title, kind FROM sessions WHERE id=1")
         assert await cur.fetchone() == ("kept", "interactive")  # backfilled + survives v5 rebuild
@@ -121,7 +122,7 @@ async def test_v3_to_v4_migration_preserves_data(tmp_path: Path) -> None:
         )
         await db.commit()
 
-        assert await migrate(db) == 15  # applies v4..v14 onto a populated v3 db
+        assert await migrate(db) == latest_version()
 
         cur = await db.execute("SELECT title, kind FROM sessions WHERE id=1")
         assert await cur.fetchone() == ("kept", "task")  # task kind survives v5 rebuild
@@ -180,7 +181,7 @@ async def test_v4_to_v5_migration_preserves_data_and_widens_kind(tmp_path: Path)
         )
         await db.commit()
 
-        assert await migrate(db) == 15
+        assert await migrate(db) == latest_version()
 
         # All rows survive, including the widened-column values on the rebuilt table.
         cur = await db.execute(

@@ -20,9 +20,10 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import re
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
 from jarvis.knowledge import converters
@@ -77,6 +78,19 @@ _INGESTIBLE: frozenset[str] = frozenset(
         ".epub",
         ".html",
         ".htm",
+    }
+)
+
+# Browser uploads admit the reviewed document set plus a conservative allowlist of text source and
+# configuration formats.  They are converted through the same byte-capped sandbox; unsupported
+# binaries still fail closed before a converter sees them.
+_CHAT_UPLOADABLE = _INGESTIBLE | frozenset(
+    {
+        ".csv", ".json", ".jsonl", ".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx",
+        ".ts", ".tsx", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".css",
+        ".scss", ".xml", ".sql", ".sh", ".ps1", ".bat", ".cmd", ".go", ".rs",
+        ".java", ".kt", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".rb", ".php",
+        ".swift", ".vue", ".svelte",
     }
 )
 
@@ -260,6 +274,7 @@ class KnowledgeService:
         created_by: str = "user",
         source_session_id: int | None = None,
         project_id: int | None = None,
+        origin_override: str | None = None,
     ) -> IngestResult:
         """Ingest exactly one of a file ``path``, a ``url``, or freeform ``text`` into
         an immutable raw artifact + deterministic markdown + a chunk index.
@@ -284,11 +299,10 @@ class KnowledgeService:
         else:
             kind, origin = "note", "note"
             raw_bytes, ext, seed = text.encode("utf-8"), ".md", (title or "note")
+        if origin_override is not None:
+            origin = origin_override
 
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
-        existing = await self.store.find_by_hash(content_hash)
-        if existing is not None:  # content_hash is UNIQUE — identical bytes are a no-op
-            return IngestResult("duplicate", existing.id, 0, existing.review_status, existing.title)
 
         # raw artifact FIRST (orphan-file-not-dangling-row on crash)
         stem = f"{content_hash[:16]}-{slugify(seed or origin)[:60]}"
@@ -304,8 +318,14 @@ class KnowledgeService:
         # source is itself reviewed (an unattended re-ingest must not silently replace
         # trusted content; it stages for review instead).
         prior: Source | None = None
-        if kind in ("file", "url") and review_status == "reviewed":
-            prior = await self.store.find_live_by_origin(origin)
+        if kind in ("file", "url"):
+            existing = await self.store.find_live_by_origin(origin, project_id=project_id)
+            if existing is not None and existing.content_hash == content_hash:
+                return IngestResult(
+                    "duplicate", existing.id, 0, existing.review_status, existing.title
+                )
+            if existing is not None and review_status == "reviewed":
+                prior = existing
 
         source_id = await self.store.add_source(
             kind=kind,
@@ -345,6 +365,58 @@ class KnowledgeService:
         return IngestResult(
             action, source_id, len(new_chunks), review_status, title or conversion.title
         )
+
+    async def ingest_uploaded(
+        self,
+        filename: str,
+        raw_bytes: bytes,
+        *,
+        created_by: str = "user",
+        source_session_id: int | None = None,
+        project_id: int | None = None,
+        relative_path: str | None = None,
+    ) -> IngestResult:
+        """Ingest one browser-selected document without retaining a second upload copy.
+
+        The browser never supplies a server filesystem path. Bytes are staged under the
+        knowledge jail only long enough for the existing capped, sandboxed converter to read
+        them; :meth:`ingest` then writes the immutable raw artifact and indexed markdown.
+        """
+        raw_name = str(relative_path or filename).replace("\\", "/").strip("/")
+        logical = PurePosixPath(raw_name)
+        invalid_part = any(part in {"", ".", ".."} for part in logical.parts)
+        if not raw_name or logical.is_absolute() or invalid_part:
+            raise KnowledgeError("invalid upload path")
+        blocked_dirs = {".git", "node_modules", ".venv", "venv", "dist", "build"}
+        blocked = any(
+            part.lower() in blocked_dirs or part.lower().startswith(".env")
+            for part in logical.parts
+        )
+        if blocked:
+            raise KnowledgeError("sensitive or generated upload path")
+        name = logical.as_posix()
+        suffix = Path(name).suffix.lower()
+        if not name or name in {".", ".."} or suffix not in _CHAT_UPLOADABLE:
+            raise KnowledgeError("unsupported upload type")
+        if len(raw_bytes) > self.config.max_ingest_bytes:
+            raise KnowledgeError("uploaded file exceeds the ingest size cap")
+        self.ensure_dirs()
+        staging = self.knowledge_dir / "staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        staged = staging / f"{uuid.uuid4().hex}{suffix}"
+        staged.write_bytes(raw_bytes)
+        scope = project_id if project_id is not None else "global"
+        try:
+            return await self.ingest(
+                path=str(staged),
+                title=name,
+                created_by=created_by,
+                source_session_id=source_session_id,
+                project_id=project_id,
+                origin_override=f"chat-upload:{scope}:{name}",
+            )
+        finally:
+            staged.unlink(missing_ok=True)
 
     async def _read_file_source(self, path: str) -> tuple[str, str, bytes, str, str]:
         """Resolve + validate a file path (defense-in-depth floor), return its bytes."""

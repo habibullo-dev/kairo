@@ -8,15 +8,21 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.config import KnowledgeConfig, load_config
+from jarvis.graph import GraphStore
+from jarvis.graph.builder import rebuild as rebuild_graph
 from jarvis.knowledge.service import KnowledgeService
 from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory.embeddings import FakeEmbedder
 from jarvis.persistence.db import connect
+from jarvis.persistence.sessions import SessionStore
+from jarvis.projects import ProjectStore
+from jarvis.projects.service import ProjectService
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
 from jarvis.ui.readmodels import UiServices, vault_overview
 from jarvis.ui.server import create_app
@@ -141,6 +147,173 @@ async def test_ingest_route_ingests_a_text_note(tmp_path: Path) -> None:
     assert r.status_code == 200 and r.json()["ok"] is True
 
 
+async def test_chat_attachment_route_ingests_a_browser_selected_document(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    client, auth = _app(tmp_path, svc)
+    r = client.post(
+        "/api/chat/attachments",
+        files={"file": ("brief.md", b"# Brief\n\nProject upload canary.", "text/markdown")},
+        headers=_cookie(auth),
+    )
+    assert r.status_code == 200 and r.json()["ok"] is True
+    source = await svc.store.get_source(r.json()["source_id"])
+    assert source is not None and source.origin == "chat-upload:global:brief.md"
+    assert "upload canary" in (svc.knowledge_dir / source.markdown_path).read_text(encoding="utf-8")
+
+
+async def test_folder_upload_finalize_rebuilds_the_project_graph(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    projects = ProjectStore(svc.store.db, svc.store.lock)
+    project_id = await projects.create(name="Folder project")
+    project_service = ProjectService(projects)
+    await project_service.activate(project_id)
+    client, auth = _app(tmp_path, svc)
+    client.app.state.projects = project_service
+    client.app.state.services = UiServices(
+        knowledge=svc, graph=GraphStore(svc.store.db, svc.store.lock),
+    )
+    uploaded = client.post(
+        "/api/chat/attachments",
+        files={"file": ("main.py", b"print('folder import')", "text/x-python")},
+        data={"relative_path": "repo/src/main.py"},
+        headers=_cookie(auth),
+    )
+    assert uploaded.status_code == 200 and uploaded.json()["ok"] is True
+
+    finalized = client.post(
+        "/api/chat/attachments", data={"finalize": "true"}, headers=_cookie(auth))
+    assert finalized.status_code == 200 and finalized.json() == {"ok": True, "graph_rebuilt": True}
+    edges = await client.app.state.services.graph.list_edges(
+        project_id=project_id, include_global=False
+    )
+    assert any(edge.src_kind == "project" and edge.dst_kind == "folder" for edge in edges)
+    assert any(edge.src_kind == "folder" and edge.dst_kind == "source" for edge in edges)
+
+
+async def test_project_folder_detach_rejects_only_that_folder_and_rebuilds_graph(
+    tmp_path: Path,
+) -> None:
+    svc = await _service(tmp_path)
+    projects = ProjectStore(svc.store.db, svc.store.lock)
+    project_id = await projects.create(name="Folder project")
+    project_service = ProjectService(projects)
+    await project_service.activate(project_id)
+    client, auth = _app(tmp_path, svc)
+    client.app.state.projects = project_service
+    client.app.state.services = UiServices(
+        knowledge=svc, graph=GraphStore(svc.store.db, svc.store.lock),
+    )
+    await svc.ingest_uploaded(
+        "old.py", b"old", project_id=project_id, relative_path="wrong/old.py"
+    )
+    retained = await svc.ingest_uploaded(
+        "new.py", b"new", project_id=project_id, relative_path="right/new.py"
+    )
+    await rebuild_graph(client.app.state.services.graph)
+
+    detached = client.post(
+        "/api/chat/knowledge/detach", json={"root": "wrong"}, headers=_cookie(auth)
+    )
+    assert detached.status_code == 200 and detached.json() == {
+        "ok": True,
+        "detached_sources": 1,
+        "cleared_chunks": 1,
+    }
+    assert (await svc.store.get_source(retained.source_id)).status == "live"
+    assert await client.app.state.services.graph.list_edges(
+        project_id=project_id, include_global=False
+    )
+
+
+async def test_chat_attachment_refuses_unknown_types_without_returning_parser_details(
+    tmp_path: Path,
+) -> None:
+    svc = await _service(tmp_path)
+    client, auth = _app(tmp_path, svc)
+    r = client.post(
+        "/api/chat/attachments",
+        files={"file": ("payload.exe", b"not a document", "application/octet-stream")},
+        headers=_cookie(auth),
+    )
+    assert r.status_code == 400
+    assert r.json()["message"] == (
+        "Kairo couldn't add that file. Use a supported document under the upload limit."
+    )
+
+
+async def test_chat_files_are_limited_to_the_exact_live_session(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    sessions = SessionStore(svc.store.db)
+    chat_a = await sessions.create_session()
+    chat_b = await sessions.create_session()
+    await svc.ingest_uploaded(
+        "a.md", b"# A\n\nA chat canary", created_by="user", source_session_id=chat_a
+    )
+    await svc.ingest_uploaded(
+        "b.md", b"# B\n\nB chat canary", created_by="user", source_session_id=chat_b
+    )
+    client, auth = _app(tmp_path, svc)
+    client.app.state.session = SimpleNamespace(session_id=chat_a, project_id=None)
+    payload = client.get("/api/chat/files", headers=_cookie(auth)).json()
+    assert [row["title"] for row in payload["files"]] == ["a.md"]
+    assert "A chat canary" not in str(payload) and "B chat canary" not in str(payload)
+    assert "markdown_path" not in payload["files"][0]
+
+
+async def test_chat_knowledge_is_project_scoped_and_bodies_free(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    projects = ProjectStore(svc.store.db)
+    project_a = await projects.create(name="Project A")
+    project_b = await projects.create(name="Project B")
+    await svc.ingest_uploaded(
+        "alpha.md", b"# Alpha\n\nPROJECT-A-BODY-CANARY", created_by="user", project_id=project_a
+    )
+    await svc.ingest_uploaded(
+        "beta.md", b"# Beta\n\nPROJECT-B-BODY-CANARY", created_by="user", project_id=project_b
+    )
+    client, auth = _app(tmp_path, svc)
+    client.app.state.session = SimpleNamespace(session_id=91, project_id=project_a)
+
+    payload = client.get("/api/chat/knowledge", headers=_cookie(auth)).json()
+
+    assert payload["project_id"] == project_a
+    assert payload["source_count"] == 1
+    assert [source["title"] for source in payload["sources"]] == ["alpha.md"]
+    assert payload["graph"] == {
+        "available": False, "nodes": [], "edge_count": 0, "truncated": False,
+    }
+    rendered = str(payload)
+    assert "PROJECT-A-BODY-CANARY" not in rendered
+    assert "PROJECT-B-BODY-CANARY" not in rendered
+    assert "chat-upload" not in rendered
+    assert "markdown_path" not in rendered
+
+    client.app.state.session = SimpleNamespace(session_id=91, project_id=None)
+    global_payload = client.get("/api/chat/knowledge", headers=_cookie(auth)).json()
+    assert global_payload["project_id"] is None
+    assert global_payload["sources"] == []
+
+
+async def test_chat_attachment_binds_to_a_legacy_live_session_when_one_exists(
+    tmp_path: Path,
+) -> None:
+    svc = await _service(tmp_path)
+    sessions = SessionStore(svc.store.db)
+    chat_id = await sessions.create_session()
+    client, auth = _app(tmp_path, svc)
+    client.app.state.session = SimpleNamespace(session_id=chat_id, project_id=None)
+    uploaded = client.post(
+        "/api/chat/attachments",
+        files={"file": ("legacy.md", b"# Legacy\n\nScoped upload", "text/markdown")},
+        headers=_cookie(auth),
+    )
+    assert uploaded.status_code == 200 and uploaded.json()["ok"]
+    source = await svc.store.get_source(uploaded.json()["source_id"])
+    assert source is not None and source.source_session_id == chat_id
+    listed = client.get("/api/chat/files", headers=_cookie(auth)).json()
+    assert [row["title"] for row in listed["files"]] == ["legacy.md"]
+
+
 async def test_ingest_route_denies_sensitive_path_403(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
     svc = await _service(tmp_path)
@@ -172,7 +345,5 @@ def test_ingest_route_requires_session(tmp_path: Path) -> None:
     auth = AuthManager(token="t")
     app = create_app(load_config(root=tmp_path, env_file=None), auth=auth)
     client = TestClient(app, base_url="http://127.0.0.1")
-    r = client.post(
-        "/api/vault/ingest", json={"text": "x"}, headers={"origin": "http://127.0.0.1"}
-    )
+    r = client.post("/api/vault/ingest", json={"text": "x"}, headers={"origin": "http://127.0.0.1"})
     assert r.status_code == 401

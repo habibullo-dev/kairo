@@ -20,7 +20,8 @@ from fastapi import FastAPI, Request, WebSocket, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
-from jarvis.core.execution import bind_execution_context
+from jarvis.core.execution import ExecutionContext, bind_execution_context
+from jarvis.graph.builder import rebuild as rebuild_graph
 from jarvis.graph.index import CostAwareEmbedder
 from jarvis.graph.review import approve as graph_approve
 from jarvis.graph.review import reject as graph_reject
@@ -60,6 +61,8 @@ from jarvis.ui.readmodels import (
     projects_overview,
     projects_view,
     providers_status,
+    serialize_artifact,
+    serialize_chat_file,
     services_status,
     session_transcript,
     settings_overview,
@@ -159,9 +162,7 @@ def _runner_status(
     return {
         "runner_running": bool(runner is not None and runner.is_running),
         "in_flight": (
-            getattr(runner, "in_flight", None)
-            if runner is not None and reveal_in_flight
-            else None
+            getattr(runner, "in_flight", None) if runner is not None and reveal_in_flight else None
         ),
         "turn_busy": bool(session is not None and session.busy),
     }
@@ -236,6 +237,57 @@ def create_app(
         return meta is not None and (
             workspace is None or meta.project_id == workspace.context.project_id
         )
+
+    def _chat_scope(request: Request) -> ExecutionContext | None:
+        """Return the one exact context allowed to populate a chat's context shelf.
+
+        Browser workspaces are authoritative.  The legacy single-session composition remains
+        usable for focused tests and the CLI host, but it still has to name a real session before
+        chat-scoped files can be read.
+        """
+        workspace = _workspace_for(request)
+        if workspace is not None:
+            return workspace.context
+        if app.state.workspaces is not None:
+            return None
+        session = app.state.session
+        if session is None or session.session_id is None:
+            return None
+        return ExecutionContext(session_id=session.session_id, project_id=session.project_id)
+
+    def _chat_output_download(store, artifact) -> Response:
+        """Serve an already-registered output as an attachment after exact scope checking.
+
+        This is intentionally separate from the preview-only artifact content route.  It permits
+        common document output types as *downloads*, never rendered HTML/SVG/JS, and keeps all
+        path confinement, sensitivity, and size checks in the ArtifactStore boundary.
+        """
+        if artifact is None or artifact.sensitivity == "quarantined":
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        try:
+            path = store.content_path(artifact)
+        except ArtifactPathError:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        if path is None or not path.is_file():
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        media_type = {
+            **_ARTIFACT_MEDIA,
+            ".pdf": "application/pdf",
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ".csv": "text/csv; charset=utf-8",
+        }.get(path.suffix.lower())
+        if media_type is None:
+            return _deny(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "unsupported type")
+        if path.stat().st_size > config.limits.max_read_bytes:
+            return _deny(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "too large")
+        suffix = path.suffix.lower()
+        if artifact.title.endswith(suffix):
+            safe_name = artifact.title
+        else:
+            safe_name = f"{artifact.title}{suffix}"
+        return FileResponse(path, media_type=media_type, filename=safe_name)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):  # noqa: ANN001,ANN202 - framework signature
@@ -383,14 +435,14 @@ def create_app(
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
         sess = workspace.session if workspace is not None else app.state.session
-        status = _runner_status(
-            app.state.runner, sess, reveal_in_flight=workspace is None
-        )
+        status = _runner_status(app.state.runner, sess, reveal_in_flight=workspace is None)
         modes = app.state.modes
         status["mode"] = modes.current().value if modes is not None else "approval"
         projects = app.state.projects
-        cur = workspace.project if workspace is not None else (
-            projects.current() if projects is not None else None
+        cur = (
+            workspace.project
+            if workspace is not None
+            else (projects.current() if projects is not None else None)
         )
         status["project"] = {"id": cur.project_id, "name": cur.name} if cur is not None else None
         status["pending_approvals"] = (
@@ -729,10 +781,19 @@ def create_app(
         return JSONResponse(await task_runs(svc, task_id))
 
     @app.get("/api/vault")
-    async def vault(project_id: int | None = None) -> JSONResponse:
+    async def vault(request: Request, project_id: int | None = None) -> JSONResponse:
         svc = app.state.services.knowledge
         if svc is None:
             return _unavailable("knowledge")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            # A query parameter must not become a cross-project read capability.  The active
+            # authenticated workspace owns this view; a different id is a not-found response.
+            if project_id is not None and project_id != workspace.context.project_id:
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
+            project_id = workspace.context.project_id
         return JSONResponse(await vault_overview(svc, project_id=project_id))
 
     @app.get("/api/vault/lint")
@@ -741,6 +802,191 @@ def create_app(
         if svc is None:
             return _unavailable("knowledge")
         return JSONResponse(await vault_lint(svc))
+
+    @app.get("/api/chat/files")
+    async def chat_files(request: Request) -> JSONResponse:
+        """Metadata for documents explicitly attached to this exact active chat only."""
+        svc = app.state.services.knowledge
+        if svc is None:
+            return _unavailable("knowledge")
+        scope = _chat_scope(request)
+        if app.state.workspaces is not None and scope is None:
+            return _workspace_required()
+        if scope is None:
+            # A fresh legacy chat has no durable session yet, so it cannot have chat-owned files.
+            return JSONResponse({"files": []})
+        rows = await svc.store.list_sources(
+            status="live", source_session_id=scope.session_id, project_id=scope.project_id
+        )
+        return JSONResponse({"files": [serialize_chat_file(source) for source in rows]})
+
+    @app.get("/api/chat/outputs")
+    async def chat_outputs(request: Request) -> JSONResponse:
+        """Current project's registered outputs for the chat context shelf.
+
+        Artifacts do not yet retain a source-session foreign key, so this deliberately returns
+        only the exact project (or Global), never claims that every item was created by this chat.
+        """
+        store = app.state.services.artifacts
+        if store is None:
+            return _unavailable("artifacts")
+        scope = _chat_scope(request)
+        if app.state.workspaces is not None and scope is None:
+            return _workspace_required()
+        project_id = scope.project_id if scope is not None else None
+        rows = [
+            artifact
+            for artifact in await store.list(project_id=project_id, include_global=False, limit=50)
+            if artifact.sensitivity != "quarantined"
+        ]
+        return JSONResponse({"artifacts": [serialize_artifact(artifact) for artifact in rows]})
+
+    @app.get("/api/chat/outputs/{artifact_id}/content")
+    async def chat_output_content(artifact_id: int, request: Request) -> Response:
+        """Download a project output through the same authenticated workspace handle."""
+        store = app.state.services.artifacts
+        if store is None:
+            return _unavailable("artifacts")
+        scope = _chat_scope(request)
+        if app.state.workspaces is not None and scope is None:
+            return _workspace_required()
+        artifact = await store.get(artifact_id)
+        project_id = scope.project_id if scope is not None else None
+        if artifact is None or artifact.project_id != project_id:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        return _chat_output_download(store, artifact)
+
+    @app.get("/api/chat/knowledge")
+    async def chat_knowledge(request: Request) -> JSONResponse:
+        """A compact, project-bound knowledge shelf for the active chat.
+
+        This is deliberately metadata-only: project sources and a small derived graph preview.
+        The browser never supplies a project id, source body, local path, or graph selector;
+        all scope comes from the authenticated live workspace.
+        """
+        knowledge = app.state.services.knowledge
+        if knowledge is None:
+            return _unavailable("knowledge")
+        scope = _chat_scope(request)
+        if app.state.workspaces is not None and scope is None:
+            return _workspace_required()
+        project_id = scope.project_id if scope is not None else None
+        empty_graph = {
+            "available": app.state.services.graph is not None,
+            "nodes": [],
+            "edge_count": 0,
+            "truncated": False,
+        }
+        # Global chats are intentionally not a back door into every global source.  Choose a
+        # project first, then Kairo can retrieve and visualize only that project's knowledge.
+        if project_id is None:
+            return JSONResponse(
+                {
+                    "project_id": None,
+                    "source_count": 0,
+                    "sources": [],
+                    "folder_imports": [],
+                    "graph": empty_graph,
+                }
+            )
+
+        sources = await knowledge.store.list_sources(status="live", project_id=project_id)
+        folder_prefix = f"chat-upload:{project_id}:"
+        folder_counts: dict[str, int] = {}
+        for source in sources:
+            if not source.origin.startswith(folder_prefix):
+                continue
+            relative = source.origin[len(folder_prefix):]
+            root = relative.split("/", 1)[0]
+            if root and "/" in relative:
+                folder_counts[root] = folder_counts.get(root, 0) + 1
+        graph = empty_graph
+        graph_store = app.state.services.graph
+        if graph_store is not None:
+            preview = await subgraph(graph_store, project_id, depth=2, limit=24)
+            graph = {
+                "available": True,
+                # Preserve the graph service's bodies-free cards, but only send fields needed by
+                # the compact shelf.  Source content and managed paths never cross this boundary.
+                "nodes": [
+                    {
+                        "id": node["id"],
+                        "kind": node["kind"],
+                        "label": node["label"],
+                        "degree": node["degree"],
+                        "trust_class": node["trust_class"],
+                    }
+                    for node in preview["nodes"][:8]
+                ],
+                "edge_count": len(preview["edges"]),
+                "truncated": preview["truncated"],
+            }
+        return JSONResponse(
+            {
+                "project_id": project_id,
+                "source_count": len(sources),
+                # Titles are the logical paths selected by the user, not managed storage paths.
+                # Cap the browser tree so a giant repository cannot turn this read model into a
+                # corpus dump; all source bodies and origins remain server-side.
+                "sources": [serialize_chat_file(source) for source in sources[:300]],
+                "sources_truncated": len(sources) > 300,
+                "folder_imports": [
+                    {"root": root, "source_count": count}
+                    for root, count in sorted(
+                        folder_counts.items(), key=lambda item: item[0].casefold()
+                    )
+                ],
+                "graph": graph,
+            }
+        )
+
+    @app.post("/api/chat/knowledge/detach")
+    async def detach_chat_knowledge_folder(request: Request) -> JSONResponse:
+        """Detach one explicitly imported folder from the active project, audit-preserving.
+
+        This is a local user lifecycle action, equivalent to rejecting KB sources—not an executor,
+        tool call, or external write.  The browser can name only a displayed logical folder root;
+        project scope still comes exclusively from the authenticated workspace.
+        """
+        knowledge = app.state.services.knowledge
+        if knowledge is None:
+            return _unavailable("knowledge")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        projects = app.state.projects
+        project_id = (
+            workspace.context.project_id
+            if workspace is not None
+            else (projects.current().project_id if projects is not None else None)
+        )
+        body = await request.json()
+        root = body.get("root")
+        if (
+            project_id is None
+            or not isinstance(root, str)
+            or not root.strip()
+            or len(root) > 160
+            or root in {".", ".."}
+            or "/" in root
+            or "\\" in root
+        ):
+            return JSONResponse({"ok": False, "message": "invalid folder"}, status_code=400)
+        root = root.strip()
+        detached = await knowledge.store.reject_project_folder_import(
+            project_id=project_id, root=root
+        )
+        if not detached.sources_rejected and not detached.chunks_cleared:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        if app.state.services.graph is not None:
+            await rebuild_graph(app.state.services.graph)
+        return JSONResponse(
+            {
+                "ok": True,
+                "detached_sources": detached.sources_rejected,
+                "cleared_chunks": detached.chunks_cleared,
+            }
+        )
 
     @app.get("/api/agents")
     async def agents() -> JSONResponse:
@@ -751,6 +997,7 @@ def create_app(
 
     @app.get("/api/sessions")
     async def sessions_list(
+        request: Request,
         query: str | None = None,
         pinned: bool | None = None,
         project_id: int | None = None,
@@ -759,9 +1006,24 @@ def create_app(
         svc = app.state.services.sessions
         if svc is None:
             return _unavailable("sessions")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        # A history list is as private as a transcript: never let a live workspace enumerate
+        # another project's chat titles. Cross-project resume remains the explicit lifecycle path.
+        if workspace is not None:
+            if project_id is not None and project_id != workspace.context.project_id:
+                return JSONResponse(
+                    {"ok": False, "message": "wrong project scope"}, status_code=404
+                )
+            project_id = workspace.context.project_id
         return JSONResponse(
             await list_sessions_view(
-                svc, query=query, pinned=pinned, project_id=project_id,
+                svc,
+                query=query,
+                pinned=pinned,
+                project_id=project_id,
+                scope_project=workspace is not None,
                 limit=max(1, min(limit, 200)),
             )
         )
@@ -813,9 +1075,7 @@ def create_app(
         budgets = app.state.services.budgets
         if store is None or budgets is None:
             return _unavailable("roi")
-        return JSONResponse(
-            {"roi": await orchestration_roi(store, budgets, project_id=project_id)}
-        )
+        return JSONResponse({"roi": await orchestration_roi(store, budgets, project_id=project_id)})
 
     # --- Studio (orchestration): catalog + runs + estimate (all read-only) -------------
 
@@ -828,8 +1088,10 @@ def create_app(
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
         projects = app.state.projects
-        active = workspace.project if workspace is not None else (
-            projects.current() if projects is not None else None
+        active = (
+            workspace.project
+            if workspace is not None
+            else (projects.current() if projects is not None else None)
         )
         # Per-project narrowing (Phase 13): show the project's subset when it narrows, else the
         # full global availability. A project can only narrow (the write route enforces it).
@@ -982,6 +1244,104 @@ def create_app(
             return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
         return JSONResponse({"ok": True, "action": result.action, "source_id": result.source_id})
 
+    @app.post("/api/chat/attachments")
+    async def chat_attachment(request: Request) -> JSONResponse:
+        """Persist one browser-selected document into the current chat/project knowledge scope.
+
+        This is an explicit local-user action, like the existing Vault ingest click. The upload is
+        byte-capped before conversion, staged only under the knowledge jail, and immediately
+        removed after the existing sandboxed ingest pipeline stores its immutable artifact.
+        """
+        svc = app.state.services.knowledge
+        if svc is None:
+            return _unavailable("knowledge")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        try:
+            form = await request.form(
+                max_files=1,
+                max_fields=6,
+                max_part_size=svc.config.max_ingest_bytes + 1,
+            )
+            upload = form.get("file")
+            relative_path = form.get("relative_path")
+            projects = app.state.projects
+            project_id = (
+                workspace.context.project_id
+                if workspace is not None
+                else (projects.current().project_id if projects is not None else None)
+            )
+            # The folder UI finalizes separately, so one rejected last file cannot leave the
+            # already-indexed project without its derived source edges.
+            if form.get("finalize") == "true" and upload is None:
+                if project_id is None or app.state.services.graph is None:
+                    return JSONResponse({"ok": True, "graph_rebuilt": False})
+                await rebuild_graph(app.state.services.graph)
+                return JSONResponse({"ok": True, "graph_rebuilt": True})
+            filename = getattr(upload, "filename", None)
+            reader = getattr(upload, "read", None)
+            if not filename or not callable(reader):
+                return JSONResponse({"ok": False, "message": "choose one file"}, status_code=400)
+            cap = svc.config.max_ingest_bytes
+            raw = bytearray()
+            closer = getattr(upload, "close", None)
+            try:
+                while chunk := await reader(64 * 1024):
+                    raw.extend(chunk)
+                    if len(raw) > cap:
+                        return JSONResponse(
+                            {"ok": False, "message": "file exceeds Kairo's upload size limit"},
+                            status_code=413,
+                        )
+            finally:
+                if callable(closer):
+                    await closer()
+            source_session_id = workspace.context.session_id if workspace is not None else None
+            if source_session_id is None:
+                # The legacy single-session host has the same invariant as workspaces: an upload
+                # belongs to one durable chat.  Allocate the lazy row before ingestion when the
+                # live UI session can do so; bare test/utility compositions remain harmlessly
+                # unbound rather than guessing a session id.
+                ui_session = app.state.session
+                ensure_session = getattr(ui_session, "ensure_session", None)
+                if callable(ensure_session):
+                    source_session_id = await ensure_session()
+                else:
+                    source_session_id = getattr(ui_session, "session_id", None)
+            result = await svc.ingest_uploaded(
+                filename,
+                bytes(raw),
+                created_by="user",
+                source_session_id=source_session_id,
+                project_id=project_id,
+                relative_path=str(relative_path) if relative_path else None,
+            )
+            graph_rebuilt = False
+        except Exception:  # conversion errors can contain unhelpful local parser details
+            log.warning("chat_attachment_ingest_failed", exc_info=True)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "message": (
+                        "Kairo couldn't add that file. "
+                        "Use a supported document under the upload limit."
+                    ),
+                },
+                status_code=400,
+            )
+        return JSONResponse(
+            {
+                "ok": True,
+                "action": result.action,
+                "source_id": result.source_id,
+                "title": result.title or filename,
+                "chunks": result.chunks,
+                "review_status": result.review_status,
+                "graph_rebuilt": graph_rebuilt,
+            }
+        )
+
     @app.post("/api/digest/run")
     async def digest_run() -> JSONResponse:
         # "Run digest now" — deterministic collectors + one tool-less summarize, then UI/DB
@@ -1028,8 +1388,10 @@ def create_app(
             return JSONResponse({"ok": False, "message": "content required"}, status_code=400)
         mem_type = body.get("type") if body.get("type") in _MEMORY_TYPES else "fact"
         projects = app.state.projects
-        pid = workspace.context.project_id if workspace is not None else (
-            projects.current().project_id if projects is not None else None
+        pid = (
+            workspace.context.project_id
+            if workspace is not None
+            else (projects.current().project_id if projects is not None else None)
         )
         scope = (
             bind_execution_context(workspace.context)
@@ -1051,8 +1413,10 @@ def create_app(
             return _workspace_required()
         body = await request.json()
         projects = app.state.projects
-        pid = workspace.context.project_id if workspace is not None else (
-            projects.current().project_id if projects is not None else None
+        pid = (
+            workspace.context.project_id
+            if workspace is not None
+            else (projects.current().project_id if projects is not None else None)
         )
         try:
             scope = (
@@ -1377,7 +1741,10 @@ def create_app(
             return _unavailable("artifacts")
         return JSONResponse(
             await artifacts_list(
-                store, project_id=project_id, kind=kind, pinned=pinned,
+                store,
+                project_id=project_id,
+                kind=kind,
+                pinned=pinned,
                 limit=max(1, min(limit, 200)),  # floored: LIMIT -1 in SQLite means "no limit"
             )
         )
@@ -1669,31 +2036,71 @@ def create_app(
 
     @app.get("/api/workspace/{project_id}/graph")
     async def workspace_graph(
-        project_id: int, focus: str | None = None, depth: int = 1, kinds: str | None = None,
-        trust: str | None = None, since: str | None = None, limit: int = 300,
+        project_id: int,
+        request: Request,
+        focus: str | None = None,
+        depth: int = 1,
+        kinds: str | None = None,
+        trust: str | None = None,
+        since: str | None = None,
+        limit: int = 300,
     ) -> JSONResponse:
         # Phase 15: the project-scoped memory-graph subgraph (nodes+edges+counts). READ-ONLY,
         # clamped (depth<=2, limit<=300), bodies-free. Degrades to an empty graph if unavailable.
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None and project_id != workspace.context.project_id:
+            return JSONResponse({"ok": False, "message": "wrong project scope"}, status_code=404)
         svc = app.state.services
         if svc.graph is None:
-            return JSONResponse({"project_id": project_id, "nodes": [], "edges": [],
-                                 "counts": {"by_kind": {}, "by_trust": {}}, "truncated": False})
+            return JSONResponse(
+                {
+                    "project_id": project_id,
+                    "nodes": [],
+                    "edges": [],
+                    "counts": {"by_kind": {}, "by_trust": {}},
+                    "truncated": False,
+                }
+            )
         focus_ep = None
         if focus and ":" in focus:
             fk, fid = focus.split(":", 1)
             focus_ep = (fk, fid)
-        return JSONResponse(await subgraph(
-            svc.graph, project_id, focus=focus_ep, depth=depth,
-            kinds=set(kinds.split(",")) if kinds else None,
-            trust=set(trust.split(",")) if trust else None, since=since, limit=limit,
-        ))
+        return JSONResponse(
+            await subgraph(
+                svc.graph,
+                project_id,
+                focus=focus_ep,
+                depth=depth,
+                kinds=set(kinds.split(",")) if kinds else None,
+                trust=set(trust.split(",")) if trust else None,
+                since=since,
+                limit=limit,
+            )
+        )
 
     @app.get("/api/graph/node/{kind}/{ref_id:path}")
-    async def graph_node(kind: str, ref_id: str) -> JSONResponse:
+    async def graph_node(kind: str, ref_id: str, request: Request) -> JSONResponse:
         # One node's card + capped neighbors (ref_id is a path converter so wiki paths work).
         svc = app.state.services
         if svc.graph is None:
             return JSONResponse({"detail": "graph unavailable"}, status_code=404)
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            # Node ids are not authority.  A card can be inspected only when it participates in
+            # the active workspace's project graph; this also covers derived folder endpoints.
+            edges = await svc.graph.list_edges(
+                project_id=workspace.context.project_id, include_global=False
+            )
+            if (kind, ref_id) not in {
+                (edge.src_kind, edge.src_id) for edge in edges
+            } | {
+                (edge.dst_kind, edge.dst_id) for edge in edges
+            }:
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
         card = await node_card(svc.graph, kind, ref_id)
         if card is None:
             return JSONResponse({"detail": "node not found"}, status_code=404)
@@ -1704,8 +2111,9 @@ def create_app(
         # The project's QUARANTINED review queue (bodies-free previews + evidence pointers).
         svc = app.state.services
         if svc.graph is None:
-            return JSONResponse({"project_id": project_id, "suggestions": [],
-                                 "counts": {"by_trust": {}}})
+            return JSONResponse(
+                {"project_id": project_id, "suggestions": [], "counts": {"by_trust": {}}}
+            )
         return JSONResponse(await suggestions_view(svc.graph, project_id))
 
     @app.post("/api/graph/suggestions/{suggestion_id}/approve")
@@ -1737,7 +2145,8 @@ def create_app(
                 pricing = load_pricing(config.root / "config" / "pricing.yaml")
                 embedder = CostAwareEmbedder(svc.embedder, pricing)
         return JSONResponse(
-            await unified_search(svc.graph, embedder, q, project_id=project_id, limit=limit))
+            await unified_search(svc.graph, embedder, q, project_id=project_id, limit=limit)
+        )
 
     @app.post("/api/orchestration/run")
     async def orchestration_run(request: Request) -> JSONResponse:

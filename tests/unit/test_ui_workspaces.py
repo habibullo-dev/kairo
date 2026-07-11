@@ -22,6 +22,7 @@ from jarvis.core.execution import (
     bind_execution_context,
     current_execution_context,
 )
+from jarvis.graph import GraphStore
 from jarvis.permissions.gate import Decision
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
@@ -356,6 +357,66 @@ async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
             ).json()
             assert after_a["project"]["id"] == project_a
             assert after_b["project"]["id"] is None
+            await sample_workspace.session.sessions.save_messages(
+                after_a["session_id"],
+                [{"role": "user", "content": "shared chat"}],
+            )
+
+            # The project graph is as private as a chat transcript.  A tab in another live
+            # workspace cannot inspect it merely by putting Project A's numeric id in a GET URL.
+            graph_a = client.get(
+                f"/api/workspace/{project_a}/graph",
+                headers={"cookie": cookie, WORKSPACE_HEADER: hello_a["workspace_id"]},
+            )
+            graph_b = client.get(
+                f"/api/workspace/{project_a}/graph",
+                headers={"cookie": cookie, WORKSPACE_HEADER: hello_b["workspace_id"]},
+            )
+            assert graph_a.status_code == 200
+            assert graph_b.status_code == 404
+
+            # Graph cards are scoped too.  A derived folder label is not a capability just
+            # because another workspace can guess its project-qualified ref.
+            graph_store = GraphStore(
+                sample_workspace.session.sessions.db, sample_workspace.session.sessions.lock
+            )
+            await graph_store.upsert_edge(
+                src_kind="project", src_id=str(project_a), dst_kind="folder",
+                dst_id=f"{project_a}:private", edge_kind="contains", origin="derived",
+                trust_class="trusted_local", created_by="system",
+                created_at="2026-01-01T00:00:00+00:00",
+                project_id=project_a,
+            )
+            app.state.services.graph = graph_store
+            own_folder = client.get(
+                f"/api/graph/node/folder/{project_a}:private",
+                headers={"cookie": cookie, WORKSPACE_HEADER: hello_a["workspace_id"]},
+            )
+            foreign_folder = client.get(
+                f"/api/graph/node/folder/{project_a}:private",
+                headers={"cookie": cookie, WORKSPACE_HEADER: hello_b["workspace_id"]},
+            )
+            assert own_folder.status_code == 200 and own_folder.json()["label"] == "private"
+            assert foreign_folder.status_code == 404
+
+            # History titles are scoped too: a global/other-project workspace cannot enumerate
+            # Project A's chat list just by calling the collection route or adding a query string.
+            history_a = client.get(
+                "/api/sessions?limit=50",
+                headers={"cookie": cookie, WORKSPACE_HEADER: hello_a["workspace_id"]},
+            )
+            history_b = client.get(
+                "/api/sessions?limit=50",
+                headers={"cookie": cookie, WORKSPACE_HEADER: hello_b["workspace_id"]},
+            )
+            assert history_a.status_code == history_b.status_code == 200
+            assert after_a["session_id"] in {row["id"] for row in history_a.json()["sessions"]}
+            assert after_a["session_id"] not in {row["id"] for row in history_b.json()["sessions"]}
+            foreign_history = client.get(
+                f"/api/sessions?project_id={project_a}",
+                headers={"cookie": cookie, WORKSPACE_HEADER: hello_b["workspace_id"]},
+            )
+            assert foreign_history.status_code == 404
 
             # A different live workspace may not inspect or mutate Project A's transcript just
             # by knowing its numeric id. Resume below is the sole deliberate cross-project path.
@@ -391,10 +452,6 @@ async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
             # A second live tab may deliberately resume the same persisted chat. Archiving that
             # row must transition every bound workspace, never leave B saving into an archived
             # session behind A's back.
-            await sample_workspace.session.sessions.save_messages(
-                after_a["session_id"],
-                [{"role": "user", "content": "shared chat"}],
-            )
             resumed_b = client.post(
                 f"/api/sessions/{after_a['session_id']}/resume",
                 json={},

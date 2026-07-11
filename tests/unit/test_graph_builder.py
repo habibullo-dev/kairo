@@ -92,6 +92,34 @@ async def test_trust_is_mapped_from_content_endpoint(tmp_path: Path) -> None:
     assert by_kind["has_chat"].trust_class == "trusted_local"  # structural
 
 
+async def test_rebuild_derives_logical_folder_tree_for_uploaded_project_sources(
+    tmp_path: Path,
+) -> None:
+    store, _ = await _seed(tmp_path)
+    await store.db.execute(
+        "INSERT INTO kb_sources (kind, origin, title, content_hash, raw_path, markdown_path, "
+        "markdown_hash, converter, converter_version, byte_size, status, review_status, "
+        "created_by, created_at, updated_at, project_id) VALUES "
+        "('file','chat-upload:1:repo/src/main.py','repo/src/main.py','folder-hash','r2','m2',"
+        "'mh2','passthrough','1',10,'live','reviewed','user',?,?,1)",
+        (_TS, _TS),
+    )
+    await store.db.commit()
+
+    counts = await rebuild(store)
+    edges = await store.list_edges(origin="derived")
+    assert counts["contains"] == 3
+    assert any(
+        e.src_kind == "project" and e.dst_kind == "folder" and e.dst_id == "1:repo"
+        for e in edges
+    )
+    assert any(
+        e.src_kind == "folder" and e.src_id == "1:repo" and e.dst_id == "1:repo/src"
+        for e in edges
+    )
+    assert any(e.src_kind == "folder" and e.dst_kind == "source" for e in edges)
+
+
 async def test_derived_edge_uses_source_row_created_at(tmp_path: Path) -> None:
     store, _ = await _seed(tmp_path)
     await rebuild(store)

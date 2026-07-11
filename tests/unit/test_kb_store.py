@@ -12,6 +12,8 @@ import pytest
 
 from jarvis.knowledge.store import KnowledgeStore, NewChunk, WikiLink
 from jarvis.persistence.db import connect
+from jarvis.persistence.fts import integrity_check_all, query_domain
+from jarvis.projects import ProjectStore
 
 MODEL = "voyage-3-large"
 _OPEN_DBS: list = []
@@ -44,6 +46,7 @@ async def _add_source(store: KnowledgeStore, origin: str, **kw) -> int:
         byte_size=kw.get("byte_size", 100),
         review_status=kw.get("review_status", "reviewed"),
         created_by=kw.get("created_by", "user"),
+        project_id=kw.get("project_id"),
     )
 
 
@@ -57,27 +60,31 @@ async def _chunk(store: KnowledgeStore, *, source_id=None, wiki_path=None, vec, 
     )
 
 
-# --- sources: hash uniqueness, supersede lineage ---------------------------
+# --- sources: origin lifecycle, supersede lineage --------------------------
 
 
-async def test_find_by_hash_and_uniqueness(tmp_path: Path) -> None:
+async def test_identical_bytes_can_have_distinct_logical_origins(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     sid = await _add_source(store, "a.txt", content_hash="abc123")
     found = await store.find_by_hash("abc123")
     assert found is not None and found.id == sid
     assert await store.find_by_hash("nope") is None
-    # the UNIQUE index on content_hash rejects a duplicate ingest of identical bytes
-    with pytest.raises(aiosqlite.IntegrityError):
-        await _add_source(store, "b.txt", content_hash="abc123")
+    # A folder may contain duplicated boilerplate at different paths; its logical source identity
+    # is the scoped origin, not the raw hash.
+    other = await _add_source(store, "b.txt", content_hash="abc123")
+    assert other != sid
 
 
 async def test_supersede_lineage(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     old = await _add_source(store, "doc.txt", content_hash="v1")
     new = await _add_source(store, "doc.txt", content_hash="v2")
+    await _chunk(store, source_id=old, vec=[1.0, 0.0])
     await store.supersede_source(old, new)
     old_row = await store.get_source(old)
     assert old_row.status == "superseded" and old_row.superseded_by == new
+    # The audit row remains, but the stale derived cache does not.
+    assert await store.chunks_for_source(old) == []
     # the live-by-origin lookup now returns the new row
     live = await store.find_live_by_origin("doc.txt")
     assert live is not None and live.id == new
@@ -86,11 +93,72 @@ async def test_supersede_lineage(tmp_path: Path) -> None:
 async def test_reject_and_review_status(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     sid = await _add_source(store, "u.txt", review_status="unreviewed")
+    await _chunk(store, source_id=sid, vec=[1.0, 0.0])
     await store.set_review_status(sid, "reviewed")
     assert (await store.get_source(sid)).review_status == "reviewed"
     assert await store.reject_source(sid) is True
     assert (await store.get_source(sid)).status == "rejected"
+    assert await store.chunks_for_source(sid) == []
     assert await store.reject_source(sid) is False  # already rejected
+
+
+async def test_detach_folder_purges_derived_chunks_and_fts_but_keeps_audit_sources(
+    tmp_path: Path,
+) -> None:
+    store = await _store(tmp_path)
+    project_id = await ProjectStore(store.db, store.lock).create(name="Imported folder")
+    detached_source = await _add_source(
+        store,
+        f"chat-upload:{project_id}:wrong/readme.md",
+        project_id=project_id,
+    )
+    retained_source = await _add_source(
+        store,
+        f"chat-upload:{project_id}:right/readme.md",
+        project_id=project_id,
+    )
+    await store.replace_chunks(
+        source_id=detached_source,
+        chunks=[NewChunk("", 0, "folder-detach-cache-canary", [1.0, 0.0])],
+        embedding_model=MODEL,
+    )
+    await store.replace_chunks(
+        source_id=retained_source,
+        chunks=[NewChunk("", 0, "retained-folder-canary", [0.0, 1.0])],
+        embedding_model=MODEL,
+    )
+    assert len(
+        await query_domain(
+            store.db, "knowledge", "folder-detach-cache-canary", project_id=project_id,
+            include_global=False,
+        )
+    ) == 1
+
+    result = await store.reject_project_folder_import(project_id=project_id, root="wrong")
+
+    assert result.sources_rejected == 1
+    assert result.chunks_cleared == 1
+    source = await store.get_source(detached_source)
+    assert source is not None and source.status == "rejected"  # audit provenance persists
+    assert await store.chunks_for_source(detached_source) == []
+    assert len(await store.chunks_for_source(retained_source)) == 1
+    assert await query_domain(
+        store.db, "knowledge", "folder-detach-cache-canary", project_id=project_id,
+        include_global=False,
+    ) == []
+    await integrity_check_all(store.db)
+    await store.db.commit()  # integrity_check_all issues FTS maintenance statements directly.
+
+    # A prior interrupted release could leave a rejected folder with derived rows.  Detach is
+    # safe to retry: it repairs that cache without resurrecting or deleting the audit source.
+    await store.replace_chunks(
+        source_id=detached_source,
+        chunks=[NewChunk("", 0, "retry-detach-cache-canary", [1.0, 0.0])],
+        embedding_model=MODEL,
+    )
+    retry = await store.reject_project_folder_import(project_id=project_id, root="wrong")
+    assert retry.sources_rejected == 0 and retry.chunks_cleared == 1
+    assert await store.chunks_for_source(detached_source) == []
 
 
 # --- chunk owner CHECK -----------------------------------------------------

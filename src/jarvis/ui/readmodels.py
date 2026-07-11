@@ -153,7 +153,10 @@ async def projects_overview(services: UiServices) -> dict:
     out: list[dict] = []
     for p in active:
         health: dict = {
-            "open_tasks": None, "sessions_week": None, "last_run": None, "month_spend_usd": None,
+            "open_tasks": None,
+            "sessions_week": None,
+            "last_run": None,
+            "month_spend_usd": None,
         }
         # Each chip degrades independently: an absent store leaves it None, and a composed store
         # that errors leaves just that one chip None rather than failing the whole grid.
@@ -359,8 +362,11 @@ async def workspace_overview(services: UiServices, project_id: int) -> dict:
     """The Project Workspace Overview tab: the project + a few health chips + recent artifacts +
     recent runs, scoped to the project. Read-only; each piece degrades if its service is off."""
     out: dict = {
-        "project_id": project_id, "project": None,
-        "recent_artifacts": [], "recent_runs": [], "health": {},
+        "project_id": project_id,
+        "project": None,
+        "recent_artifacts": [],
+        "recent_runs": [],
+        "health": {},
     }
     if services.projects is not None:
         p = await services.projects.store.get(project_id)
@@ -388,13 +394,27 @@ async def activity_feed(services: UiServices, project_id: int, *, limit: int = 3
             for a in await services.artifacts.list(
                 project_id=project_id, include_global=False, limit=limit
             ):
-                events.append({"type": "artifact", "title": a.title, "kind": a.kind,
-                               "ts": a.created_at, "ref_id": a.id})
+                events.append(
+                    {
+                        "type": "artifact",
+                        "title": a.title,
+                        "kind": a.kind,
+                        "ts": a.created_at,
+                        "ref_id": a.id,
+                    }
+                )
     with contextlib.suppress(Exception):
         if services.orchestration is not None:
             for r in await services.orchestration.list(project_id=project_id, limit=limit):
-                events.append({"type": "run", "title": r.title or r.workflow, "status": r.status,
-                               "ts": r.finished_at or r.started_at, "ref_id": r.id})
+                events.append(
+                    {
+                        "type": "run",
+                        "title": r.title or r.workflow,
+                        "status": r.status,
+                        "ts": r.finished_at or r.started_at,
+                        "ref_id": r.id,
+                    }
+                )
     with contextlib.suppress(Exception):
         if services.sessions is not None:
             for m in await services.sessions.list_sessions(project_id=project_id, limit=limit):
@@ -559,13 +579,14 @@ async def list_sessions_view(
     query: str | None = None,
     pinned: bool | None = None,
     project_id: int | None = None,
+    scope_project: bool = False,
     limit: int = 50,
 ) -> dict:
     """The chats list (or a search over titles + message text). Interactive sessions only.
     ``project_id`` scopes to one project's chats (the Workspace Chats tab); absent ⇒ every chat
-    (the global list). Passing None as a value would mean 'global-only', so it is only forwarded
-    when a concrete id is given."""
-    scope = {} if project_id is None else {"project_id": project_id}
+    (the legacy/global list). ``scope_project`` preserves the distinction between an omitted
+    project (all chats) and a live workspace deliberately scoped to Global (``project_id=None``)."""
+    scope = {"project_id": project_id} if scope_project or project_id is not None else {}
     if query:
         rows = await sessions.search_sessions(query, limit=limit, **scope)
     else:
@@ -648,6 +669,24 @@ def serialize_source(source) -> dict:
         "byte_size": source.byte_size,
         "mime": source.mime,
         "markdown_path": source.markdown_path,
+    }
+
+
+def serialize_chat_file(source) -> dict:
+    """Inert metadata for the active chat's Files shelf.
+
+    Unlike the Vault inspector, this intentionally omits origin and managed paths.  The browser
+    only needs a recognisable title, type, size, review state, and time — never local storage
+    topology or raw document bytes.
+    """
+    return {
+        "id": source.id,
+        "title": source.title,
+        "kind": source.kind,
+        "mime": source.mime,
+        "byte_size": source.byte_size,
+        "review_status": source.review_status,
+        "created_at": source.created_at,
     }
 
 
@@ -814,8 +853,12 @@ _GOOGLE_SCOPE_LABELS = {
 }
 
 _PROVIDER_LABELS = {
-    "anthropic": "Anthropic", "openai": "OpenAI", "gemini": "Gemini",
-    "qwen": "Qwen", "deepseek": "DeepSeek", "zai": "Z.ai",
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "gemini": "Gemini",
+    "qwen": "Qwen",
+    "deepseek": "DeepSeek",
+    "zai": "Z.ai",
 }
 
 
@@ -863,7 +906,8 @@ def connector_hub_overview(config: Config, *, connectors: dict | None = None) ->
     raw_scopes = google.get("scopes", []) if isinstance(google, dict) else []
     google_scopes = [
         {"name": _GOOGLE_SCOPE_LABELS.get(str(scope), "Additional approved scope")}
-        for scope in raw_scopes if isinstance(scope, str)
+        for scope in raw_scopes
+        if isinstance(scope, str)
     ]
     # The configured loopback URI is helpful setup context, but a query/fragment is not needed to
     # register it and could accidentally carry sensitive data. Display only the safe URI identity.
@@ -960,8 +1004,10 @@ def connector_hub_overview(config: Config, *, connectors: dict | None = None) ->
         ],
         "services": [
             {
-                "name": row["name"], "state": _hub_state(row["state"]),
-                "kind": row["kind"], "note": row["note"],
+                "name": row["name"],
+                "state": _hub_state(row["state"]),
+                "kind": row["kind"],
+                "note": row["note"],
                 "local": not bool(row["egress"]),
             }
             for row in services_status(config)
@@ -1237,36 +1283,54 @@ def capability_truth(
     c = connectors or _empty_connectors()
     demo = bool(c.get("demo"))
     google = c.get("google")
-    g_connected = bool(google) and bool(google.get("connected", True)) and not (
-        isinstance(google, dict) and google.get("needs_reconnect")
+    g_connected = (
+        bool(google)
+        and bool(google.get("connected", True))
+        and not (isinstance(google, dict) and google.get("needs_reconnect"))
     )
     g_reconnect = isinstance(google, dict) and bool(google.get("needs_reconnect"))
 
     def _google_row(label: str, key: str) -> dict:
         if google is None:
-            return {"name": label, "state": "not_configured", "exposed_to_chat": False,
-                    "reason": "Connect Google in the Hub to use it here."}
+            return {
+                "name": label,
+                "state": "not_configured",
+                "exposed_to_chat": False,
+                "reason": "Connect Google in the Hub to use it here.",
+            }
         if g_reconnect:
-            return {"name": label, "state": "needs_reconnect", "exposed_to_chat": False,
-                    "reason": "Google sign-in expired — reconnect in the Hub."}
+            return {
+                "name": label,
+                "state": "needs_reconnect",
+                "exposed_to_chat": False,
+                "reason": "Google sign-in expired — reconnect in the Hub.",
+            }
         exposed = _exposed(registered_tools, _CAP_NEEDLES[key], connected=g_connected)
         reason = "" if exposed else "Connected, but not available as a tool in this chat."
         if demo:
             reason = "Demo data — not your real account."
         return {"name": label, "state": "connected", "exposed_to_chat": exposed, "reason": reason}
 
-    conn_rows = [_google_row("Google Calendar", "calendar"), _google_row("Gmail", "gmail"),
-                 _google_row("Google Drive", "drive")]
+    conn_rows = [
+        _google_row("Google Calendar", "calendar"),
+        _google_row("Gmail", "gmail"),
+        _google_row("Google Drive", "drive"),
+    ]
     for name, label in (("telegram", "Telegram"), ("kakao", "Kakao")):
         st = (c.get("notifiers") or {}).get(name)
         configured = bool(st) and bool(st.get("configured", st.get("connected", False)))
-        conn_rows.append({
-            "name": label,
-            "state": "connected" if configured else "not_configured",
-            "exposed_to_chat": False,  # a notifier delivers messages OUT; it is not a chat tool
-            "reason": ("Delivers notifications; not a chat tool."
-                       if configured else f"Add {label} in settings to receive notifications."),
-        })
+        conn_rows.append(
+            {
+                "name": label,
+                "state": "connected" if configured else "not_configured",
+                "exposed_to_chat": False,  # a notifier delivers messages OUT; it is not a chat tool
+                "reason": (
+                    "Delivers notifications; not a chat tool."
+                    if configured
+                    else f"Add {label} in settings to receive notifications."
+                ),
+            }
+        )
 
     # Providers + services depend on the pricing table / provider registry. Resolve them
     # DEFENSIVELY: a hiccup there must never blank the whole grid — the connector rows above (and
@@ -1278,10 +1342,14 @@ def capability_truth(
         for name in EXTERNAL_CHAT_PROVIDERS:
             if name not in PROVIDER_CATALOG:
                 continue
-            prov_rows.append({
-                "name": name, "state": reg.state(name).value, "exposed_to_chat": False,
-                "reason": "Not enabled for the main chat (would receive private context).",
-            })
+            prov_rows.append(
+                {
+                    "name": name,
+                    "state": reg.state(name).value,
+                    "exposed_to_chat": False,
+                    "reason": "Not enabled for the main chat (would receive private context).",
+                }
+            )
     except Exception:  # noqa: BLE001 - keep the grid rendering; just show anthropic
         pass
 
@@ -1292,19 +1360,27 @@ def capability_truth(
         services = []
     for s in services:
         avail = s.get("state") == "available"
-        svc_rows.append({
-            "name": s.get("name"), "state": s.get("state"), "exposed_to_chat": avail,
-            "reason": "" if avail else f"Service {s.get('state')}.",
-        })
+        svc_rows.append(
+            {
+                "name": s.get("name"),
+                "state": s.get("state"),
+                "exposed_to_chat": avail,
+                "reason": "" if avail else f"Service {s.get('state')}.",
+            }
+        )
 
     v = voice or {}
     v_on = bool(v.get("enabled"))
     voice_row = {
-        "state": "on" if v_on else "off", "exposed_to_chat": v_on,
+        "state": "on" if v_on else "off",
+        "exposed_to_chat": v_on,
         "reason": "" if v_on else (v.get("reason") or "Voice is off — enable it in settings.yaml."),
     }
-    mcp_row = {"state": "not_configured", "exposed_to_chat": False,
-               "reason": "No MCP client yet — a future phase."}
+    mcp_row = {
+        "state": "not_configured",
+        "exposed_to_chat": False,
+        "reason": "No MCP client yet — a future phase.",
+    }
 
     exposed_conns = [r["name"] for r in conn_rows if r["exposed_to_chat"]]
     exposed_svcs = sum(1 for r in svc_rows if r["exposed_to_chat"])
@@ -1314,8 +1390,12 @@ def capability_truth(
         bits.append(f"{exposed_svcs} service{'s' if exposed_svcs != 1 else ''}")
     bits.append("voice on" if v_on else "voice off")
     return {
-        "connectors": conn_rows, "providers": prov_rows, "services": svc_rows,
-        "voice": voice_row, "mcp": mcp_row, "summary": " · ".join(bits),
+        "connectors": conn_rows,
+        "providers": prov_rows,
+        "services": svc_rows,
+        "voice": voice_row,
+        "mcp": mcp_row,
+        "summary": " · ".join(bits),
     }
 
 
@@ -1354,8 +1434,11 @@ def _eval_freshness(config: Config, repos: list[dict]) -> dict:
         "projected_replay_usd": 0.0,
         "cost_note": (
             "default `jarvis eval` is keyless replay = $0; a live gate "
-            + (f"last cost ${last_cost:.2f}" if isinstance(last_cost, int | float) else
-               "has no prior cost recorded")
+            + (
+                f"last cost ${last_cost:.2f}"
+                if isinstance(last_cost, int | float)
+                else "has no prior cost recorded"
+            )
             + ". Use `jarvis eval plan --live` for a projection."
         ),
     }

@@ -24,7 +24,7 @@ from jarvis.core import FakeClient, text_message
 from jarvis.digest import DigestBuilder, DigestStore, ensure_digest_task
 from jarvis.digest.builder import Section
 from jarvis.persistence.db import connect
-from jarvis.persistence.migrations import MIGRATIONS, migrate
+from jarvis.persistence.migrations import MIGRATIONS, latest_version, migrate
 from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
 from jarvis.scheduler.service import TaskService
 from jarvis.scheduler.store import TaskStore
@@ -90,7 +90,7 @@ async def test_migration_v6_preserves_tasks_and_adds_digest_kind() -> None:
     )
     await db.commit()
 
-    assert await migrate(db) == 15  # applies pending through v14
+    assert await migrate(db) == latest_version()
 
     # Seeded rows survived the tasks rebuild; the FK from task_runs is intact.
     cur = await db.execute("SELECT kind FROM tasks WHERE id = 1")

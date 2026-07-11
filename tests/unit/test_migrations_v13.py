@@ -29,7 +29,7 @@ async def _build_v12(path: Path) -> aiosqlite.Connection:
 async def test_v12_to_v13_adds_archived_flag_defaulting_off() -> None:
     db = await _build_v12(":memory:")
     try:
-        assert await migrate(db) == 15
+        assert await migrate(db) == M.MIGRATIONS[-1][0]
         cur = await db.execute("PRAGMA table_info(sessions)")
         cols = {r[1] for r in await cur.fetchall()}
         assert "archived" in cols
@@ -52,6 +52,6 @@ async def test_v13_is_rerunnable() -> None:
         await migrate(db)  # -> 13
         await db.execute("PRAGMA user_version = 12")  # simulate a crash before the version bump
         await db.commit()
-        assert await migrate(db) == 15  # guarded ADD COLUMN ⇒ clean no-op re-run
+        assert await migrate(db) == M.MIGRATIONS[-1][0]
     finally:
         await db.close()

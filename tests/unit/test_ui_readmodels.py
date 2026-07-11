@@ -152,6 +152,11 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/vault/sources/{source_id}/approve"),
         ("POST", "/api/vault/sources/{source_id}/reject"),
         ("POST", "/api/vault/ingest"),  # Phase 9: human-initiated ingest (same gate floor)
+        # Chat attachment is the same explicit human local-file ingest, not a tool/executor path.
+        ("POST", "/api/chat/attachments"),
+        # Explicit local lifecycle action: reject one displayed project-folder import; no tool,
+        # executor, external write, or hard deletion.
+        ("POST", "/api/chat/knowledge/detach"),
         ("POST", "/api/digest/run"),  # Phase 9: run the Daily Digest now
         ("POST", "/api/tasks/{task_id}/cancel"),
         ("POST", "/api/memory/{memory_id}/forget"),
