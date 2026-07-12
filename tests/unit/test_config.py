@@ -48,6 +48,29 @@ def test_defaults_when_no_settings_file(tmp_path: Path) -> None:
     assert cfg.paths.data_dir == Path("data")
 
 
+def test_logging_config_defaults_and_yaml_override(tmp_path: Path) -> None:
+    defaults = load_config(root=tmp_path, env_file=None)
+    assert defaults.logging.max_bytes == 10 * 1024 * 1024
+    assert defaults.logging.backup_count == 3
+    assert defaults.logging.retention_days == 30
+
+    _write_settings(
+        tmp_path,
+        "logging:\n  max_bytes: 4096\n  backup_count: 2\n  retention_days: 7\n",
+    )
+    configured = load_config(root=tmp_path, env_file=None)
+    assert configured.logging.max_bytes == 4096
+    assert configured.logging.backup_count == 2
+    assert configured.logging.retention_days == 7
+
+
+@pytest.mark.parametrize("key", ["max_bytes", "backup_count", "retention_days"])
+def test_logging_config_rejects_non_positive_values(tmp_path: Path, key: str) -> None:
+    _write_settings(tmp_path, f"logging:\n  {key}: 0\n")
+    with pytest.raises(ConfigError, match=key):
+        load_config(root=tmp_path, env_file=None)
+
+
 def test_memory_config_defaults(tmp_path: Path) -> None:
     cfg = load_config(root=tmp_path, env_file=None)
     assert cfg.memory.enabled is True

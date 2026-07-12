@@ -198,7 +198,7 @@ def connect_cli(argv: list[str]) -> int:
         print(f"Configuration error: {exc}")
         return 1
     config.ensure_dirs()
-    configure_logging(config.logs_dir)
+    configure_logging(config.logs_dir, **config.logging.model_dump())
 
     try:
         return asyncio.run(_dispatch(args, config))

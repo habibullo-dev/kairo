@@ -437,6 +437,14 @@ class PathsConfig(BaseModel):
     logs_dir: Path = Path("logs")
 
 
+class LoggingConfig(BaseModel):
+    """Local structured-log lifecycle. Values are deliberately bounded away from zero."""
+
+    max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    backup_count: int = Field(default=3, gt=0)
+    retention_days: int = Field(default=30, gt=0)
+
+
 class ModesConfig(BaseModel):
     """Run modes (Phase 10). ``auto_allow_tools`` is the opt-in allowlist Auto mode may
     auto-approve — empty by default (Auto adds no standing authority until a human lists
@@ -582,6 +590,7 @@ class Config(BaseModel):
     context_reuse: ContextReuseConfig = Field(default_factory=ContextReuseConfig)  # Phase 13 (S7)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)  # reviewed local packs, default OFF
     attention: AttentionConfig = Field(default_factory=AttentionConfig)  # Phase 16
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
     paths: PathsConfig
     secrets: Secrets
 
@@ -668,6 +677,7 @@ def load_config(
             voice=VoiceConfig(**data.get("voice", {})),
             ui=UIConfig(**data.get("ui", {})),
             connectors=ConnectorsConfig(**data.get("connectors", {})),
+            logging=LoggingConfig(**data.get("logging", {})),
             paths=PathsConfig(**data.get("paths", {})),
             budgets=BudgetsConfig(**data.get("budgets", {})),
             services=ServicesConfig(**data.get("services", {})),

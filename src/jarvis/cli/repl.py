@@ -1606,7 +1606,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
             _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
     with _ctx.suppress(Exception):
         from jarvis.observability import configure_logging
-        configure_logging(config.logs_dir)
+        configure_logging(config.logs_dir, **config.logging.model_dump())
     if not config.ui.enabled:
         console.print(
             "[dim]The workstation UI is not enabled. Set ui.enabled: true in settings.yaml "

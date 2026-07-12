@@ -102,7 +102,7 @@ def main() -> None:
         sys.exit(1)
 
     config.ensure_dirs()
-    configure_logging(config.logs_dir)
+    configure_logging(config.logs_dir, **config.logging.model_dump())
 
     try:
         if args.ui:

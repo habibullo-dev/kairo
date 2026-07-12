@@ -165,6 +165,11 @@ connectors:
     max_notify_chars: 3500
   repos: ['.']                   # repos whose git state feeds the Daily "what changed" card
 
+logging:
+  max_bytes: 10485760            # 10 MiB active JSONL segment; older segments are gzip-compressed
+  backup_count: 3                # compressed segments retained for the current day
+  retention_days: 30             # recognized Jarvis logs older than this are deleted
+
 paths:
   data_dir: data   # SQLite db (relative to project root)
   logs_dir: logs   # JSON-lines audit/trace logs

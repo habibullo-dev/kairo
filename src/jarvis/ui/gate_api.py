@@ -7,7 +7,9 @@ whole app writes, so the Gate screen and the on-disk log tell one story (ADR-000
 from __future__ import annotations
 
 import datetime as _dt
+import gzip
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -32,6 +34,8 @@ AUDIT_EVENTS = frozenset(
     }
 )
 
+_ROTATED_LOG_PATTERN = re.compile(r"jarvis-(?P<day>\d{4}-\d{2}-\d{2})\.(?P<index>\d+)\.jsonl\.gz$")
+
 
 def policy_snapshot(gate: PermissionGate) -> dict:
     """A JSON-safe, read-only view of the active policy (defaults, per-tool decisions, the
@@ -41,20 +45,37 @@ def policy_snapshot(gate: PermissionGate) -> dict:
 
 def read_today_audit(logs_dir: Path, *, limit: int = 200, date: str | None = None) -> list[dict]:
     """Return today's audit lines relevant to the Gate (most recent last), capped at
-    ``limit``. A missing/absent log file yields ``[]`` (a fresh box has nothing yet)."""
+    ``limit``. Rotated gzip segments are included before the live JSONL file, so a busy
+    day's evidence does not disappear from the Gate. A missing log set yields ``[]``."""
     day = date or _dt.datetime.now().strftime("%Y-%m-%d")
-    path = logs_dir / f"jarvis-{day}.jsonl"
-    if not path.exists():
-        return []
+    archived: list[tuple[int, Path]] = []
+    for candidate in logs_dir.glob(f"jarvis-{day}.*.jsonl.gz"):
+        match = _ROTATED_LOG_PATTERN.fullmatch(candidate.name)
+        if match is not None and match.group("day") == day:
+            archived.append((int(match.group("index")), candidate))
+    paths = [path for _index, path in sorted(archived, reverse=True)]
+    live = logs_dir / f"jarvis-{day}.jsonl"
+    if live.exists():
+        paths.append(live)
+
     out: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    for path in paths:
         try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
+            if path.suffix == ".gz":
+                with gzip.open(path, "rt", encoding="utf-8") as handle:
+                    lines = handle.readlines()
+            else:
+                lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
             continue
-        if rec.get("event") in AUDIT_EVENTS:
-            out.append(rec)
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("event") in AUDIT_EVENTS:
+                out.append(rec)
     return out[-limit:]
