@@ -249,7 +249,16 @@ function onNotice(notice) {
   state.notices.unshift(notice);
   if (state.notices.length > 50) state.notices.pop();
   busEmit("notice", notice);
-  if (notice.kind === "digest") refreshConversation();
+  if (notice.kind === "digest") {
+    refreshConversation();
+  } else {
+    refreshIfActive("daily");  // the latest-notification card is current without navigation
+  }
+  refreshIfActive("gate");        // durable notice history + attention queue share this surface
+  if (notice.kind === "task") {
+    refreshIfActive("tasks");
+    refreshWorkspaceTabs("tasks");
+  }
 }
 
 // Voice round-trip, made visible in Daily (one heard bubble + one safe caption). The reply
@@ -294,7 +303,18 @@ function onEvent(evt) {
   onConversationEvent(state, evt);
   refreshConversation();
   refreshIfActive("trace");
-  if (evt.type === "turn_completed") { renderRunnerState(); pollStatus(); }
+  if (evt.type === "turn_completed") {
+    // A completed turn can change the current scope's derived memory/knowledge. Re-fetch only
+    // if one of those read-only panels is visible; a stale event cannot change scope server-side.
+    refreshIfActive("memory");
+    if (!vaultHasDraft()) {
+      refreshIfActive("vault");
+      refreshWorkspaceTabs("vault");
+    }
+    refreshWorkspaceTabs("memory");
+    renderRunnerState();
+    pollStatus();
+  }
 }
 
 // --- approvals: the priority attention surface ---
@@ -447,6 +467,15 @@ const WORKSPACE_LABELS = {
 };
 
 function refreshIfActive(name) { if (state.route === name) renderRoute(); }
+function vaultHasDraft() {
+  const input = document.getElementById("vault-ingest-input");
+  return Boolean(input && (input === document.activeElement || input.value.trim() !== ""));
+}
+function refreshWorkspaceTabs(...tabs) {
+  if (state.route === "workspace" && tabs.includes(state.routeArgs[1] || "overview")) {
+    renderRoute();
+  }
+}
 function refreshConversation() { refreshIfActive("chat"); refreshIfActive("daily"); }
 
 function renderRoute() {
