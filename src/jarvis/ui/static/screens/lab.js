@@ -1,5 +1,7 @@
 // Lab — eval history + baselines + latest report. View-only: running evals stays a
 // deliberate terminal ritual (the note carries the exact command).
+import { esc } from "../ui/dom.js";
+
 export async function render(container, api) {
   const lab = await api.get("/api/lab");
   if (!lab) { container.innerHTML = `<div class="rise"><h1>Lab</h1><div class="sub">Unavailable.</div></div>`; return; }
@@ -18,4 +20,3 @@ export async function render(container, api) {
     <div class="card rise debug-only"><div class="card-label">baselines.yaml</div>
       <pre class="block">${esc(lab.baselines || "(none)")}</pre></div>`;
 }
-function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }

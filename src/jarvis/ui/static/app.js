@@ -591,10 +591,6 @@ function renderRunnerState() {
   // Phase 10 status strip: active project, run mode, today's spend, cost-ledger health.
   setText("st-project", s.project && s.project.name ? s.project.name : "global");
   setText("st-mode", s.mode || "approval");
-  // Phase 15.5: the composer's always-visible live model + mode readout (real server state, not
-  // the old debug-only fake chips). The full selectors live in the conversation header.
-  for (const id of ["composer-model", "chat-model"]) setText(id, s.model || "");
-  for (const id of ["composer-mode", "chat-mode"]) setText(id, s.mode ? `mode ${s.mode}` : "");
   // The rail's Workspace entry deep-links to the ACTIVE project (hidden in global scope).
   const ws = document.getElementById("rail-workspace");
   if (ws) {
