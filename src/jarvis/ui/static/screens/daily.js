@@ -211,6 +211,10 @@ async function fillToday(container, api) {
   if (!host) return;
   const tasks = await api.get("/api/tasks");
   clear(host);
+  if (tasks === null) {
+    host.appendChild(emptyState("Tasks unavailable", "Kairo couldn't load scheduled work right now."));
+    return;
+  }
   const active = Array.isArray(tasks) ? tasks.filter((task) => task.status === "active").slice(0, 4) : [];
   if (!active.length) {
     host.appendChild(emptyState("No next tasks", "Create a task when you want Kairo to keep something on the radar.", [["Create task", "#tasks"]]));

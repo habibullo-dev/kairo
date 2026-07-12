@@ -157,6 +157,15 @@ function renderStatus(region) {
   region.textContent = "";
   const s = _status;
   if (!s) { region.appendChild(el("div", { class: "dim" }, ["Loading status…"])); return; }
+  const unavailable = Object.entries(s)
+    .filter(([, data]) => data == null)
+    .map(([name]) => name);
+  if (unavailable.length) {
+    region.appendChild(el("div", { class: "empty-state" }, [
+      el("h4", {}, ["Some status is unavailable"]),
+      el("div", {}, [`Couldn't load ${unavailable.join(", ")}. The remaining status is shown below.`]),
+    ]));
+  }
   const hub = s.hub || {};
   const costs = s.costs || {};
   const runner = s.runner || {};
@@ -243,7 +252,7 @@ function renderStatus(region) {
 
 async function fetchStatus(api) {
   const [hub, costs, runner, settings] = await Promise.all([
-    api.get("/api/hub"), api.get("/api/costs"), api.get("/api/runner"), api.get("/api/settings"),
+    api.get("/api/hub"), api.get("/api/costs"), api.runnerStatus(), api.get("/api/settings"),
   ]);
   _status = { hub, costs, runner, settings };
 }

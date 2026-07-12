@@ -419,7 +419,7 @@ async function openChatHistory(container, api, detail, redraw) {
 
   const refresh = async () => {
     const [data, runner, files, outputs, knowledge] = await Promise.all([
-      api.get("/api/sessions?limit=50"), api.get("/api/runner"),
+      api.get("/api/sessions?limit=50"), api.runnerStatus(),
       api.get("/api/chat/files"), api.get("/api/chat/outputs"),
       api.get("/api/chat/knowledge"),
     ]);

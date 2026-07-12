@@ -937,6 +937,7 @@ tr.clickable:hover td { color: var(--cyan); }
   background: rgba(var(--attention-rgb), .12); }
 .plain-button.ghost { opacity: .74; font-weight: 500; }
 .plain-button:disabled { opacity: .45; cursor: default; }
+.hdr-load-warning { color: var(--attention); font-size: 11px; white-space: nowrap; }
 
 /* list rows (+ attention / cost tone) */
 .list-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px;

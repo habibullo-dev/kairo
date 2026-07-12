@@ -23,7 +23,7 @@ def test_header_exports_mount_and_refresh() -> None:
 
 def test_header_renders_from_server_state_not_fake_chips() -> None:
     # Values come from the read models, never hardcoded — and the old fake composer chip is gone.
-    assert "/api/runner" in HDR and "/api/models" in HDR and "/api/capabilities" in HDR
+    assert "runnerStatus" in HDR and "/api/models" in HDR and "/api/capabilities" in HDR
     assert "opus-4-8" not in DAILY  # the hardcoded fake model chip was removed
     assert "opus-4-8" not in HDR  # the header never hardcodes a model id
     assert "hdr-model-menu" in HDR  # model/effort/mode live in one quiet composer popover

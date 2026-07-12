@@ -32,7 +32,8 @@ const state = {
   chat: [],            // Daily conversation items {role, text} | {tool, resolution}
   chatAttachments: [], // local user-selected sources persisted into this chat/project knowledge scope
   pending: new Map(),  // decision_id -> approval payload (+ nonce once minted)
-  runner: {},          // last /api/runner status
+  runner: null,        // last /api/runner status; null until the first shared read succeeds
+  runnerStatusError: false, // latest shared runner read failed; cached state is not current
   voice: { enabled: false },
   trace: [],           // raw events (Debug/Trace)
   notices: [],         // background job/reminder/digest notices (Phase 9)
@@ -50,11 +51,29 @@ function workspaceHeaders(base = {}) {
 }
 
 // --- tiny API helper (same-origin; cookie carried automatically) ---
+let runnerStatusRequest = null;
 export const api = {
   state,
   async get(path) {
-    const r = await fetch(path, { headers: workspaceHeaders({ "accept": "application/json" }) });
-    return r.ok ? r.json() : null;
+    try {
+      const r = await fetch(path, { headers: workspaceHeaders({ "accept": "application/json" }) });
+      return r.ok ? await r.json() : null;
+    } catch {
+      return null;  // read surfaces render a distinct unavailable state instead of throwing
+    }
+  },
+  async runnerStatus({ refresh = false } = {}) {
+    // Retain last-known state for passive chrome, but never hand it to an interactive surface
+    // after a failed read. The scheduled refresh is the sole recovery path in that interval.
+    if (!refresh && state.runnerStatusError) return null;
+    if (!refresh && state.runner) return state.runner;
+    if (runnerStatusRequest) return runnerStatusRequest;
+    runnerStatusRequest = api.get("/api/runner").then((runner) => {
+      state.runnerStatusError = runner == null;
+      if (runner) state.runner = runner;
+      return runner;
+    }).finally(() => { runnerStatusRequest = null; });
+    return runnerStatusRequest;
   },
   async post(path, body) {
     const r = await fetch(path, {
@@ -611,13 +630,20 @@ async function rehydrateConversation() {
 }
 
 async function pollStatus() {
-  const s = await api.get("/api/runner");
+  const runnerWasUnavailable = state.runnerStatusError;
+  const s = await api.runnerStatus({ refresh: true });
   if (s) {
     state.runner = s;
     if (s.session_id != null) {
       state.context = { session_id: s.session_id, project_id: s.project ? s.project.id : null };
     }
     renderRunnerState(); rehydrateConversation();
+    // Re-enable the header immediately after an outage; otherwise its deliberately disabled
+    // controls would remain frozen until an unrelated event happens to refresh it.
+    if (runnerWasUnavailable) refreshHeader();
+  } else {
+    // Keep last-known status-bar data, but stop presenting it as writable header state.
+    refreshHeader();
   }
   // Default to OFF when the status can't be read (v null), so the mic is ALWAYS gated — never left
   // at the CSP-blocked HTML default (which would leave Talk visible while voice is off, blocker 4).

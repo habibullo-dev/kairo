@@ -10,6 +10,7 @@
 //      tab; an artifact opens its hardened content GET; the rest navigate.
 // Every row renders via el()/textContent, so a snippet can never inject markup.
 import { el } from "./dom.js";
+import { refreshHeader } from "./header.js";
 import { pushEscape, setPaletteToggle } from "./keys.js";
 
 const NAV = [
@@ -64,6 +65,10 @@ function go(hash) { close(); location.hash = hash; }
 async function act(path, body, { resetChat = false, then = null } = {}) {
   const res = await _api.post(path, body || {});
   if (res.ok) {
+    // A WebSocket echo is helpful but not the authority for UI state. Refresh the shared cache
+    // before the next consumer opens, so palette/header/status agree even if that echo is late.
+    await _api.runnerStatus({ refresh: true });
+    await refreshHeader();
     if (resetChat && _api.state) _api.state.chat = [];
     close();
     if (then) then();
@@ -258,7 +263,7 @@ async function open() {
   _escOff = pushEscape(close);
   // Refresh the action context (active project/model/mode + the pickers + recent chats), re-render.
   const [runner, projects, models, sessions] = await Promise.all([
-    _api.get("/api/runner"), _api.get("/api/projects"), _api.get("/api/models"),
+    _api.runnerStatus({ refresh: true }), _api.get("/api/projects"), _api.get("/api/models"),
     _api.get("/api/sessions?limit=20"),
   ]);
   _ctx = {

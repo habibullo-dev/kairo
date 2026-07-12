@@ -22,20 +22,20 @@ export async function mountHeader(host, api, opts = {}) {
 
 // Re-fetch + re-render. Safe to call any time: a no-op when the host isn't on screen (so a WS
 // model/mode/project echo while another screen is open costs nothing).
-export async function refreshHeader() {
+export async function refreshHeader({ refreshRunner = false } = {}) {
   if (!_host || !_host.isConnected) return;
   const [runner, models, caps, projects] = await Promise.all([
-    _api.get("/api/runner"), _api.get("/api/models"), _api.get("/api/capabilities"),
+    _api.runnerStatus({ refresh: refreshRunner }), _api.get("/api/models"), _api.get("/api/capabilities"),
     _api.get("/api/projects"),
   ]);
-  render(runner || {}, models || {}, caps || {}, projects || {});
+  render(runner, models, caps, projects);
 }
 
 // POST a UI-state change, then refresh. `conversation` also tells Daily to reload the chat view
 // (a new/resumed/archived chat changed which transcript is live).
 async function post(path, body) {
   const res = await _api.post(path, body || {});
-  if (res.ok) await refreshHeader();
+  if (res.ok) await refreshHeader({ refreshRunner: true });
   return res.ok;
 }
 
@@ -46,26 +46,32 @@ function resetChat() {
   }
 }
 
-function scopeSelect(runner, projects) {
+function scopeSelect(runner, projects, unavailable = false) {
   const activeId = (runner.project && runner.project.id) ?? null;
-  const opts = [el("option", { value: "" }, ["No project"])];
-  for (const p of projects.projects || []) {
-    opts.push(el("option", { value: String(p.id), selected: p.id === activeId },
-      [p.name || `Project ${p.id}`]));
+  const opts = unavailable
+    ? [el("option", { value: "", selected: true }, ["Project status unavailable"])]
+    : [el("option", { value: "" }, ["No project"])];
+  if (!unavailable) {
+    for (const p of projects.projects || []) {
+      opts.push(el("option", { value: String(p.id), selected: p.id === activeId },
+        [p.name || `Project ${p.id}`]));
+    }
   }
   const sel = el("select", {
     class: "hdr-select hdr-scope", "aria-label": "Project for this chat",
-    title: activeId == null
+    disabled: unavailable,
+    title: unavailable ? "Project status is unavailable. Reload this view to try again." : activeId == null
       ? "No project selected: this is an unassigned personal chat."
       : "Project for this chat",
   }, opts);
-  sel.value = activeId == null ? "" : String(activeId);
+  sel.value = unavailable || activeId == null ? "" : String(activeId);
   sel.addEventListener("change", async () => {
+    if (unavailable) return;
     // Switching scope starts a FRESH scoped conversation server-side (a session is bound to one
     // project for life). Clear the client transcript so the old chat doesn't linger.
     const res = await _api.post("/api/projects/select",
       { project_id: sel.value === "" ? null : Number(sel.value) });
-    if (res.ok) { resetChat(); await refreshHeader(); _onChanged(); }
+    if (res.ok) { resetChat(); await refreshHeader({ refreshRunner: true }); _onChanged(); }
   });
   return sel;
 }
@@ -74,7 +80,13 @@ function scopeSelect(runner, projects) {
 // routing; below it, Manual pins a trusted Claude model. Other providers are shown DISABLED with
 // an honest reason (text-only / not-allowed-for-private / unavailable). When Auto, a caption shows
 // what it picked last turn ("→ Sonnet 5").
-function modelSelect(models) {
+function modelSelect(models, unavailable = false) {
+  if (unavailable) {
+    return el("select", { class: "hdr-select", "aria-label": "Model routing", disabled: true,
+      title: "Model status is unavailable. Reload this view to try again." }, [
+      el("option", { value: "" }, ["Model status unavailable"]),
+    ]);
+  }
   const policy = models.policy || "manual";
   const auto = models.auto || {};
   const manual = models.models || [];
@@ -98,7 +110,7 @@ function modelSelect(models) {
   const sel = el("select", { class: "hdr-select", "aria-label": "Model routing" }, opts);
   sel.value = policy === "auto" ? "auto" : (models.current || "auto");
   sel.title = auto.description || "uses cheap models first, escalates only when needed";
-  sel.addEventListener("change", () => { if (sel.value) post("/api/model", { model: sel.value }); });
+  sel.addEventListener("change", () => { if (!unavailable && sel.value) post("/api/model", { model: sel.value }); });
   return sel;
 }
 
@@ -106,7 +118,8 @@ function modelSelect(models) {
 // level is remembered per model server-side, so switching model re-renders this with that model's
 // effort. When a route manages effort itself or a model does not support it, omit the control
 // entirely — a disabled "n/a" selector is visual noise, not useful information.
-function effortSelect(models) {
+function effortSelect(models, unavailable = false) {
+  if (unavailable) return null;
   const levels = models.effort_levels || [];
   if (!levels.length) return null;
   const cur = models.current_effort || "high";
@@ -125,35 +138,41 @@ function effortSelect(models) {
   return sel;
 }
 
-function modeSelect(runner) {
+function modeSelect(runner, unavailable = false) {
+  if (unavailable) {
+    return el("select", { class: "hdr-select", "aria-label": "Mode", disabled: true,
+      title: "Run-mode status is unavailable. Reload this view to try again." }, [
+      el("option", { value: "" }, ["Mode status unavailable"]),
+    ]);
+  }
   const cur = runner.mode || "approval";
   const sel = el("select", { class: "hdr-select", "aria-label": "Mode" },
     MODES.map(([v, label]) => el("option", { value: v, selected: v === cur }, [label])));
   sel.value = cur;
-  sel.addEventListener("change", () => post("/api/mode", { mode: sel.value }));
+  sel.addEventListener("change", () => { if (!unavailable) post("/api/mode", { mode: sel.value }); });
   return sel;
 }
 
-function titleCluster(runner) {
-  const title = runner.session_title || "Untitled";
+function titleCluster(runner, unavailable = false) {
+  const title = unavailable ? "Chat status unavailable" : runner.session_title || "Untitled";
   return el("span", { class: "hdr-title", title }, [title]);
 }
 
-function modelMenu(runner, models) {
+function modelMenu(runner, models, unavailable = false) {
   const policy = models.policy || "manual";
   const current = (models.models || []).find((m) => m.current);
-  const model = policy === "auto" ? (models.auto?.label || "Auto")
+  const model = unavailable ? "Status unavailable" : policy === "auto" ? (models.auto?.label || "Auto")
     : (current?.label || models.current || "Model");
-  const effort = effortSelect(models);
+  const effort = effortSelect(models, unavailable);
   const effortLabel = effort
     ? ((models.effort_levels || []).find((item) => item.id === models.current_effort)?.label || "")
     : "";
-  const mode = MODES.find(([id]) => id === (runner.mode || "approval"))?.[1] || "Approval";
+  const mode = unavailable ? "" : MODES.find(([id]) => id === (runner.mode || "approval"))?.[1] || "Approval";
   const summary = [model, effortLabel, mode].filter(Boolean).join(" · ");
   const fields = [
-    el("label", { class: "hdr-model-field" }, [el("span", {}, ["Model"]), modelSelect(models)]),
+    el("label", { class: "hdr-model-field" }, [el("span", {}, ["Model"]), modelSelect(models, unavailable)]),
     ...(effort ? [el("label", { class: "hdr-model-field" }, [el("span", {}, ["Effort"]), effort])] : []),
-    el("label", { class: "hdr-model-field" }, [el("span", {}, ["Mode"]), modeSelect(runner)]),
+    el("label", { class: "hdr-model-field" }, [el("span", {}, ["Mode"]), modeSelect(runner, unavailable)]),
   ];
   return el("details", { class: "hdr-model-menu" }, [
     el("summary", { "aria-label": "Model, effort, and mode", title: "Model, effort, and mode" }, [summary]),
@@ -162,9 +181,22 @@ function modelMenu(runner, models) {
 }
 
 function render(runner, models, caps, projects) {
+  const runnerUnavailable = runner == null || !!_api.state?.runnerStatusError;
+  const statusUnavailable = runnerUnavailable || [models, caps, projects].some((data) => data == null);
+  const scopeUnavailable = runnerUnavailable || projects == null;
+  const routingUnavailable = runnerUnavailable || models == null;
+  runner = runner || {};
+  models = models || {};
+  caps = caps || {};
+  projects = projects || {};
   _host.textContent = "";
   _host.appendChild(el("div", { class: "convo-header compact" }, [
-    el("div", { class: "hdr-context" }, [scopeSelect(runner, projects), titleCluster(runner)]),
-    el("div", { class: "hdr-controls" }, [modelMenu(runner, models)]),
+    el("div", { class: "hdr-context" }, [
+      scopeSelect(runner, projects, scopeUnavailable), titleCluster(runner, runnerUnavailable),
+      statusUnavailable ? el("span", {
+        class: "hdr-load-warning", title: "Some chat status could not be loaded. Reload this view to try again.",
+      }, ["Status unavailable"]) : null,
+    ].filter(Boolean)),
+    el("div", { class: "hdr-controls" }, [modelMenu(runner, models, routingUnavailable)]),
   ]));
 }
