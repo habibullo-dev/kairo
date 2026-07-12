@@ -44,6 +44,7 @@ from jarvis.ui.readmodels import (
     activity_feed,
     artifacts_list,
     capability_truth,
+    connector_write_history,
     costs_overview,
     daily_overview,
     hub_status,
@@ -641,7 +642,13 @@ def create_app(
     # --- read models: Hub / Lab (always available) ------------------------------------
 
     @app.get("/api/hub")
-    async def hub() -> dict:
+    async def hub(request: Request) -> JSONResponse:
+        # Capability availability is workspace-specific: a connected provider is useful in chat
+        # only when this workspace's loop actually registered its tool.  Hub must use the same
+        # live workspace as Daily, the header, and the dedicated capabilities route.
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         connectors = app.state.services.connectors
         ledger = app.state.services.ledger
         data = hub_status(
@@ -649,14 +656,17 @@ def create_app(
             connectors=connectors.status() if connectors is not None else None,
             ledger_status=ledger.status() if ledger is not None else None,
         )
-        data["capabilities"] = _capabilities()  # Phase 15.5: the shared truth, embedded
-        return data
+        data["capabilities"] = _capabilities(workspace)  # Phase 15.5: the shared truth, embedded
+        return JSONResponse(data)
 
     @app.get("/api/settings")
-    async def settings_status() -> dict:
+    async def settings_status(request: Request) -> JSONResponse:
         # Read-only settings policy surface (Phase 13). Presence/state/env-NAMES only — never a
         # key value or a token (covered by the secret-absence sweep). Mutates nothing; global
         # service flags stay YAML-only.
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         connectors = app.state.services.connectors
         ledger = app.state.services.ledger
         data = settings_overview(
@@ -664,8 +674,8 @@ def create_app(
             connectors=connectors.status() if connectors is not None else None,
             ledger_status=ledger.status() if ledger is not None else None,
         )
-        data["capabilities"] = _capabilities()  # Phase 15.5: the shared truth, embedded
-        return data
+        data["capabilities"] = _capabilities(workspace)  # Phase 15.5: the shared truth, embedded
+        return JSONResponse(data)
 
     @app.get("/api/models")
     async def models_list() -> dict:
@@ -712,8 +722,13 @@ def create_app(
         voice = active_voice.status() if active_voice is not None else {"enabled": False}
         registered: set[str] | None = None
         sess = workspace.session if workspace is not None else app.state.session
-        if sess is not None and getattr(sess, "loop", None) is not None:
-            registered = set(sess.loop.registry.names())
+        registry = getattr(getattr(sess, "loop", None), "registry", None)
+        names = getattr(registry, "names", None)
+        if callable(names):
+            try:
+                registered = set(names())
+            except Exception:  # noqa: BLE001 - capability status must remain a read-only fallback
+                registered = None
         return capability_truth(
             config,
             connectors=connectors.status() if connectors is not None else None,
@@ -774,10 +789,22 @@ def create_app(
         return JSONResponse(await list_tasks(svc, project_id=scope))
 
     @app.get("/api/tasks/{task_id}/runs")
-    async def tasks_runs(task_id: int) -> JSONResponse:
+    async def tasks_runs(task_id: int, request: Request) -> JSONResponse:
         svc = app.state.services.tasks
         if svc is None:
             return _unavailable("tasks")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            # A workspace may read its own task history plus explicitly global tasks, matching
+            # the project task-list contract. A numeric task id never grants another project's
+            # scheduler history.
+            task = await svc.store.get(task_id)
+            if task is None or (
+                task.project_id is not None and task.project_id != workspace.context.project_id
+            ):
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
         return JSONResponse(await task_runs(svc, task_id))
 
     @app.get("/api/vault")
@@ -1820,6 +1847,25 @@ def create_app(
             return _unavailable("intents")
         return JSONResponse(await intents_queue(store, project_id=project_id, limit=limit))
 
+    @app.get("/api/connector-writes")
+    async def connector_writes(request: Request, limit: int = 50) -> JSONResponse:
+        """Read-only, metadata-only evidence of completed outward connector writes.
+
+        Under the live-workspace composition, the browser never chooses a project id: a project
+        workspace sees only its journal rows, while the global workspace retains the global audit
+        view. The legacy single-session composition keeps its existing unscoped read behavior.
+        """
+        journal = app.state.services.write_journal
+        if journal is None:
+            return _unavailable("connector writes")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        project_id = workspace.context.project_id if workspace is not None else None
+        return JSONResponse(
+            await connector_write_history(journal, project_id=project_id, limit=limit)
+        )
+
     @app.get("/api/intents/{intent_id}")
     async def intent_detail(intent_id: int) -> JSONResponse:
         from jarvis.ui.readmodels import serialize_intent
@@ -2013,13 +2059,23 @@ def create_app(
         return JSONResponse({"ok": ok})
 
     @app.get("/api/workspace/{project_id}")
-    async def workspace(project_id: int) -> JSONResponse:
+    async def workspace(project_id: int, request: Request) -> JSONResponse:
         # Aggregate Overview for one project (metadata only; degrades if a service is absent).
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None and project_id != workspace.context.project_id:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
         return JSONResponse(await workspace_overview(app.state.services, project_id))
 
     @app.get("/api/workspace/{project_id}/activity")
-    async def workspace_activity(project_id: int) -> JSONResponse:
+    async def workspace_activity(project_id: int, request: Request) -> JSONResponse:
         # Derived, metadata-only project activity feed (artifacts/runs/chats). Read-only.
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None and project_id != workspace.context.project_id:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
         return JSONResponse(await activity_feed(app.state.services, project_id))
 
     @app.get("/api/workspace/{project_id}/office")
@@ -2119,19 +2175,42 @@ def create_app(
         return JSONResponse(await suggestions_view(svc.graph, project_id))
 
     @app.post("/api/graph/suggestions/{suggestion_id}/approve")
-    async def graph_suggestion_approve(suggestion_id: int) -> JSONResponse:
+    async def graph_suggestion_approve(suggestion_id: int, request: Request) -> JSONResponse:
         # The ONLY door from a quarantined proposal to durable graph truth — the Vault review
         # pattern (idempotent claim-then-materialize). New mutation route (pin 35->37).
         svc = app.state.services
         if svc.graph is None:
             return JSONResponse({"ok": False, "reason": "graph unavailable"}, status_code=404)
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            # A suggestion id is not authority. Match the review queue's P + global scope, so a
+            # live browser workspace cannot approve another project's quarantined proposal.
+            suggestion = await svc.graph.get_suggestion(suggestion_id)
+            if suggestion is None or (
+                suggestion.project_id is not None
+                and suggestion.project_id != workspace.context.project_id
+            ):
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
         return JSONResponse(await graph_approve(svc.graph, suggestion_id, resolved_by="user"))
 
     @app.post("/api/graph/suggestions/{suggestion_id}/reject")
-    async def graph_suggestion_reject(suggestion_id: int) -> JSONResponse:
+    async def graph_suggestion_reject(suggestion_id: int, request: Request) -> JSONResponse:
         svc = app.state.services
         if svc.graph is None:
             return JSONResponse({"ok": False, "reason": "graph unavailable"}, status_code=404)
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            # See approve: the active workspace may resolve only its own or global suggestions.
+            suggestion = await svc.graph.get_suggestion(suggestion_id)
+            if suggestion is None or (
+                suggestion.project_id is not None
+                and suggestion.project_id != workspace.context.project_id
+            ):
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
         return JSONResponse(await graph_reject(svc.graph, suggestion_id, resolved_by="user"))
 
     @app.get("/api/graph/search")

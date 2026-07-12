@@ -111,6 +111,21 @@ async def test_approve_executes_the_write(tmp_path: Path) -> None:
     assert (await intents.get(iid)).state.value == "executed"
 
 
+async def test_connector_write_audit_is_metadata_only(tmp_path: Path) -> None:
+    client, auth, intents, _fake = await _client(tmp_path)
+    iid = await _previewed(intents)
+    client.post(f"/api/intents/{iid}/approve", headers=_hdr(auth, post=True))
+
+    response = client.get("/api/connector-writes", headers=_hdr(auth))
+    assert response.status_code == 200
+    writes = response.json()["writes"]
+    assert len(writes) == 1
+    assert set(writes[0]) == {"id", "provider", "verb", "scope", "project_id", "status", "at"}
+    # No remote/rollback/trace/egress handle or request/preview body crosses the read boundary.
+    forbidden = {"remote_id", "rollback_ref", "egress_ref", "trace_id", "request", "preview"}
+    assert not (forbidden & writes[0].keys())
+
+
 async def test_approve_twice_conflicts(tmp_path: Path) -> None:
     client, auth, intents, _fake = await _client(tmp_path)
     iid = await _previewed(intents)
@@ -164,3 +179,4 @@ async def test_intents_route_503_without_store(tmp_path: Path) -> None:
     app.state.services = UiServices()  # no intents store composed
     client = TestClient(app, base_url="http://127.0.0.1")
     assert client.get("/api/intents", headers=_hdr(auth)).status_code == 503
+    assert client.get("/api/connector-writes", headers=_hdr(auth)).status_code == 503

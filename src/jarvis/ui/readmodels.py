@@ -1664,3 +1664,30 @@ async def intents_queue(intents: Any, *, project_id: int | None = None, limit: i
         "pending": [serialize_intent(i) for i in pending],
         "recent": [serialize_intent(i) for i in recent],
     }
+
+
+def serialize_connector_write(write: Any) -> dict:
+    """Metadata-only outward-write evidence safe for the Notifications audit surface.
+
+    Deliberately omit remote/rollback/egress/trace handles.  They may be useful to internal
+    recovery code, but the browser needs only proof of the provider action, its outcome, scope,
+    and time — never content or correlation identifiers.
+    """
+    return {
+        "id": write.id,
+        "provider": write.provider,
+        "verb": write.verb,
+        "scope": write.scope,
+        "project_id": write.project_id,
+        "status": write.status,
+        "at": write.ts,
+    }
+
+
+async def connector_write_history(
+    journal: Any, *, project_id: int | None = None, limit: int = 50
+) -> dict:
+    """Newest-first, metadata-only connector writes for a scope or the legacy/global UI."""
+    cap = max(1, min(limit, 100))
+    writes = await journal.list(project_id=project_id, limit=cap)
+    return {"writes": [serialize_connector_write(write) for write in writes]}

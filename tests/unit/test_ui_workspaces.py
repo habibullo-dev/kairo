@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from jarvis.actions.journal import ConnectorWriteJournal
 from jarvis.config import load_config
 from jarvis.core.client import ToolCall
 from jarvis.core.events import TextDelta
@@ -27,6 +28,8 @@ from jarvis.permissions.gate import Decision
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
 from jarvis.projects import ProjectService, ProjectStore
+from jarvis.scheduler.service import TaskService
+from jarvis.scheduler.store import TaskStore
 from jarvis.tools import Permission
 from jarvis.ui.approver import ApprovalManager
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
@@ -60,6 +63,9 @@ class _Loop:
     def __init__(self, label: str) -> None:
         self.label = label
         self.contexts: list[ExecutionContext | None] = []
+        # The real AgentLoop exposes the registered tool names to capability_truth. Keep the
+        # workspace double structurally compatible so route tests can prove per-workspace truth.
+        self.registry = SimpleNamespace(names=lambda: [])
 
     async def run_turn(self, messages: list[dict], *, on_event) -> object:
         self.contexts.append(current_execution_context())
@@ -288,6 +294,165 @@ async def test_voice_activity_blocks_context_replacement(tmp_path: Path) -> None
 
     await workspace.select_project(project_id)
     assert workspace.context.project_id == project_id
+
+
+async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path) -> None:
+    """Workspace-only reads cannot be selected by a guessed project or task id.
+
+    This also pins the capability-truth promise: each surface must use the live workspace loop's
+    actual tool registry rather than the process-wide/ambient session.
+    """
+    registry, connections, projects = await _registry(tmp_path)
+    config = load_config(root=tmp_path, env_file=None)
+    auth = AuthManager(token="tok")
+    owner_a, owner_b = auth.mint_session(), auth.mint_session()
+    workspace_a = await registry.attach(
+        connections.register(_Socket(), owner_session=owner_a), owner_session=owner_a
+    )
+    workspace_b = await registry.attach(
+        connections.register(_Socket(), owner_session=owner_b), owner_session=owner_b
+    )
+    project_a = await projects.store.create(name="Project A")
+    project_b = await projects.store.create(name="Project B")
+    await workspace_a.select_project(project_a)
+    registry.refresh_context(workspace_a)
+    await workspace_b.select_project(project_b)
+    registry.refresh_context(workspace_b)
+    workspace_a.session.loop.registry = SimpleNamespace(names=lambda: ["drive_search"])
+
+    tasks = TaskService(
+        TaskStore(workspace_a.session.sessions.db, workspace_a.session.sessions.lock),
+        config.scheduler,
+    )
+    own_task = await tasks.schedule(
+        kind="reminder",
+        title="Project A only",
+        payload="x",
+        schedule_kind="once",
+        schedule_spec="2099-01-01T00:00:00+00:00",
+        created_by="user",
+        project_id=project_a,
+    )
+    global_task = await tasks.schedule(
+        kind="reminder",
+        title="Global task",
+        payload="x",
+        schedule_kind="once",
+        schedule_spec="2099-01-01T00:00:00+00:00",
+        created_by="user",
+        project_id=None,
+    )
+    graph = GraphStore(workspace_a.session.sessions.db, workspace_a.session.sessions.lock)
+    journal = ConnectorWriteJournal(
+        workspace_a.session.sessions.db, workspace_a.session.sessions.lock
+    )
+    own_write = await journal.record(
+        provider="google", verb="calendar_create", status="executed", project_id=project_a
+    )
+    foreign_write = await journal.record(
+        provider="google", verb="calendar_create", status="executed", project_id=project_b
+    )
+    own_suggestion = await graph.add_suggestion(
+        kind="memory",
+        payload={"content": "Project A only"},
+        trust_class="model_generated",
+        project_id=project_a,
+    )
+    foreign_suggestion = await graph.add_suggestion(
+        kind="memory",
+        payload={"content": "Project B only"},
+        trust_class="model_generated",
+        project_id=project_b,
+    )
+    global_suggestion = await graph.add_suggestion(
+        kind="memory",
+        payload={"content": "Global review"},
+        trust_class="model_generated",
+        project_id=None,
+    )
+    connectors = SimpleNamespace(
+        status=lambda: {
+            "demo": False,
+            "google": {"connected": True, "needs_reconnect": False},
+            "notifiers": {},
+        }
+    )
+    app = create_app(config, auth=auth, connections=connections)
+    app.state.projects = projects
+    app.state.services = UiServices(
+        sessions=workspace_a.session.sessions,
+        tasks=tasks,
+        projects=projects,
+        connectors=connectors,
+        graph=graph,
+        write_journal=journal,
+    )
+    app.state.workspaces = registry
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    def headers(owner: str, workspace_id: str) -> dict[str, str]:
+        return {
+            "cookie": f"{SESSION_COOKIE}={owner}",
+            WORKSPACE_HEADER: workspace_id,
+        }
+
+    own = headers(owner_a, workspace_a.workspace_id)
+    foreign = headers(owner_b, workspace_b.workspace_id)
+
+    for path in (
+        f"/api/workspace/{project_a}",
+        f"/api/workspace/{project_a}/activity",
+        f"/api/tasks/{own_task.id}/runs",
+    ):
+        assert client.get(path, headers=own).status_code == 200
+        assert client.get(path, headers=foreign).status_code == 404
+    # Global tasks deliberately remain visible from either workspace, just like the scoped task
+    # list. The guard is project isolation, not an accidental removal of global reminders.
+    assert client.get(f"/api/tasks/{global_task.id}/runs", headers=foreign).status_code == 200
+
+    # Connector-write audit rows follow the same server-owned workspace scope. The browser has
+    # no project selector and no remote/rollback handles to turn a numeric id into authority.
+    own_audit = client.get("/api/connector-writes", headers=own).json()["writes"]
+    foreign_audit = client.get("/api/connector-writes", headers=foreign).json()["writes"]
+    assert [row["id"] for row in own_audit] == [own_write]
+    assert [row["id"] for row in foreign_audit] == [foreign_write]
+
+    # Quarantined graph-suggestion review mutations use the same P + global workspace scope as
+    # their review queue. A guessed numeric id from Project B must never resolve its proposal.
+    own_post = {**own, "origin": "http://127.0.0.1"}
+    assert client.post(
+        f"/api/graph/suggestions/{foreign_suggestion}/approve", headers=own_post
+    ).status_code == 404
+    assert client.post(
+        f"/api/graph/suggestions/{foreign_suggestion}/reject", headers=own_post
+    ).status_code == 404
+    assert (await graph.get_suggestion(foreign_suggestion)).status == "pending"
+    assert client.post(
+        f"/api/graph/suggestions/{own_suggestion}/approve", headers=own_post
+    ).json()["ok"] is True
+    assert client.post(
+        f"/api/graph/suggestions/{global_suggestion}/reject", headers=own_post
+    ).json()["ok"] is True
+
+    def drive_exposed(payload: dict) -> bool:
+        row = next(
+            row
+            for row in payload["capabilities"]["connectors"]
+            if row["name"] == "Google Drive"
+        )
+        return row["exposed_to_chat"]
+
+    for path in ("/api/capabilities", "/api/daily", "/api/hub", "/api/settings"):
+        own_payload = client.get(path, headers=own).json()
+        foreign_payload = client.get(path, headers=foreign).json()
+        own_caps = own_payload if path == "/api/capabilities" else own_payload["capabilities"]
+        foreign_caps = (
+            foreign_payload
+            if path == "/api/capabilities"
+            else foreign_payload["capabilities"]
+        )
+        assert drive_exposed({"capabilities": own_caps}) is True, path
+        assert drive_exposed({"capabilities": foreign_caps}) is False, path
 
 
 async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
