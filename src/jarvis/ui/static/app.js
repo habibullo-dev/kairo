@@ -118,9 +118,27 @@ export const api = {
 
 // --- WebSocket: heartbeat + surface state + event stream ---
 let ws = null;
+let heartbeatTimer = null;
 let mounted = new Set();
 
 function wsSend(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+// A reconnect creates a new socket, so its heartbeat must replace (never join) the old one.
+// Keep the timer handle outside the socket so both reconnect and close can cancel it.
+function clearHeartbeat() {
+  if (heartbeatTimer !== null) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+function startHeartbeat(socket) {
+  clearHeartbeat();
+  heartbeatTimer = setInterval(() => {
+    // A late timer from a replaced socket must never beat the current connection.
+    if (ws === socket && socket.readyState === 1) socket.send(JSON.stringify({ type: "heartbeat" }));
+  }, 5000);
+}
 
 function setSurface(name, on) {
   if (on && !mounted.has(name)) { mounted.add(name); wsSend({ type: "surface", surface: name, mounted: true }); }
@@ -128,14 +146,23 @@ function setSurface(name, on) {
 }
 
 function connect() {
+  clearHeartbeat();
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen = () => {
+  const socket = new WebSocket(`${proto}://${location.host}/ws`);
+  ws = socket;
+  socket.onopen = () => {
+    if (ws !== socket) return;
     wsSend({ type: "hello", surfaces: [...mounted], workspace_id: workspaceId });
-    setInterval(() => wsSend({ type: "heartbeat" }), 5000);
+    startHeartbeat(socket);
   };
-  ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
-  ws.onclose = () => setTimeout(connect, 1500); // best-effort reconnect
+  socket.onmessage = (e) => handleMessage(JSON.parse(e.data));
+  socket.onclose = () => {
+    // A late close from a superseded socket cannot tear down the new connection's heartbeat.
+    if (ws !== socket) return;
+    clearHeartbeat();
+    ws = null;
+    setTimeout(connect, 1500); // best-effort reconnect
+  };
 }
 
 function handleMessage(msg) {
