@@ -321,6 +321,36 @@ def test_providers_config_yaml_override(tmp_path: Path) -> None:
     assert cfg.providers.base_urls == {"deepseek": "https://example.test/anthropic"}
 
 
+def test_skills_config_is_off_by_default_and_accepts_human_pins(tmp_path: Path) -> None:
+    assert load_config(root=tmp_path, env_file=None).skills.mode == "off"
+    _write_settings(
+        tmp_path,
+        "skills:\n"
+        "  mode: shadow\n"
+        "  enabled:\n"
+        "    - pack: core-engineering\n"
+        "      version: 1.0.0\n"
+        "      sha256: 0123456789ab\n",
+    )
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.skills.mode == "shadow"
+    assert cfg.skills.enabled[0].pack == "core-engineering"
+
+
+def test_skills_reject_unsafe_pack_pins(tmp_path: Path) -> None:
+    _write_settings(
+        tmp_path,
+        "skills:\n"
+        "  mode: active\n"
+        "  enabled:\n"
+        "    - pack: ../escape\n"
+        "      version: 1.0.0\n"
+        "      sha256: not-a-hash\n",
+    )
+    with pytest.raises(ConfigError):
+        load_config(root=tmp_path, env_file=None)
+
+
 def test_provider_secrets_read_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = load_config(root=tmp_path, env_file=None)
     assert cfg.secrets.deepseek_api_key == ""  # default empty

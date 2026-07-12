@@ -56,6 +56,9 @@ class _Engine:
     def check_provider_context(self, _team, _context: ContextBundle) -> None:
         return None
 
+    def validate_team_workflow(self, _team, _workflow) -> None:
+        return None
+
     def estimate(self, _team, _workflow, _context, *, budget_usd=None):
         return None
 

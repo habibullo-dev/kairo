@@ -31,7 +31,8 @@ from jarvis.orchestration import (
     resolve_team,
 )
 from jarvis.orchestration.context import ContextItem, Provenance
-from jarvis.orchestration.engine import ProviderContextError
+from jarvis.orchestration.engine import ProviderContextError, TeamWorkflowError
+from jarvis.skills import SkillPackError
 
 if TYPE_CHECKING:
     from jarvis.orchestration import OrchestrationEngine
@@ -155,9 +156,16 @@ class OrchestrationController:
             else await self._active_project_id()
         )
         team = await self._resolve(team_id, pid)
-        est = self.engine.estimate(
-            team, WORKFLOWS[workflow_id], self._build_context(task, project), budget_usd=budget_usd
-        )
+        try:
+            self.engine.validate_team_workflow(team, WORKFLOWS[workflow_id])
+            est = self.engine.estimate(
+                team,
+                WORKFLOWS[workflow_id],
+                self._build_context(task, project),
+                budget_usd=budget_usd,
+            )
+        except (RouteError, SkillPackError, TeamWorkflowError) as exc:
+            return {"ok": False, "message": str(exc)}
         return {"ok": True, "estimate": serialize_estimate(est)}
 
     async def start(
@@ -201,9 +209,10 @@ class OrchestrationController:
         # non-trusted provider, and surface an unavailable/invalid route as a 400 — before any run
         # row or spawn (never a 500, never a silent launch that immediately dies).
         try:
+            self.engine.validate_team_workflow(team, workflow)
             self.engine.check_provider_context(team, context)
             est = self.engine.estimate(team, workflow, context, budget_usd=budget_usd)
-        except (ProviderContextError, RouteError) as exc:
+        except (ProviderContextError, RouteError, SkillPackError, TeamWorkflowError) as exc:
             return {"ok": False, "message": str(exc)}, 400
 
         # Two-step confirm: if the worst case needs confirmation and the caller hasn't confirmed,

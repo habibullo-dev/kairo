@@ -1475,10 +1475,11 @@ def _build_orchestrator(config: Config, *, repl: Repl, app, store, artifacts=Non
     the utility-client precedent); members run on their per-role model via the shared client.
     The engine gets the ModelRegistry + PricingTable + budget config so the pre-fan-out
     worst-case reservation is live."""
-    from jarvis.models import ModelRegistry
+    from jarvis.models import ClientFactory, ModelRegistry
     from jarvis.models.providers import ProviderRegistry
     from jarvis.observability.cost import load_pricing
     from jarvis.orchestration import OrchestrationEngine
+    from jarvis.skills import SkillCatalog
     from jarvis.ui.orchestration import OrchestrationController
 
     # One pricing table feeds both provider availability (fail-closed: enabled ∧ key ∧ priced)
@@ -1496,10 +1497,12 @@ def _build_orchestrator(config: Config, *, repl: Repl, app, store, artifacts=Non
         max_rounds=config.budgets.max_rounds,
         budget=repl.budgets,  # between-stage hard stop + project-monthly gate
         registry=model_registry,  # per-role member models + reservation pricing
+        factory=ClientFactory(config, ledger=repl.cost_ledger),  # exact provider client + ledger
         pricing=pricing,
         budgets=config.budgets,  # reservation caps + confirm threshold
         est_iterations=config.sub_agents.max_iterations,
         artifacts=artifacts,  # Phase 11: index each finished run as a DB-backed artifact
+        skills=SkillCatalog(config.root, config.skills),
     )
     return OrchestrationController(
         engine=engine, connections=app.state.connections, projects=repl.projects

@@ -19,7 +19,7 @@ import aiosqlite
 _COLUMNS = (
     "id, project_id, workflow, title, config_json, context_manifest_json, status, stage, "
     "verdict, synthesis_summary, estimated_cost_usd, actual_cost_usd, budget_usd, session_id, "
-    "trace_id, started_at, finished_at, created_at"
+    "trace_id, started_at, finished_at, created_at, skills_manifest_json"
 )
 
 #: Terminal statuses (CHECK-enforced in the schema).
@@ -52,6 +52,7 @@ class OrchestrationRun:
     started_at: str
     finished_at: str | None
     created_at: str
+    skills_manifest: list
 
 
 def _row_to_run(row: tuple) -> OrchestrationRun:
@@ -74,6 +75,7 @@ def _row_to_run(row: tuple) -> OrchestrationRun:
         started_at=row[15],
         finished_at=row[16],
         created_at=row[17],
+        skills_manifest=json.loads(row[18]) if row[18] else [],
     )
 
 
@@ -94,6 +96,7 @@ class OrchestrationStore:
         budget_usd: float | None,
         session_id: int | None = None,
         trace_id: str | None = None,
+        skills_manifest: list[dict] | None = None,
     ) -> int:
         """Open a ``running`` run row (title is already sanitized by the caller — never raw
         user/email text). config/manifest are metadata + hashes only, no bodies."""
@@ -102,8 +105,9 @@ class OrchestrationStore:
             cursor = await self.db.execute(
                 "INSERT INTO orchestration_runs "
                 "(project_id, workflow, title, config_json, context_manifest_json, status, "
-                "estimated_cost_usd, budget_usd, session_id, trace_id, started_at, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)",
+                "estimated_cost_usd, budget_usd, session_id, trace_id, started_at, created_at, "
+                "skills_manifest_json) "
+                "VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)",
                 (
                     project_id,
                     workflow,
@@ -116,6 +120,7 @@ class OrchestrationStore:
                     trace_id,
                     now,
                     now,
+                    json.dumps(skills_manifest or []),
                 ),
             )
             await self.db.commit()

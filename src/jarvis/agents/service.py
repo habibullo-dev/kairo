@@ -227,6 +227,9 @@ class SubAgentService:
         orchestration_run_id: int | None = None,
         project_id: int | None = None,
         fresh_trace: bool = False,
+        skill_text: str | None = None,
+        skill_manifest: list[dict] | None = None,
+        allow_toolless: bool = False,
     ) -> ToolResult | str:
         """Run one scoped sub-agent and return its framed report (or an error result).
 
@@ -249,7 +252,7 @@ class SubAgentService:
             return ToolResult(content="Delegation is not available.", is_error=True)
 
         scope = frozenset(tools)
-        if not scope:
+        if not scope and not allow_toolless:
             return ToolResult(
                 content="A sub-agent needs at least one tool in its scope.", is_error=True
             )
@@ -293,6 +296,8 @@ class SubAgentService:
             team=team,
             orchestration_run_id=orchestration_run_id,
             project_id=project_id,
+            skill_text=skill_text,
+            skill_manifest=skill_manifest,
         )
 
     async def _run(
@@ -309,6 +314,8 @@ class SubAgentService:
         team: str | None = None,
         orchestration_run_id: int | None = None,
         project_id: int | None = None,
+        skill_text: str | None = None,
+        skill_manifest: list[dict] | None = None,
     ) -> ToolResult | str:
         execution_context = current_execution_context()
         run_id = await self.run_store.begin_run(
@@ -327,6 +334,7 @@ class SubAgentService:
             orchestration_run_id=orchestration_run_id,
             role=role,
             stage=stage,
+            skills_manifest=skill_manifest,
         )
         agent_id = str(run_id)
         child_session_id = await self.session_store.create_session(
@@ -347,7 +355,11 @@ class SubAgentService:
             gate=gate,
             config=child_config,
             approver=approver,
-            system=build_system(subagent=True, knowledge_enabled="query_knowledge_base" in scope),
+            system=build_system(
+                subagent=True,
+                knowledge_enabled="query_knowledge_base" in scope,
+                skills=skill_text,
+            ),
             context_manager=self.make_context_manager() if self.make_context_manager else None,
             memory=None,  # isolation: no auto-recall, no personal memory
             # Cost attribution: an orchestration child records purpose="orchestration", a plain

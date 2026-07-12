@@ -14,7 +14,7 @@ from jarvis.orchestration.context import (
     ContextPolicyError,
     check_context_policy,
 )
-from jarvis.orchestration.engine import ConfirmationRequired, OrchestrationEngine
+from jarvis.orchestration.engine import ConfirmationRequired, OrchestrationEngine, TeamWorkflowError
 from jarvis.orchestration.estimate import MemberEstimate, RunEstimate, estimate_run
 from jarvis.orchestration.roles import (
     READ_ONLY_SPAWNABLE,
@@ -47,6 +47,7 @@ __all__ = [
     "RunEstimate",
     "StageSpec",
     "TeamProfile",
+    "TeamWorkflowError",
     "WorkflowTemplate",
     "check_context_policy",
     "estimate_run",

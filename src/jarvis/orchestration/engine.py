@@ -44,6 +44,7 @@ from jarvis.orchestration.store import OrchestrationStore
 from jarvis.orchestration.teams import TeamProfile
 from jarvis.orchestration.workflows import WorkflowTemplate
 from jarvis.services.catalog import SERVICE_CATALOG
+from jarvis.skills import CompiledSkills, MemberIdentity, SkillCatalog
 
 #: Service name → the tool that exposes it in a member's spawn scope (Task 16). A member's
 #: declared services become scoped tools only when available, stage-appropriate, and within the
@@ -73,6 +74,14 @@ class ProviderContextError(Exception):
     provenance. A model is a context SINK, so this REFUSES the whole run before any row is
     opened — never a silent reroute (Phase 10C non-negotiable #3). No new run status / no
     migration: like :class:`ConfirmationRequired`, it fires before ``begin_run``."""
+
+
+class TeamWorkflowError(ValueError):
+    """A team cannot safely execute the selected workflow shape."""
+
+
+class ProviderClientError(RuntimeError):
+    """A resolved provider route has no compatible client factory."""
 
 
 _RECORD_SYNTHESIS = {
@@ -142,6 +151,7 @@ class OrchestrationEngine:
         est_out_tokens: int = 2048,
         project_routes: dict | None = None,
         artifacts: object | None = None,
+        skills: SkillCatalog | None = None,
     ) -> None:
         self.spawn = spawn
         self.store = store
@@ -158,6 +168,7 @@ class OrchestrationEngine:
         self.est_out_tokens = est_out_tokens
         self.project_routes = project_routes
         self.artifacts = artifacts  # Phase 11: optional ArtifactStore (None ⇒ no indexing)
+        self.skills = skills  # reviewed local packs; None/off preserves prior behavior
         self._on_event: Callable[[dict], Awaitable[None]] | None = None  # set per run()
         self._execution_context: ExecutionContext | None = None
         self.log = get_logger("jarvis.orchestration")
@@ -189,13 +200,20 @@ class OrchestrationEngine:
         if self.registry is None or self.pricing is None or self.budgets is None:
             return None
         context_tokens = sum(item["tokens_est"] for item in context.manifest())
+        # A pack is part of the system prompt for every applicable child. Use the largest
+        # compiled pack across the workflow for every member call: conservative, simple, and
+        # it can never under-reserve a Fable-priced run. The head receives no role pack, so this
+        # slightly over-reserves its calls too, which is intentional.
+        skill_tokens = max(
+            (plan.token_estimate for plan in self._skill_plans(team, workflow).values()), default=0
+        )
         return estimate_run(
             team=team,
             workflow=workflow,
             registry=self.registry,
             pricing=self.pricing,
             budgets=self.budgets,
-            context_tokens=context_tokens,
+            context_tokens=context_tokens + skill_tokens,
             max_rounds=self.max_rounds,
             iterations=self.est_iterations,
             out_per_call=self.est_out_tokens,
@@ -221,6 +239,39 @@ class OrchestrationEngine:
                     f"provider {route.provider!r} (private_ok=False), but this run's context "
                     f"carries PRIVATE content — refused before fan-out (no silent reroute)"
                 )
+
+    def validate_team_workflow(self, team: TeamProfile, workflow: WorkflowTemplate) -> None:
+        """Refuse a building workflow that has no writer before any run row or model call.
+
+        ``default_workflows`` is presentation metadata, so the engine must enforce the actual
+        capability match itself. Otherwise a read-only team silently enters review/verdict with
+        an empty execution result.
+        """
+        if any(stage.kind == "execution" for stage in workflow.stages) and not self._members(
+            team, "execution"
+        ):
+            raise TeamWorkflowError(
+                f"team {team.id!r} has no write-capable member for workflow {workflow.id!r}"
+            )
+
+    def _skill_plans(
+        self, team: TeamProfile, workflow: WorkflowTemplate
+    ) -> dict[tuple[str, str], CompiledSkills]:
+        """Compile every member/stage that this workflow can spawn before opening the run."""
+        if self.skills is None:
+            return {}
+        plans: dict[tuple[str, str], CompiledSkills] = {}
+        for stage in workflow.stages:
+            for member in self._members(team, stage.kind):
+                identity = MemberIdentity(
+                    team=team.id,
+                    member_id=member.id,
+                    title=member.title,
+                    route_role=member.route_role,
+                    stage=stage.kind,
+                )
+                plans[(member.id, stage.kind)] = self.skills.compile(identity)
+        return plans
 
     @staticmethod
     def _members(team: TeamProfile, stage_kind: str) -> list[RosterRole]:
@@ -272,21 +323,31 @@ class OrchestrationEngine:
         project_id: int,
         prompt: str,
         context: ContextBundle,
+        skills: CompiledSkills | None = None,
     ) -> StageResult:
         # Per-role MODEL routing: the member runs on its route's model (researcher→sonnet,
         # coder→opus, …) so execution matches what the estimate priced. The client stays the
         # shared Anthropic client unless a factory is wired (default routes are all Anthropic;
         # OpenAI is opt-in per role and text-only, never for the tool-capable writer).
         model = client = None
+        tool_less = False
         if self.registry is not None:
             route = self.registry.route(member.route_role, project_routes=self.project_routes)
             model = route.model
+            spec = provider_spec(route.provider)
+            tool_less = route.text_only or bool(spec and not spec.tool_capable)
+            if self.factory is None and route.provider != "anthropic":
+                raise ProviderClientError(
+                    f"role {member.route_role!r} resolves to {route.provider!r}, but no "
+                    "provider-aware ClientFactory was supplied"
+                )
             if self.factory is not None:
                 client = self.factory.for_route(route)
+        scope = [] if tool_less else self._member_scope(member, stage, context)
         result = await self.spawn(
             title=f"{team_id}:{member.id}",
             prompt=prompt,
-            tools=self._member_scope(member, stage, context),
+            tools=scope,
             model=model,
             client=client,
             role=member.route_role,
@@ -295,6 +356,9 @@ class OrchestrationEngine:
             orchestration_run_id=run_id,
             project_id=project_id,
             fresh_trace=True,
+            skill_text=skills.text if skills is not None else None,
+            skill_manifest=list(skills.manifest) if skills is not None else None,
+            allow_toolless=tool_less,
         )
         # Trust the RUN RECORD: spawn's is_error is derived from the child's agent_runs status,
         # not its report text. The report is untrusted data for the synthesizer only.
@@ -321,6 +385,7 @@ class OrchestrationEngine:
         project_id: int,
         prompt: str,
         context: ContextBundle,
+        skill_plans: dict[tuple[str, str], CompiledSkills] | None = None,
     ) -> list[StageResult]:
         if not members:
             return []
@@ -334,6 +399,7 @@ class OrchestrationEngine:
                     project_id=project_id,
                     prompt=prompt,
                     context=context,
+                    skills=(skill_plans or {}).get((m.id, stage)),
                 )
                 for m in members
             ),
@@ -452,6 +518,7 @@ class OrchestrationEngine:
             raise ValueError("orchestration execution context/project mismatch")
         self._on_event = on_event
         self._execution_context = execution_context
+        self.validate_team_workflow(team, workflow)
         # Provider privacy (constraint #3): refuse a PRIVATE bundle routed to a non-trusted
         # provider BEFORE any row opens — same pre-begin_run seam as the two-step confirm.
         self.check_provider_context(team, context)
@@ -462,6 +529,10 @@ class OrchestrationEngine:
             if estimated_cost_usd is None:
                 estimated_cost_usd = estimate.total_usd
 
+        skill_plans = self._skill_plans(team, workflow)
+        skills_manifest = [
+            entry for plan in skill_plans.values() for entry in plan.manifest
+        ]
         run_id = await self.store.begin_run(
             project_id=project_id,
             workflow=workflow.id,
@@ -471,6 +542,7 @@ class OrchestrationEngine:
             estimated_cost_usd=estimated_cost_usd,
             budget_usd=budget_usd,
             session_id=execution_context.session_id if execution_context is not None else None,
+            skills_manifest=skills_manifest,
         )
         await self._emit(
             "orchestration_started",
@@ -509,6 +581,7 @@ class OrchestrationEngine:
                 project_id=project_id,
                 prompt=f"Analyze the task for your specialty.\n\n{framed_ctx}",
                 context=context,
+                skill_plans=skill_plans,
             )
 
             # B. Synthesis (head, forced schema, over framed untrusted council reports)
@@ -539,6 +612,7 @@ class OrchestrationEngine:
                                     project_id=project_id,
                                     prompt=exec_prompt,
                                     context=context,
+                                    skills=skill_plans.get((writer[0].id, "execution")),
                                 )
                             ]
                     # D. Review (parallel, read-only, over the produced artifact)
@@ -551,6 +625,7 @@ class OrchestrationEngine:
                         project_id=project_id,
                         prompt=f"Review the work.\n\n{self._framed(exec_results)}",
                         context=context,
+                        skill_plans=skill_plans,
                     )
                     # E. Verdict
                     await self._stage(run_id, "verdict")

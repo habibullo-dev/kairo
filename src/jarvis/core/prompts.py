@@ -132,6 +132,7 @@ def build_system(
     unattended: bool = False,
     subagent: bool = False,
     voice: bool = False,
+    skills: str | None = None,
 ) -> str:
     """Assemble the system prompt.
 
@@ -146,6 +147,8 @@ def build_system(
     escalate to on-screen confirmation — never voice-only. ``extra`` appends dynamic
     context (compaction summary, recalled memories, current time, …); it is ordered
     *after* the stable identity so a future cache breakpoint after the identity still hits.
+    ``skills`` is a reviewed, code-selected stable role-playbook block. It is inserted after
+    the safety guidance and before dynamic context, and grants no authority.
     """
     parts = [DEFAULT_IDENTITY]
     if memory_enabled:
@@ -164,6 +167,8 @@ def build_system(
         parts.append(SUBAGENT_GUIDANCE)
     if voice:
         parts.append(VOICE_GUIDANCE)
+    if skills:
+        parts.append(skills)
     if extra:
         parts.append(extra)
     return "\n\n".join(parts)

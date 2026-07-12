@@ -1003,6 +1003,7 @@ CREATE INDEX IF NOT EXISTS idx_kb_sources_scope_origin_live
     ON kb_sources(project_id, origin, status);
 """
 
+
 # Source records are immutable audit/provenance.  Their chunks are a derived retrieval cache, so
 # terminal source lifecycle states must not retain old vector/FTS rows.  This repairs databases
 # created before folder detach performed the cache invalidation itself.  The table-existence guard
@@ -1019,6 +1020,28 @@ async def _migrate_v18(db: aiosqlite.Connection) -> None:
         "SELECT id FROM kb_sources WHERE status != 'live'"
         ")"
     )
+
+
+async def _migrate_v19(db: aiosqlite.Connection) -> None:
+    """Add bodies-free reviewed-skill manifests to existing audit tables.
+
+    The table guards keep a deliberately skeletal database that already claims an older schema
+    version recoverable, matching the defensive shape of v18.
+    """
+
+    for table in ("orchestration_runs", "agent_runs"):
+        exists = await (
+            await db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            )
+        ).fetchone()
+        if exists is None:
+            continue
+        columns = await (await db.execute(f"PRAGMA table_info({table})")).fetchall()
+        if "skills_manifest_json" not in {row[1] for row in columns}:
+            await db.execute(
+                f"ALTER TABLE {table} ADD COLUMN skills_manifest_json TEXT NOT NULL DEFAULT '[]'"
+            )
 
 
 # A migration is either a SQL script (run via executescript) or an async callable that
@@ -1045,6 +1068,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (16, _SCHEMA_V16),
     (17, _SCHEMA_V17),
     (18, _migrate_v18),
+    (19, _migrate_v19),
 ]
 
 

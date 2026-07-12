@@ -56,6 +56,9 @@ class FakeEngine:
     def check_provider_context(self, team, context) -> None:
         return None  # Phase 10C: the real engine refuses PRIVATE→non-trusted; no-op here
 
+    def validate_team_workflow(self, team, workflow) -> None:
+        return None  # Real engine refuses execution workflows without a writer; no-op in this fake.
+
     def estimate(self, team, workflow, context, *, budget_usd=None) -> RunEstimate | None:
         return self._est
 

@@ -26,7 +26,8 @@ import aiosqlite
 _COLS = (
     "id, parent_session_id, parent_trace_id, child_session_id, child_trace_id, "
     "title, prompt, tools_scope, status, iterations, denied_count, input_tokens, "
-    "output_tokens, cost_usd, result_text, error, started_at, finished_at, created_at"
+    "output_tokens, cost_usd, result_text, error, started_at, finished_at, created_at, "
+    "skills_manifest_json"
 )
 
 
@@ -57,6 +58,7 @@ class AgentRun:
     started_at: str
     finished_at: str | None
     created_at: str
+    skills_manifest: list
 
 
 def _row_to_run(row: tuple) -> AgentRun:
@@ -80,6 +82,7 @@ def _row_to_run(row: tuple) -> AgentRun:
         started_at=row[16],
         finished_at=row[17],
         created_at=row[18],
+        skills_manifest=json.loads(row[19]) if row[19] else [],
     )
 
 
@@ -102,6 +105,7 @@ class AgentRunStore:
         orchestration_run_id: int | None = None,
         role: str | None = None,
         stage: str | None = None,
+        skills_manifest: list[dict] | None = None,
     ) -> int:
         """Open a ``'running'`` row before the child executes; returns its id. The Phase 10
         columns (project_id / orchestration_run_id / role / stage) are NULL for a plain
@@ -111,8 +115,9 @@ class AgentRunStore:
             cursor = await self.db.execute(
                 "INSERT INTO agent_runs "
                 "(parent_session_id, parent_trace_id, title, prompt, tools_scope, "
-                "status, started_at, created_at, project_id, orchestration_run_id, role, stage) "
-                "VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)",
+                "status, started_at, created_at, project_id, orchestration_run_id, role, stage, "
+                "skills_manifest_json) "
+                "VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)",
                 (
                     parent_session_id,
                     parent_trace_id,
@@ -125,6 +130,7 @@ class AgentRunStore:
                     orchestration_run_id,
                     role,
                     stage,
+                    json.dumps(skills_manifest or []),
                 ),
             )
             await self.db.commit()

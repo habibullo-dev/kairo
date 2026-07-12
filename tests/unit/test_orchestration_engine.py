@@ -25,6 +25,7 @@ import pytest
 from jarvis.agents import AgentRunStore, SubAgentService
 from jarvis.config import load_config
 from jarvis.core.client import FakeClient, ToolCall, text_message, tool_use_message
+from jarvis.models import ModelRegistry
 from jarvis.orchestration import (
     READ_ONLY_SPAWNABLE,
     WORKFLOWS,
@@ -34,6 +35,7 @@ from jarvis.orchestration import (
     resolve_team,
 )
 from jarvis.orchestration.context import ContextItem, Provenance
+from jarvis.orchestration.engine import ProviderClientError, TeamWorkflowError
 from jarvis.orchestration.roles import Capability
 from jarvis.permissions import PermissionGate, Policy
 from jarvis.persistence import SessionStore
@@ -376,6 +378,92 @@ async def test_budget_preflight_refuses_before_any_fanout(tmp_path: Path) -> Non
     )
     assert (await store.get(rid)).status == "budget_stopped"
     assert calls == []  # nothing spawned at all
+
+
+async def test_execution_workflow_requires_a_writer_before_opening_a_run(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    calls: list[dict] = []
+
+    async def fake_spawn(**kw) -> ToolResult:
+        calls.append(kw)
+        return ToolResult(content="unexpected", is_error=False)
+
+    engine = OrchestrationEngine(
+        spawn=fake_spawn,
+        store=store,
+        head_client=FakeClient([]),
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+    )
+    with pytest.raises(TeamWorkflowError, match="no write-capable"):
+        await engine.run(
+            project_id=1,
+            team=resolve_team("research"),
+            workflow=WORKFLOWS["implement"],
+            context=_CTX,
+            title="must not start",
+        )
+    assert calls == [] and await store.list(project_id=1) == []
+
+
+async def test_text_only_route_receives_no_tools_and_its_factory_client() -> None:
+    calls: list[dict] = []
+    client = object()
+
+    class Factory:
+        def for_route(self, route):
+            assert route.provider == "gemini" and route.text_only is True
+            return client
+
+    async def fake_spawn(**kw) -> ToolResult:
+        calls.append(kw)
+        return ToolResult(content="report", is_error=False)
+
+    engine = OrchestrationEngine(
+        spawn=fake_spawn,
+        store=None,
+        head_client=FakeClient([]),
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+        registry=ModelRegistry(
+            {"researcher": {"provider": "gemini", "model": "gemini-test", "text_only": True}}
+        ),
+        factory=Factory(),
+    )
+    researcher = next(m for m in resolve_team("research").members if m.route_role == "researcher")
+    await engine._spawn_member(
+        researcher,
+        stage="council",
+        team_id="research",
+        run_id=1,
+        project_id=1,
+        prompt="analyze",
+        context=_CTX,
+    )
+    assert calls[0]["tools"] == [] and calls[0]["allow_toolless"] is True
+    assert calls[0]["client"] is client and calls[0]["model"] == "gemini-test"
+
+
+async def test_non_anthropic_route_without_factory_fails_closed() -> None:
+    engine = OrchestrationEngine(
+        spawn=lambda **kw: None,
+        store=None,
+        head_client=FakeClient([]),
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+        registry=ModelRegistry({"researcher": {"provider": "gemini", "model": "gemini-test"}}),
+    )
+    researcher = next(m for m in resolve_team("research").members if m.route_role == "researcher")
+    with pytest.raises(ProviderClientError, match="ClientFactory"):
+        await engine._spawn_member(
+            researcher,
+            stage="council",
+            team_id="research",
+            run_id=1,
+            project_id=1,
+            prompt="analyze",
+            context=_CTX,
+        )
 
 
 def test_engine_member_selection_respects_capability_floors() -> None:

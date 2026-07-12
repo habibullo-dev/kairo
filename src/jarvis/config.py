@@ -16,6 +16,7 @@ than surfacing later as an opaque 401 from the API.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -486,6 +487,39 @@ class ContextReuseConfig(BaseModel):
     enabled: bool = False
 
 
+class SkillActivationConfig(BaseModel):
+    """One human-pinned runtime skill pack."""
+
+    pack: str
+    version: str
+    sha256: str
+
+    @field_validator("pack")
+    @classmethod
+    def _safe_pack_id(cls, value: str) -> str:
+        import re
+
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value):
+            raise ValueError("pack must be a lowercase kebab-case id")
+        return value
+
+    @field_validator("sha256")
+    @classmethod
+    def _digest_prefix(cls, value: str) -> str:
+        import re
+
+        if not re.fullmatch(r"[0-9a-f]{12,64}", value):
+            raise ValueError("sha256 must be a 12-64 character lowercase hex digest")
+        return value
+
+
+class SkillsConfig(BaseModel):
+    """Reviewed local skill packs. ``off`` is byte-identical to the pre-skill runtime."""
+
+    mode: Literal["off", "shadow", "active"] = "off"
+    enabled: list[SkillActivationConfig] = Field(default_factory=list)
+
+
 class BudgetsConfig(BaseModel):
     """Cost budgets + ROI inputs (Phase 10). 0 / None means "no limit". Per-run limits gate
     an orchestration run's accumulated spend; project_monthly caps month-to-date per project;
@@ -546,6 +580,7 @@ class Config(BaseModel):
     services: ServicesConfig = Field(default_factory=ServicesConfig)  # Phase 10B
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)  # Phase 10C
     context_reuse: ContextReuseConfig = Field(default_factory=ContextReuseConfig)  # Phase 13 (S7)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)  # reviewed local packs, default OFF
     attention: AttentionConfig = Field(default_factory=AttentionConfig)  # Phase 16
     paths: PathsConfig
     secrets: Secrets
@@ -638,6 +673,7 @@ def load_config(
             services=ServicesConfig(**data.get("services", {})),
             providers=ProvidersConfig(**data.get("providers", {})),
             context_reuse=ContextReuseConfig(**data.get("context_reuse", {})),
+            skills=SkillsConfig(**data.get("skills", {})),
             secrets=secrets,
         )
     except ValidationError as e:
