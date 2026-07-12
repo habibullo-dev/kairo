@@ -44,6 +44,9 @@ async def _settle(cond, tries: int = 200) -> None:
 
 async def test_denied_gated_turn_settles_to_idle(tmp_path: Path) -> None:
     config = load_config(root=tmp_path, env_file=None)
+    # This scenario isolates the approval/settle lifecycle; the independent priced-chat preflight
+    # cap would otherwise reject the fake turn before it reaches the Gate.
+    config.chat.hard_stop_usd_per_turn = 0
     # (1) the model calls a gated tool (write_file = ASK); (2) after the denial, a denial reply.
     client = FakeClient(
         [

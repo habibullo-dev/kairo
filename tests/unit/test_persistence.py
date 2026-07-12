@@ -50,7 +50,7 @@ async def test_migrations_set_user_version(tmp_path: Path) -> None:
     cursor = await db.execute("PRAGMA user_version")
     (version,) = await cursor.fetchone()
     await db.close()
-    assert version == 18  # Derived KB chunks are purged when their source is no longer live.
+    assert version == latest_version()
 
 
 async def test_v2_to_v3_migration_preserves_data(tmp_path: Path) -> None:

@@ -16,7 +16,7 @@ import pytest
 from jarvis.graph import GraphStore
 from jarvis.persistence.db import connect
 from jarvis.persistence.fts import query_domain
-from jarvis.persistence.migrations import _SCHEMA_V12, migrate
+from jarvis.persistence.migrations import _SCHEMA_V12, latest_version, migrate
 from jarvis.projects import ProjectStore
 
 _OPEN: list = []
@@ -39,7 +39,7 @@ async def _store(tmp_path: Path) -> GraphStore:
 async def test_migration_v12_applied_and_tables_exist(tmp_path: Path) -> None:
     db = await connect(tmp_path / "g.db")
     _OPEN.append(db)
-    assert (await (await db.execute("PRAGMA user_version")).fetchone())[0] == 18
+    assert (await (await db.execute("PRAGMA user_version")).fetchone())[0] == latest_version()
     names = {
         r[0] for r in await (await db.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
@@ -51,10 +51,10 @@ async def test_migration_v12_script_is_idempotent(tmp_path: Path) -> None:
     db = await connect(tmp_path / "g.db")
     _OPEN.append(db)
     # Every statement is IF NOT EXISTS: re-running the whole v12 script is a safe no-op, and
-    # migrate() itself is a no-op once at v12.
+    # migrate() itself is a no-op once every current migration has landed.
     await db.executescript(_SCHEMA_V12)
     await db.executescript(_SCHEMA_V12)
-    assert await migrate(db) == 18
+    assert await migrate(db) == latest_version()
 
 
 # --- asserted nodes: never-DELETE (retract) --------------------------------

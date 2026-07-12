@@ -24,11 +24,11 @@ def test_primary_rail_is_the_five_places() -> None:
     for screen in ("daily", "projects", "studio", "costs", "settings"):
         assert f'data-screen="{screen}"' in INDEX, screen
     assert ">Settings<" in INDEX
-    # Vault/Tasks/Memory are no longer rail entries (they become Workspace tabs in T10). They
-    # stay reachable by hash, so their modules must still exist (test_ui_screens covers that),
-    # but the rail must not advertise them as top-level destinations.
+    # Vault/Tasks/Memory are not desktop primary-rail entries; mobile-secondary affordances keep
+    # the global fallback screens reachable on a narrow viewport.
     for gone in ("vault", "tasks", "memory"):
-        assert f'data-screen="{gone}"' not in INDEX, gone
+        lines = [line for line in INDEX.splitlines() if f'data-screen="{gone}"' in line]
+        assert all("mobile-secondary" in line for line in lines), gone
 
 
 def test_utility_area_after_the_spacer() -> None:

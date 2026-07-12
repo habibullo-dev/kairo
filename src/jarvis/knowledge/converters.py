@@ -48,7 +48,7 @@ _PASSTHROUGH_SUFFIXES = frozenset(
         ".md", ".markdown", ".txt", ".text", ".csv", ".json", ".jsonl",
         ".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx",
         ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".css", ".scss",
-        ".html", ".htm", ".xml", ".sql", ".sh", ".ps1", ".bat", ".cmd",
+        ".xml", ".sql", ".sh", ".ps1", ".bat", ".cmd",
         ".go", ".rs", ".java", ".kt", ".c", ".h", ".cc", ".cpp", ".hpp",
         ".cs", ".rb", ".php", ".swift", ".vue", ".svelte",
     }
