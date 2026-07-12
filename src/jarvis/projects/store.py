@@ -1,8 +1,8 @@
 """ProjectStore: SQLite persistence for project workspaces (schema v7).
 
 Plain SQL like the other stores, on the *same* aiosqlite connection and shared write
-lock (a second connection deadlocks; a second lock lets a write land inside another
-store's open transaction). Nothing is ever DELETEd — ``archive`` is a status flip, and
+lock (a second lock lets a write land inside another store's open transaction). Nothing is ever
+DELETEd — ``archive`` is a status flip, and
 scoped rows in other tables keep a nullable ``project_id`` (NULL == global scope).
 
 The store is mechanism, not policy: it does not decide scope or inject context (that is

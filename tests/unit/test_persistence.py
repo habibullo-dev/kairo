@@ -53,6 +53,46 @@ async def test_migrations_set_user_version(tmp_path: Path) -> None:
     assert version == latest_version()
 
 
+async def test_connect_configures_wal_and_waits_for_a_contended_writer(tmp_path: Path) -> None:
+    """Each connection receives the local PRAGMAs, and an ordinary lock waits to clear."""
+    path = tmp_path / "concurrent.db"
+    first = await connect(path)
+    second = await connect(path)
+    try:
+        for db in (first, second):
+            journal_mode = (await (await db.execute("PRAGMA journal_mode")).fetchone())[0]
+            busy_timeout = (await (await db.execute("PRAGMA busy_timeout")).fetchone())[0]
+            synchronous = (await (await db.execute("PRAGMA synchronous")).fetchone())[0]
+            foreign_keys = (await (await db.execute("PRAGMA foreign_keys")).fetchone())[0]
+            assert journal_mode == "wal"
+            assert busy_timeout == 5000
+            assert synchronous == 1  # NORMAL
+            assert foreign_keys == 1
+
+        await first.execute("CREATE TABLE contention_probe (value TEXT NOT NULL)")
+        await first.commit()
+        await first.execute("BEGIN IMMEDIATE")
+        await first.execute("INSERT INTO contention_probe (value) VALUES ('first')")
+        waiting_write = asyncio.create_task(
+            second.execute("INSERT INTO contention_probe (value) VALUES ('second')")
+        )
+        await asyncio.sleep(0.05)
+        if waiting_write.done():
+            # Re-raise an immediate SQLite error instead of leaving it hidden in the task.
+            await waiting_write
+            pytest.fail("The second writer completed before the first writer released its lock.")
+        assert not waiting_write.done()
+
+        await first.commit()
+        await asyncio.wait_for(waiting_write, timeout=2)
+        await second.commit()
+        count = (await (await first.execute("SELECT COUNT(*) FROM contention_probe")).fetchone())[0]
+        assert count == 2
+    finally:
+        await second.close()
+        await first.close()
+
+
 async def test_v2_to_v3_migration_preserves_data(tmp_path: Path) -> None:
     db = await aiosqlite.connect(tmp_path / "m.db")
     try:

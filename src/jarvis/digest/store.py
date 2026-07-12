@@ -1,7 +1,7 @@
 """DigestStore: persistence for generated digests (schema v6).
 
-Same rules as the other stores: the shared aiosqlite connection + write lock (a second
-connection deadlocks). Rows are MINIMIZED (amendment A4) — the store only ever receives and
+Same rules as the other stores: the shared aiosqlite connection + write lock. Rows are
+MINIMIZED (amendment A4) — the store only ever receives and
 persists structured sections (snippets/counts/headers/status), a summary, suggested actions,
 and delivery/provenance. Raw email bodies and provider error bodies never reach it.
 """

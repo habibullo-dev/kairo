@@ -1,10 +1,9 @@
 """TaskStore: SQLite persistence for tasks + their run history (schema v3).
 
 Plain SQL like the other stores, and the same rules apply: it runs on the *same*
-aiosqlite connection and shared write lock as SessionStore/MemoryStore (a second
-connection to one file would deadlock; a second lock would let a task write land
-inside another store's open transaction). Nothing is ever DELETEd — cancel is a
-status, run history is audit.
+aiosqlite connection and shared write lock as SessionStore/MemoryStore. A second
+lock would let a task write land inside another store's open transaction. Nothing is ever
+DELETEd — cancel is a status, run history is audit.
 
 The store is mechanism, not policy: it applies decisions the TaskService already
 made (what the next fire time is, whether a failure trips the cap) atomically.

@@ -52,6 +52,26 @@ def test_backup_manifest_and_consistent_sqlite_copy(tmp_path: Path) -> None:
         copied.close()
 
 
+async def test_backup_captures_a_committed_wal_database(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    live = await connect(data / "jarvis.db")
+    try:
+        await live.execute("CREATE TABLE backup_probe (value TEXT NOT NULL)")
+        await live.execute("INSERT INTO backup_probe (value) VALUES ('live-wal-row')")
+        await live.commit()
+
+        backup = create_backup(data)
+    finally:
+        await live.close()
+
+    copied = sqlite3.connect(backup / "jarvis.db")
+    try:
+        assert copied.execute("SELECT value FROM backup_probe").fetchone()[0] == "live-wal-row"
+    finally:
+        copied.close()
+
+
 def test_backup_excludes_connectors_and_sensitive_names(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()

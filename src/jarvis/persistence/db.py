@@ -1,7 +1,6 @@
 """SQLite connection helper (aiosqlite) + the shared write lock.
 
-The whole app runs on **one** aiosqlite connection (a second connection to the
-same file deadlocks on the first concurrent write). That makes interleaved writes
+The whole app runs on **one shared** aiosqlite connection. That makes interleaved writes
 the hazard: with sqlite3's legacy implicit transactions, two coroutines writing
 across await points share one open transaction, and either one's ``commit()``
 commits the other's half-done work — a crash at the wrong moment can then lose
@@ -27,8 +26,11 @@ from jarvis.persistence.migrations import latest_version, migrate
 
 
 async def connect(path: Path) -> aiosqlite.Connection:
-    """Open the database at ``path`` (creating parent dirs), enable foreign keys,
-    and run migrations. Returns a ready-to-use connection."""
+    """Open a ready-to-use SQLite connection with predictable concurrency settings.
+
+    WAL is persistent per database file; the remaining safety and contention settings are
+    connection-local and must therefore be applied every time a connection is opened.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     # A real, older database is snapshotted before any DDL. The online SQLite backup API makes
     # this safe even if another Kairo process currently has the database open. Snapshot failure
@@ -40,8 +42,26 @@ async def connect(path: Path) -> aiosqlite.Connection:
             path, current_version=current_version, target_version=target_version
         )
     db = await aiosqlite.connect(path)
-    await db.execute("PRAGMA foreign_keys = ON")
-    await migrate(db)
+    try:
+        # Keep short lock contention from surfacing as an immediate OperationalError while
+        # preserving the existing in-process transaction lock as the primary writer guard.
+        await db.execute("PRAGMA busy_timeout = 5000")
+        cursor = await db.execute("PRAGMA journal_mode = WAL")
+        row = await cursor.fetchone()
+        if row is None or str(row[0]).lower() != "wal":
+            reported_mode = row[0] if row else None
+            raise RuntimeError(
+                f"SQLite database {path} did not enable WAL mode (reported {reported_mode!r})."
+            )
+        # NORMAL is the intended WAL durability/performance trade-off: SQLite stays
+        # consistent after a crash, while the most recent committed transactions can be lost
+        # on sudden power loss.
+        await db.execute("PRAGMA synchronous = NORMAL")
+        await db.execute("PRAGMA foreign_keys = ON")
+        await migrate(db)
+    except BaseException:
+        await db.close()
+        raise
     return db
 
 
