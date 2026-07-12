@@ -1503,6 +1503,7 @@ def _build_orchestrator(config: Config, *, repl: Repl, app, store, artifacts=Non
         est_iterations=config.sub_agents.max_iterations,
         artifacts=artifacts,  # Phase 11: index each finished run as a DB-backed artifact
         skills=SkillCatalog(config.root, config.skills),
+        cost_ledger=repl.cost_ledger,  # actual cost stays unknown if tracking is degraded
     )
     return OrchestrationController(
         engine=engine, connections=app.state.connections, projects=repl.projects

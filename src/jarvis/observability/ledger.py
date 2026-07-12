@@ -96,6 +96,9 @@ class CostLedger:
         self.log = get_logger("jarvis.cost")
         self._degraded_since: str | None = None  # A5: set when a write fails, cleared on success
         self._unrecorded = 0
+        # Monotonic: a later successful row clears the *live* degradation signal, but it must not
+        # erase evidence that a prior row was lost while an orchestration run was accumulating.
+        self._failure_generation = 0
 
     async def record(
         self,
@@ -168,6 +171,7 @@ class CostLedger:
         if self._degraded_since is None:
             self._degraded_since = _now()
         self._unrecorded += 1
+        self._failure_generation += 1
 
     def _clear_degraded(self) -> None:
         if self._degraded_since is not None:
@@ -182,8 +186,17 @@ class CostLedger:
             "degraded": self._degraded_since is not None,
             "since": self._degraded_since,
             "unrecorded": self._unrecorded,
+            "failure_generation": self._failure_generation,
             "pricing_version": self.pricing.version,
         }
+
+    def failure_generation(self) -> int:
+        """A monotonic generation for fail-closed scoped cost rollups.
+
+        It intentionally never resets on recovery. Consumers can snapshot it before a run and
+        decline to present an exact total if any ledger row was lost before the run completed.
+        """
+        return self._failure_generation
 
     async def total(self, *, project_id: int | None = None) -> dict:
         """A minimal rollup (Task 8 adds the periodised views): summed cost + call counts,

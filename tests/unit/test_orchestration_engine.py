@@ -26,6 +26,9 @@ from jarvis.agents import AgentRunStore, SubAgentService
 from jarvis.config import load_config
 from jarvis.core.client import FakeClient, ToolCall, text_message, tool_use_message
 from jarvis.models import ModelRegistry
+from jarvis.observability.budget import BudgetService
+from jarvis.observability.cost import Usage, load_pricing
+from jarvis.observability.ledger import CostLedger, LedgeredClient
 from jarvis.orchestration import (
     READ_ONLY_SPAWNABLE,
     WORKFLOWS,
@@ -211,6 +214,249 @@ async def test_readonly_workflow_council_then_head_verdict(tmp_path: Path) -> No
         assert c["fresh_trace"] is True and c["orchestration_run_id"] == rid
         assert set(c["tools"]) <= READ_ONLY_SPAWNABLE  # read-only floor holds
     assert len(head.calls) == 2  # synthesis + verdict, both on the head route
+
+
+async def test_fable_head_calls_are_attributed_and_written_back_as_actual_run_cost(
+    tmp_path: Path,
+) -> None:
+    store = await _store(tmp_path)
+    ledger = CostLedger(store.db, store.lock, load_pricing(None))
+    head = LedgeredClient(
+        FakeClient([
+            tool_use_message(
+                [ToolCall(id="s", name="record_synthesis", input={"summary": "s"})],
+                model="claude-fable-5",
+                usage=Usage(input_tokens=120, output_tokens=30),
+            ),
+            tool_use_message(
+                [ToolCall(id="v", name="record_verdict", input={"verdict": "accept"})],
+                model="claude-fable-5",
+                usage=Usage(input_tokens=90, output_tokens=20),
+            ),
+        ]),
+        ledger=ledger,
+        provider="anthropic",
+        effort="high",
+    )
+
+    async def fake_spawn(**kw) -> ToolResult:
+        return ToolResult(content=f"report:{kw['role']}", is_error=False)
+
+    budgets = BudgetService(store.db, store.lock)
+    engine = OrchestrationEngine(
+        spawn=fake_spawn,
+        store=store,
+        head_client=head,
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+        budget=budgets,
+        cost_ledger=ledger,
+    )
+    rid = await engine.run(
+        project_id=1,
+        team=resolve_team("research"),
+        workflow=WORKFLOWS["research"],
+        context=_CTX,
+        title="ledgered head",
+    )
+
+    cur = await store.db.execute(
+        "SELECT orchestration_run_id, project_id, purpose, agent_role, team, stage "
+        "FROM model_calls ORDER BY id"
+    )
+    assert await cur.fetchall() == [
+        (rid, 1, "orchestration", "planner", "research", "synthesis"),
+        (rid, 1, "orchestration", "planner", "research", "verdict"),
+    ]
+    spend = await budgets.run_spend(rid)
+    run = await store.get(rid)
+    assert spend["unpriced"] == 0 and spend["cost_usd"] > 0
+    assert run is not None and run.actual_cost_usd == spend["cost_usd"]
+
+
+async def test_unpriced_fable_head_cost_keeps_actual_run_cost_unknown(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    ledger = CostLedger(store.db, store.lock, load_pricing(None))
+    head = LedgeredClient(
+        FakeClient([
+            tool_use_message(
+                [ToolCall(id="s", name="record_synthesis", input={"summary": "s"})],
+                model="unpriced-head-model",
+            ),
+            tool_use_message(
+                [ToolCall(id="v", name="record_verdict", input={"verdict": "accept"})],
+                model="unpriced-head-model",
+            ),
+        ]),
+        ledger=ledger,
+        provider="anthropic",
+        effort="high",
+    )
+
+    async def fake_spawn(**kw) -> ToolResult:
+        return ToolResult(content="report", is_error=False)
+
+    budgets = BudgetService(store.db, store.lock)
+    engine = OrchestrationEngine(
+        spawn=fake_spawn,
+        store=store,
+        head_client=head,
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+        budget=budgets,
+        cost_ledger=ledger,
+    )
+    rid = await engine.run(
+        project_id=1,
+        team=resolve_team("research"),
+        workflow=WORKFLOWS["research"],
+        context=_CTX,
+        title="unknown head price",
+    )
+
+    spend = await budgets.run_spend(rid)
+    run = await store.get(rid)
+    assert spend["unpriced"] == 2
+    assert run is not None and run.actual_cost_usd is None
+
+
+async def test_degraded_cost_ledger_keeps_actual_run_cost_unknown(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+
+    class DegradedLedger:
+        @staticmethod
+        def status() -> dict:
+            return {"degraded": True}
+
+    class ZeroBudget:
+        async def project_month_exceeded(self, project_id: int) -> bool:
+            return False
+
+        async def run_spend(self, run_id: int) -> dict:
+            return {"cost_usd": 0.0, "unpriced": 0}
+
+    async def fake_spawn(**kw) -> ToolResult:
+        return ToolResult(content="report", is_error=False)
+
+    engine = OrchestrationEngine(
+        spawn=fake_spawn,
+        store=store,
+        head_client=FakeClient([_synth(), _verdict("accept")]),
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+        budget=ZeroBudget(),
+        cost_ledger=DegradedLedger(),  # type: ignore[arg-type] - narrow status seam only
+    )
+    rid = await engine.run(
+        project_id=1,
+        team=resolve_team("research"),
+        workflow=WORKFLOWS["research"],
+        context=_CTX,
+        title="degraded cost tracking",
+    )
+    run = await store.get(rid)
+    assert run is not None and run.status == "ok" and run.actual_cost_usd is None
+
+
+async def test_recovered_ledger_loss_keeps_actual_run_cost_unknown(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+
+    class FailFirstLedger(CostLedger):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.failed_once = False
+
+        async def record(self, **kwargs) -> None:
+            if not self.failed_once:
+                self.failed_once = True
+                self._mark_degraded()
+                return
+            await super().record(**kwargs)
+
+    ledger = FailFirstLedger(store.db, store.lock, load_pricing(None))
+    head = LedgeredClient(
+        FakeClient([
+            tool_use_message(
+                [ToolCall(id="s", name="record_synthesis", input={"summary": "s"})],
+                model="claude-fable-5",
+                usage=Usage(input_tokens=120, output_tokens=30),
+            ),
+            tool_use_message(
+                [ToolCall(id="v", name="record_verdict", input={"verdict": "accept"})],
+                model="claude-fable-5",
+                usage=Usage(input_tokens=90, output_tokens=20),
+            ),
+        ]),
+        ledger=ledger,
+        provider="anthropic",
+        effort="high",
+    )
+
+    async def fake_spawn(**kw) -> ToolResult:
+        return ToolResult(content="report", is_error=False)
+
+    engine = OrchestrationEngine(
+        spawn=fake_spawn,
+        store=store,
+        head_client=head,
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+        budget=BudgetService(store.db, store.lock),
+        cost_ledger=ledger,
+    )
+    rid = await engine.run(
+        project_id=1,
+        team=resolve_team("research"),
+        workflow=WORKFLOWS["research"],
+        context=_CTX,
+        title="recovered ledger loss",
+    )
+
+    # The verdict row is recorded and clears the live degraded signal, but the missing synthesis
+    # row makes the per-run total incomplete. The persisted actual must stay unknown.
+    assert ledger.status()["degraded"] is False
+    spend = await BudgetService(store.db, store.lock).run_spend(rid)
+    assert spend["calls"] == 1 and spend["unpriced"] == 0 and spend["cost_usd"] > 0
+    run = await store.get(rid)
+    assert run is not None and run.actual_cost_usd is None
+
+
+async def test_actual_cost_read_failure_still_closes_the_run(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+
+    class HealthyLedger:
+        @staticmethod
+        def status() -> dict:
+            return {"degraded": False}
+
+    class BrokenBudget:
+        async def project_month_exceeded(self, project_id: int) -> bool:
+            return False
+
+        async def run_spend(self, run_id: int) -> dict:
+            raise RuntimeError("ledger query failed")
+
+    async def fake_spawn(**kw) -> ToolResult:
+        return ToolResult(content="report", is_error=False)
+
+    engine = OrchestrationEngine(
+        spawn=fake_spawn,
+        store=store,
+        head_client=FakeClient([_synth(), _verdict("accept")]),
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+        budget=BrokenBudget(),
+        cost_ledger=HealthyLedger(),  # type: ignore[arg-type] - narrow status seam only
+    )
+    rid = await engine.run(
+        project_id=1,
+        team=resolve_team("research"),
+        workflow=WORKFLOWS["research"],
+        context=_CTX,
+        title="cost read failure",
+    )
+    run = await store.get(rid)
+    assert run is not None and run.status == "ok" and run.actual_cost_usd is None
 
 
 async def test_head_action_items_are_bounded_and_never_scheduler_tasks(tmp_path: Path) -> None:
