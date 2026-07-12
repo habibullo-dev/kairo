@@ -1,6 +1,6 @@
 // Vault — KB stats + the unreviewed review queue (kb review) + lint. Amber flags anything
 // awaiting review (quarantined untrusted content).
-import { esc } from "../ui/dom.js";
+import { esc, escAttr } from "../ui/dom.js";
 
 export async function render(container, api) {
   const data = await api.get("/api/vault");
@@ -19,17 +19,17 @@ export async function render(container, api) {
       <div class="stat-row"><div class="stat"><span class="n">${esc(String(readiness.sources || 0))}</span><span class="l">project files</span></div>
         <div class="stat"><span class="n">${esc(String(readiness.indexed_chunks || 0))}</span><span class="l">indexed sections</span></div>
         <div class="stat"><span class="n">${esc(String(readiness.import_links || 0))}</span><span class="l">verified imports</span></div></div>
-      <div class="dim" style="font-size:12px;margin-top:8px">${esc(readiness.detail || "")}</div>
-      <div class="action-row" style="margin-top:10px"><a class="plain-button ghost" href="#workspace/${esc(String(readiness.project_id))}/graph">Open project graph</a><a class="plain-button ghost" href="#chat">Ask about this project</a></div>
-      <div class="dim" style="font-size:12px;margin-top:8px">Kairo retrieves relevant sections and direct verified dependencies for a question; it does not put the entire project into every prompt.</div>
+      <div class="dim vault-readiness-detail">${esc(readiness.detail || "")}</div>
+      <div class="action-row vault-readiness-actions"><a class="plain-button ghost" href="#workspace/${escAttr(String(readiness.project_id))}/graph">Open project graph</a><a class="plain-button ghost" href="#chat">Ask about this project</a></div>
+      <div class="dim vault-readiness-detail">Kairo retrieves relevant sections and direct verified dependencies for a question; it does not put the entire project into every prompt.</div>
     </div>` : ""}
     <div class="card rise"><div class="card-head"><div class="t">Add to the vault</div></div>
       <div class="ingest-box">
         <input id="vault-ingest-input" placeholder="file path, folder, or https:// URL" autocomplete="off">
         <button class="rowbtn" id="vault-ingest-go">Ingest</button>
       </div>
-      <div class="dim" style="font-size:12px;margin-top:6px">Files/URLs land reviewed; a folder bulk-ingests (secrets skipped, symlinks refused). Use <span class="mono">kb ingest</span> in the terminal for folders.</div>
-      <div id="vault-ingest-out" class="dim mono" style="margin-top:6px"></div></div>
+      <div class="dim vault-ingest-hint">Files/URLs land reviewed; a folder bulk-ingests (secrets skipped, symlinks refused). Use <span class="mono">kb ingest</span> in the terminal for folders.</div>
+      <div id="vault-ingest-out" class="dim mono vault-ingest-output"></div></div>
     <div class="card rise"><div class="card-label amber">Review queue · unreviewed</div><div id="vault-queue"></div></div>
     <div class="card rise"><div class="card-head"><div class="t">Lint</div>
       <button class="rowbtn" id="vault-lint">Run lint</button></div>
