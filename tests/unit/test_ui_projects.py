@@ -18,8 +18,8 @@ def test_grid_over_the_overview_read_model() -> None:
 
 
 def test_writes_are_the_enumerated_project_mutations_only() -> None:
-    # create / select / archive / pin / label — the metadata set. No turn/executor/orchestration.
-    for ep in ("/api/projects", "/api/projects/select", "/pin", "/label", "/archive"):
+    # create / select / update / archive / pin / label — the metadata set. No turn/executor.
+    for ep in ("/api/projects", "/api/projects/select", "/update", "/pin", "/label", "/archive"):
         assert ep in PROJECTS_JS, ep
     assert "/api/turn" not in PROJECTS_JS
     assert "/api/orchestration" not in PROJECTS_JS
@@ -32,6 +32,19 @@ def test_renders_without_innerhtml() -> None:
 
 def test_pin_and_label_present() -> None:
     assert "pin-star" in PROJECTS_JS and "label-select" in PROJECTS_JS
+
+
+def test_attended_project_details_edit_uses_existing_metadata_route() -> None:
+    # Metadata remains a human-reviewed form; it cannot select scope or invoke a run.
+    assert "openProjectEdit" in PROJECTS_JS
+    assert "Edit details" in PROJECTS_JS
+    assert "/api/projects/${encodeURIComponent(project.id)}/update" in PROJECTS_JS
+    assert "Save details" in PROJECTS_JS
+    assert "project scope" in PROJECTS_JS
+    assert "projectEditSequence" in PROJECTS_JS
+    assert "activeProjectEdit?.owner !== owner" in PROJECTS_JS
+    assert "current.saving" in PROJECTS_JS
+    assert "try {" in PROJECTS_JS and "catch {" in PROJECTS_JS
 
 
 def test_health_chips_present() -> None:

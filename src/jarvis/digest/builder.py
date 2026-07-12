@@ -89,6 +89,7 @@ class DigestBuilder:
         eval_freshness: Callable[[], dict | None] | None = None,
         notices: Any = None,
         task_id: int | None = None,
+        project_id: int | None = None,
         artifacts: Any = None,
         now: Callable[[], _dt.datetime] | None = None,
     ) -> None:
@@ -103,6 +104,7 @@ class DigestBuilder:
         self.eval_freshness = eval_freshness
         self.notices = notices
         self.task_id = task_id
+        self.project_id = project_id
         self.artifacts = artifacts  # Phase 11: optional ArtifactStore (None ⇒ no indexing)
         self._now = now or (lambda: _dt.datetime.now().astimezone())
         self._cost: float | None = None
@@ -334,7 +336,11 @@ class DigestBuilder:
                 _log.warning("digest_artifact_register_failed")
         # UI delivery FIRST — the DB row + a calm notice (no toast). Notifiers come after.
         if self.notices is not None:
-            self.notices.post(f"Daily digest ready — {summary[:120]}", kind="digest")
+            self.notices.post(
+                f"Daily digest ready — {summary[:120]}",
+                kind="digest",
+                project_id=self.project_id,
+            )
 
         for channel in self._notifier_channels():
             notifier = self.connectors.notifier(channel) if self.connectors else None
@@ -347,7 +353,9 @@ class DigestBuilder:
             except ConnectorError:
                 if self.notices is not None:
                     self.notices.post(
-                        f"Digest delivery to {channel} failed — check connection.", kind="warn"
+                        f"Digest delivery to {channel} failed — check connection.",
+                        kind="warn",
+                        project_id=self.project_id,
                     )
         if delivered != ["ui"]:
             await self.store.set_delivered(digest_id, delivered)

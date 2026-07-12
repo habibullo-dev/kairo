@@ -9,7 +9,7 @@ export async function render(container, api) {
   container.innerHTML = `
     <div class="rise">
       <h1>Notifications</h1>
-      <div class="sub">Everything waiting on you, in one place. Amber means Kairo is blocked on you.</div>
+      <div class="sub">Everything waiting on you, in one place. Amber means Kairo is blocked on you. “Approve & send” authorizes a write; clearing a proposal only removes it from this list.</div>
     </div>
     <div class="card rise" id="gate-pending-card">
       <div class="card-label amber">Needs you</div>
@@ -18,6 +18,14 @@ export async function render(container, api) {
     <div class="card rise">
       <div class="card-label">Recent writes · undo</div>
       <div id="gate-writes" class="dim">loading…</div>
+    </div>
+    <div class="card rise">
+      <div class="card-label">External write audit · metadata only</div>
+      <div id="gate-connector-writes" class="dim">loading…</div>
+    </div>
+    <div class="card rise">
+      <div class="card-label">Background activity · this session</div>
+      <div id="gate-notices" class="dim">loading…</div>
     </div>
     <div class="card rise">
       <div class="card-label">Earlier today · audit</div>
@@ -109,7 +117,7 @@ export async function render(container, api) {
     // attention rows (proposals / alerts / reviews): metadata-only resolve. A proposal's real
     // acceptance is the human acting on its source elsewhere — never a hidden action here.
     return [
-      actionBtn("Done", "btn", () => act(`/api/attention/${it.ref}/resolve`, { action: "done" })),
+      actionBtn("Clear from list", "btn", () => act(`/api/attention/${it.ref}/resolve`, { action: "done" })),
       actionBtn("Dismiss", "btn", () => act(`/api/attention/${it.ref}/resolve`, { action: "dismiss" })),
     ];
   }
@@ -117,6 +125,8 @@ export async function render(container, api) {
   async function act(path, body) {
     await api.post(path, body || {});
     await fillQueue();
+    await fillWrites();
+    await fillConnectorWrites();
   }
 
   // Recent writes with undo (history, not a competing pending surface).
@@ -149,9 +159,37 @@ export async function render(container, api) {
         row.appendChild(actionBtn("Undo", "btn", async () => {
           await api.post(`/api/intents/${it.id}/undo`, {});
           await fillWrites();
+          await fillConnectorWrites();
         }));
       }
       writes.appendChild(row);
+    }
+  }
+
+  // The journal proves that an outward connector write happened without surfacing its content,
+  // remote identifiers, rollback handles, egress references, or trace ids.
+  const connectorWrites = container.querySelector("#gate-connector-writes");
+  async function fillConnectorWrites() {
+    const data = await api.get("/api/connector-writes");
+    connectorWrites.className = "";
+    connectorWrites.textContent = "";
+    if (!data) {
+      connectorWrites.className = "dim";
+      connectorWrites.textContent = "External write audit is unavailable.";
+      return;
+    }
+    const rows = Array.isArray(data.writes) ? data.writes : [];
+    if (!rows.length) {
+      connectorWrites.className = "dim";
+      connectorWrites.textContent = "No connector writes in this scope.";
+      return;
+    }
+    for (const write of rows) {
+      const row = document.createElement("div");
+      row.className = "toolline";
+      row.textContent = [write.provider, write.verb, write.status, write.at]
+        .filter((value) => typeof value === "string" && value).join(" · ");
+      connectorWrites.appendChild(row);
     }
   }
 
@@ -187,6 +225,57 @@ export async function render(container, api) {
 
   await fillQueue();
   await fillWrites();
+  await fillConnectorWrites();
+
+  // The server keeps a bounded current-session activity buffer, unlike the in-memory WebSocket
+  // toast list. It is not durable history and never creates an approval or an action.
+  const noticeHistory = container.querySelector("#gate-notices");
+  async function fillNoticeHistory() {
+    const data = await api.get("/api/notices");
+    noticeHistory.className = "";
+    noticeHistory.textContent = "";
+    if (!data) {
+      noticeHistory.className = "dim";
+      noticeHistory.textContent = "Background activity is unavailable.";
+      return;
+    }
+    const byKey = new Map();
+    for (const [source, rows] of [["durable", data.notices], ["live", api.state?.notices]]) {
+      if (!Array.isArray(rows)) continue;
+      rows.forEach((notice, index) => {
+        if (!notice || typeof notice !== "object") return;
+        // Sequence plus timestamp distinguishes a restarted NoticeBoard from a duplicate live row.
+        const key = notice.seq != null ? `seq:${String(notice.seq)}:${String(notice.at || "")}` : `${source}:${index}`;
+        byKey.set(key, notice);
+      });
+    }
+    const noticeTime = (notice) => {
+      const timestamp = Date.parse(typeof notice.at === "string" ? notice.at : "");
+      return Number.isFinite(timestamp) ? timestamp : 0;
+    };
+    const notices = [...byKey.values()].sort((a, b) => {
+      const byTime = noticeTime(b) - noticeTime(a);
+      if (byTime) return byTime;
+      const aSeq = Number(a.seq);
+      const bSeq = Number(b.seq);
+      return Number.isFinite(aSeq) && Number.isFinite(bSeq) ? bSeq - aSeq : 0;
+    });
+    if (!notices.length) {
+      noticeHistory.className = "dim";
+      noticeHistory.textContent = "No background activity in this session.";
+      return;
+    }
+    for (const notice of notices.slice(0, 50)) {
+      const row = document.createElement("div");
+      row.className = "toolline";
+      const text = [notice.text, notice.summary, notice.message]
+        .find((value) => typeof value === "string" && value);
+      row.textContent = [notice.kind, text, notice.at]
+        .filter((value) => typeof value === "string" && value).join(" · ");
+      noticeHistory.appendChild(row);
+    }
+  }
+  await fillNoticeHistory();
 
   const audit = await api.get("/api/audit/today");
   const at = container.querySelector("#gate-audit");

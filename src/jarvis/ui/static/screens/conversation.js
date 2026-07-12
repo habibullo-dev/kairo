@@ -192,6 +192,15 @@ export function renderConversation(host, state, { emptyHeading, emptyHint } = {}
     return;
   }
   for (const item of state.chat) {
+    if (item.subagent) {
+      const line = document.createElement("div");
+      const adverse = item.status === "denied" || item.status === "error"
+        || item.status === "timeout" || item.status === "cancelled" || item.status === "aborted";
+      line.className = "toolline subagent-line" + (adverse ? " deny" : "");
+      line.textContent = `sub-agent ${item.title} · ${item.status}${item.detail ? ` · ${item.detail}` : ""}`;
+      host.appendChild(line);
+      continue;
+    }
     if (item.tool) {
       const line = document.createElement("div");
       line.className = "toolline" + (item.resolution === "denied" ? " deny" : "");
@@ -234,6 +243,56 @@ export async function submitConversationTurn(api, input, redraw) {
   }
 }
 
+function compactLabel(value, fallback) {
+  const label = String(value || "").trim();
+  if (!label) return fallback;
+  return label.length <= 80 ? label : `${label.slice(0, 79).trimEnd()}…`;
+}
+
+function addSubagentActivity(state, evt) {
+  const agentId = compactLabel(evt.agent_id, "unknown");
+  const title = compactLabel(evt.title, "sub-agent");
+  const inner = evt.inner && typeof evt.inner === "object" ? evt.inner : {};
+  const type = String(inner.type || "");
+  const tool = compactLabel(inner.name, "a tool");
+  let status = "working";
+  let detail = "";
+
+  if (type === "tool_started") {
+    status = "running";
+    detail = tool;
+  } else if (type === "tool_finished") {
+    status = inner.is_error ? "error" : "finished";
+    detail = tool;
+  } else if (type === "tool_decision") {
+    status = inner.resolution === "deny" ? "denied" : "approved";
+    detail = tool;
+  } else if (type === "turn_completed") {
+    status = "finished";
+  } else if (type === "text_delta") {
+    // A child can stream many text chunks. Show progress once, without reflecting untrusted text.
+    const alreadyShown = state.chat.some((item) => item.subagent && item.agentId === agentId
+      && item.status === "working" && item.detail === "drafting a response");
+    if (alreadyShown) return;
+    detail = "drafting a response";
+  } else {
+    detail = "working";
+  }
+  state.chat.push({ subagent: true, agentId, title, status, detail });
+}
+
+function addSubagentCompletion(state, evt) {
+  const known = new Set(["ok", "error", "timeout", "cancelled", "aborted"]);
+  const status = known.has(evt.status) ? evt.status : "completed";
+  state.chat.push({
+    subagent: true,
+    agentId: compactLabel(evt.agent_id, "unknown"),
+    title: compactLabel(evt.title, "sub-agent"),
+    status,
+    detail: status === "ok" ? "complete" : "",
+  });
+}
+
 export function onConversationEvent(state, evt) {
   if (evt.type === "text_delta") {
     let last = state.chat[state.chat.length - 1];
@@ -246,8 +305,15 @@ export function onConversationEvent(state, evt) {
     state.chat.push({ tool: evt.name, resolution: "allow" });
   } else if (evt.type === "tool_decision" && evt.resolution === "deny") {
     state.chat.push({ tool: evt.name, resolution: "denied" });
+  } else if (evt.type === "subagent_event") {
+    // Child payloads are observational only: expose activity, never raw child text or tool data.
+    addSubagentActivity(state, evt);
+  } else if (evt.type === "subagent_completed") {
+    addSubagentCompletion(state, evt);
   } else if (evt.type === "turn_completed") {
-    const last = state.chat[state.chat.length - 1];
+    // Delegated-progress lines can arrive after streamed parent text, so settle the last live
+    // assistant bubble rather than assuming it is the final conversation item.
+    const last = [...state.chat].reverse().find((item) => item.role === "assistant" && item.live);
     if (last && last.role === "assistant") last.live = false;
   }
 }

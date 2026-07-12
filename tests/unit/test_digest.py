@@ -334,7 +334,7 @@ async def test_delivery_is_ui_first_then_notifier_with_egress(tmp_path: Path, mo
     order: list[str] = []
 
     class _Notices:
-        def post(self, text, *, kind="info"):
+        def post(self, text, *, kind="info", project_id=None):
             order.append("ui")
 
     class _StoreFirst(FakeDigestStore):

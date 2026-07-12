@@ -5,6 +5,7 @@
 // metadata mutation (create/select/archive/pin/label) — no new authority. Built entirely with
 // el() so a project name/label can never inject markup.
 import { el } from "../ui/dom.js";
+import { showToast } from "../ui/feedback.js";
 import { money } from "../ui/format.js";
 
 const LABELS = ["Coding", "Creativity", "Business", "Personal", "Learning", "Finance"];
@@ -18,6 +19,139 @@ const BUILTIN_VIEWS = [
   ["by-team-model", "By team / model"],
   ["pinned-work", "Pinned project work"],
 ];
+
+// Metadata edits are attended: this form is populated from the current project card and only
+// submits after the person explicitly saves it.  It does not switch project scope, change the
+// stable slug, or touch repositories, agents, schedules, or any run state.
+let activeProjectEdit = null;
+let projectEditSequence = 0;
+
+function closeProjectEdit(value, owner = null) {
+  const current = activeProjectEdit;
+  if (!current || (owner !== null && current.owner !== owner)) return false;
+  activeProjectEdit = null;
+  document.removeEventListener("keydown", current.onKeydown);
+  current.overlay.remove();
+  current.restoreFocus?.focus?.();
+  current.resolve(value);
+  return true;
+}
+
+function projectField(labelText, control, hint = null) {
+  const field = el("label", { class: "project-edit-field" }, [
+    el("span", { class: "project-edit-label", text: labelText }), control,
+  ]);
+  if (hint) field.append(el("span", { class: "project-edit-hint", text: hint }));
+  return field;
+}
+
+function openProjectEdit(project, api) {
+  return new Promise((resolve) => {
+    if (activeProjectEdit) {
+      // Never let a late response from dialog A close dialog B. A saving form owns the modal
+      // until its request settles, so a second card click simply leaves the current review open.
+      if (activeProjectEdit.saving) { resolve(false); return; }
+      closeProjectEdit(false);
+    }
+    const owner = ++projectEditSequence;
+    const overlay = el("div", { class: "dialog-overlay", role: "presentation" });
+    const card = el("section", {
+      class: "dialog-card project-edit-dialog", role: "dialog", "aria-modal": "true",
+      "aria-label": `Edit project details for ${project.name || "project"}`,
+    });
+    const name = el("input", {
+      class: "dialog-input", type: "text", required: true, maxlength: "120",
+      "aria-label": "Project name",
+    });
+    name.value = String(project.name || "");
+    const description = el("textarea", {
+      class: "dialog-input project-edit-description", rows: "5", maxlength: "2000",
+      "aria-label": "Project description",
+    });
+    description.value = String(project.description || "");
+    const error = el("div", { class: "project-edit-error", role: "alert", hidden: true });
+    const cancel = el("button", { class: "dialog-button secondary", type: "button", text: "Cancel" });
+    const submit = el("button", { class: "dialog-button primary", type: "submit", text: "Save details" });
+    const form = el("form", { class: "project-edit-form" }, [
+      el("h2", { class: "dialog-title", text: "Edit project details" }),
+      el("p", {
+        class: "dialog-message",
+        text: "Review the metadata before saving. This does not switch project scope or change project files, agents, schedules, or run settings.",
+      }),
+      projectField("Project name", name, "The stable project slug stays unchanged."),
+      projectField("Description", description, "Optional; shown in the project card and workspace header."),
+      error,
+      el("div", { class: "dialog-actions" }, [cancel, submit]),
+    ]);
+    card.append(form);
+    overlay.append(card);
+
+    const showError = (message) => {
+      error.hidden = false;
+      error.textContent = message || "Project details could not be saved. Please try again.";
+    };
+    const closeIfIdle = () => {
+      if (activeProjectEdit?.owner !== owner || activeProjectEdit.saving) return;
+      closeProjectEdit(false, owner);
+    };
+    const setSaving = (saving) => {
+      const current = activeProjectEdit;
+      if (!current || current.owner !== owner) return false;
+      current.saving = saving;
+      submit.disabled = saving;
+      cancel.disabled = saving;
+      return true;
+    };
+    cancel.addEventListener("click", closeIfIdle);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (activeProjectEdit?.owner !== owner || activeProjectEdit.saving) return;
+      const nextName = name.value.trim();
+      if (!nextName) {
+        showError("A project name is required.");
+        name.focus();
+        return;
+      }
+      setSaving(true);
+      error.hidden = true;
+      let result;
+      try {
+        result = await api.post(`/api/projects/${encodeURIComponent(project.id)}/update`, {
+          name: nextName,
+          description: description.value.trim(),
+        });
+      } catch {
+        if (setSaving(false)) showError("Project details could not be saved. Please try again.");
+        return;
+      }
+      if (activeProjectEdit?.owner !== owner) return;
+      if (!result.ok || !result.data?.ok) {
+        setSaving(false);
+        showError(result.data?.message);
+        return;
+      }
+      closeProjectEdit(true, owner);
+    });
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) closeIfIdle();
+    });
+    const restoreFocus = document.activeElement;
+    const onKeydown = (event) => {
+      if (event.key === "Escape") { closeIfIdle(); return; }
+      if (event.key !== "Tab") return;
+      const controls = [...card.querySelectorAll("button, input, textarea, [tabindex]:not([tabindex='-1'])")];
+      const first = controls[0];
+      const last = controls.at(-1);
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKeydown);
+    activeProjectEdit = { owner, saving: false, overlay, resolve, onKeydown, restoreFocus };
+    document.body.append(overlay);
+    name.focus();
+  });
+}
 
 function runTone(status) {
   if (status === "ok") return "good";
@@ -117,6 +251,12 @@ function projectCard(p, activeId, api, refresh) {
       refresh();
     }),
     plainButton(active ? "Open →" : "Open & switch", () => { void openWorkspace(); }, "ghost"),
+    plainButton("Edit details", async () => {
+      const saved = await openProjectEdit(p, api);
+      if (!saved) return;
+      showToast("Project details saved.");
+      refresh();
+    }, "ghost"),
     plainButton("Archive", async () => {
       await api.post(`/api/projects/${p.id}/archive`, {});
       refresh();

@@ -227,6 +227,7 @@ function handleMessage(msg) {
     state.context = { session_id: msg.session_id, project_id: msg.project_id };
     state.chat = [];
     state.chatAttachments = [];
+    state.notices = [];  // history belongs to the prior project scope, never the next one
     renderRunnerState(); refreshHeader(); refreshConversation(); return;
   }
   if (msg.kind === "session_new" || msg.kind === "session_resumed") {
@@ -234,6 +235,7 @@ function handleMessage(msg) {
     state.context = { session_id: msg.session_id, project_id: msg.project_id };
     if (msg.kind === "session_new") state.chat = [];
     state.chatAttachments = [];
+    state.notices = [];
     pollStatus(); refreshHeader(); refreshConversation(); return;
   }
   if (msg.kind === "session_persistence") {
@@ -264,7 +266,9 @@ function acceptsContext(msg) {
 // Background notices (job/reminder/digest) reach the browser here — the calm, non-modal
 // surface (never an attention grab). A digest notice quietly refreshes Daily's Briefing.
 function onNotice(notice) {
-  if (!notice) return;
+  // Project scope is server-owned, but reject a stale queued frame client-side as well. A notice
+  // without exact provenance is never safe to show in the currently selected workspace.
+  if (!notice || !state.context || notice.project_id !== state.context.project_id) return;
   state.notices.unshift(notice);
   if (state.notices.length > 50) state.notices.pop();
   busEmit("notice", notice);

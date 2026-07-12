@@ -16,11 +16,14 @@ def test_daily_is_a_briefing_that_routes_to_chat_and_detail_homes() -> None:
     assert DAILY.index('id="daily-pending"') < DAILY.index('id="daily-status"')
 
 
-def test_daily_has_no_duplicate_chat_or_mutation_surface() -> None:
+def test_daily_has_no_duplicate_chat_or_unattended_mutation_surface() -> None:
     for removed in ("daily-chat", "composer-input", "daily-convo-header", "daily-workflows",
                     "daily-artifacts", "daily-run", "daily-connectors", "daily-changed"):
         assert removed not in DAILY
-    assert "api.post(" not in DAILY
+    # Daily exposes only the existing, explicit briefing refresh — never chat turns or writes.
+    assert 'api.post("/api/digest/run", {})' in DAILY
+    assert DAILY.count("api.post(") == 1
+    assert 'api.post("/api/turn"' not in DAILY
 
 
 def test_briefing_and_notices_use_safe_text_nodes() -> None:

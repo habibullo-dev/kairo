@@ -83,6 +83,14 @@ class UiWorkspace:
         if self.projects is not None:
             self.projects.bind_execution_context(self.context, self.project)
 
+    def refresh_project_context(self, project: ProjectContext) -> bool:
+        """Apply metadata refresh without changing the workspace's project or session binding."""
+        if project.project_id != self.project.project_id:
+            return False
+        self.project = project
+        self._bind_project_scope()
+        return True
+
     async def _project_context(self, project_id: int | None) -> ProjectContext:
         if project_id is None:
             return GLOBAL

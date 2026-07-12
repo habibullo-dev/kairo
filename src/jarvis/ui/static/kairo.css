@@ -479,6 +479,9 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 .chat-voice-status.error { color: var(--attention); }
 .chat-send { border: 0; border-radius: 10px; background: var(--accent); color: #07111d; padding: 8px 13px; font: 700 13px var(--font); cursor: pointer; }
 .chat-send:hover { filter: brightness(1.08); }
+.chat-turn-cancel { border: 1px solid rgba(var(--attention-rgb), .55); border-radius: 10px; background: transparent; color: var(--attention); padding: 7px 11px; font: 700 12px var(--font); cursor: pointer; }
+.chat-turn-cancel:not(:disabled):hover { background: rgba(var(--attention-rgb), .09); }
+.chat-turn-cancel:disabled { cursor: wait; opacity: .65; }
 @media (max-width: 720px) { .chat-shell { min-height: calc(100dvh - 118px); padding: 12px 16px; } .chat-turn-meta { white-space: normal; } .chat-thread { padding: 26px 2px 12px; } .chat-thread .msg { max-width: 94%; } .message-code { padding: 10px; } }
 @media (max-width: 600px) {
   .chat-composer { padding: 10px; margin-top: 8px; }
@@ -618,6 +621,35 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 .dialog-button.secondary { border: 1px solid var(--line); background: transparent; color: var(--muted); }
 .dialog-button.primary { border: 0; background: var(--accent); color: #07111d; }
 .dialog-button.primary.attention { background: var(--attention); color: #1b1000; }
+.task-draft-dialog, .task-history-dialog { width: min(640px, 100%); max-height: min(760px, calc(100vh - 40px)); overflow: auto; }
+.project-edit-dialog { width: min(560px, 100%); max-height: min(680px, calc(100vh - 40px)); overflow: auto; }
+.memory-draft-dialog { width: min(560px, 100%); max-height: min(680px, calc(100vh - 40px)); overflow: auto; }
+.project-edit-form { display: grid; gap: 12px; }
+.memory-draft-form { display: grid; gap: 12px; }
+.memory-draft-field { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: 12px; }
+.memory-draft-label { color: var(--ink); font-weight: 650; }
+.memory-draft-hint { color: var(--dim); font-size: 11px; line-height: 1.4; }
+.memory-draft-content { min-height: 132px; resize: vertical; font: 13px/1.5 var(--font); }
+.memory-draft-error { color: var(--attention); font-size: 12px; line-height: 1.45; }
+.project-edit-field { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: 12px; }
+.project-edit-label { color: var(--ink); font-weight: 650; }
+.project-edit-hint { color: var(--dim); font-size: 11px; line-height: 1.4; }
+.project-edit-description { min-height: 112px; resize: vertical; font: 13px/1.5 var(--font); }
+.project-edit-error { color: var(--attention); font-size: 12px; line-height: 1.45; }
+.task-draft-form { display: grid; gap: 12px; }
+.task-draft-field { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: 12px; }
+.task-draft-label { color: var(--ink); font-weight: 650; }
+.task-draft-hint { color: var(--dim); font-size: 11px; line-height: 1.4; }
+.task-draft-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.task-draft-payload { min-height: 150px; resize: vertical; font: 12px/1.45 var(--mono, monospace); }
+.task-draft-error { color: var(--attention); font-size: 12px; line-height: 1.45; }
+.task-history-list { display: grid; gap: 8px; overflow: auto; }
+.task-history-run { display: grid; gap: 5px; border: 1px solid var(--line); border-radius: 9px; padding: 10px; }
+.task-history-run-head { display: flex; justify-content: space-between; gap: 12px; color: var(--ink); font-size: 12px; }
+.task-history-provenance { display: grid; gap: 5px; color: var(--ink); font-size: 12px; }
+.task-history-result { max-height: 180px; margin: 0; overflow: auto; white-space: pre-wrap; color: var(--muted); font: 11px/1.45 var(--mono, monospace); }
+.task-history-payload { max-height: 120px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--canvas); }
+@media (max-width: 560px) { .task-draft-grid { grid-template-columns: 1fr; } }
 .toast-stack { position: fixed; right: 18px; bottom: 18px; z-index: 111; display: grid; gap: 8px; width: min(340px, calc(100vw - 36px)); pointer-events: none; }
 .toast { padding: 11px 13px; border: 1px solid var(--line-strong); border-radius: 11px; background: var(--panel-strong); color: var(--ink); box-shadow: var(--shadow-soft); font: 600 12px/1.45 var(--font); animation: kairoRise .18s ease both; }
 .toast.error { border-color: rgba(var(--attention-rgb), .52); color: var(--attention); }

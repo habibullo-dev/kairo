@@ -1500,6 +1500,8 @@ async def daily_overview(
     services: UiServices,
     *,
     notices: Any = None,
+    notice_project_id: int | None = None,
+    scope_notices: bool = False,
     gate_pending: int = 0,
 ) -> dict:
     """The Daily screen's bootstrap: repo state, eval freshness, today's tasks, the review
@@ -1546,7 +1548,11 @@ async def daily_overview(
         "pending_approvals": gate_pending,
         "kb_review_count": kb_review,
         "digest": _digest_dict(latest) if latest else None,
-        "notices": notices.tail(20) if notices is not None else [],
+        "notices": (
+            notices.tail(20, project_id=notice_project_id)
+            if notices is not None and scope_notices
+            else (notices.tail(20) if notices is not None else [])
+        ),
         "connectors": connectors,
         "demo": bool(connectors.get("demo")),
         "what_changed": {"repos": len(repos), "dirty_files": total_dirty},

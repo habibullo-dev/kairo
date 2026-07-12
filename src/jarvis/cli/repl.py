@@ -1102,8 +1102,10 @@ def _build_runner(
     def notify(line: str) -> None:
         # markup off: task titles/payloads are data, not rich markup.
         console.print(line, markup=False)
-        if board is not None:  # UI: also surface the line as a browser notice
-            board.post(line, kind="task")
+
+    def task_notify(line: str, task: Task) -> None:
+        if board is not None:  # UI gets only the task's server-owned project scope
+            board.post(line, kind="task", project_id=task.project_id)
 
     run_digest = None
     if digest_store is not None:
@@ -1120,6 +1122,7 @@ def _build_runner(
                 notices=board,
                 artifacts=artifacts,
                 task_id=task.id,
+                project_id=task.project_id,
             )
             outcome = await builder.build_and_deliver()
             return JobOutcome(
@@ -1132,6 +1135,7 @@ def _build_runner(
     return BackgroundRunner(
         tasks,
         notify=notify,
+        task_notify=task_notify,
         run_job=job_runner.run,
         run_digest=run_digest,
         turn_lock=repl.turn_lock,
@@ -1686,7 +1690,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
         # Background job/reminder lines fan out to the browser as notices (Phase 9 Task 5).
         from jarvis.ui.notices import NoticeBoard
 
-        board = NoticeBoard(broadcast=app.state.connections.broadcast)
+        board = NoticeBoard(publish=app.state.connections.publish_project)
         app.state.notices = board
 
         if tasks is not None:  # background runner shares the turn lock (no interleaving)

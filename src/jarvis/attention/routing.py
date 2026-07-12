@@ -118,5 +118,9 @@ class NotificationRouter:
                 except ConnectorError:
                     _log.warning("attention_push_failed", channel=channel)
                     if self._notices is not None:
-                        self._notices.post(f"Attention push to {channel} failed.", kind="warn")
+                        self._notices.post(
+                            f"Attention push to {channel} failed.",
+                            kind="warn",
+                            project_id=project_id,
+                        )
         return decision

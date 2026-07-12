@@ -4,6 +4,7 @@
 // the budget reservation, and the two-step confirm server-side. No key, prompt, or report body
 // ever reaches this screen — only metadata, summaries, and manifests.
 import { esc } from "../ui/dom.js";
+import { openTaskDraft } from "../ui/task-draft.js";
 
 const S = {
   catalog: null,     // { teams, workflows, services, model_routes, active_project_id, busy }
@@ -242,10 +243,12 @@ function renderDetail(container) {
   const verdictBlock = r.verdict_rationale
     ? `<section class="run-verdict"><div class="synth-head">Final rationale</div>${esc(r.verdict_rationale)}</section>`
     : "";
-  const actions = (r.action_items || []).map((item) =>
+  const actionItems = Array.isArray(r.action_items) ? r.action_items : [];
+  const actions = actionItems.map((item, index) =>
     `<article class="run-action-item"><div class="run-action-title"><b>${esc(item.title || "Follow-up")}</b>
       <span class="chip dim">${esc(item.priority || "medium")}</span></div>
-      <div>${esc(item.goal || "")}</div></article>`).join("");
+      <div>${esc(item.goal || "")}</div>
+      <button class="plain-button ghost run-actions-promote" data-promote-follow-up="${index}">Review &amp; schedule</button></article>`).join("");
   const actionBlock = actions
     ? `<section class="run-actions"><div class="synth-head">Recommended next steps</div>
         <div class="dim run-actions-note">Added to this project's Team follow-ups. They are not scheduled or run automatically.</div>
@@ -263,6 +266,20 @@ function renderDetail(container) {
   el.querySelector("[data-project-tasks]")?.addEventListener("click", (event) => {
     const projectId = Number(event.currentTarget.dataset.projectTasks);
     if (Number.isInteger(projectId) && projectId > 0) location.hash = `workspace/${projectId}/tasks`;
+  });
+  el.querySelectorAll("[data-promote-follow-up]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      const index = Number(event.currentTarget.dataset.promoteFollowUp);
+      const item = actionItems[index];
+      if (!item) return;
+      await openTaskDraft({
+        runId: r.id,
+        runTitle: r.title || r.workflow || "Team run",
+        title: item.title,
+        goal: item.goal,
+        priority: item.priority,
+      }, api_());
+    });
   });
 }
 

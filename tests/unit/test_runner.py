@@ -18,6 +18,7 @@ from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
 from jarvis.permissions import PermissionGate, Policy
 from jarvis.persistence.db import connect
 from jarvis.persistence.sessions import SessionStore
+from jarvis.projects import ProjectStore
 from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
 from jarvis.scheduler.service import TaskService
 from jarvis.scheduler.store import TaskStore
@@ -66,6 +67,7 @@ async def _schedule(service: TaskService, **kw):
         schedule_spec=kw.get("schedule_spec", "3600"),
         created_by=kw.get("created_by", "user"),
         timezone="UTC",
+        project_id=kw.get("project_id"),
     )
 
 
@@ -100,6 +102,29 @@ async def test_reminder_fires_notify_once_and_records_ok(tmp_path: Path) -> None
     runs = await store.runs_for(task.id)
     assert [r.status for r in runs] == ["ok"]
     assert (await store.get(task.id)).next_run_at == "2026-07-06T10:00:00+00:00"  # advanced
+
+
+async def test_background_notification_keeps_the_task_project_scope(tmp_path: Path) -> None:
+    service, clock, _store = await _service(tmp_path)
+    project_id = await ProjectStore(service.store.db).create(name="Project A")
+    await _schedule(service, kind="reminder", payload="only project A", project_id=project_id)
+    rec = Recorder()
+    scoped: list[tuple[str, int | None]] = []
+
+    def task_notify(line: str, task) -> None:
+        scoped.append((line, task.project_id))
+
+    runner = BackgroundRunner(
+        service,
+        notify=rec.notify,
+        task_notify=task_notify,
+        run_job=None,
+        turn_lock=asyncio.Lock(),
+    )
+    clock.advance(hours=1, minutes=1)
+    await runner.check_due()
+    assert len(scoped) == 1 and "only project A" in scoped[0][0]
+    assert scoped[0][1] == project_id
 
 
 async def test_reminder_notify_precedes_recording(tmp_path: Path) -> None:

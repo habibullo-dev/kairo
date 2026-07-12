@@ -239,6 +239,19 @@ def create_app(
             workspace is None or meta.project_id == workspace.context.project_id
         )
 
+    def _workspace_can_access_project(project_id: int | None, workspace) -> bool:
+        """Whether a row belongs to the caller's live workspace view.
+
+        A project workspace may use only its own project rows. The global workspace intentionally
+        remains the aggregate administrative view, matching the existing search and attention
+        projections; it is still selected only through a live, authenticated workspace handle.
+        """
+        return (
+            workspace is None
+            or workspace.context.project_id is None
+            or project_id == workspace.context.project_id
+        )
+
     def _chat_scope(request: Request) -> ExecutionContext | None:
         """Return the one exact context allowed to populate a chat's context shelf.
 
@@ -633,10 +646,18 @@ def create_app(
         )
 
     @app.get("/api/notices")
-    async def notices() -> JSONResponse:
-        # Background job/reminder lines (Phase 9). Read-only — NOT a mutating route.
+    async def notices(request: Request) -> JSONResponse:
+        # Background activity is process-local (not durable history), and its task payload/error
+        # text belongs only to the matching server-owned workspace project.
         board = app.state.notices
-        tail = board.tail(50) if board is not None else []
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        tail = (
+            board.tail(50, project_id=workspace.context.project_id)
+            if board is not None and workspace is not None
+            else (board.tail(50) if board is not None else [])
+        )
         return JSONResponse({"notices": tail})
 
     # --- read models: Hub / Lab (always available) ------------------------------------
@@ -751,7 +772,12 @@ def create_app(
             return _workspace_required()
         pending = len(app.state.approvals.pending_for(workspace.context)) if workspace else 0
         data = await daily_overview(
-            config, app.state.services, notices=app.state.notices, gate_pending=pending
+            config,
+            app.state.services,
+            notices=app.state.notices,
+            notice_project_id=workspace.context.project_id if workspace is not None else None,
+            scope_notices=workspace is not None,
+            gate_pending=pending,
         )
         data["capabilities"] = _capabilities(workspace)  # Phase 15.5 shared connector truth
         return JSONResponse(data)
@@ -818,11 +844,13 @@ def create_app(
             return _workspace_required()
         if workspace is not None:
             # A workspace may read its own task history plus explicitly global tasks, matching
-            # the project task-list contract. A numeric task id never grants another project's
-            # scheduler history.
+            # the project task-list contract. The global workspace retains its documented
+            # aggregate view; a project workspace never gains another project's history from an
+            # observed numeric id.
             task = await svc.store.get(task_id)
             if task is None or (
-                task.project_id is not None and task.project_id != workspace.context.project_id
+                workspace.context.project_id is not None
+                and task.project_id not in (None, workspace.context.project_id)
             ):
                 return _deny(status.HTTP_404_NOT_FOUND, "not found")
         return JSONResponse(await task_runs(svc, task_id))
@@ -1390,31 +1418,64 @@ def create_app(
         )
 
     @app.post("/api/digest/run")
-    async def digest_run() -> JSONResponse:
+    async def digest_run(request: Request) -> JSONResponse:
         # "Run digest now" — deterministic collectors + one tool-less summarize, then UI/DB
-        # delivery. 503 if not composed; 409 if a turn is in flight (same busy contract as
-        # /api/turn, since the digest makes a model call).
+        # delivery. The current digest is deliberately global: project tabs must not make a
+        # global collector/model call or receive its result under a project heading.
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None and workspace.context.project_id is not None:
+            return JSONResponse(
+                {"ok": False, "message": "digest is available from the global workspace"},
+                status_code=status.HTTP_409_CONFLICT,
+            )
         run_now = getattr(app.state, "run_digest_now", None)
         if run_now is None:
             return _unavailable("digest")
-        if app.state.session is not None and app.state.session.busy:
+        session = workspace.session if workspace is not None else app.state.session
+        if session is not None and session.busy:
             return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
         outcome = await run_now()
         return JSONResponse({"ok": True, "summary": outcome.text})
 
     @app.post("/api/tasks/{task_id}/cancel")
-    async def tasks_cancel(task_id: int) -> JSONResponse:
+    async def tasks_cancel(task_id: int, request: Request) -> JSONResponse:
         svc = app.state.services.tasks
         if svc is None:
             return _unavailable("tasks")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            # Match the task list/history contract: a project workspace may cancel only its own
+            # task or a global task. The global workspace retains its administrative aggregate;
+            # a guessed foreign id is never a capability from a project workspace.
+            task = await svc.store.get(task_id)
+            if task is None or (
+                workspace.context.project_id is not None
+                and task.project_id not in (None, workspace.context.project_id)
+            ):
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
         cancelled = await svc.cancel(task_id)
         return JSONResponse({"ok": cancelled is not None})
 
     @app.post("/api/memory/{memory_id}/forget")
-    async def memory_forget(memory_id: int) -> JSONResponse:
+    async def memory_forget(memory_id: int, request: Request) -> JSONResponse:
         svc = app.state.services.memory
         if svc is None:
             return _unavailable("memory")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            # A memory id is not authority. Project workspaces may forget their own memories or
+            # deliberately shared global memories, never an id guessed from another project.
+            memory = await svc.store.get(memory_id)
+            if memory is None or (
+                memory.project_id is not None and memory.project_id != workspace.context.project_id
+            ):
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
         forgotten = await svc.store.forget(memory_id)  # status flip, never DELETE
         return JSONResponse({"ok": bool(forgotten)})
 
@@ -1429,20 +1490,60 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        body = await request.json()
-        content = str(body.get("content", "")).strip()
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse({"ok": False, "message": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"ok": False, "message": "memory request must be an object"}, status_code=400
+            )
+        raw_content = body.get("content")
+        if not isinstance(raw_content, str):
+            return JSONResponse(
+                {"ok": False, "message": "content must be text"}, status_code=400
+            )
+        content = raw_content.strip()
         if not content:
             return JSONResponse({"ok": False, "message": "content required"}, status_code=400)
-        mem_type = body.get("type") if body.get("type") in _MEMORY_TYPES else "fact"
+        if len(content) > 4000:
+            return JSONResponse(
+                {"ok": False, "message": "content must be at most 4000 characters"}, status_code=400
+            )
+        mem_type = body.get("type", "fact")
+        if not isinstance(mem_type, str) or mem_type not in _MEMORY_TYPES:
+            return JSONResponse(
+                {"ok": False, "message": "invalid memory type"}, status_code=400
+            )
+        checked_context: ExecutionContext | None = None
+        if workspace is not None:
+            expected = body.get("expected_context")
+            # This is a freshness check, never a browser-selected scope: capture the one live
+            # workspace context under the same lock that project/session transitions use, and
+            # reject a draft that was reviewed before another duplicate tab switched context.
+            async with app.state.workspaces.transition_lock:
+                checked_context = workspace.context
+                if (
+                    not isinstance(expected, dict)
+                    or expected.get("session_id") != checked_context.session_id
+                    or expected.get("project_id") != checked_context.project_id
+                ):
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "message": "workspace context changed; review the memory again",
+                        },
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
         projects = app.state.projects
         pid = (
-            workspace.context.project_id
-            if workspace is not None
+            checked_context.project_id
+            if checked_context is not None
             else (projects.current().project_id if projects is not None else None)
         )
         scope = (
-            bind_execution_context(workspace.context)
-            if workspace is not None
+            bind_execution_context(checked_context)
+            if checked_context is not None
             else contextlib.nullcontext()
         )
         with scope:
@@ -1458,17 +1559,44 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        body = await request.json()
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse({"ok": False, "message": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"ok": False, "message": "task request must be an object"}, status_code=400
+            )
+        checked_context: ExecutionContext | None = None
+        if workspace is not None:
+            expected = body.get("expected_context")
+            # This is a freshness check, never a browser-selected scope: capture the one live
+            # workspace context under the same lock that project/session transitions use, and
+            # reject a task draft reviewed before another duplicate tab switched context.
+            async with app.state.workspaces.transition_lock:
+                checked_context = workspace.context
+                if (
+                    not isinstance(expected, dict)
+                    or expected.get("session_id") != checked_context.session_id
+                    or expected.get("project_id") != checked_context.project_id
+                ):
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "message": "workspace context changed; review the task again",
+                        },
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
         projects = app.state.projects
         pid = (
-            workspace.context.project_id
-            if workspace is not None
+            checked_context.project_id
+            if checked_context is not None
             else (projects.current().project_id if projects is not None else None)
         )
         try:
             scope = (
-                bind_execution_context(workspace.context)
-                if workspace is not None
+                bind_execution_context(checked_context)
+                if checked_context is not None
                 else contextlib.nullcontext()
             )
             with scope:
@@ -1634,12 +1762,49 @@ def create_app(
         svc = app.state.projects
         if svc is None:
             return _unavailable("projects")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if not _workspace_can_access_project(project_id, workspace):
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
         body = await request.json()
-        fields = {k: body[k] for k in ("name", "description", "color", "icon") if k in body}
-        try:
-            ok = await svc.store.update(
-                project_id, repos=body.get("repos"), settings=body.get("settings"), **fields
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"ok": False, "message": "project update must be an object"}, status_code=400
             )
+        repos = body.get("repos")
+        if "settings" in body:
+            return JSONResponse(
+                {"ok": False, "message": "project services use the dedicated settings route"},
+                status_code=400,
+            )
+        if repos is not None and (
+            not isinstance(repos, list) or not all(isinstance(item, str) for item in repos)
+        ):
+            return JSONResponse(
+                {"ok": False, "message": "repos must be a list of strings"}, status_code=400
+            )
+        fields = {k: body[k] for k in ("name", "description", "color", "icon") if k in body}
+        if any(value is not None and not isinstance(value, str) for value in fields.values()):
+            return JSONResponse(
+                {"ok": False, "message": "project fields must be strings"}, status_code=400
+            )
+        if "name" in fields and not str(fields["name"] or "").strip():
+            return JSONResponse({"ok": False, "message": "name required"}, status_code=400)
+        try:
+            if app.state.workspaces is None:
+                ok = await svc.store.update(project_id, repos=repos, **fields)
+                if ok:
+                    await svc.refresh_project_context(project_id)
+            else:
+                async with app.state.workspaces.transition_lock:
+                    ok = await svc.store.update(
+                        project_id, repos=repos, **fields
+                    )
+                    if ok:
+                        refreshed = await svc.refresh_project_context(project_id)
+                        for item in app.state.workspaces.for_project(project_id):
+                            item.refresh_project_context(refreshed)
         except ValueError as exc:
             return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
         return JSONResponse({"ok": ok})
@@ -1859,12 +2024,21 @@ def create_app(
     # checked UI, never from a model tool / Auto / unattended run. Execute runs the STORED request.
 
     @app.get("/api/intents")
-    async def intents_index(project_id: int | None = None, limit: int = 50) -> JSONResponse:
+    async def intents_index(
+        request: Request, project_id: int | None = None, limit: int = 50
+    ) -> JSONResponse:
         from jarvis.ui.readmodels import intents_queue
 
         store = app.state.services.intents
         if store is None:
             return _unavailable("intents")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            if project_id is not None and project_id != workspace.context.project_id:
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
+            project_id = workspace.context.project_id
         return JSONResponse(await intents_queue(store, project_id=project_id, limit=limit))
 
     @app.get("/api/connector-writes")
@@ -1887,27 +2061,33 @@ def create_app(
         )
 
     @app.get("/api/intents/{intent_id}")
-    async def intent_detail(intent_id: int) -> JSONResponse:
+    async def intent_detail(intent_id: int, request: Request) -> JSONResponse:
         from jarvis.ui.readmodels import serialize_intent
 
         store = app.state.services.intents
         if store is None:
             return _unavailable("intents")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         intent = await store.get(intent_id)
-        if intent is None:
+        if intent is None or not _workspace_can_access_project(intent.project_id, workspace):
             return _deny(status.HTTP_404_NOT_FOUND, "not found")
         return JSONResponse(serialize_intent(intent))
 
     @app.post("/api/intents/{intent_id}/approve")
-    async def intent_approve(intent_id: int) -> JSONResponse:
+    async def intent_approve(intent_id: int, request: Request) -> JSONResponse:
         from jarvis.actions.executor import WriteExecutor
         from jarvis.actions.intents import IntentState
 
         svc = app.state.services
         if svc.intents is None or svc.write_journal is None:
             return _unavailable("intents")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         intent = await svc.intents.get(intent_id)
-        if intent is None:
+        if intent is None or not _workspace_can_access_project(intent.project_id, workspace):
             return _deny(status.HTTP_404_NOT_FOUND, "not found")
         if intent.state is not IntentState.PREVIEWED:
             return JSONResponse(
@@ -1928,14 +2108,17 @@ def create_app(
         )
 
     @app.post("/api/intents/{intent_id}/reject")
-    async def intent_reject(intent_id: int) -> JSONResponse:
+    async def intent_reject(intent_id: int, request: Request) -> JSONResponse:
         from jarvis.actions.intents import IntentState
 
         svc = app.state.services
         if svc.intents is None:
             return _unavailable("intents")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         intent = await svc.intents.get(intent_id)
-        if intent is None:
+        if intent is None or not _workspace_can_access_project(intent.project_id, workspace):
             return _deny(status.HTTP_404_NOT_FOUND, "not found")
         if intent.state not in (IntentState.DRAFT, IntentState.PREVIEWED):
             return JSONResponse(
@@ -1946,13 +2129,19 @@ def create_app(
         return JSONResponse({"ok": True})
 
     @app.post("/api/intents/{intent_id}/undo")
-    async def intent_undo(intent_id: int) -> JSONResponse:
+    async def intent_undo(intent_id: int, request: Request) -> JSONResponse:
         from jarvis.actions.executor import WriteExecutor
         from jarvis.connectors.base import ConnectorError
 
         svc = app.state.services
         if svc.intents is None or svc.write_journal is None:
             return _unavailable("intents")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        intent = await svc.intents.get(intent_id)
+        if intent is None or not _workspace_can_access_project(intent.project_id, workspace):
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
         client = svc.connectors.google if svc.connectors is not None else None
         executor = WriteExecutor(client, svc.intents, svc.write_journal, artifacts=svc.artifacts)
         try:
@@ -2009,6 +2198,12 @@ def create_app(
         svc = app.state.services
         if svc.attention is None:
             return _unavailable("attention")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        existing = await svc.attention.get(item_id)
+        if existing is None or not _workspace_can_access_project(existing.project_id, workspace):
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
         body = await request.json()
         action = str(body.get("action", ""))
         try:
@@ -2023,11 +2218,20 @@ def create_app(
 
     @app.get("/api/search")
     async def global_search(
-        q: str = "", project_id: int | None = None, limit: int = 40
+        request: Request, q: str = "", project_id: int | None = None, limit: int = 40
     ) -> JSONResponse:
         store = app.state.services.artifacts  # shares the app's single connection
         if store is None:
             return _unavailable("search")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            # Search is evidence access. The live workspace, never a query parameter, owns the
+            # project boundary; global workspaces intentionally retain the aggregate search view.
+            if project_id is not None and project_id != workspace.context.project_id:
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
+            project_id = workspace.context.project_id
         capped = max(1, min(limit, 100))
         if project_id is None:
             results = await _federated_search(store.db, q, limit=capped)

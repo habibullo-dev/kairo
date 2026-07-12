@@ -51,6 +51,7 @@ class JobOutcome:
 RunJob = Callable[[Task], Awaitable[JobOutcome]]
 # Emits one user-facing notification line.
 Notify = Callable[[str], None]
+TaskNotify = Callable[[str, Task], None]
 
 
 class BackgroundRunner:
@@ -59,6 +60,7 @@ class BackgroundRunner:
         service: TaskService,
         *,
         notify: Notify,
+        task_notify: TaskNotify | None = None,
         run_job: RunJob,
         turn_lock: asyncio.Lock,
         run_digest: RunJob | None = None,
@@ -66,6 +68,7 @@ class BackgroundRunner:
     ) -> None:
         self.service = service
         self.notify = notify
+        self.task_notify = task_notify
         self.run_job = run_job
         self.run_digest = run_digest
         self.turn_lock = turn_lock
@@ -108,7 +111,7 @@ class BackgroundRunner:
         suffix = f" (missed — was due {self._local(due)})" if late else ""
         # At-least-once: deliver first, then record. A crash before the record
         # re-delivers next startup (duplicate, not lost).
-        self.notify(f"⏰ reminder #{task.id}: {task.payload}{suffix}")
+        self._notify(f"⏰ reminder #{task.id}: {task.payload}{suffix}", task)
         run_id = await self.service.begin_run(due)
         await self.service.complete_run(due, run_id, ok=True, result_text=f"delivered{suffix}")
 
@@ -124,7 +127,7 @@ class BackgroundRunner:
             self.log.exception("job_crashed", task_id=task.id)
             detail = f"{type(exc).__name__}: {exc}"
             await self.service.complete_run(due, run_id, ok=False, error=detail)
-            self.notify(f'✗ job #{task.id} "{task.title}" failed: {detail}')
+            self._notify(f'✗ job #{task.id} "{task.title}" failed: {detail}', task)
             return
         finally:
             self.in_flight = None
@@ -162,7 +165,7 @@ class BackgroundRunner:
             detail = f"{type(exc).__name__}: {exc}"
             async with self.turn_lock:
                 await self.service.complete_run(due, run_id, ok=False, error=detail)
-                self.notify(f"✗ digest #{task.id} failed: {detail}")
+                self._notify(f"✗ digest #{task.id} failed: {detail}", task)
             return
         finally:
             self.in_flight = None
@@ -178,25 +181,31 @@ class BackgroundRunner:
                 error=outcome.error,
                 cost_usd=outcome.cost_usd,
             )
-            self.notify(f"✓ daily digest ready{'' if ok else ' (with errors)'}")
+            self._notify(f"✓ daily digest ready{'' if ok else ' (with errors)'}", task)
 
     async def _fire_missed(self, due: Due) -> None:
         task = due.task
         await self.service.record_missed(due)
-        self.notify(
+        self._notify(
             f'⚠ job #{task.id} "{task.title}" was due {self._local(due)} but the '
-            "assistant wasn't running — recorded as missed, not run (see `tasks`)"
+            "assistant wasn't running — recorded as missed, not run (see `tasks`)",
+            task,
         )
 
     def _notify_job_done(self, task: Task, outcome: JobOutcome, ok: bool) -> None:
         cost = f" · ${outcome.cost_usd:.4f}" if outcome.cost_usd is not None else ""
         denied = f" · {outcome.denied_count} denied" if outcome.denied_count else ""
         if not ok:
-            self.notify(f'✗ job #{task.id} "{task.title}": {outcome.error}{cost}{denied}')
+            self._notify(f'✗ job #{task.id} "{task.title}": {outcome.error}{cost}{denied}', task)
             return
         head = _first_lines(outcome.text, 8)
         more = "\n  (see `tasks` for the full result)" if _has_more(outcome.text, 8) else ""
-        self.notify(f'✓ job #{task.id} "{task.title}"{cost}{denied}:\n{head}{more}')
+        self._notify(f'✓ job #{task.id} "{task.title}"{cost}{denied}:\n{head}{more}', task)
+
+    def _notify(self, line: str, task: Task) -> None:
+        self.notify(line)
+        if self.task_notify is not None:
+            self.task_notify(line, task)
 
     def _local(self, due: Due) -> str:
         return due.scheduled_for  # UTC ISO; describe()/`tasks` render local time

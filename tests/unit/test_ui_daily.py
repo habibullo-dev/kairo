@@ -3,8 +3,8 @@
 T8 grows Daily into the §4 command center: the existing pending/Now/Briefing/Today cards plus
 recent artifacts, latest orchestration run, cost today, notices and connector health — each with
 a designed empty state. It stays calm (one primary attention surface = the amber pending zone),
-reads-only (the sole action path is the gated POST /api/turn), and never linkifies untrusted
-content. The load-bearing WS contract (test_ui_refinement / test_ui_activity_settle) is unchanged.
+and permits only an explicit attended briefing refresh through its existing route. It never
+linkifies untrusted content. The load-bearing WS contract is unchanged.
 """
 
 from __future__ import annotations
@@ -38,9 +38,16 @@ def test_every_card_has_a_designed_empty_state() -> None:
         assert phrase in DAILY_JS, phrase
 
 
-def test_daily_reads_and_navigates_only() -> None:
-    # Daily is navigation/read-only; Chat retains the sole attended turn path.
-    assert "api.post(" not in DAILY_JS
+def test_daily_refreshes_only_the_existing_attended_briefing_route() -> None:
+    # Daily never submits a chat turn or any outward action. Refresh is a deliberate model call
+    # through the already-pinned digest endpoint and is disabled while another turn is busy.
+    assert 'api.post("/api/digest/run", {})' in DAILY_JS
+    assert "daily-briefing-refresh" in DAILY_JS
+    assert "briefingRefreshInFlight" in DAILY_JS
+    assert "result.status === 409" in DAILY_JS
+    assert "projectScoped" in DAILY_JS and "Global only" in DAILY_JS
+    assert "Open the global workspace to refresh the daily briefing." in DAILY_JS
+    assert 'api.post("/api/turn"' not in DAILY_JS
     assert 'from "./conversation.js"' not in DAILY_JS
     assert CONVERSATION_JS.count('api.post("/api/turn"') == 1
 

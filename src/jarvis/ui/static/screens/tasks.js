@@ -1,6 +1,7 @@
-// Tasks — reminders & jobs with next-fire times. Cancel is the only mutation (creation stays
-// in chat via the gated schedule_task — one creation path, one approval).
-import { esc, unavailable } from "./vault.js";
+// Tasks — reminders & jobs with next-fire times. Creation is always an explicit human-authority
+// action (a task draft or the gated schedule tool); this screen never promotes model output.
+import { esc } from "../ui/dom.js";
+import { openTaskHistory } from "../ui/task-draft.js";
 
 export async function render(container, api) {
   const rows = await api.get("/api/tasks");
@@ -21,6 +22,11 @@ export async function render(container, api) {
       <td class="mono dim">${esc(t.next_run_at || "—")}</td>
       <td><span class="tag ${active ? "ok" : ""}">${esc(t.status)}</span></td>
       <td style="text-align:right"></td>`;
+    const history = document.createElement("button");
+    history.className = "rowbtn";
+    history.textContent = "History";
+    history.addEventListener("click", () => { void openTaskHistory(t, api); });
+    tr.lastElementChild.appendChild(history);
     if (active) {
       const b = document.createElement("button");
       b.className = "rowbtn";
@@ -30,4 +36,8 @@ export async function render(container, api) {
     }
     tbl.appendChild(tr);
   }
+}
+
+function unavailable(name, why) {
+  return `<div class="rise"><h1>${name}</h1><div class="sub">Unavailable — ${why}.</div></div>`;
 }

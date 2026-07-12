@@ -37,7 +37,7 @@ export function render(container, api) {
               <button class="chat-mic" id="chat-mic" type="button" aria-label="Start voice capture">🎙</button>
               <button class="chat-voice-cancel is-hidden" id="chat-voice-cancel" type="button">Cancel</button>
             </div>
-            <div class="chat-composer-actions"><span class="chat-voice-status" id="chat-voice-status"></span><button class="chat-send" type="submit">Send</button></div>
+            <div class="chat-composer-actions"><span class="chat-voice-status" id="chat-voice-status"></span><button class="chat-turn-cancel is-hidden" id="chat-turn-cancel" type="button">Stop</button><button class="chat-send" type="submit">Send</button></div>
           </div>
         </form>
       </section>`;
@@ -99,6 +99,34 @@ export function render(container, api) {
       });
     });
     container.querySelector("#chat-voice-cancel").addEventListener("click", () => api.cancelVoiceCapture());
+    container.querySelector("#chat-turn-cancel").addEventListener("click", async () => {
+      if (!api.state.runner?.turn_busy || api.state.turnCancelling) return;
+      api.state.turnCancelling = true;
+      renderTurnControls(container, api);
+      try {
+        const result = await api.post("/api/turn/cancel", {});
+        if (result.ok && result.data.cancelled) {
+          // A successful cancellation settles only when the workspace-scoped turn_cancelled
+          // event arrives, or when the server's runner read confirms that the turn is already
+          // gone. The latter recovers a transiently missed WebSocket frame without guessing.
+          const runner = await api.runnerStatus({ refresh: true });
+          if (runner && !runner.turn_busy) api.state.turnCancelling = false;
+          renderTurnControls(container, api);
+          return;
+        }
+        // The attended turn can complete between the Stop click and this response. Reconcile
+        // from the server so a 200 {cancelled:false} never leaves this control stuck disabled.
+        api.state.turnCancelling = false;
+        await api.runnerStatus({ refresh: true });
+        renderTurnControls(container, api);
+        showToast(result.data?.message || "This turn has already finished.", "error");
+      } catch {
+        api.state.turnCancelling = false;
+        await api.runnerStatus({ refresh: true });
+        renderTurnControls(container, api);
+        showToast("Kairo couldn't stop this turn. Please try again.", "error");
+      }
+    });
     handle.addEventListener("click", async () => openChatHistory(container, api, {}, redraw));
     container.querySelector("#chat-history-scrim").addEventListener("click", () => closeChatHistory(container));
     mountHeader(container.querySelector("#chat-convo-header"), api, { onChanged: () => redraw() });
@@ -108,6 +136,7 @@ export function render(container, api) {
   renderMeta(container, api);
   renderLifecycle(container, api);
   renderVoiceControls(container, api);
+  renderTurnControls(container, api);
   renderAttachments(container, api);
   renderImportControls(container, api);
   renderProjectImportProgress(container, api);
@@ -176,6 +205,17 @@ function renderImportControls(container, api) {
     const control = container.querySelector(selector);
     if (control) control.disabled = disabled;
   }
+}
+
+function renderTurnControls(container, api) {
+  const button = container.querySelector("#chat-turn-cancel");
+  if (!button) return;
+  const busy = Boolean(api.state.runner?.turn_busy);
+  if (!busy) api.state.turnCancelling = false;
+  button.classList.toggle("is-hidden", !busy);
+  button.disabled = !busy || Boolean(api.state.turnCancelling);
+  button.textContent = api.state.turnCancelling ? "Stopping…" : "Stop";
+  button.title = "Stop this conversation only. Background jobs keep running.";
 }
 
 const PROJECT_UPLOADABLE = new Set([

@@ -1,6 +1,9 @@
 // Daily — Kairo's calm briefing. Chat owns conversation and actions; Daily only orients the
 // person toward the day, their current project, and the one thing needing attention.
+import { showToast } from "../ui/feedback.js";
 import { money, relTime } from "../ui/format.js";
+
+let briefingRefreshInFlight = false;
 
 export function render(container, api) {
   if (!container.querySelector("#daily-briefing")) {
@@ -17,7 +20,7 @@ export function render(container, api) {
           <span class="daily-cost" id="daily-cost-today">—</span>
         </section>
         <section class="daily-grid">
-          <article class="surface" id="daily-briefing"><div class="panel-title"><h3>Morning briefing</h3></div><div id="daily-briefing-body"></div></article>
+          <article class="surface" id="daily-briefing"><div class="panel-title"><h3>Morning briefing</h3><button class="plain-button ghost" id="daily-briefing-refresh" type="button" title="Run a fresh briefing from your connected sources.">Refresh</button></div><div id="daily-briefing-body"></div></article>
           <article class="surface" id="daily-project"><div class="panel-title"><h3>Active project</h3></div><div id="daily-project-body"></div></article>
           <article class="surface" id="daily-today"><div class="panel-title"><h3>Next tasks</h3><a href="#tasks">All tasks →</a></div><div id="daily-today-rows" class="daily-rows"></div></article>
           <article class="surface" id="daily-notice"><div class="panel-title"><h3>Latest notification</h3><a href="#gate">Notifications →</a></div><div id="daily-notice-body"></div></article>
@@ -31,7 +34,48 @@ export function render(container, api) {
   renderStatus(container, api);
   renderProject(container, api);
   renderNotice(container, api);
+  renderBriefingRefresh(container, api);
   scheduleFills(container, api);
+}
+
+function renderBriefingRefresh(container, api) {
+  const button = container.querySelector("#daily-briefing-refresh");
+  if (!button) return;
+  const busy = !!api.state.runner?.turn_busy;
+  const projectScoped = api.state.context?.project_id != null;
+  button.disabled = briefingRefreshInFlight || busy || projectScoped;
+  button.textContent = briefingRefreshInFlight ? "Refreshing…" : (projectScoped ? "Global only" : "Refresh");
+  button.title = projectScoped
+    ? "Daily briefing refresh uses global connected sources. Open the global workspace to run it."
+    : (busy
+    ? "Wait for the current chat turn to finish before refreshing the briefing."
+    : "Run a fresh briefing from your connected sources.");
+  if (button.dataset.bound === "true") return;
+  button.dataset.bound = "true";
+  button.addEventListener("click", () => { void refreshBriefing(container, api); });
+}
+
+async function refreshBriefing(container, api) {
+  if (briefingRefreshInFlight || api.state.runner?.turn_busy) return;
+  if (api.state.context?.project_id != null) {
+    showToast("Open the global workspace to refresh the daily briefing.", "error");
+    return;
+  }
+  briefingRefreshInFlight = true;
+  renderBriefingRefresh(container, api);
+  try {
+    const result = await api.post("/api/digest/run", {});
+    if (!result.ok) {
+      const busy = result.status === 409 || result.data?.message === "busy";
+      showToast(busy ? "Kairo is already working. Try refreshing the briefing shortly." : "Briefing refresh failed.", "error");
+      return;
+    }
+    showToast("Briefing refreshed.");
+    await fillBriefing(container, api);
+  } finally {
+    briefingRefreshInFlight = false;
+    renderBriefingRefresh(container, api);
+  }
 }
 
 function clear(host) {

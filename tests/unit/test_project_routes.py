@@ -107,9 +107,10 @@ async def test_update_and_slug_is_immutable(tmp_path: Path) -> None:
     pid = client.post("/api/projects", json={"name": "P"}, headers=_hdr(auth, post=True)).json()[
         "id"
     ]
+    await projects.activate(pid)  # the legacy REPL context must refresh without a scope switch
     ok = client.post(
         f"/api/projects/{pid}/update",
-        json={"description": "now described", "color": "#abc"},
+        json={"name": "Renamed", "description": "now described", "color": "#abc"},
         headers=_hdr(auth, post=True),
     )
     assert ok.status_code == 200 and ok.json()["ok"] is True
@@ -121,6 +122,26 @@ async def test_update_and_slug_is_immutable(tmp_path: Path) -> None:
     assert r.status_code == 200
     after = await projects.store.get(pid)
     assert after.slug == "p" and after.description == "now described"
+    assert projects.current().name == "Renamed"  # metadata changed; project scope/session did not
+
+
+async def test_update_rejects_malformed_json_columns(tmp_path: Path) -> None:
+    client, _app, auth, _projects = await _client(tmp_path)
+    pid = client.post("/api/projects", json={"name": "P"}, headers=_hdr(auth, post=True)).json()[
+        "id"
+    ]
+    assert client.post(
+        f"/api/projects/{pid}/update", json={"repos": "not-a-list"}, headers=_hdr(auth, post=True)
+    ).status_code == 400
+    assert client.post(
+        f"/api/projects/{pid}/update", json={"settings": []}, headers=_hdr(auth, post=True)
+    ).status_code == 400
+    assert client.post(
+        f"/api/projects/{pid}/update", json={"settings": {}}, headers=_hdr(auth, post=True)
+    ).status_code == 400
+    assert client.post(
+        f"/api/projects/{pid}/update", json=[], headers=_hdr(auth, post=True)
+    ).status_code == 400
 
 
 async def test_archive_active_falls_back_to_global(tmp_path: Path) -> None:

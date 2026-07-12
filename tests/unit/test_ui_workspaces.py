@@ -14,7 +14,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from jarvis.actions.intents import IntentStore
 from jarvis.actions.journal import ConnectorWriteJournal
+from jarvis.attention.store import AttentionKind, AttentionStore
 from jarvis.config import load_config
 from jarvis.core.client import ToolCall
 from jarvis.core.events import TextDelta
@@ -35,6 +37,7 @@ from jarvis.tools import Permission
 from jarvis.ui.approver import ApprovalManager
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
 from jarvis.ui.connections import ConnectionManager
+from jarvis.ui.notices import NoticeBoard
 from jarvis.ui.readmodels import UiServices
 from jarvis.ui.server import WORKSPACE_HEADER, create_app
 from jarvis.ui.session import UiSession
@@ -180,6 +183,58 @@ async def test_workspace_id_is_bound_to_its_authenticated_cookie(tmp_path: Path)
     )
     assert registry.resolve(owner_session="owner-b", workspace_id=workspace.workspace_id) is None
     assert registry.resolve(owner_session="owner-a", workspace_id="short") is None
+
+
+async def test_project_metadata_update_refreshes_live_contexts_without_switching_sessions(
+    tmp_path: Path,
+) -> None:
+    registry, connections, projects = await _registry(tmp_path)
+    project_id = await projects.store.create(name="Before", description="old context")
+    await projects.activate(project_id)  # legacy process context is refreshed too
+    auth = AuthManager(token="tok")
+    owner_a, owner_b = auth.mint_session(), auth.mint_session()
+    workspace_a = await registry.attach(
+        connections.register(_Socket(), owner_session=owner_a), owner_session=owner_a
+    )
+    workspace_b = await registry.attach(
+        connections.register(_Socket(), owner_session=owner_b), owner_session=owner_b
+    )
+    await workspace_a.select_project(project_id)
+    await workspace_b.select_project(project_id)
+    session_a, session_b = workspace_a.context.session_id, workspace_b.context.session_id
+
+    config = load_config(root=tmp_path, env_file=None)
+    app = create_app(config, auth=auth, connections=connections)
+    app.state.projects = projects
+    app.state.workspaces = registry
+    client = TestClient(app, base_url="http://127.0.0.1")
+    headers = {
+        "cookie": f"{SESSION_COOKIE}={owner_a}",
+        WORKSPACE_HEADER: workspace_a.workspace_id,
+        "origin": "http://127.0.0.1",
+    }
+    updated = client.post(
+        f"/api/projects/{project_id}/update",
+        json={"name": "After", "description": "fresh context"},
+        headers=headers,
+    )
+    assert updated.status_code == 200 and updated.json()["ok"] is True
+    assert (workspace_a.context.session_id, workspace_b.context.session_id) == (
+        session_a,
+        session_b,
+    )
+    assert workspace_a.project.name == workspace_b.project.name == "After"
+    with bind_execution_context(workspace_a.context):
+        assert "After" in projects.current().system_extra
+        assert "fresh context" in projects.current().system_extra
+    assert projects.current().name == "After"
+
+    missing_workspace = client.post(
+        f"/api/projects/{project_id}/update",
+        json={"name": "No workspace"},
+        headers={"cookie": f"{SESSION_COOKIE}={owner_a}", "origin": "http://127.0.0.1"},
+    )
+    assert missing_workspace.status_code == 409
 
 
 async def test_emergency_cancel_covers_every_live_workspace(tmp_path: Path) -> None:
@@ -344,7 +399,54 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
         project_id=None,
     )
     graph = GraphStore(workspace_a.session.sessions.db, workspace_a.session.sessions.lock)
-    memory = SimpleNamespace(store=MemoryStore(workspace_a.session.sessions.db))
+    memory_store = MemoryStore(workspace_a.session.sessions.db)
+    remembered: list[tuple[str, str, int | None]] = []
+
+    async def remember(content: str, mem_type: str, *, source: str, project_id: int | None):
+        remembered.append((content, mem_type, project_id))
+        return SimpleNamespace(memory_id=len(remembered), action="inserted")
+
+    memory = SimpleNamespace(store=memory_store, remember=remember)
+    intents = IntentStore(workspace_a.session.sessions.db, workspace_a.session.sessions.lock)
+    own_intent = await intents.create_draft(
+        idempotency_key="project-a-intent",
+        provider="google",
+        kind="calendar_create",
+        request={},
+        summary="Project A draft",
+        source="agent",
+        project_id=project_a,
+    )
+    foreign_intent = await intents.create_draft(
+        idempotency_key="project-b-intent",
+        provider="google",
+        kind="calendar_create",
+        request={},
+        summary="Project B draft",
+        source="agent",
+        project_id=project_b,
+    )
+    await intents.mark_previewed(
+        own_intent,
+        preview={"title": "A", "fields": [], "diff": [], "notes": [], "warnings": []},
+    )
+    await intents.mark_previewed(
+        foreign_intent,
+        preview={"title": "B", "fields": [], "diff": [], "notes": [], "warnings": []},
+    )
+    attention = AttentionStore(workspace_a.session.sessions.db, workspace_a.session.sessions.lock)
+    own_attention = await attention.create(
+        kind=AttentionKind.PROPOSAL,
+        source="dreaming",
+        title="Project A proposal",
+        project_id=project_a,
+    )
+    foreign_attention = await attention.create(
+        kind=AttentionKind.PROPOSAL,
+        source="dreaming",
+        title="Project B proposal",
+        project_id=project_b,
+    )
     journal = ConnectorWriteJournal(
         workspace_a.session.sessions.db, workspace_a.session.sessions.lock
     )
@@ -379,18 +481,28 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
             "notifiers": {},
         }
     )
+
+    async def list_artifacts(**_kwargs):
+        return []
+
     app = create_app(config, auth=auth, connections=connections)
     app.state.projects = projects
     app.state.services = UiServices(
         sessions=workspace_a.session.sessions,
         tasks=tasks,
         memory=memory,
+        intents=intents,
+        attention=attention,
         projects=projects,
         connectors=connectors,
         graph=graph,
         write_journal=journal,
+        artifacts=SimpleNamespace(db=workspace_a.session.sessions.db, list=list_artifacts),
     )
     app.state.workspaces = registry
+    app.state.notices = NoticeBoard(now=lambda: "t")
+    app.state.notices.post("Project A scheduler payload", kind="task", project_id=project_a)
+    app.state.notices.post("Project B scheduler payload", kind="task", project_id=project_b)
     client = TestClient(app, base_url="http://127.0.0.1")
 
     def headers(owner: str, workspace_id: str) -> dict[str, str]:
@@ -414,6 +526,74 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
     assert client.get(f"/api/tasks/{global_task.id}/runs", headers=foreign).status_code == 200
     assert client.get(f"/api/tasks?project_id={project_a}", headers=foreign).status_code == 404
     assert client.get(f"/api/memory?project_id={project_a}", headers=foreign).status_code == 404
+    assert client.get(
+        "/api/search", params={"q": "project-a", "project_id": project_a}, headers=foreign
+    ).status_code == 404
+    assert [row["text"] for row in client.get("/api/notices", headers=own).json()["notices"]] == [
+        "Project A scheduler payload"
+    ]
+    foreign_notices = client.get("/api/notices", headers=foreign).json()["notices"]
+    assert [row["text"] for row in foreign_notices] == ["Project B scheduler payload"]
+    assert [row["text"] for row in client.get("/api/daily", headers=own).json()["notices"]] == [
+        "Project A scheduler payload"
+    ]
+    assert [
+        row["text"] for row in client.get("/api/daily", headers=foreign).json()["notices"]
+    ] == ["Project B scheduler payload"]
+    digest_response = client.post(
+        "/api/digest/run", headers={**own, "origin": "http://127.0.0.1"}
+    )
+    assert digest_response.status_code == 409
+    # Task ids are not authority either: foreign project tasks cannot be cancelled by guessing
+    # an id, while global reminders remain a deliberate shared workspace surface.
+    foreign_post = {**foreign, "origin": "http://127.0.0.1"}
+    assert client.post(f"/api/tasks/{own_task.id}/cancel", headers=foreign_post).status_code == 404
+    assert (await tasks.store.get(own_task.id)).status != "cancelled"
+    own_post = {**own, "origin": "http://127.0.0.1"}
+    assert client.post(f"/api/tasks/{own_task.id}/cancel", headers=own_post).json()["ok"] is True
+    assert (await tasks.store.get(own_task.id)).status == "cancelled"
+
+    # Project metadata is a mutable capability too: a Project A workspace cannot rename or
+    # rewrite project details for B merely by guessing its numeric id.
+    foreign_update = client.post(
+        f"/api/projects/{project_b}/update", json={"name": "hijacked"}, headers=own_post
+    )
+    assert foreign_update.status_code == 404
+    assert (await projects.store.get(project_b)).name == "Project B"
+
+    # Memory deletion must obey the same P + global boundary. A foreign id cannot become a
+    # capability merely because its numeric value was observed elsewhere in the UI.
+    own_memory = await memory.store.add(
+        type="fact", content="A only", embedding=[0.1, 0.2], embedding_model="fake", source="user",
+        project_id=project_a,
+    )
+    foreign_memory = await memory.store.add(
+        type="fact", content="B only", embedding=[0.3, 0.4], embedding_model="fake", source="user",
+        project_id=project_b,
+    )
+    assert client.post(f"/api/memory/{foreign_memory}/forget", headers=own_post).status_code == 404
+    assert (await memory.store.get(foreign_memory)).status == "live"
+    assert client.post(f"/api/memory/{own_memory}/forget", headers=own_post).json()["ok"] is True
+    assert (await memory.store.get(own_memory)).status == "forgotten"
+
+    # Gate detail, queue, and every mutation route must share the live workspace boundary; a
+    # numeric intent/attention id from Project B never becomes read or execution authority in A.
+    assert client.get("/api/intents", headers=own).json()["pending"][0]["id"] == own_intent
+    assert client.get(
+        "/api/intents", params={"project_id": project_b}, headers=own
+    ).status_code == 404
+    for suffix in ("", "/approve", "/reject", "/undo"):
+        method = client.get if not suffix else client.post
+        kwargs = {"headers": own if not suffix else own_post}
+        assert method(f"/api/intents/{foreign_intent}{suffix}", **kwargs).status_code == 404
+    assert (await intents.get(foreign_intent)).state.value == "previewed"
+    assert client.post(
+        f"/api/attention/{foreign_attention}/resolve", json={"action": "dismiss"}, headers=own_post
+    ).status_code == 404
+    assert (await attention.get(foreign_attention)).state.value == "open"
+    assert client.post(
+        f"/api/attention/{own_attention}/resolve", json={"action": "dismiss"}, headers=own_post
+    ).json()["ok"] is True
 
     # Connector-write audit rows follow the same server-owned workspace scope. The browser has
     # no project selector and no remote/rollback handles to turn a numeric id into authority.
@@ -461,6 +641,71 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
         )
         assert drive_exposed({"capabilities": own_caps}) is True, path
         assert drive_exposed({"capabilities": foreign_caps}) is False, path
+
+    # A human-review draft binds to the exact live context it opened in. If another duplicated
+    # tab switches this shared workspace before Save, the stale assertion fails closed rather
+    # than retagging reviewed Project A content as Project B durable memory.
+    expected_context = {
+        "session_id": workspace_a.context.session_id,
+        "project_id": workspace_a.context.project_id,
+    }
+    scheduled = client.post(
+        "/api/tasks/create",
+        json={
+            "title": "A reviewed task",
+            "schedule_spec": "2099-01-01T00:00:00Z",
+            "expected_context": expected_context,
+        },
+        headers=own_post,
+    )
+    assert scheduled.status_code == 200
+    task_count = len(await tasks.store.list(include_finished=True))
+    saved = client.post(
+        "/api/memory/remember",
+        json={"content": "A reviewed fact", "type": "fact", "expected_context": expected_context},
+        headers=own_post,
+    )
+    assert saved.status_code == 200 and remembered == [("A reviewed fact", "fact", project_a)]
+    switched = client.post(
+        "/api/projects/select", json={"project_id": project_b}, headers=own_post
+    )
+    assert switched.status_code == 200
+    stale = client.post(
+        "/api/memory/remember",
+        json={"content": "A stale fact", "type": "fact", "expected_context": expected_context},
+        headers=own_post,
+    )
+    assert stale.status_code == 409 and remembered == [("A reviewed fact", "fact", project_a)]
+    stale_task = client.post(
+        "/api/tasks/create",
+        json={
+            "title": "A stale task",
+            "schedule_spec": "2099-01-01T00:00:00Z",
+            "expected_context": expected_context,
+        },
+        headers=own_post,
+    )
+    assert stale_task.status_code == 409
+    assert len(await tasks.store.list(include_finished=True)) == task_count
+
+    # The global workspace is deliberately the administrative aggregate used by the Tasks
+    # screen. It may inspect and cancel an existing project task; only a project workspace is
+    # restricted to its own rows plus explicit global reminders.
+    admin_task = await tasks.schedule(
+        kind="reminder",
+        title="Project A admin task",
+        payload="review",
+        schedule_kind="once",
+        schedule_spec="2099-01-01T00:00:00Z",
+        created_by="user",
+        project_id=project_a,
+    )
+    global_scope = client.post(
+        "/api/projects/select", json={"project_id": None}, headers=own_post
+    )
+    assert global_scope.status_code == 200
+    assert client.get(f"/api/tasks/{admin_task.id}/runs", headers=own).status_code == 200
+    assert client.post(f"/api/tasks/{admin_task.id}/cancel", headers=own_post).json()["ok"] is True
 
 
 async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
@@ -610,9 +855,19 @@ async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
             assert foreign_pin.status_code == 404
 
             for workspace_id in (hello_a["workspace_id"], hello_b["workspace_id"]):
+                runner = client.get(
+                    "/api/runner", headers={"cookie": cookie, WORKSPACE_HEADER: workspace_id}
+                ).json()
                 created = client.post(
                     "/api/tasks/create",
-                    json={"title": "scoped", "schedule_spec": "2099-01-01T00:00:00Z"},
+                    json={
+                        "title": "scoped",
+                        "schedule_spec": "2099-01-01T00:00:00Z",
+                        "expected_context": {
+                            "session_id": runner["session_id"],
+                            "project_id": runner["project"]["id"],
+                        },
+                    },
                     headers={
                         "cookie": cookie,
                         "origin": "http://127.0.0.1",

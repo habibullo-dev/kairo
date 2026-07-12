@@ -90,6 +90,20 @@ async def test_promote_to_memory_requires_content(tmp_path: Path) -> None:
     assert r.status_code == 400
 
 
+async def test_promote_to_memory_rejects_malformed_content_and_type(tmp_path: Path) -> None:
+    client, auth, _m, _db, _lock, _pid = await _app(tmp_path)
+    headers = _hdr(auth, post=True)
+    for body in (
+        [],
+        {"content": 1},
+        {"content": "x" * 4001},
+        {"content": "valid", "type": "unknown"},
+        {"content": "valid", "type": []},
+        {"content": "valid", "type": {}},
+    ):
+        assert client.post("/api/memory/remember", json=body, headers=headers).status_code == 400
+
+
 async def test_promote_to_task_creates_user_task(tmp_path: Path) -> None:
     client, auth, _m, _db, _lock, _pid = await _app(tmp_path)
     r = client.post(

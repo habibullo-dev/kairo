@@ -5,9 +5,9 @@
 //      action (Run Workflow only NAVIGATES to Studio). A deliberate amendment of the Phase-11
 //      "GET-only" rule, pinned to an exact allowlist by test_ui_palette.
 //   2. GO TO — jump to any screen (hash).
-//   3. RESULTS — unified search (/api/graph/search: chats/artifacts/memory/vault/tasks/runs +
-//      graph entities, quarantine-aware). A chat result RESUMES; an entity opens the focused graph
-//      tab; an artifact opens its hardened content GET; the rest navigate.
+//   3. RESULTS — federated search (/api/search: chats, memory, knowledge, tasks, workflows,
+//      digests, and artifacts; project-scoped and quarantine-aware). A chat result RESUMES; an
+//      artifact opens its hardened content GET; the rest navigate to their owning screen.
 // Every row renders via el()/textContent, so a snippet can never inject markup.
 import { el } from "./dom.js";
 import { refreshHeader } from "./header.js";
@@ -20,7 +20,7 @@ const NAV = [
   ["studio", "Studio", "Orchestration"],
   ["costs", "Costs", "Spend & budgets"],
   ["settings", "Settings", "Appearance & status"],
-  ["gate", "Gate", "Pending approvals"],
+  ["gate", "Notifications", "Approvals and background activity"],
   ["hub", "Hub", "Connectors & capabilities"],
   ["trace", "Trace", "Event log"],
   ["lab", "Lab", "Evals"],
@@ -30,19 +30,15 @@ const NAV = [
   ["memory", "Memory", "Long-term memory"],
 ];
 
-// kind (from the unified search) -> how to open it. "resume"/"artifact"/"entity"/"project" are
-// special-cased; everything else navigates to a screen hash.
-const KIND_ROUTE = {
-  chat: "resume", artifact: "artifact", project: "project", digest: "daily",
-  memory: "memory", source: "vault", wiki: "vault", task: "tasks", run: "studio",
-  team: "studio", service: "hub", member: "studio",
-  person: "entity", decision: "entity", topic: "entity", external_ref: "entity", custom: "entity",
+// Federated-search domains are a closed server contract.  Do not use returned titles/snippets as
+// routes: they remain display-only text, and the route is selected exclusively from this map.
+const DOMAIN_ROUTE = {
+  chats: "resume", memories: "memory", knowledge: "vault", tasks: "tasks",
+  orchestration: "studio", digests: "daily", artifacts: "artifact",
 };
-const KIND_LABEL = {
-  chat: "Chat", artifact: "Artifact", memory: "Memory", source: "Source", wiki: "Wiki",
-  task: "Task", run: "Run", project: "Project", digest: "Digest", team: "Team", service: "Service",
-  member: "Member", person: "Entity", decision: "Entity", topic: "Entity",
-  external_ref: "Entity", custom: "Entity",
+const DOMAIN_LABEL = {
+  chats: "Chat", memories: "Memory", knowledge: "Knowledge", tasks: "Task",
+  orchestration: "Workflow", digests: "Digest", artifacts: "Artifact",
 };
 
 let _api = null;
@@ -128,34 +124,24 @@ function computeNav(q) {
 }
 
 function resultItems(results) {
-  return (results || []).map((r) => ({
-    kind: "result", chip: KIND_LABEL[r.kind] || r.kind, title: r.label || r.title || "(untitled)",
-    snip: (r.badges || []).join(" · ") || r.snippet || "", run: () => openResult(r),
+  return (results || []).filter((r) => r && DOMAIN_ROUTE[r.domain]).map((r) => ({
+    kind: "result", chip: DOMAIN_LABEL[r.domain],
+    title: typeof r.title === "string" && r.title.trim() ? r.title : "(untitled)",
+    snip: typeof r.snippet === "string" ? r.snippet : "", run: () => openResult(r),
   }));
 }
 
 function openResult(r) {
-  const dest = KIND_ROUTE[r.kind] || "daily";
-  if (dest === "resume") { _api.resumeChat(Number(r.ref_id)).then(() => go("#daily")); return; }
+  const dest = DOMAIN_ROUTE[r.domain];
+  const refId = Number(r.ref_id);
+  if (!Number.isSafeInteger(refId) || refId < 1) return;
+  if (dest === "resume") { _api.resumeChat(refId).then(() => go("#daily")); return; }
   if (dest === "artifact") {
-    window.open(`/api/artifacts/${encodeURIComponent(r.ref_id)}/content`, "_blank", "noopener");
+    window.open(`/api/artifacts/${encodeURIComponent(refId)}/content`, "_blank", "noopener");
     close();
     return;
   }
-  if (dest === "project") { go(`#workspace/${r.ref_id}`); return; }
-  if (dest === "entity") { openEntity(r); return; }
-  go(`#${dest}`);
-}
-
-// Open the graph tab focused on an entity. The graph consumes this session-only focus once, so a
-// database reset cannot turn an old project-id reuse into a stale graph view. Navigate-only.
-function openEntity(r) {
-  const pid = _ctx.runner.project && _ctx.runner.project.id;
-  if (!pid) { go("#projects"); return; }
-  try {
-    sessionStorage.setItem(`kairo:graph:focus:${pid}`, `${r.kind}:${r.ref_id}`);
-  } catch { /* storage disabled — the graph just opens unfocused */ }
-  go(`#workspace/${pid}/graph`);
+  if (dest) go(`#${dest}`);
 }
 
 function markSel() {
@@ -214,7 +200,7 @@ function scheduleSearch() {
     if (!_api) return;
     const pid = _ctx.runner.project && _ctx.runner.project.id;
     const scope = pid ? `&project_id=${pid}` : "";
-    const data = await _api.get(`/api/graph/search?q=${encodeURIComponent(q)}&limit=25${scope}`);
+    const data = await _api.get(`/api/search?q=${encodeURIComponent(q)}&limit=25${scope}`);
     if (my !== _seq) return;  // a newer keystroke superseded this one
     _items = [..._actions, ..._chats, ..._navItems, ...resultItems((data && data.results) || [])];
     if (_sel >= _items.length) _sel = Math.max(0, _items.length - 1);

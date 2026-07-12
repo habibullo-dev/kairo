@@ -8,7 +8,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from jarvis.config import load_config
+from jarvis.core.execution import ExecutionContext
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
+from jarvis.ui.connections import ConnectionManager
 from jarvis.ui.notices import NoticeBoard
 from jarvis.ui.server import create_app
 
@@ -52,7 +54,46 @@ async def test_post_on_loop_broadcasts_once() -> None:
     # Envelope discriminator is "notice"; the notice (with its own kind) is nested, so the
     # notice's kind can't clobber the WS routing key.
     assert sent[0]["kind"] == "notice"
-    assert sent[0]["notice"] == {"seq": 1, "at": "t", "kind": "task", "text": "job done"}
+    assert sent[0]["notice"] == {
+        "seq": 1,
+        "at": "t",
+        "kind": "task",
+        "text": "job done",
+        "project_id": None,
+    }
+
+
+async def test_project_notice_delivery_never_broadcasts_to_a_foreign_workspace() -> None:
+    class Socket:
+        def __init__(self) -> None:
+            self.sent: list[dict] = []
+
+        async def send_json(self, message: dict) -> None:
+            self.sent.append(message)
+
+    connections = ConnectionManager(clock=lambda: 0.0)
+    socket_a, socket_b = Socket(), Socket()
+    a = connections.register(socket_a, owner_session="same-browser")
+    b = connections.register(socket_b, owner_session="same-browser")
+    connections.bind_workspace(
+        a,
+        owner_session="same-browser",
+        workspace_id="workspace-a",
+        context=ExecutionContext(session_id=1, project_id=1),
+    )
+    connections.bind_workspace(
+        b,
+        owner_session="same-browser",
+        workspace_id="workspace-b",
+        context=ExecutionContext(session_id=2, project_id=2),
+    )
+    board = NoticeBoard(publish=connections.publish_project, now=lambda: "t")
+    board.post("project A task body", kind="task", project_id=1)
+    await asyncio.sleep(0)
+    assert [message["notice"]["text"] for message in socket_a.sent] == ["project A task body"]
+    assert socket_b.sent == []
+    assert [item["text"] for item in board.tail(project_id=1)] == ["project A task body"]
+    assert board.tail(project_id=2) == []
 
 
 # --- GET /api/notices ------------------------------------------------------

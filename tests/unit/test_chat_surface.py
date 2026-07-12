@@ -41,6 +41,7 @@ def test_chat_has_readable_full_height_composer_and_context_controls() -> None:
         "chat-attachments",
         'id="chat-mic"',
         'id="chat-voice-cancel"',
+        'id="chat-turn-cancel"',
     ):
         assert token in CHAT
     assert "chat-intro" not in CHAT
@@ -56,10 +57,44 @@ def test_chat_has_readable_full_height_composer_and_context_controls() -> None:
     assert "Send <span" not in CHAT
 
 
+def test_chat_stop_cancels_only_the_current_turn() -> None:
+    assert 'api.post("/api/turn/cancel", {})' in CHAT
+    assert "Background jobs keep running." in CHAT
+    assert 'api.post("/api/runner/pause"' not in CHAT
+    assert ".chat-turn-cancel" in CSS
+
+
+def test_chat_stop_recovers_when_cancel_races_or_the_network_fails() -> None:
+    # A 200 response is not itself a successful cancellation: the server returns
+    # {cancelled:false} when the attended turn completed in the request race. Both that response
+    # and a rejected fetch must restore a usable control after a fresh status read.
+    assert "result.ok && result.data.cancelled" in CHAT
+    assert 'api.runnerStatus({ refresh: true })' in CHAT
+    assert "if (runner && !runner.turn_busy) api.state.turnCancelling = false;" in CHAT
+    assert "This turn has already finished." in CHAT
+    assert "Kairo couldn't stop this turn. Please try again." in CHAT
+
+
 def test_chat_message_rendering_remains_text_only() -> None:
     assert "document.createTextNode" in CONVERSATION
     assert "code.textContent" in CONVERSATION
     assert "innerHTML" not in CONVERSATION
+
+
+def test_chat_shows_safe_subagent_progress_without_child_payloads() -> None:
+    # Delegated work is visible in the attended conversation, but tool input, previews, and
+    # streamed child text never become a second untrusted content channel.
+    for token in (
+        'evt.type === "subagent_event"',
+        'evt.type === "subagent_completed"',
+        "addSubagentActivity", "addSubagentCompletion", "subagent-line",
+        "drafting a response", "compactLabel",
+    ):
+        assert token in CONVERSATION
+    assert "inner.input" not in CONVERSATION
+    assert "inner.preview" not in CONVERSATION
+    assert "line.textContent" in CONVERSATION
+    assert 'reverse().find((item) => item.role === "assistant" && item.live)' in CONVERSATION
 
 
 def test_idle_global_chrome_collapses_without_removing_active_controls() -> None:
@@ -78,7 +113,7 @@ def test_chat_voice_is_review_first_and_uses_the_existing_safe_controller() -> N
     assert "api.cancelVoiceCapture" in CHAT
     assert 'mode || "dictation"' in CHAT
     assert 'status.textContent = disabled ? "Voice unavailable"' in CHAT
-    assert "/api/turn" not in CHAT
+    assert 'api.post("/api/turn",' not in CHAT  # voice never submits a raw chat turn
 
 
 def test_composer_omits_unsupported_effort_and_uses_a_quiet_context_shelf() -> None:

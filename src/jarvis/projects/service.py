@@ -46,6 +46,23 @@ class ProjectService:
         self._current = build_project_context(project)
         return self._current
 
+    async def refresh_project_context(self, project_id: int) -> ProjectContext:
+        """Rebuild every live context for a metadata-only project update.
+
+        Unlike a scope switch, this preserves session ids and pending transcript state: the new
+        name/description/repos apply on the next turn while the project id remains unchanged.
+        """
+        project = await self.store.get(project_id)
+        if project is None:
+            raise KeyError(f"no project #{project_id}")
+        refreshed = build_project_context(project)
+        if self._current.project_id == project_id:
+            self._current = refreshed
+        for session_id, context in tuple(self._execution_contexts.items()):
+            if context.project_id == project_id:
+                self._execution_contexts[session_id] = refreshed
+        return refreshed
+
     def current(self) -> ProjectContext:
         """The execution-local project when bound, otherwise the REPL's process scope."""
         execution = current_execution_context()

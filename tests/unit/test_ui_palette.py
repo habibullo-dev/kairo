@@ -1,6 +1,6 @@
 """Command palette pins (Phase 11 T7 + Phase 15.5 T7).
 
-The palette searches (a GET on the unified /api/graph/search) and navigates. Phase 15.5 amends the
+The palette searches (a GET on the federated /api/search) and navigates. Phase 15.5 amends the
 original "GET-only" rule: it MAY now perform a small set of reversible UI-state WRITES (New Chat,
 Switch Project/Model/Mode) — but ONLY those four routes, funnelled through a single act() helper —
 and NEVER the agent turn, an approval, or any Gate-reaching action. Untrusted snippets render via
@@ -46,16 +46,18 @@ def test_palette_bound_to_hotkey_and_escape() -> None:
 
 def test_palette_result_routing_reads_and_navigates() -> None:
     # A chat result RESUMES via the shared helper; an artifact opens its hardened read-only content;
-    # an entity opens the (navigate-only) focused graph tab; the rest navigate by hash.
+    # remaining federated domains navigate by hash. Returned titles/snippets never choose a route.
     assert "resumeChat(" in PALETTE_JS
     assert "location.hash" in PALETTE_JS
     assert "/api/artifacts/" in PALETTE_JS and "/content" in PALETTE_JS
     assert "window.open(" in PALETTE_JS and "noopener" in PALETTE_JS
-    assert "openEntity" in PALETTE_JS and "kairo:graph:focus:" in PALETTE_JS  # focus graph once
+    assert "DOMAIN_ROUTE" in PALETTE_JS
+    assert "Number.isSafeInteger(refId)" in PALETTE_JS
 
 
-def test_palette_searches_the_unified_graph_search() -> None:
-    assert "/api/graph/search" in PALETTE_JS
+def test_palette_searches_the_federated_search() -> None:
+    assert "/api/search" in PALETTE_JS
+    assert "/api/graph/search" not in PALETTE_JS
     assert "_api.get(" in PALETTE_JS  # search is a GET
 
 

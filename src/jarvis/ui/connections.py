@@ -143,6 +143,17 @@ class ConnectionManager:
             if conn.context == context:
                 await self.send(conn, payload)
 
+    async def publish_project(self, project_id: int | None, message: dict) -> None:
+        """Deliver background activity to the exact project scope of each live workspace.
+
+        Unlike a process-wide broadcast, a project-scoped scheduler notice can contain a reminder
+        payload, task title, error, or job-result excerpt. ``None`` is the global workspace's
+        explicit scope, not a wildcard, so missing provenance never turns into a disclosure.
+        """
+        for conn in self.live():
+            if conn.context is not None and conn.context.project_id == project_id:
+                await self.send(conn, message)
+
     async def publish_workspace(
         self,
         *,

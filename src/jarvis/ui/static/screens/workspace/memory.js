@@ -6,6 +6,7 @@
 import { el } from "../../ui/dom.js";
 import { emptyState, row, section, actionButton } from "./_util.js";
 import { relTime } from "../../ui/format.js";
+import { openMemoryDraft } from "../../ui/memory-draft.js";
 
 export async function render(container, api, ctx) {
   container.textContent = "";
@@ -41,12 +42,9 @@ export async function render(container, api, ctx) {
 
   // --- Memory: durable, live memories ---
   const memories = Array.isArray(data) ? data : data.memories || [];
-  if (!memories.length) {
-    container.appendChild(section("Memory", [
-      emptyState("Nothing remembered yet", "Facts Kairo learns about this project will collect here."),
-    ]));
-    return;
-  }
+  const remember = actionButton("Remember something", async () => {
+    if (await openMemoryDraft(api)) rerender();
+  });
   const rows = memories.map((m) =>
     row("🧠", m.content, m.type + " · " + relTime(m.created_at), {
       trailing: el("div", { class: "row-actions" }, [
@@ -56,7 +54,9 @@ export async function render(container, api, ctx) {
       ]),
     })
   );
-  container.appendChild(section("Memory", rows));
+  container.appendChild(section("Memory", rows.length ? rows : [
+    emptyState("Nothing remembered yet", "Facts you choose to save for this project will collect here."),
+  ], remember));
 }
 
 // A quiet "View in graph" deep-link: focus the graph tab on this node (graph.js reads its focus

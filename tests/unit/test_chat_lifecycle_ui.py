@@ -28,7 +28,8 @@ def test_chat_shows_identity_save_state_and_existing_lifecycle_actions() -> None
     ):
         assert text in source
     assert "window.confirm" not in source and "window.prompt" not in source
-    assert 'api.post("/api/turn' not in source and 'api.post("/api/turn' not in header
+    # Chat may cancel an already-running turn, but its lifecycle controls never submit one.
+    assert 'api.post("/api/turn",' not in source and 'api.post("/api/turn' not in header
     app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     assert 'msg.kind === "session_persistence"' in app
 
