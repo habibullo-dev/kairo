@@ -129,6 +129,14 @@ def test_chat_file_button_uses_the_scoped_local_upload_path() -> None:
         assert token in CHAT
     assert '"/api/chat/attachments"' in CHAT
     assert "chatAttachments" in APP
+    for token in (
+        "project-import-progress",
+        "Analyzing your project files",
+        "Building your local knowledge map",
+        "Graphify is connecting folders and files",
+        'projectImport.stage = "graph"',
+    ):
+        assert token in CHAT
 
 
 def test_chat_knowledge_uses_the_safe_shared_source_tree() -> None:

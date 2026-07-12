@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from jarvis.config import KnowledgeConfig
+from jarvis.graph import GraphStore
+from jarvis.graph.builder import rebuild
 from jarvis.knowledge.service import KnowledgeService
 from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory.embeddings import FakeEmbedder
@@ -84,3 +86,21 @@ async def test_unscoped_query_sees_everything(tmp_path: Path) -> None:
     await svc.ingest(text="project two canary", title="b", project_id=2)
     out = await svc.query("canary")  # ANY_PROJECT default
     assert "project one canary" in out and "project two canary" in out
+
+
+async def test_project_query_includes_only_its_local_import_metadata(tmp_path: Path) -> None:
+    svc = await _svc(tmp_path)
+    await svc.ingest(
+        text="alpha canary\nfrom .core import runner", title="repo/src/kairo/app.py", project_id=1
+    )
+    await svc.ingest(text="def runner(): pass", title="repo/src/kairo/core.py", project_id=1)
+    await svc.ingest(
+        text="beta canary\nfrom .core import runner", title="other/src/kairo/app.py", project_id=2
+    )
+    await svc.ingest(text="def runner(): pass", title="other/src/kairo/core.py", project_id=2)
+    await rebuild(GraphStore(svc.store.db, svc.store.lock))
+
+    project_a = await svc.query("alpha canary", project_id=1)
+    assert "Project dependency metadata" in project_a
+    assert "repo/src/kairo/app.py imports repo/src/kairo/core.py" in project_a
+    assert "other/src/kairo/app.py" not in project_a

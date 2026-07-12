@@ -15,28 +15,43 @@ export async function render(container, api, ctx) {
   container.textContent = "";
   const pid = ctx.projectId;
   // Saved view — last focus + kind filters, persisted to localStorage ONLY (like themes / office
-  // layout). No server route, so the tab stays read-only.
-  const LKEY = `kairo:graph:${pid}`;
+  // layout). Include the immutable project creation timestamp so resetting a local database
+  // cannot accidentally reapply a former project's filter to its newly reused numeric id.
+  // No server route is involved, so the tab stays read-only.
+  const stamp = String((ctx.project && ctx.project.created_at) || "unknown");
+  const LKEY = `kairo:graph:v4:${pid}:${stamp}`;
+  const pendingFocusKey = `kairo:graph:focus:${pid}`;
   function loadState() {
+    let pendingFocus = null;
+    try {
+      pendingFocus = sessionStorage.getItem(pendingFocusKey);
+      sessionStorage.removeItem(pendingFocusKey); // a palette jump is one-time, never stale state
+    } catch { /* session storage disabled — persisted view still works */ }
     try {
       const r = JSON.parse(localStorage.getItem(LKEY) || "{}") || {};
-      return { focus: r.focus || null, kinds: new Set(Array.isArray(r.kinds) ? r.kinds : []),
-               depth: 1 };
+      return { focus: pendingFocus || r.focus || null,
+        kinds: new Set(Array.isArray(r.kinds) ? r.kinds : []),
+        depth: [2, 4, 6].includes(r.depth) ? r.depth : 6,
+        view: r.view === "dependencies" ? "dependencies" : "structure" };
     } catch {
-      return { focus: null, kinds: new Set(), depth: 1 };
+      return { focus: pendingFocus, kinds: new Set(), depth: 6, view: "structure" };
     }
   }
   function saveState() {
     try {
-      localStorage.setItem(LKEY, JSON.stringify({ focus: state.focus, kinds: [...state.kinds] }));
+      localStorage.setItem(
+        LKEY, JSON.stringify({
+          focus: state.focus, kinds: [...state.kinds], view: state.view, depth: state.depth,
+        }),
+      );
     } catch { /* storage disabled — the view just isn't remembered */ }
   }
   const state = loadState();
 
   async function load() {
-    const params = new URLSearchParams({ depth: String(state.depth), limit: "150" });
-    if (state.focus) params.set("focus", state.focus);
-    if (state.kinds.size) params.set("kinds", [...state.kinds].join(","));
+    const params = new URLSearchParams({ depth: String(state.depth), limit: "300", view: state.view });
+    if (state.view === "structure" && state.focus) params.set("focus", state.focus);
+    if (state.view === "structure" && state.kinds.size) params.set("kinds", [...state.kinds].join(","));
     const data = await api.get(`/api/workspace/${pid}/graph?` + params.toString());
     container.textContent = "";
     if (!data || !(data.nodes || []).length) {
@@ -49,9 +64,14 @@ export async function render(container, api, ctx) {
         "The graph links this project's chats, runs, artifacts, memory, sources and people into a "
         + "calm map you can explore and search. It's read-only — exploring it never changes your "
         + "data, and new memories still go through review before they appear."]);
+      const dependencyEmpty = state.view === "dependencies";
       container.appendChild(section("Knowledge Graph", [
-        emptyState("Nothing to graph yet",
-          "Work in this project, then rebuild the derived links to populate the graph."),
+        emptyState(
+          dependencyEmpty ? "No local code relationships yet" : "Nothing to graph yet",
+          dependencyEmpty
+            ? "Kairo draws Code map links only for local imports it can resolve. Switch to Files to browse the project tree."
+            : "Work in this project, then rebuild the derived links to populate the graph.",
+        ),
         el("div", { class: "graph-empty-actions" }, [copy]),
         help,
       ]));
@@ -60,8 +80,15 @@ export async function render(container, api, ctx) {
     container.appendChild(buildHeader(data));
     const main = el("div", { class: "graph-main" });
     const canvasHost = el("div", { class: "graph-host" });
-    const side = el("div", { class: "graph-side" }, [
-      el("div", { class: "dim", style: "padding:12px" }, ["Click a node to inspect it."])]);
+    const sideItems = [el("div", { class: "dim", style: "padding:12px" }, [
+      "Click a node to highlight its relationships and inspect safe metadata.",
+    ])];
+    if (Array.isArray(data.communities) && data.communities.length) {
+      sideItems.push(section("File groups", data.communities.slice(0, 12).map((community) =>
+        row("●", community.name, `${community.count} file${community.count === 1 ? "" : "s"}`),
+      )));
+    }
+    const side = el("div", { class: "graph-side" }, sideItems);
     main.append(canvasHost, side);
     container.appendChild(main);
     mountGraph(canvasHost, data, { onNode: (n) => showCard(side, n) });
@@ -69,7 +96,7 @@ export async function render(container, api, ctx) {
 
   function buildHeader(data) {
     const counts = (data.counts && data.counts.by_kind) || {};
-    const chips = Object.keys(counts).sort().map((k) => {
+    const chips = state.view === "structure" ? Object.keys(counts).sort().map((k) => {
       const on = state.kinds.has(k);
       const c = chip(`${KIND_ICON[k] || "•"} ${k} ${counts[k]}`, on ? "svc available" : "");
       c.style.cursor = "pointer";
@@ -79,12 +106,56 @@ export async function render(container, api, ctx) {
         load();
       });
       return c;
+    }) : [];
+    const viewControl = el("div", { class: "graph-view-toggle", role: "group", "aria-label": "Graph view" });
+    for (const [view, label] of [["dependencies", "Code map"], ["structure", "Files"]]) {
+      const active = state.view === view;
+      const button = el("button", {
+        class: active ? "plain-button active" : "plain-button ghost", type: "button",
+        "aria-pressed": active ? "true" : "false",
+      }, [label]);
+      button.addEventListener("click", () => {
+        if (state.view === view) return;
+        state.view = view;
+        state.focus = null;
+        state.kinds.clear();
+        saveState();
+        load();
+      });
+      viewControl.appendChild(button);
+    }
+    const depthControl = el("div", {
+      class: "graph-depth-toggle", role: "group", "aria-label": "Folder depth",
     });
+    if (state.view === "structure") {
+      for (const depth of [2, 4, 6]) {
+        const active = state.depth === depth;
+        const button = el("button", {
+          class: active ? "plain-button active" : "plain-button ghost", type: "button",
+          "aria-pressed": active ? "true" : "false",
+        }, [`${depth} levels`]);
+        button.addEventListener("click", () => {
+          if (state.depth === depth) return;
+          state.depth = depth;
+          saveState();
+          load();
+        });
+        depthControl.appendChild(button);
+      }
+    }
+    const explainer = state.view === "dependencies"
+      ? "Local import links show likely dependents. External packages and dynamic imports stay out of the map."
+      : "Project folders and files are shown through six levels. Open a folder, then choose Focus here to explore that branch.";
     const head = el("div", { class: "graph-head" }, [
-      el("h2", {}, ["Knowledge Graph"]),
+      el("div", { class: "graph-title-block" }, [
+        el("h2", {}, ["Knowledge Graph"]),
+        el("div", { class: "dim graph-explainer" }, [explainer]),
+      ]),
+      viewControl,
+      ...(state.view === "structure" ? [depthControl] : []),
       el("div", { class: "graph-filters" }, chips),
     ]);
-    if (state.focus || state.kinds.size) {
+    if (state.view === "structure" && (state.focus || state.kinds.size)) {
       const reset = el("button", { class: "plain-button ghost" }, ["Reset view"]);
       reset.addEventListener("click", () => {
         state.focus = null; state.kinds.clear(); saveState(); load();
@@ -102,8 +173,14 @@ export async function render(container, api, ctx) {
       ["Trace", "#trace"], ["Artifacts", `#workspace/${pid}/artifacts`],
       ["Costs", `#workspace/${pid}/costs`],
     ].map(([t, href]) => el("a", { href, class: "plain-button ghost" }, [t]));
-    const focusBtn = el("button", { class: "plain-button" }, ["Focus here"]);
-    focusBtn.addEventListener("click", () => { state.focus = node.id; saveState(); load(); });
+    const browse = state.view === "dependencies";
+    const focusBtn = el("button", { class: "plain-button" }, [browse ? "Browse location" : "Focus here"]);
+    focusBtn.addEventListener("click", () => {
+      if (browse) state.view = "structure";
+      state.focus = node.id;
+      saveState();
+      load();
+    });
     const neighbors = ((card && card.neighbors) || []).slice(0, 12).map((nb) =>
       row(KIND_ICON[nb.node.kind] || "•", nb.node.label, `${nb.direction} · ${nb.edge_kind}`));
     side.append(

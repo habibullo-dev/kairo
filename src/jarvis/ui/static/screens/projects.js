@@ -78,6 +78,18 @@ function projectCard(p, activeId, api, refresh) {
   const active = p.id === activeId;
   const card = el("div", { class: "project-card" + (p.pinned ? " pinned" : "") });
 
+  // A Workspace is not merely a dashboard: its Graph, Vault, and Chat data are deliberately
+  // read through the live project workspace. Navigate there only after the existing project
+  // selection transition succeeds, otherwise an inactive project's scoped panels would correctly
+  // refuse to show its private data and look empty. This adds no route or authority.
+  const openWorkspace = async () => {
+    if (!active) {
+      const selected = await api.post("/api/projects/select", { project_id: p.id });
+      if (!selected.ok) { refresh(); return; }
+    }
+    location.hash = `workspace/${p.id}`;
+  };
+
   const tile = el("div", { class: "card-tile" }, [p.icon || (p.name || "?").slice(0, 1).toUpperCase()]);
   if (p.color) { tile.style.setProperty("--p1", p.color); tile.style.setProperty("--p2", p.color); }
   const head = el("div", { class: "pc-head" }, [
@@ -89,7 +101,7 @@ function projectCard(p, activeId, api, refresh) {
     pinStar(p, api, refresh),
   ]);
   head.style.cursor = "pointer";
-  head.addEventListener("click", () => { location.hash = `workspace/${p.id}`; });
+  head.addEventListener("click", () => { void openWorkspace(); });
 
   const meta = el("div", { class: "pc-meta" }, [
     labelSelect(p, api, refresh),
@@ -104,7 +116,7 @@ function projectCard(p, activeId, api, refresh) {
       await api.post("/api/projects/select", { project_id: p.id });
       refresh();
     }),
-    plainButton("Open →", () => { location.hash = `workspace/${p.id}`; }, "ghost"),
+    plainButton(active ? "Open →" : "Open & switch", () => { void openWorkspace(); }, "ghost"),
     plainButton("Archive", async () => {
       await api.post(`/api/projects/${p.id}/archive`, {});
       refresh();

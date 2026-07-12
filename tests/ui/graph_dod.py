@@ -30,7 +30,7 @@ import jarvis.core  # noqa: F401 - load core first (ledger<->core.context import
 from jarvis.agents import AgentRunStore
 from jarvis.graph import GraphStore
 from jarvis.graph.builder import rebuild
-from jarvis.graph.service import subgraph
+from jarvis.graph.service import dependency_subgraph, subgraph
 from jarvis.orchestration import OrchestrationStore
 from jarvis.persistence.db import connect
 from jarvis.projects import ProjectStore
@@ -45,7 +45,7 @@ from jarvis.ui.server import STATIC_DIR
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "screenshots" / "graph"
-STATES = ["focus", "expanded", "filtered", "empty"]
+STATES = ["focus", "expanded", "filtered", "code-map", "empty"]
 _TS = "2026-03-15T00:00:00+00:00"
 
 HARNESS = """<!doctype html><html><head><meta charset="utf-8">
@@ -60,9 +60,13 @@ try { const a = JSON.parse(localStorage.getItem('kairo:appearance')||'{}');
   document.documentElement.classList.add('reduce-motion'); } catch(e){}
 const q = new URLSearchParams(location.search);
 const data = await (await fetch('./__graph_'+(q.get('state')||'focus')+'.json')).json();
+if (q.get('state') === 'code-map') {
+  localStorage.setItem('kairo:graph:v4:1:graph-dod', JSON.stringify({view:'dependencies',depth:6}));
+}
 const api = { get: async (url) => (url.includes('/node/') ? {} : data), post: async () => ({}) };
 const { render } = await import('./screens/workspace/graph.js');
-await render(document.getElementById('root'), api, { projectId: 1 });
+await render(document.getElementById('root'), api,
+  { projectId: 1, project: {id:1, created_at:'graph-dod'} });
 window.__READY__ = true;
 </script></body></html>"""
 
@@ -90,6 +94,43 @@ async def _seed_json(static_dir: Path) -> None:
         "created_by, created_at, updated_at, project_id) VALUES "
         "('url','http://x','h','r','m','mh','trafilatura','1',10,'live','unreviewed','agent',?,?,1)",
         (_TS, _TS))
+    code_sources: list[tuple[int, str, str]] = []
+    seed_code = [
+        ("repo/src/kairo/app.py", "from .core import runner\n"),
+        ("repo/src/kairo/core.py", "from .ui import render\n"),
+        ("repo/src/kairo/ui.py", "def render(): pass\n"),
+        ("repo/src/kairo/connectors/mail.py", "from kairo.core import runner\n"),
+    ]
+    # Keep the visual harness honest for the real use case: a deep uploaded codebase must draw
+    # as a dense, inspectable network rather than only proving a four-node demo. These are local
+    # relative imports in a deterministic ring, so graph derivation remains source-only and does
+    # not execute anything.
+    module_count = 120
+    seed_code.extend(
+        (
+            f"repo/src/kairo/modules/module_{index:03}.py",
+            f"from .module_{(index + 1) % module_count:03} import run\n",
+        )
+        for index in range(module_count)
+    )
+    for title, text in seed_code:
+        cur = await db.execute(
+            "INSERT INTO kb_sources (kind, origin, title, content_hash, raw_path, markdown_path, "
+            "markdown_hash, converter, converter_version, byte_size, status, review_status, "
+            "created_by, created_at, updated_at, project_id) VALUES "
+            "('file', ?, ?, ?, 'r', 'm', 'mh', 'passthrough', '1', 10, 'live', 'reviewed', "
+            "'user', ?, ?, 1)",
+            (f"chat-upload:1:{title}", title, f"hash-{title}", _TS, _TS),
+        )
+        assert cur.lastrowid is not None
+        code_sources.append((cur.lastrowid, title, text))
+    for source_id, _title, text in code_sources:
+        await db.execute(
+            "INSERT INTO kb_chunks (source_id, wiki_path, heading_path, seq, text, embedding, "
+            "embedding_model, created_at) VALUES (?, NULL, '', 0, ?, X'00', 'fake', ?)",
+            (source_id, text, _TS),
+        )
+    await db.commit()
     store = GraphStore(db, lock)
     try:
         await rebuild(store)
@@ -97,6 +138,7 @@ async def _seed_json(static_dir: Path) -> None:
             "focus": await subgraph(store, 1, depth=1),
             "expanded": await subgraph(store, 1, depth=2),
             "filtered": await subgraph(store, 1, depth=2, kinds={"source", "run", "team"}),
+            "code-map": await dependency_subgraph(store, 1),
             "empty": {"project_id": 2, "focus": "project:2", "nodes": [], "edges": [],
                       "counts": {"by_kind": {}, "by_trust": {}}, "truncated": False},
         }
@@ -164,6 +206,10 @@ async def main() -> int:
     try:
         static = work / "static"
         shutil.copytree(STATIC_DIR, static)
+        # Kairo's real stylesheet references local theme imagery under /static/assets.  Mirror
+        # that mount inside this otherwise root-served harness so graph captures include the same
+        # local background/veil treatment as the workstation rather than noisy 404 fallbacks.
+        shutil.copytree(STATIC_DIR, static / "static")
         (static / "__graph_dod.html").write_text(HARNESS, encoding="utf-8")
         await _seed_json(static)
         port = _free_port()

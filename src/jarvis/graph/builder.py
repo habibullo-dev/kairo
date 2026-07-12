@@ -25,6 +25,7 @@ import json
 from collections import Counter
 from pathlib import PurePosixPath
 
+from jarvis.graph.code_dependencies import SourceHead, local_import_pairs
 from jarvis.graph.store import GraphStore
 
 _DERIVED_BY = "system"
@@ -135,10 +136,12 @@ async def rebuild(store: GraphStore) -> dict[str, int]:
     # 7. project -> source, with a deterministic folder hierarchy for browser folder imports.
     # Every edge is a rebuildable structural cache.  ``folder`` endpoints are logical labels from
     # the user-selected relative path, not real filesystem paths and not inferred dependencies.
+    source_meta: dict[int, tuple[int, str | None, str, str, str]] = {}
     for sid, pid, title, kind, review, ts in await rows(
         "SELECT id, project_id, title, kind, review_status, created_at FROM kb_sources "
         "WHERE status='live' AND project_id IS NOT NULL ORDER BY id"
     ):
+        source_meta[sid] = (pid, title, kind, review, ts)
         source_trust = _source_trust(kind, review)
         folders = _source_folder_parts(title)
         if not folders:
@@ -153,6 +156,36 @@ async def rebuild(store: GraphStore) -> dict[str, int]:
             parent_kind, parent_id = "folder", folder_id
         await edge("folder", parent_id, "source", sid, "contains", ts,
                    trust=source_trust, project_id=pid)
+
+    # 7b. source -> source for deterministic local code imports.  Uploaded code is treated only
+    # as inert text: the parser inspects a bounded first chunk, executes nothing, and emits an
+    # edge only when an import resolves to another live source in the *same* project.  Dynamic,
+    # external, and alias-based imports remain unresolved rather than guessed.
+    heads_by_project: dict[int, list[SourceHead]] = {}
+    for sid, title, text in await rows(
+        "SELECT s.id, s.title, c.text FROM kb_sources s "
+        "LEFT JOIN kb_chunks c ON c.source_id=s.id AND c.seq=0 "
+        "WHERE s.status='live' AND s.project_id IS NOT NULL ORDER BY s.id"
+    ):
+        meta = source_meta.get(sid)
+        if meta is not None:
+            heads_by_project.setdefault(meta[0], []).append(SourceHead(sid, title, text))
+    for pid, heads in sorted(heads_by_project.items()):
+        for importer, imported in local_import_pairs(heads):
+            importer_meta, imported_meta = source_meta[importer], source_meta[imported]
+            # Both endpoints are project-local by construction.  The relationship cannot be more
+            # trusted than either source; a reviewed local upload stays "reviewed", not upgraded
+            # to trusted_local merely because it has a structural edge.
+            trust = (
+                "untrusted_external"
+                if "untrusted_external" in {
+                    _source_trust(importer_meta[2], importer_meta[3]),
+                    _source_trust(imported_meta[2], imported_meta[3]),
+                }
+                else "reviewed"
+            )
+            await edge("source", importer, "source", imported, "imports", importer_meta[4],
+                       trust=trust, project_id=pid)
 
     # 8. project -> artifact   9. artifact -> origin (produced_by, for mapped producers)
     for aid, pid, otype, oid, prov, ts in await rows(

@@ -2044,9 +2044,10 @@ def create_app(
         trust: str | None = None,
         since: str | None = None,
         limit: int = 300,
+        view: str = "structure",
     ) -> JSONResponse:
         # Phase 15: the project-scoped memory-graph subgraph (nodes+edges+counts). READ-ONLY,
-        # clamped (depth<=2, limit<=300), bodies-free. Degrades to an empty graph if unavailable.
+        # clamped (depth<=6, limit<=300), bodies-free. Degrades to an empty graph if unavailable.
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
@@ -2077,6 +2078,7 @@ def create_app(
                 trust=set(trust.split(",")) if trust else None,
                 since=since,
                 limit=limit,
+                view="dependencies" if view == "dependencies" else "structure",
             )
         )
 

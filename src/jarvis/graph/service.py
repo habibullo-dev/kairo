@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import contextlib
 from collections import Counter, defaultdict
+from pathlib import PurePosixPath
 
 from jarvis.graph.builder import _artifact_trust, _source_trust
 from jarvis.graph.store import GraphStore
 
-MAX_DEPTH = 2
+MAX_DEPTH = 6
 MAX_NODES = 300
 _MEM_LABEL = 80  # truncate a memory/source snippet to a short label (bodies-free)
 
@@ -51,11 +52,14 @@ async def _resolve(store: GraphStore, endpoints: set[tuple[str, str]]) -> dict[t
         by_kind[kind].append(rid)
     out: dict[tuple, dict] = {}
 
-    def card(kind, rid, label, trust, sensitivity=None):
-        out[(kind, rid)] = {
+    def card(kind, rid, label, trust, sensitivity=None, *, community: str | None = None):
+        entry = {
             "kind": kind, "ref_id": rid, "id": _ep(kind, rid), "label": label or f"{kind} {rid}",
             "trust_class": trust, "sensitivity": sensitivity,
         }
+        if community:
+            entry["community"] = community
+        out[(kind, rid)] = entry
 
     async def int_rows(kind: str, sql: str):
         """Run an IN-query for int-id rows of `kind`; yields each row. Non-int ids are skipped."""
@@ -88,7 +92,10 @@ async def _resolve(store: GraphStore, endpoints: set[tuple[str, str]]) -> dict[t
         "SELECT id, title, origin, kind, review_status FROM kb_sources "
         "WHERE id IN ({marks}) AND status='live'",
     ):
-        card("source", str(sid), title or (origin or "")[:_MEM_LABEL], _source_trust(kind, review))
+        card(
+            "source", str(sid), title or (origin or "")[:_MEM_LABEL], _source_trust(kind, review),
+            community=_source_community(title),
+        )
     for aid, title, prov, sens in await int_rows(
         "artifact",
         "SELECT id, title, provenance_class, sensitivity FROM artifacts WHERE id IN ({marks})",
@@ -122,6 +129,30 @@ async def _resolve(store: GraphStore, endpoints: set[tuple[str, str]]) -> dict[t
     return out
 
 
+def _source_community(title: str | None) -> str | None:
+    """A truthful, deterministic source-file group for the map legend.
+
+    This is a logical-path group, not a claimed semantic or model-discovered community.  Prefer
+    the first domain folder below ``src/<package>`` (``core``, ``ui``, ``connectors``), then fall
+    back to the top-level folder.  Source labels are already bodies-free path metadata.
+    """
+    raw = str(title or "").replace("\\", "/").strip("/")
+    path = PurePosixPath(raw)
+    if not raw or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return None
+    folders = list(path.parts[:-1])
+    if not folders:
+        return "root"
+    if "src" in folders:
+        index = len(folders) - 1 - folders[::-1].index("src")
+        below = folders[index + 1 :]
+        if len(below) > 1:
+            return below[1]
+        if below:
+            return below[0]
+    return folders[0]
+
+
 def _edge_dict(e) -> dict:
     return {
         "src": _ep(e.src_kind, e.src_id), "dst": _ep(e.dst_kind, e.dst_id),
@@ -140,9 +171,12 @@ async def subgraph(
     trust: set[str] | None = None,
     since: str | None = None,
     limit: object = MAX_NODES,
+    view: str = "structure",
 ) -> dict:
     """A project-scoped, depth/size-clamped neighborhood around ``focus`` (default the project
     node). Returns resolved nodes + the edges among them + filter counts. Read-only."""
+    if view == "dependencies":
+        return await dependency_subgraph(store, project_id, limit=limit)
     depth = _clamp(depth, 0, MAX_DEPTH, 1)
     limit = _clamp(limit, 1, MAX_NODES, MAX_NODES)
     focus = focus or ("project", str(project_id))
@@ -192,6 +226,78 @@ async def subgraph(
             "by_kind": dict(Counter(n["kind"] for n in nodes)),
             "by_trust": dict(Counter(n["trust_class"] for n in nodes)),
         },
+    }
+
+
+async def dependency_subgraph(
+    store: GraphStore, project_id: int, *, limit: object = MAX_NODES
+) -> dict:
+    """Return a bounded code-file dependency map for one project.
+
+    The map contains source files with supported code suffixes and the derived, resolvable local
+    ``imports`` edges between them.  It intentionally omits third-party packages, aliases, and
+    dynamic imports: those cannot be verified from the uploaded project alone.  This remains a
+    bodies-free, project-scoped read model; it does not run code or provide model authority.
+    """
+    cap = _clamp(limit, 1, MAX_NODES, MAX_NODES)
+    code_suffixes = {
+        ".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
+    }
+    source_rows = await (
+        await store.db.execute(
+            "SELECT id, title FROM kb_sources WHERE project_id=? AND status='live' ORDER BY id",
+            (project_id,),
+        )
+    ).fetchall()
+    source_ids = {
+        str(source_id)
+        for source_id, title in source_rows
+        if PurePosixPath(str(title or "")).suffix.lower() in code_suffixes
+    }
+    imports = [
+        edge for edge in await store.list_edges(project_id=project_id, include_global=False)
+        if edge.edge_kind == "imports"
+        and edge.src_kind == "source"
+        and edge.dst_kind == "source"
+        and edge.src_id in source_ids
+        and edge.dst_id in source_ids
+    ]
+    degree: Counter[str] = Counter()
+    for edge in imports:
+        degree[edge.src_id] += 1
+        degree[edge.dst_id] += 1
+    ordered = sorted(source_ids, key=lambda sid: (-degree[sid], int(sid)))
+    selected = ordered[:cap]
+    selected_keys = {("source", source_id) for source_id in selected}
+    resolved = await _resolve(store, selected_keys)
+    nodes = [dict(resolved[key], degree=degree[key[1]]) for key in selected_keys if key in resolved]
+    nodes.sort(key=lambda node: (-node["degree"], node["id"]))
+    keys = {(node["kind"], node["ref_id"]) for node in nodes}
+    edges = [
+        _edge_dict(edge) for edge in imports
+        if (edge.src_kind, edge.src_id) in keys and (edge.dst_kind, edge.dst_id) in keys
+    ]
+    communities = Counter(
+        str(node["community"])
+        for node in nodes
+        if node.get("kind") == "source" and node.get("community")
+    )
+    return {
+        "project_id": project_id,
+        "view": "dependencies",
+        "focus": None,
+        "depth": None,
+        "nodes": nodes,
+        "edges": edges,
+        "truncated": len(source_ids) > len(nodes),
+        "counts": {
+            "by_kind": dict(Counter(node["kind"] for node in nodes)),
+            "by_trust": dict(Counter(node["trust_class"] for node in nodes)),
+        },
+        "communities": [
+            {"name": name, "count": count}
+            for name, count in sorted(communities.items(), key=lambda item: (-item[1], item[0]))
+        ],
     }
 
 

@@ -89,6 +89,13 @@ async def test_graph_route_returns_projection(tmp_path: Path) -> None:
     assert data["edges"] and "by_kind" in data["counts"]
 
 
+async def test_graph_route_accepts_the_read_only_dependency_view(tmp_path: Path) -> None:
+    client, auth, _ = await _client(tmp_path)
+    r = client.get("/api/workspace/1/graph?view=dependencies", headers=_hdr(auth))
+    assert r.status_code == 200
+    assert r.json()["view"] == "dependencies"
+
+
 async def test_node_card_route_and_path_converter(tmp_path: Path) -> None:
     client, auth, rid = await _client(tmp_path)
     r = client.get(f"/api/graph/node/run/{rid}", headers=_hdr(auth))

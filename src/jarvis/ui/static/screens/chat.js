@@ -15,6 +15,13 @@ export function render(container, api) {
         <div class="chat-lifecycle-status" id="chat-lifecycle-status"></div>
         <div id="chat-pending"></div>
         <div class="chat-thread" id="chat-thread"></div>
+        <section class="project-import-progress is-hidden" id="project-import-progress" role="status" aria-live="polite" aria-atomic="true">
+          <div class="project-import-orbit" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div class="project-import-copy">
+            <strong id="project-import-title"></strong>
+            <span id="project-import-detail"></span>
+          </div>
+        </section>
         <form class="chat-composer" id="chat-composer">
           <textarea id="chat-input" rows="1" placeholder="Message Kairo…" autocomplete="off" aria-label="Message Kairo"></textarea>
           <div class="chat-composer-toolbar">
@@ -103,6 +110,7 @@ export function render(container, api) {
   renderVoiceControls(container, api);
   renderAttachments(container, api);
   renderImportControls(container, api);
+  renderProjectImportProgress(container, api);
 }
 
 const VOICE_STATES = {
@@ -137,8 +145,28 @@ function renderAttachments(container, api) {
     const progress = document.createElement("span");
     progress.className = "chat-attachment uploading";
     const failures = importState.failed ? ` · ${importState.failed} couldn't add` : "";
-    progress.textContent = `Preparing project knowledge ${importState.done}/${importState.total}${failures}`;
+    const stage = importState.stage === "graph" ? "Building knowledge map" : "Analyzing files";
+    progress.textContent = `${stage} ${importState.done}/${importState.total}${failures}`;
     host.appendChild(progress);
+  }
+}
+
+function renderProjectImportProgress(container, api) {
+  const panel = container.querySelector("#project-import-progress");
+  if (!panel) return;
+  const state = api.state.projectImport;
+  panel.classList.toggle("is-hidden", !state);
+  if (!state) return;
+  const title = panel.querySelector("#project-import-title");
+  const detail = panel.querySelector("#project-import-detail");
+  const failures = state.failed
+    ? ` ${state.failed} file${state.failed === 1 ? "" : "s"} could not be added.` : "";
+  if (state.stage === "graph") {
+    title.textContent = "Building your local knowledge map";
+    detail.textContent = `Graphify is connecting folders and files. ${state.done}/${state.total} files are ready.${failures}`;
+  } else {
+    title.textContent = "Analyzing your project files";
+    detail.textContent = `Kairo is reading and indexing ${state.done}/${state.total} files.${failures}`;
   }
 }
 
@@ -209,9 +237,10 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
     return;
   }
   if (projectFolder) api.state.projectImport = {
-    done: 0, total: selected.length, added: 0, duplicates: 0, failed: 0,
+    stage: "files", done: 0, total: selected.length, added: 0, duplicates: 0, failed: 0,
   };
   renderImportControls(container, api);
+  renderProjectImportProgress(container, api);
   let failures = 0;
   const uploadOne = async (file) => {
     const attachment = projectFolder ? null : { title: file.name || "Untitled file", state: "uploading" };
@@ -252,6 +281,7 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
     } finally {
       if (projectFolder) api.state.projectImport.done += 1;
       renderAttachments(container, api);
+      renderProjectImportProgress(container, api);
     }
   };
   if (projectFolder) {
@@ -270,6 +300,9 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
     for (const file of selected) await uploadOne(file);
   }
   if (projectFolder) {
+    api.state.projectImport.stage = "graph";
+    renderAttachments(container, api);
+    renderProjectImportProgress(container, api);
     try {
       const finalize = new FormData();
       finalize.append("finalize", "true");
@@ -282,6 +315,7 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
     api.state.projectImport = null;
     renderAttachments(container, api);
     renderImportControls(container, api);
+    renderProjectImportProgress(container, api);
     const indexed = (summary.added + summary.duplicates).toLocaleString();
     showToast(
       failures

@@ -51,7 +51,7 @@ def test_palette_result_routing_reads_and_navigates() -> None:
     assert "location.hash" in PALETTE_JS
     assert "/api/artifacts/" in PALETTE_JS and "/content" in PALETTE_JS
     assert "window.open(" in PALETTE_JS and "noopener" in PALETTE_JS
-    assert "openEntity" in PALETTE_JS and "kairo:graph:" in PALETTE_JS  # focus the graph tab
+    assert "openEntity" in PALETTE_JS and "kairo:graph:focus:" in PALETTE_JS  # focus graph once
 
 
 def test_palette_searches_the_unified_graph_search() -> None:

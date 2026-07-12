@@ -14,6 +14,7 @@ import pytest
 from jarvis.agents import AgentRunStore
 from jarvis.graph import GraphStore
 from jarvis.graph.builder import rebuild
+from jarvis.graph.service import dependency_subgraph, subgraph
 from jarvis.orchestration import OrchestrationStore
 from jarvis.persistence.db import connect
 from jarvis.projects import ProjectStore
@@ -118,6 +119,57 @@ async def test_rebuild_derives_logical_folder_tree_for_uploaded_project_sources(
         for e in edges
     )
     assert any(e.src_kind == "folder" and e.dst_kind == "source" for e in edges)
+
+
+async def test_rebuild_derives_resolved_local_code_imports_only(tmp_path: Path) -> None:
+    store, _ = await _seed(tmp_path)
+    source_ids: dict[str, int] = {}
+    for title, text in (
+        ("repo/src/kairo/app.py", "from .core import runner\n"),
+        ("repo/src/kairo/core.py", "def runner(): pass\n"),
+        ("repo/src/kairo/other.py", "import external_package\n"),
+    ):
+        cur = await store.db.execute(
+            "INSERT INTO kb_sources (kind, origin, title, content_hash, raw_path, markdown_path, "
+            "markdown_hash, converter, converter_version, byte_size, status, review_status, "
+            "created_by, created_at, updated_at, project_id) VALUES "
+            "('file', ?, ?, ?, 'r', 'm', 'mh', 'passthrough', '1', 10, 'live', 'reviewed', "
+            "'user', ?, ?, 1)",
+            (f"chat-upload:1:{title}", title, f"hash-{title}", _TS, _TS),
+        )
+        assert cur.lastrowid is not None
+        source_ids[title] = cur.lastrowid
+        await store.db.execute(
+            "INSERT INTO kb_chunks (source_id, wiki_path, heading_path, seq, text, embedding, "
+            "embedding_model, created_at) VALUES (?, NULL, '', 0, ?, X'00', 'fake', ?)",
+            (cur.lastrowid, text, _TS),
+        )
+    await store.db.commit()
+
+    counts = await rebuild(store)
+    imports = [
+        edge for edge in await store.list_edges(origin="derived") if edge.edge_kind == "imports"
+    ]
+    assert counts["imports"] == 1
+    assert [(edge.src_id, edge.dst_id, edge.trust_class) for edge in imports] == [
+        (
+            str(source_ids["repo/src/kairo/app.py"]),
+            str(source_ids["repo/src/kairo/core.py"]),
+            "reviewed",
+        )
+    ]
+    code_map = await dependency_subgraph(store, 1)
+    assert code_map["view"] == "dependencies"
+    assert [(edge["src"], edge["dst"]) for edge in code_map["edges"]] == [
+        (
+            f"source:{source_ids['repo/src/kairo/app.py']}",
+            f"source:{source_ids['repo/src/kairo/core.py']}",
+        )
+    ]
+    assert {node["community"] for node in code_map["nodes"]} == {"kairo"}
+    deep_tree = await subgraph(store, 1, depth=6)
+    node_ids = {node["id"] for node in deep_tree["nodes"]}
+    assert f"source:{source_ids['repo/src/kairo/app.py']}" in node_ids
 
 
 async def test_derived_edge_uses_source_row_created_at(tmp_path: Path) -> None:

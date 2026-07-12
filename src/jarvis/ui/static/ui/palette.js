@@ -142,13 +142,13 @@ function openResult(r) {
   go(`#${dest}`);
 }
 
-// Open the graph tab focused on an entity. graph.js reads its focus from localStorage, so we set
-// it (navigate-only — no mutation) then jump to the active project's graph.
+// Open the graph tab focused on an entity. The graph consumes this session-only focus once, so a
+// database reset cannot turn an old project-id reuse into a stale graph view. Navigate-only.
 function openEntity(r) {
   const pid = _ctx.runner.project && _ctx.runner.project.id;
   if (!pid) { go("#projects"); return; }
   try {
-    localStorage.setItem(`kairo:graph:${pid}`, JSON.stringify({ focus: `${r.kind}:${r.ref_id}`, kinds: [] }));
+    sessionStorage.setItem(`kairo:graph:focus:${pid}`, `${r.kind}:${r.ref_id}`);
   } catch { /* storage disabled — the graph just opens unfocused */ }
   go(`#workspace/${pid}/graph`);
 }

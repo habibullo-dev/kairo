@@ -46,5 +46,11 @@ def test_collections_row_navigates_only() -> None:
     assert "location.hash" in PROJECTS_JS
 
 
-def test_card_opens_workspace_by_hash() -> None:
+def test_opening_an_inactive_workspace_switches_to_its_scoped_context_first() -> None:
+    # The Graph/Vault read models correctly require the server-owned active workspace. A project
+    # card therefore selects through the pre-existing lifecycle route before navigating instead
+    # of rendering an inactive project's scoped panels as misleadingly empty.
+    assert "const openWorkspace" in PROJECTS_JS
+    assert 'api.post("/api/projects/select", { project_id: p.id })' in PROJECTS_JS
+    assert "Open & switch" in PROJECTS_JS
     assert "workspace/" in PROJECTS_JS

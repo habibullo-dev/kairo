@@ -81,7 +81,7 @@ async def test_subgraph_is_project_scoped(tmp_path: Path) -> None:
 
 async def test_depth_and_limit_are_clamped(tmp_path: Path) -> None:
     store, _ = await _seed(tmp_path)
-    assert (await subgraph(store, 1, depth=99))["depth"] == MAX_DEPTH  # clamped to 2
+    assert (await subgraph(store, 1, depth=99))["depth"] == MAX_DEPTH  # clamped to 6
     tiny = await subgraph(store, 1, depth=2, limit=1)
     assert len(tiny["nodes"]) == 1 and tiny["truncated"] is True
 
