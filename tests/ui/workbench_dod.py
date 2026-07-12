@@ -420,6 +420,12 @@ def _base() -> dict:
             "mcp": {"connected": False, "note": "not connected — future phase"},
         },
         "/api/graph/search": {"results": []},
+        "/api/vault": {
+            "stats": {"sources": 4, "chunks": 12, "unreviewed": 0},
+            "unreviewed": [],
+            "project_id": None,
+            "project_readiness": None,
+        },
         "_default": {},
     }
 
@@ -454,6 +460,53 @@ def _seed_for(state: str) -> dict:
         s["_hash"] = "workspace/1/tasks"
         r["project"] = {"id": 1, "name": "Kairo"}
         s["/api/projects"]["active_project_id"] = 1
+    elif state == "workspace-vault":
+        s["_hash"] = "workspace/1/vault"
+        r["project"] = {"id": 1, "name": "Kairo"}
+        s["/api/projects"]["active_project_id"] = 1
+        s["/api/vault"] = {
+            "stats": {"sources": 4, "chunks": 12, "unreviewed": 0},
+            "unreviewed": [],
+            "project_id": 1,
+            "project_readiness": {
+                "project_id": 1,
+                "sources": 4,
+                "indexed_chunks": 12,
+                "graph_available": True,
+                "folder_links": 7,
+                "import_links": 3,
+                "ready": True,
+                "detail": (
+                    "Relevant sections and verified local dependencies are available "
+                    "to project chat."
+                ),
+            },
+        }
+        s["/api/chat/knowledge"] = {
+            "project_id": 1,
+            "source_count": 4,
+            "sources": [
+                {
+                    "id": 12,
+                    "title": "src/app.py",
+                    "kind": "file",
+                    "mime": "text/plain",
+                    "byte_size": 2048,
+                    "review_status": "reviewed",
+                    "created_at": "2026-07-09T09:00:00+00:00",
+                },
+                {
+                    "id": 11,
+                    "title": "src/core.py",
+                    "kind": "file",
+                    "mime": "text/plain",
+                    "byte_size": 1890,
+                    "review_status": "reviewed",
+                    "created_at": "2026-07-09T08:00:00+00:00",
+                },
+            ],
+            "graph": {"available": True, "nodes": [], "edge_count": 9, "truncated": False},
+        }
     elif state == "studio":
         s["_hash"] = "studio"
         r["project"] = {"id": 1, "name": "Kairo"}
@@ -652,6 +705,7 @@ STATES = [
     "projects",
     "workspace-overview",
     "workspace-tasks",
+    "workspace-vault",
     "studio",
     "studio-result",
     "costs",

@@ -91,16 +91,58 @@ async def test_unscoped_query_sees_everything(tmp_path: Path) -> None:
 async def test_project_query_includes_only_its_local_import_metadata(tmp_path: Path) -> None:
     svc = await _svc(tmp_path)
     await svc.ingest(
-        text="alpha canary\nfrom .core import runner", title="repo/src/kairo/app.py", project_id=1
+        text="alpha unique-query-token\nfrom .core import runner",
+        title="repo/src/kairo/app.py",
+        project_id=1,
     )
-    await svc.ingest(text="def runner(): pass", title="repo/src/kairo/core.py", project_id=1)
     await svc.ingest(
-        text="beta canary\nfrom .core import runner", title="other/src/kairo/app.py", project_id=2
+        text="CORE-DEPENDENCY-CANARY\ndef runner(): pass",
+        title="repo/src/kairo/core.py",
+        project_id=1,
     )
-    await svc.ingest(text="def runner(): pass", title="other/src/kairo/core.py", project_id=2)
+    await svc.ingest(
+        text="beta unique-query-token\nfrom .core import runner",
+        title="other/src/kairo/app.py",
+        project_id=2,
+    )
+    await svc.ingest(
+        text="PROJECT-B-DEPENDENCY-CANARY\ndef runner(): pass",
+        title="other/src/kairo/core.py",
+        project_id=2,
+    )
     await rebuild(GraphStore(svc.store.db, svc.store.lock))
 
-    project_a = await svc.query("alpha canary", project_id=1)
+    # One semantic hit finds app.py. GraphRAG then expands its verified project-local import
+    # neighbor core.py, without retrieving the equivalent Project B module.
+    project_a = await svc.query("alpha unique-query-token", top_k=1, project_id=1)
     assert "Project dependency metadata" in project_a
     assert "repo/src/kairo/app.py imports repo/src/kairo/core.py" in project_a
+    assert "Direct dependency excerpts" in project_a
+    assert "CORE-DEPENDENCY-CANARY" in project_a
     assert "other/src/kairo/app.py" not in project_a
+    assert "PROJECT-B-DEPENDENCY-CANARY" not in project_a
+
+
+async def test_project_query_never_expands_to_an_unreviewed_import_neighbor(
+    tmp_path: Path,
+) -> None:
+    svc = await _svc(tmp_path)
+    await svc.ingest(
+        text="reviewed query token\nfrom .core import runner",
+        title="repo/src/app.py",
+        project_id=1,
+    )
+    # Folder-style unattended imports remain quarantined until a person reviews them. A derived
+    # graph edge must not let this file bypass the normal retrieval review gate as an expansion.
+    svc.bound_unattended = True
+    await svc.ingest(
+        text="UNREVIEWED-DEPENDENCY-CANARY\ndef runner(): pass",
+        title="repo/src/core.py",
+        project_id=1,
+    )
+    await rebuild(GraphStore(svc.store.db, svc.store.lock))
+
+    result = await svc.query("reviewed query token", top_k=1, project_id=1)
+    assert "reviewed query token" in result
+    assert "UNREVIEWED-DEPENDENCY-CANARY" not in result
+    assert "Direct dependency excerpts" not in result

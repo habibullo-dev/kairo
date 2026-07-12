@@ -122,6 +122,138 @@ async def test_vault_overview_includes_preview_for_unreviewed(tmp_path: Path) ->
     assert "review me" in overview["unreviewed"][0]["preview"]  # preview shown for informed review
 
 
+async def test_vault_review_queue_is_project_scoped_without_narrowing_global_queue(
+    tmp_path: Path,
+) -> None:
+    svc = await _service(tmp_path)
+    projects = ProjectStore(svc.store.db, svc.store.lock)
+    project_id = await projects.create(name="Scoped review project")
+    svc.bound_unattended = True
+    await svc.ingest(text="GLOBAL-REVIEW-CANARY", title="global note")
+    await svc.ingest(
+        text="PROJECT-REVIEW-CANARY", title="project note", project_id=project_id
+    )
+
+    global_queue = await vault_overview(svc)
+    assert {item["title"] for item in global_queue["unreviewed"]} == {"global note", "project note"}
+    project_queue = await vault_overview(svc, project_id=project_id)
+    assert [item["title"] for item in project_queue["unreviewed"]] == ["project note"]
+    assert "GLOBAL-REVIEW-CANARY" not in str(project_queue)
+
+
+async def test_vault_readiness_is_project_scoped_and_bodies_free(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    projects = ProjectStore(svc.store.db, svc.store.lock)
+    project_a = await projects.create(name="A")
+    project_b = await projects.create(name="B")
+    await svc.ingest(
+        text="ALPHA-BODY-CANARY\nfrom .core import runner",
+        title="repo/src/app.py",
+        project_id=project_a,
+    )
+    await svc.ingest(
+        text="def runner(): pass",
+        title="repo/src/core.py",
+        project_id=project_a,
+    )
+    await svc.ingest(
+        text="PROJECT-B-BODY-CANARY",
+        title="other/private.py",
+        project_id=project_b,
+    )
+    graph = GraphStore(svc.store.db, svc.store.lock)
+    await rebuild_graph(graph)
+
+    overview = await vault_overview(svc, project_id=project_a, graph=graph)
+    assert overview["stats"] == {"sources": 2, "unreviewed": 0, "chunks": 2}
+    readiness = overview["project_readiness"]
+    assert readiness == {
+        "project_id": project_a,
+        "sources": 2,
+        "indexed_chunks": 2,
+        "graph_available": True,
+        "folder_links": 4,
+        "import_links": 1,
+        "ready": True,
+        "detail": (
+            "Relevant sections and verified local dependencies are available to project chat."
+        ),
+    }
+    rendered = str(readiness)
+    assert "ALPHA-BODY-CANARY" not in rendered
+    assert "PROJECT-B-BODY-CANARY" not in rendered
+
+
+async def test_vault_readiness_keeps_unreviewed_project_files_unusable(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    projects = ProjectStore(svc.store.db, svc.store.lock)
+    project_id = await projects.create(name="Quarantined project")
+    svc.bound_unattended = True
+    await svc.ingest(
+        text="AWAITING-REVIEW-CANARY",
+        title="repo/private.py",
+        project_id=project_id,
+    )
+
+    readiness = (await vault_overview(svc, project_id=project_id))["project_readiness"]
+    assert readiness["sources"] == 1
+    assert readiness["indexed_chunks"] == 0
+    assert readiness["ready"] is False
+    assert "awaiting review" in readiness["detail"]
+    assert "AWAITING-REVIEW-CANARY" not in str(readiness)
+
+
+async def test_vault_readiness_excludes_imports_through_unreviewed_sources(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    projects = ProjectStore(svc.store.db, svc.store.lock)
+    project_id = await projects.create(name="Mixed review project")
+    await svc.ingest(
+        text="reviewed app\nfrom .core import runner",
+        title="repo/src/app.py",
+        project_id=project_id,
+    )
+    svc.bound_unattended = True
+    await svc.ingest(
+        text="UNREVIEWED-IMPORT-CANARY\ndef runner(): pass",
+        title="repo/src/core.py",
+        project_id=project_id,
+    )
+    graph = GraphStore(svc.store.db, svc.store.lock)
+    await rebuild_graph(graph)
+
+    readiness = (await vault_overview(svc, project_id=project_id, graph=graph))["project_readiness"]
+    assert readiness["sources"] == 2
+    assert readiness["indexed_chunks"] == 1
+    assert readiness["import_links"] == 0
+    assert "no local imports were resolved yet" in readiness["detail"]
+    assert "UNREVIEWED-IMPORT-CANARY" not in str(readiness)
+
+
+async def test_vault_readiness_ignores_asserted_import_edges(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    projects = ProjectStore(svc.store.db, svc.store.lock)
+    project_id = await projects.create(name="Asserted graph project")
+    app = await svc.ingest(text="reviewed app", title="repo/src/app.py", project_id=project_id)
+    core = await svc.ingest(text="reviewed core", title="repo/src/core.py", project_id=project_id)
+    graph = GraphStore(svc.store.db, svc.store.lock)
+    await graph.upsert_edge(
+        src_kind="source",
+        src_id=str(app.source_id),
+        dst_kind="source",
+        dst_id=str(core.source_id),
+        edge_kind="imports",
+        origin="asserted",
+        trust_class="reviewed",
+        created_by="user",
+        created_at="2026-01-01T00:00:00+00:00",
+        project_id=project_id,
+    )
+
+    readiness = (await vault_overview(svc, project_id=project_id, graph=graph))["project_readiness"]
+    assert readiness["import_links"] == 0
+    assert "no local imports were resolved yet" in readiness["detail"]
+
+
 # --- POST /api/vault/ingest ------------------------------------------------
 
 
@@ -288,6 +420,13 @@ async def test_chat_knowledge_is_project_scoped_and_bodies_free(tmp_path: Path) 
     assert "chat-upload" not in rendered
     assert "markdown_path" not in rendered
 
+    # A workspace tab may state the project it is rendering, but the value is only a consistency
+    # check against the authenticated chat/workspace scope — never a cross-project selector.
+    matched = client.get(f"/api/chat/knowledge?project_id={project_a}", headers=_cookie(auth))
+    assert matched.status_code == 200 and matched.json()["project_id"] == project_a
+    foreign = client.get(f"/api/chat/knowledge?project_id={project_b}", headers=_cookie(auth))
+    assert foreign.status_code == 404
+
     client.app.state.session = SimpleNamespace(session_id=91, project_id=None)
     global_payload = client.get("/api/chat/knowledge", headers=_cookie(auth)).json()
     assert global_payload["project_id"] is None
@@ -338,6 +477,15 @@ def test_vault_js_has_ingest_box_and_text_preview() -> None:
     assert "/api/vault/ingest" in js  # the ingest box posts here
     assert "review-preview" in js  # per-source content preview (informed approval)
     assert "textContent" in js  # preview is rendered as TEXT, never HTML (untrusted content)
+    assert "project_readiness" in js
+    assert "entire project into every prompt" in js
+
+    workspace_js = (STATIC_DIR / "screens" / "workspace" / "vault.js").read_text(
+        encoding="utf-8"
+    )
+    assert "project_readiness" in workspace_js
+    assert "direct verified dependencies" in workspace_js
+    assert "/api/chat/knowledge?project_id=" in workspace_js
 
 
 def test_ingest_route_requires_session(tmp_path: Path) -> None:

@@ -690,20 +690,105 @@ def serialize_chat_file(source) -> dict:
     }
 
 
-async def vault_overview(knowledge: KnowledgeService, *, project_id: int | None = None) -> dict:
-    stats = await knowledge.stats()
-    unreviewed = await knowledge.unreviewed_sources()
+async def vault_overview(
+    knowledge: KnowledgeService, *, project_id: int | None = None, graph: Any = None
+) -> dict:
+    """Vault counts plus a bodies-free readiness view for one active project.
+
+    The readiness projection is deliberately metadata-only: it proves that semantic retrieval and
+    the derived local code graph have material to use, without returning a source body, graph
+    evidence, managed path, or a cross-project count.
+    """
+    if project_id is None:
+        stats = await knowledge.stats()
+    else:
+        # Workspace Vault renders these beside project-only readiness/tree data. Keep the count
+        # local too, so a project tab cannot silently present a global knowledge total as its own.
+        live_sources = await knowledge.store.list_sources(status="live", project_id=project_id)
+        unreviewed_sources = await knowledge.store.list_sources(
+            review_status="unreviewed", project_id=project_id
+        )
+        cursor = await knowledge.store.db.execute(
+            "SELECT COUNT(*) FROM kb_chunks c JOIN kb_sources s ON s.id=c.source_id "
+            "WHERE s.project_id=? AND s.status='live'",
+            (project_id,),
+        )
+        (chunks,) = await cursor.fetchone()
+        stats = {
+            "sources": len(live_sources),
+            "unreviewed": len(unreviewed_sources),
+            "chunks": int(chunks),
+        }
+    unreviewed = await (
+        knowledge.unreviewed_sources(project_id=project_id)
+        if project_id is not None
+        else knowledge.unreviewed_sources()
+    )
     items = []
     for s in unreviewed:
-        # Workspace Vault tab: scope the review queue to this project's sources (a Source carries
-        # project_id; None == global). The global Vault screen passes no project_id (all sources).
-        if project_id is not None and s.project_id != project_id:
-            continue
         entry = serialize_source(s)
         # A capped markdown preview so approving a quarantined source is INFORMED, not blind.
         entry["preview"] = await knowledge.source_markdown(s.id, max_chars=1200)
         items.append(entry)
-    return {"stats": stats, "unreviewed": items, "project_id": project_id}
+    readiness = None
+    if project_id is not None:
+        rows = await knowledge.store.list_sources(status="live", project_id=project_id)
+        reviewed_source_ids = {
+            source.id for source in rows if source.review_status == "reviewed"
+        }
+        cursor = await knowledge.store.db.execute(
+            "SELECT COUNT(*) FROM kb_chunks c JOIN kb_sources s ON s.id=c.source_id "
+            "WHERE s.project_id=? AND s.status='live' AND s.review_status='reviewed'",
+            (project_id,),
+        )
+        (indexed_chunks,) = await cursor.fetchone()
+        edge_counts: dict[str, int] = {}
+        if graph is not None:
+            for edge in await graph.list_edges(
+                project_id=project_id, include_global=False, origin="derived"
+            ):
+                if edge.edge_kind == "imports":
+                    try:
+                        if (
+                            int(edge.src_id) not in reviewed_source_ids
+                            or int(edge.dst_id) not in reviewed_source_ids
+                        ):
+                            continue
+                    except (TypeError, ValueError):
+                        # A malformed derived import is not verified evidence for readiness.
+                        continue
+                edge_counts[edge.edge_kind] = edge_counts.get(edge.edge_kind, 0) + 1
+        source_count = len(rows)
+        imports = edge_counts.get("imports", 0)
+        readiness = {
+            "project_id": project_id,
+            "sources": source_count,
+            "indexed_chunks": int(indexed_chunks),
+            "graph_available": graph is not None,
+            "folder_links": edge_counts.get("contains", 0),
+            "import_links": imports,
+            "ready": source_count > 0 and int(indexed_chunks) > 0,
+            "detail": (
+                "Relevant sections and verified local dependencies are available to project chat."
+                if source_count and int(indexed_chunks) and imports
+                else (
+                    "Relevant file sections are indexed; no local imports were resolved yet."
+                    if source_count and int(indexed_chunks)
+                    else (
+                        "Project files are awaiting review or could not be indexed; "
+                        "chat will not use them yet."
+                        if source_count
+                        else "Add project files to make project chat grounded in your work."
+                    )
+                )
+            ),
+        }
+    return {
+        "stats": stats,
+        "unreviewed": items,
+        "project_id": project_id,
+        "project_readiness": readiness,
+    }
 
 
 async def vault_lint(knowledge: KnowledgeService) -> dict:

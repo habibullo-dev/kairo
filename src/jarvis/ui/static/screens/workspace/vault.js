@@ -8,7 +8,9 @@ export async function render(container, api, ctx) {
   container.textContent = "";
   const [data, knowledge] = await Promise.all([
     api.get("/api/vault?project_id=" + encodeURIComponent(ctx.projectId)),
-    api.get("/api/chat/knowledge"),
+    // The tab is a project workspace, not the ambient chat shelf. The server accepts this value
+    // only when it matches the authenticated workspace, so it cannot select another project.
+    api.get("/api/chat/knowledge?project_id=" + encodeURIComponent(ctx.projectId)),
   ]);
   if (!data) {
     container.appendChild(emptyState("Unavailable", "Couldn't load this tab — it'll refresh shortly."));
@@ -19,6 +21,21 @@ export async function render(container, api, ctx) {
   const stats = data.stats || {};
   const chips = Object.entries(stats).map(([k, v]) => chip(k + " " + v));
   container.appendChild(el("div", { class: "ws-stats" }, chips.length ? chips : [chip("empty")]));
+  const readiness = data.project_readiness || null;
+  if (readiness) {
+    container.appendChild(section("Project knowledge readiness", [
+      el("div", { class: "ws-stats" }, [
+        chip(`${readiness.ready ? "Ready" : "Needs files"}`),
+        chip(`Files ${Number(readiness.sources) || 0}`),
+        chip(`Sections ${Number(readiness.indexed_chunks) || 0}`),
+        chip(`Imports ${Number(readiness.import_links) || 0}`),
+      ]),
+      el("div", { class: "dim" }, [readiness.detail || "Project knowledge is unavailable."]),
+      el("div", { class: "dim" }, [
+        "Chat retrieves relevant sections and direct verified dependencies for each question; it does not load the whole project into every prompt.",
+      ]),
+    ]));
+  }
 
   const rerender = () => render(container, api, ctx);
   const projectSources = knowledge && knowledge.project_id === ctx.projectId

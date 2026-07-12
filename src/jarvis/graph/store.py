@@ -335,14 +335,18 @@ class GraphStore:
         origin: str | None = None,
         status: str = "live",
     ) -> list[GraphEdge]:
-        scope_sql, params = _scope("project_id", project_id, include_global=include_global)
+        scope_sql, scope_params = _scope(
+            "project_id", project_id, include_global=include_global
+        )
         origin_sql = " AND origin=?" if origin else ""
+        params: list[object] = [status]
         if origin:
             params.append(origin)
+        params.extend(scope_params)
         cur = await self.db.execute(
             f"SELECT {_EDGE_COLS} FROM graph_edges WHERE status=?{origin_sql}{scope_sql} "
             "ORDER BY id",
-            (status, *params),
+            tuple(params),
         )
         return [_row_to_edge(r) for r in await cur.fetchall()]
 

@@ -1,17 +1,28 @@
 // Vault — KB stats + the unreviewed review queue (kb review) + lint. Amber flags anything
 // awaiting review (quarantined untrusted content).
+import { esc } from "../ui/dom.js";
 
 export async function render(container, api) {
   const data = await api.get("/api/vault");
   if (!data) { container.innerHTML = unavailable("Vault", "knowledge base off"); return; }
   const stats = data.stats || {};
+  const readiness = data.project_readiness;
   const cells = Object.entries(stats)
     .map(([k, v]) => `<div class="stat"><span class="n">${esc(String(v))}</span><span class="l">${esc(k)}</span></div>`)
     .join("");
   container.innerHTML = `
     <div class="rise"><h1>Vault</h1>
-      <div class="sub">Knowledge base — searchable, cited, provenance-tracked.</div></div>
+      <div class="sub">Project knowledge is retrieved by relevance, then expanded through verified local relationships.</div></div>
     <div class="card rise"><div class="stat-row">${cells || '<span class="dim">empty</span>'}</div></div>
+    ${readiness ? `<div class="card rise vault-readiness">
+      <div class="card-head"><div class="t">Project knowledge readiness</div><span class="tag ${readiness.ready ? "ok" : "amber"}">${readiness.ready ? "ready" : "needs files"}</span></div>
+      <div class="stat-row"><div class="stat"><span class="n">${esc(String(readiness.sources || 0))}</span><span class="l">project files</span></div>
+        <div class="stat"><span class="n">${esc(String(readiness.indexed_chunks || 0))}</span><span class="l">indexed sections</span></div>
+        <div class="stat"><span class="n">${esc(String(readiness.import_links || 0))}</span><span class="l">verified imports</span></div></div>
+      <div class="dim" style="font-size:12px;margin-top:8px">${esc(readiness.detail || "")}</div>
+      <div class="action-row" style="margin-top:10px"><a class="plain-button ghost" href="#workspace/${esc(String(readiness.project_id))}/graph">Open project graph</a><a class="plain-button ghost" href="#chat">Ask about this project</a></div>
+      <div class="dim" style="font-size:12px;margin-top:8px">Kairo retrieves relevant sections and direct verified dependencies for a question; it does not put the entire project into every prompt.</div>
+    </div>` : ""}
     <div class="card rise"><div class="card-head"><div class="t">Add to the vault</div></div>
       <div class="ingest-box">
         <input id="vault-ingest-input" placeholder="file path, folder, or https:// URL" autocomplete="off">
@@ -77,8 +88,6 @@ function btn(label, fn) {
   b.addEventListener("click", fn);
   return b;
 }
-function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 function unavailable(name, why) {
   return `<div class="rise"><h1>${name}</h1><div class="sub">Unavailable — ${why}.</div></div>`;
 }
-export { esc, unavailable };

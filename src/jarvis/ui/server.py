@@ -869,7 +869,9 @@ def create_app(
             if project_id is not None and project_id != workspace.context.project_id:
                 return _deny(status.HTTP_404_NOT_FOUND, "not found")
             project_id = workspace.context.project_id
-        return JSONResponse(await vault_overview(svc, project_id=project_id))
+        return JSONResponse(
+            await vault_overview(svc, project_id=project_id, graph=app.state.services.graph)
+        )
 
     @app.get("/api/vault/lint")
     async def vault_lint_route() -> JSONResponse:
@@ -932,12 +934,14 @@ def create_app(
         return _chat_output_download(store, artifact)
 
     @app.get("/api/chat/knowledge")
-    async def chat_knowledge(request: Request) -> JSONResponse:
+    async def chat_knowledge(request: Request, project_id: int | None = None) -> JSONResponse:
         """A compact, project-bound knowledge shelf for the active chat.
 
         This is deliberately metadata-only: project sources and a small derived graph preview.
-        The browser never supplies a project id, source body, local path, or graph selector;
-        all scope comes from the authenticated live workspace.
+        A Workspace tab may repeat its project id to make its request explicit, but that id is
+        only accepted when it exactly matches the authenticated live workspace/chat context. It
+        is never a cross-project selector; source bodies, local paths, and graph selectors remain
+        server-controlled.
         """
         knowledge = app.state.services.knowledge
         if knowledge is None:
@@ -945,7 +949,10 @@ def create_app(
         scope = _chat_scope(request)
         if app.state.workspaces is not None and scope is None:
             return _workspace_required()
-        project_id = scope.project_id if scope is not None else None
+        active_project_id = scope.project_id if scope is not None else None
+        if project_id is not None and project_id != active_project_id:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        project_id = active_project_id
         empty_graph = {
             "available": app.state.services.graph is not None,
             "nodes": [],
