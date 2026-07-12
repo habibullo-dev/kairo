@@ -30,6 +30,11 @@ function icon(kind) {
   return Object.hasOwn(KIND_ICONS, kind) ? KIND_ICONS[kind] : "◆";
 }
 
+function runId(a) {
+  const id = String(a && a.origin_id || "");
+  return a && a.origin_type === "orchestration" && /^\d+$/.test(id) ? id : null;
+}
+
 function withinWeek(iso) {
   if (!iso) return false;
   const t = Date.parse(iso);
@@ -122,6 +127,12 @@ function previewPanel(a) {
     open.addEventListener("click", () =>
       window.open(`/api/artifacts/${encodeURIComponent(a.id)}/content`, "_blank", "noopener"));
     acts.push(open);
+  }
+  const run = runId(a);
+  if (run) {
+    const openRun = el("button", { class: "plain-button ghost" }, ["Open run report"]);
+    openRun.addEventListener("click", () => { location.hash = `studio/${run}`; });
+    acts.push(openRun);
   }
   const labelInput = el("input", {
     class: "art-label-input", placeholder: "labels, comma-separated", value: (a.labels || []).join(", "),

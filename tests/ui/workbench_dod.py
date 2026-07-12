@@ -169,12 +169,80 @@ _ARTIFACTS = [
     },
 ]
 _RUN = {
+    "id": 1,
     "title": "Security · review",
     "workflow": "security_review",
     "team": "security",
     "status": "ok",
     "actual_cost_usd": 0.42,
     "finished_at": "2026-07-08T10:00:00+00:00",
+    "action_items": [
+        {
+            "title": "Add a recovery check",
+            "goal": "Cover the stale approval path before release.",
+            "priority": "high",
+        },
+        {
+            "title": "Verify mobile layout",
+            "goal": "Re-run the narrow visual harness after the change.",
+            "priority": "medium",
+        },
+    ],
+}
+_RUN_DETAIL = {
+    "run": {
+        **_RUN,
+        "verdict": "accept",
+        "estimated_cost_usd": 0.55,
+        "budget_usd": 2.0,
+        "synthesis_summary": (
+            "The team found two recoverable quality issues and no release blocker."
+        ),
+        "synthesis_findings": [
+            {"member": "qa_lead", "title": "QA Lead", "finding": "Regression checks passed."},
+            {
+                "member": "eval_reader",
+                "title": "Eval Reader",
+                "finding": "Evaluation freshness is current.",
+            },
+            {
+                "member": "ui_tester",
+                "title": "UI Tester",
+                "finding": "No visual overlap detected.",
+            },
+        ],
+        "action_items": [
+            {
+                "title": "Add a recovery check",
+                "goal": "Cover the stale approval path before release.",
+                "priority": "high",
+            },
+            {
+                "title": "Verify mobile layout",
+                "goal": "Re-run the narrow visual harness after the change.",
+                "priority": "medium",
+            },
+        ],
+        "verdict_rationale": "The scoped QA evidence supports acceptance.",
+        "context_manifest": [],
+    },
+    "members": [
+        {
+            "title": "qa:qa_lead", "role": "qa", "stage": "council", "status": "ok",
+            "iterations": 2, "denied_count": 0, "cost_usd": 0.1,
+            "models": ["anthropic · claude-sonnet-5"],
+        },
+        {
+            "title": "qa:eval_reader", "role": "utility", "stage": "council", "status": "ok",
+            "iterations": 2, "denied_count": 0, "cost_usd": 0.06,
+            "models": ["anthropic · claude-haiku-4-5"],
+        },
+        {
+            "title": "qa:ui_tester", "role": "qa", "stage": "council", "status": "ok",
+            "iterations": 2, "denied_count": 0, "cost_usd": 0.1,
+            "models": ["anthropic · claude-sonnet-5"],
+        },
+    ],
 }
 _PROJECT = {
     "id": 1,
@@ -219,9 +287,10 @@ _STUDIO = {
             "default_workflows": ["security_review"],
             "members": [
                 {
-                    "name": "Security Lead",
-                    "role": "lead",
+                    "id": "sec_lead",
+                    "title": "Security Lead",
                     "route_role": "reviewer",
+                    "capability": "read_only",
                     "tools": ["search"],
                     "services": [],
                 }
@@ -308,6 +377,7 @@ def _base() -> dict:
         "/api/workspace/1": _WORKSPACE,
         "/api/studio": _STUDIO,
         "/api/orchestration": {"runs": [_RUN]},
+        "/api/orchestration/1": _RUN_DETAIL,
         "/api/costs": _COSTS,
         "/api/roi": {"roi": [], "hourly_rate_usd": 75},
         "/api/settings": {},
@@ -380,8 +450,16 @@ def _seed_for(state: str) -> dict:
         s["_hash"] = "workspace/1"
         r["project"] = {"id": 1, "name": "Kairo"}
         s["/api/projects"]["active_project_id"] = 1
+    elif state == "workspace-tasks":
+        s["_hash"] = "workspace/1/tasks"
+        r["project"] = {"id": 1, "name": "Kairo"}
+        s["/api/projects"]["active_project_id"] = 1
     elif state == "studio":
         s["_hash"] = "studio"
+        r["project"] = {"id": 1, "name": "Kairo"}
+        s["/api/projects"]["active_project_id"] = 1
+    elif state == "studio-result":
+        s["_hash"] = "studio/1"
         r["project"] = {"id": 1, "name": "Kairo"}
         s["/api/projects"]["active_project_id"] = 1
     elif state == "costs":
@@ -573,7 +651,9 @@ STATES = [
     "chat-approval",
     "projects",
     "workspace-overview",
+    "workspace-tasks",
     "studio",
+    "studio-result",
     "costs",
     "settings",
     "model-selector",

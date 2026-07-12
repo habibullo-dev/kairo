@@ -10,6 +10,16 @@ const KIND_EMOJI = {
 };
 const kindEmoji = (kind) => KIND_EMOJI[kind] || "📦";
 
+function openArtifact(a) {
+  if (a.origin_type === "orchestration" && /^\d+$/.test(String(a.origin_id || ""))) {
+    location.hash = `studio/${a.origin_id}`;
+    return;
+  }
+  if (a.has_content) {
+    window.open("/api/artifacts/" + encodeURIComponent(a.id) + "/content", "_blank", "noopener");
+  }
+}
+
 export async function render(container, api, ctx) {
   container.textContent = "";
   const data = await api.get(`/api/workspace/${ctx.projectId}`);
@@ -27,9 +37,7 @@ export async function render(container, api, ctx) {
   const artRows = arts.length
     ? arts.map((a) =>
         row(kindEmoji(a.kind), a.title, a.kind + " · " + relTime(a.created_at), {
-          onClick: a.has_content
-            ? () => window.open("/api/artifacts/" + encodeURIComponent(a.id) + "/content", "_blank", "noopener")
-            : undefined,
+          onClick: (a.has_content || a.origin_type === "orchestration") ? () => openArtifact(a) : undefined,
         }),
       )
     : [emptyState("No artifacts yet", "Outputs Kairo files for this project appear here.")];
@@ -39,7 +47,7 @@ export async function render(container, api, ctx) {
     ? runs.map((r) =>
         row("🧩", r.title || r.workflow, r.status, {
           trailing: statusPill(r.status, runTone(r.status)),
-          onClick: () => { location.hash = "studio"; },
+          onClick: () => { location.hash = `studio/${r.id}`; },
         }),
       )
     : [emptyState("No runs yet", "Launch a team from Studio to see orchestration runs here.")];

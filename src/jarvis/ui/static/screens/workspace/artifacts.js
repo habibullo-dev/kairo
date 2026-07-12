@@ -13,6 +13,16 @@ function iconFor(kind) {
   return KIND_ICON[kind] || "📎";
 }
 
+function openArtifact(a) {
+  if (a.origin_type === "orchestration" && /^\d+$/.test(String(a.origin_id || ""))) {
+    location.hash = `studio/${a.origin_id}`;
+    return;
+  }
+  if (a.has_content) {
+    window.open("/api/artifacts/" + encodeURIComponent(a.id) + "/content", "_blank", "noopener");
+  }
+}
+
 export async function render(container, api, ctx) {
   container.textContent = "";
   const data = await api.get(`/api/artifacts?project_id=${ctx.projectId}`);
@@ -31,9 +41,8 @@ export async function render(container, api, ctx) {
 
   const rows = artifacts.map((a) => {
     const sub = a.kind + " · " + relTime(a.created_at) + (a.pinned ? " · pinned" : "");
-    const onClick = a.has_content
-      ? () => window.open("/api/artifacts/" + encodeURIComponent(a.id) + "/content", "_blank", "noopener")
-      : undefined;
+    const onClick = (a.has_content || a.origin_type === "orchestration")
+      ? () => openArtifact(a) : undefined;
     const trailing = actionButton(a.pinned ? "Unpin" : "Pin", async () => {
       await api.post(`/api/artifacts/${a.id}/pin`, { pinned: !a.pinned });
       render(container, api, ctx);

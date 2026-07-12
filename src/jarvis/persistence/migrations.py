@@ -1044,6 +1044,32 @@ async def _migrate_v19(db: aiosqlite.Connection) -> None:
             )
 
 
+async def _migrate_v20(db: aiosqlite.Connection) -> None:
+    """Add bounded, head-generated run-result metadata without exposing child transcripts."""
+
+    exists = await (
+        await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='orchestration_runs'"
+        )
+    ).fetchone()
+    if exists is None:
+        return
+    column_rows = await (await db.execute("PRAGMA table_info(orchestration_runs)")).fetchall()
+    columns = {row[1] for row in column_rows}
+    if "verdict_rationale" not in columns:
+        await db.execute("ALTER TABLE orchestration_runs ADD COLUMN verdict_rationale TEXT")
+    if "synthesis_findings_json" not in columns:
+        await db.execute(
+            "ALTER TABLE orchestration_runs ADD COLUMN synthesis_findings_json "
+            "TEXT NOT NULL DEFAULT '[]'"
+        )
+    if "action_items_json" not in columns:
+        await db.execute(
+            "ALTER TABLE orchestration_runs ADD COLUMN action_items_json "
+            "TEXT NOT NULL DEFAULT '[]'"
+        )
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1069,6 +1095,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (17, _SCHEMA_V17),
     (18, _migrate_v18),
     (19, _migrate_v19),
+    (20, _migrate_v20),
 ]
 
 

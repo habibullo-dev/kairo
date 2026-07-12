@@ -683,6 +683,7 @@ body.debug .debug-banner { display: flex; }
 
 /* Studio (Phase 10B) — orchestration teams + workflows + runs */
 .studio-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.studio-grid[hidden] { display: none; }
 @media (max-width: 900px) { .studio-grid { grid-template-columns: 1fr; } }
 .studio-head { margin-bottom: 10px; }
 #st-team, #st-workflow, #st-task, #st-budget {
@@ -721,6 +722,15 @@ body.debug .debug-banner { display: flex; }
 .timeline .stage.past { color: var(--ink-3); }
 .timeline .arr { color: var(--dimmer); }
 .synth { margin-top: 8px; padding: 8px 10px; border-left: 2px solid var(--line-2); color: var(--ink-3); font-size: 13px; white-space: pre-wrap; }
+.run-findings, .run-verdict { display: grid; gap: 8px; margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); }
+.run-finding { padding: 9px 10px; border-left: 2px solid rgba(var(--accent-rgb), .55); border-radius: 0 7px 7px 0; background: var(--canvas); color: var(--ink-2); font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+.run-finding b { display: block; margin-bottom: 3px; color: var(--ink); }
+.run-findings-note { margin-top: 10px; font-size: 12px; line-height: 1.45; }
+.run-actions { display: grid; gap: 8px; margin-top: 10px; padding: 10px; border: 1px solid rgba(var(--accent-rgb), .32); border-radius: 10px; background: var(--panel-soft); }
+.run-actions-note { font-size: 12px; line-height: 1.45; }
+.run-action-item { padding: 9px 10px; border-radius: 7px; background: var(--canvas); color: var(--ink-2); font-size: 13px; line-height: 1.5; }
+.run-action-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 3px; color: var(--ink); }
+.run-actions-open { justify-self: start; margin-top: 2px; }
 /* head reviewer (Fable) badge — accent (identity), never amber (amber is approval-only) */
 .head-line { margin-top: 10px; font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .synth-head { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }

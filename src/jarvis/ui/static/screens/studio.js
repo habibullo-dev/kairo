@@ -23,7 +23,7 @@ function headBadge(route) {
     <span class="hb-dot"></span>Fable <span class="dim mono">${esc(routeLabel(route, "planner"))}</span></span>`;
 }
 
-export async function render(container, api) {
+export async function render(container, api, args = []) {
   _api = api;
   const [cat, hist] = await Promise.all([api.get("/api/studio"), api.get("/api/orchestration")]);
   if (!cat) {
@@ -40,6 +40,7 @@ export async function render(container, api) {
   const svcState = mapServices(cat.services);
   const team = cat.teams.find((t) => t.id === S.team) || cat.teams[0];
   S.head = routeModel["planner"] || null;
+  const requestedRun = /^\d+$/.test(String(args[0] || "")) ? Number(args[0]) : null;
 
   container.innerHTML = `
     <div class="rise studio-head">
@@ -50,7 +51,7 @@ export async function render(container, api) {
     ${cat.active_project_id == null
       ? `<div class="card warn rise">Teams are project-scoped — select a project first.</div>`
       : ""}
-    <div class="studio-grid">
+    <div class="studio-grid"${requestedRun != null ? " hidden" : ""}>
       <div class="card rise">
         <div class="card-label">Team</div>
         <select id="st-team">${team ? cat.teams.map((t) =>
@@ -75,15 +76,17 @@ export async function render(container, api) {
       </div>
     </div>
     <div id="st-live"></div>
+    <div id="st-detail"></div>
     <div class="card rise">
       <div class="card-label">Recent runs</div>
       <table><tbody id="st-runs">${runsRows(S.runs)}</tbody></table>
-    </div>
-    <div id="st-detail"></div>`;
+    </div>`;
 
   renderEstimatePanel(container);
   renderLive(container);
   wire(container, api);
+  if (requestedRun != null) await showRunDetail(container, api, requestedRun);
+  else { S.detail = null; renderDetail(container); }
 }
 
 // live orchestration events (schema v2) → update the in-flight run panel
@@ -118,11 +121,14 @@ function wire(container, api) {
   container.querySelector("#st-estimate")?.addEventListener("click", () => doEstimate(container, api));
   container.querySelector("#st-run")?.addEventListener("click", () => doRun(container, api, false));
   for (const row of container.querySelectorAll("[data-run]")) {
-    row.addEventListener("click", async () => {
-      const d = await api.get(`/api/orchestration/${row.dataset.run}`);
-      S.detail = d; renderDetail(container);
-    });
+    row.addEventListener("click", () => { location.hash = `studio/${row.dataset.run}`; });
   }
+}
+
+async function showRunDetail(container, api, runId) {
+  const detail = await api.get(`/api/orchestration/${runId}`);
+  S.detail = detail && detail.run ? detail : null;
+  renderDetail(container);
 }
 
 function params(container) {
@@ -210,9 +216,9 @@ function renderDetail(container) {
   const r = S.detail.run;
   const money = (n) => (n == null ? "—" : `$${n.toFixed(4)}`);
   const members = (S.detail.members || []).map((m) =>
-    `<tr><td>${esc(m.role || "?")}</td><td class="dim">${esc(m.stage || "")}</td>
+    `<tr><td><b>${esc(memberLabel(m))}</b><div class="dim mono">${esc(m.role || "?")}</div></td><td class="dim">${esc(m.stage || "")}</td>
      <td>${statusPill(m.status)}</td><td style="text-align:right" class="dim">${m.iterations} it · ${m.denied_count} denied</td>
-     <td style="text-align:right">${money(m.cost_usd)}</td></tr>`).join("");
+     <td style="text-align:right">${money(m.cost_usd)}<div class="dim mono">${esc((m.models || []).join(" / ") || "model not recorded")}</div></td></tr>`).join("");
   const manifest = (r.context_manifest || []).map((c) =>
     `<span class="chip dim">${esc(c.kind)}:${esc(c.ref)}</span>`).join(" ");
   const roi = S.detail.roi;
@@ -227,14 +233,43 @@ function renderDetail(container) {
         ${(bd.services || []).length ? ` · services: ${bd.services
           .map((s) => `${esc(s.service)}×${s.calls}`).join(" · ")}` : ""}</div>`
     : "";
+  const findings = (r.synthesis_findings || []).map((finding) =>
+    `<article class="run-finding"><b>${esc(finding.title || finding.member || "Team member")}</b>
+      <div>${esc(finding.finding || "")}</div></article>`).join("");
+  const findingBlock = findings
+    ? `<section class="run-findings"><div class="synth-head">What each member found</div>${findings}</section>`
+    : `<div class="dim run-findings-note">This earlier run did not record member-level syntheses. The team synthesis below is its safe result record.</div>`;
+  const verdictBlock = r.verdict_rationale
+    ? `<section class="run-verdict"><div class="synth-head">Final rationale</div>${esc(r.verdict_rationale)}</section>`
+    : "";
+  const actions = (r.action_items || []).map((item) =>
+    `<article class="run-action-item"><div class="run-action-title"><b>${esc(item.title || "Follow-up")}</b>
+      <span class="chip dim">${esc(item.priority || "medium")}</span></div>
+      <div>${esc(item.goal || "")}</div></article>`).join("");
+  const actionBlock = actions
+    ? `<section class="run-actions"><div class="synth-head">Recommended next steps</div>
+        <div class="dim run-actions-note">Added to this project's Team follow-ups. They are not scheduled or run automatically.</div>
+        ${actions}<button class="plain-button ghost run-actions-open" data-project-tasks="${r.project_id}">Open project Tasks</button></section>`
+    : `<div class="dim run-findings-note">This earlier run did not record a structured follow-up plan. Run the review again to create one.</div>`;
   el.innerHTML = `<div class="card rise">
     <div class="card-label">Run #${r.id} · ${esc(r.title)} ${statusPill(r.status, r.verdict)}</div>
     <div class="dim">est ${money(r.estimated_cost_usd)} · actual ${money(r.actual_cost_usd)}
       ${r.budget_usd != null ? ` · cap ${money(r.budget_usd)}` : ""}</div>
     ${roiLine}${bdLine}
-    ${r.synthesis_summary ? `<div class="synth"><div class="synth-head">Synthesis ${headBadge(S.head)}</div>${esc(r.synthesis_summary)}</div>` : ""}
+    ${r.synthesis_summary ? `<div class="synth"><div class="synth-head">What the team found ${headBadge(S.head)}</div>${esc(r.synthesis_summary)}</div>` : ""}
+    ${actionBlock}${findingBlock}${verdictBlock}
     <table style="margin-top:.4rem">${members || '<tr><td class="dim">no members</td></tr>'}</table>
     <div class="dim" style="margin-top:.4rem">context: ${manifest || "—"}</div></div>`;
+  el.querySelector("[data-project-tasks]")?.addEventListener("click", (event) => {
+    const projectId = Number(event.currentTarget.dataset.projectTasks);
+    if (Number.isInteger(projectId) && projectId > 0) location.hash = `workspace/${projectId}/tasks`;
+  });
+}
+
+function memberLabel(member) {
+  const raw = String(member.title || member.role || "Team member");
+  const id = raw.includes(":") ? raw.split(":").pop() : raw;
+  return id.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // --- helpers ---

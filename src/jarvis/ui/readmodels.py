@@ -749,6 +749,11 @@ def serialize_orchestration_run(run: Any) -> dict:
         "stage": run.stage,
         "verdict": run.verdict,
         "synthesis_summary": run.synthesis_summary,
+        "verdict_rationale": run.verdict_rationale,
+        "synthesis_findings": run.synthesis_findings,
+        # Inert, bounded head-synthesis follow-ups. They are deliberately distinct from
+        # Scheduler tasks: no schedule, payload, execution path, or new authority crosses here.
+        "action_items": run.action_items,
         "estimated_cost_usd": run.estimated_cost_usd,
         "actual_cost_usd": run.actual_cost_usd,
         "budget_usd": run.budget_usd,
@@ -775,6 +780,24 @@ async def orchestration_run_detail(
     if run is None:
         return {"run": None, "members": []}
     members = await run_store.member_runs(run_id) if run_store is not None else []
+    # Model-call rows are bodies-free accounting metadata.  They let the results surface say
+    # which route actually participated without reconstructing a prompt or child transcript.
+    db = getattr(budgets, "db", None) if budgets is not None else None
+    if db is not None and members:
+        cursor = await db.execute(
+            "SELECT agent_role, stage, provider, model FROM model_calls "
+            "WHERE orchestration_run_id=? AND agent_role IS NOT NULL AND model IS NOT NULL "
+            "ORDER BY id",
+            (run_id,),
+        )
+        models: dict[tuple[str | None, str | None], list[str]] = {}
+        for role, stage, provider, model in await cursor.fetchall():
+            key = (role, stage)
+            label = " · ".join(part for part in (provider, model) if part)
+            if label and label not in models.setdefault(key, []):
+                models[key].append(label)
+        for member in members:
+            member["models"] = models.get((member.get("role"), member.get("stage")), [])
     detail = {"run": serialize_orchestration_run(run), "members": members}
     if budgets is not None:
         from jarvis.orchestration import WORKFLOWS

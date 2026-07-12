@@ -67,15 +67,39 @@ _CTX = ContextBundle(
 )
 
 
-def _synth(summary: str = "merged") -> object:
+def _synth(
+    summary: str = "merged",
+    findings: list[dict] | None = None,
+    action_items: list[dict] | None = None,
+) -> object:
     return tool_use_message(
-        [ToolCall(id="s1", name="record_synthesis", input={"summary": summary})]
+        [
+            ToolCall(
+                id="s1",
+                name="record_synthesis",
+                input={
+                    "summary": summary,
+                    **({"findings": findings} if findings is not None else {}),
+                    **({"action_items": action_items} if action_items is not None else {}),
+                },
+            )
+        ]
     )
 
 
-def _verdict(v: str) -> object:
+def _verdict(v: str, action_items: list[dict] | None = None) -> object:
     return tool_use_message(
-        [ToolCall(id="v1", name="record_verdict", input={"verdict": v, "rationale": "because"})]
+        [
+            ToolCall(
+                id="v1",
+                name="record_verdict",
+                input={
+                    "verdict": v,
+                    "rationale": "because",
+                    **({"action_items": action_items} if action_items is not None else {}),
+                },
+            )
+        ]
     )
 
 
@@ -98,9 +122,18 @@ async def test_store_begin_complete_roundtrip(tmp_path: Path) -> None:
     assert run.context_manifest[0]["ref"] == "a.py"  # manifest round-trips, bodies-free
     assert "text" not in run.context_manifest[0]  # no bodies in the audit record
     await store.set_stage(rid, "council")
-    await store.complete_run(rid, status="ok", verdict="accept", synthesis_summary="done")
+    await store.complete_run(
+        rid,
+        status="ok",
+        verdict="accept",
+        synthesis_summary="done",
+        verdict_rationale="the checks passed",
+        synthesis_findings=[{"member": "lead", "title": "Lead", "finding": "no blocker"}],
+    )
     run = await store.get(rid)
     assert run.status == "ok" and run.verdict == "accept" and run.finished_at is not None
+    assert run.verdict_rationale == "the checks passed"
+    assert run.synthesis_findings == [{"member": "lead", "title": "Lead", "finding": "no blocker"}]
 
 
 async def test_store_sweep_orphans(tmp_path: Path) -> None:
@@ -142,7 +175,10 @@ async def test_readonly_workflow_council_then_head_verdict(tmp_path: Path) -> No
         calls.append(kw)
         return ToolResult(content=f"report:{kw['role']}", is_error=False)
 
-    head = FakeClient([_synth("ok"), _verdict("accept")])
+    head = FakeClient([
+        _synth("ok", [{"member": "lead_researcher", "finding": "checked the sources"}]),
+        _verdict("accept"),
+    ])
     engine = OrchestrationEngine(
         spawn=fake_spawn,
         store=store,
@@ -159,6 +195,15 @@ async def test_readonly_workflow_council_then_head_verdict(tmp_path: Path) -> No
     )
     run = await store.get(rid)
     assert run.status == "ok" and run.verdict == "accept" and run.synthesis_summary == "ok"
+    assert run.verdict_rationale == "because"
+    assert run.synthesis_findings == [
+        {
+            "member": "lead_researcher",
+            "title": "Lead Researcher",
+            "finding": "checked the sources",
+        }
+    ]
+    assert run.action_items == []
     # research has 3 read-only members ⇒ 3 council spawns, no execution/review stage.
     council = [c for c in calls if c["stage"] == "council"]
     assert len(council) == 3 and {c["stage"] for c in calls} == {"council"}
@@ -166,6 +211,53 @@ async def test_readonly_workflow_council_then_head_verdict(tmp_path: Path) -> No
         assert c["fresh_trace"] is True and c["orchestration_run_id"] == rid
         assert set(c["tools"]) <= READ_ONLY_SPAWNABLE  # read-only floor holds
     assert len(head.calls) == 2  # synthesis + verdict, both on the head route
+
+
+async def test_head_action_items_are_bounded_and_never_scheduler_tasks(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+
+    async def fake_spawn(**kw) -> ToolResult:
+        return ToolResult(content="untrusted report", is_error=False)
+
+    head = FakeClient([
+        _synth(),
+        _verdict("accept", action_items=[
+            {
+                "title": "Fix approval recovery",
+                "goal": "Make the stale-approval path testable.",
+                "priority": "high",
+            },
+            {
+                "title": "fix approval recovery",
+                "goal": "duplicate must not survive",
+                "priority": "low",
+            },
+            {
+                "title": "Unknown priority",
+                "goal": "Keep a bounded plan item.",
+                "priority": "urgent",
+            },
+            {"title": "\x00" + "x" * 200, "goal": "y" * 600, "priority": "medium"},
+        ]),
+    ])
+    engine = OrchestrationEngine(
+        spawn=fake_spawn, store=store, head_client=head, head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+    )
+    rid = await engine.run(
+        project_id=1, team=resolve_team("research"), workflow=WORKFLOWS["research"],
+        context=_CTX, title="action plan",
+    )
+    run = await store.get(rid)
+    assert run is not None
+    assert [item["title"] for item in run.action_items[:2]] == [
+        "Fix approval recovery", "Unknown priority"
+    ]
+    assert run.action_items[1]["priority"] == "medium"
+    assert len(run.action_items[2]["title"]) == 160
+    assert len(run.action_items[2]["goal"]) == 500
+    # The engine owns no TaskService and never schedules a follow-up from a model report.
+    assert not hasattr(engine, "tasks")
 
 
 # --- Engine: building workflow — one writer, under the lock -----------------

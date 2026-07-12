@@ -19,7 +19,8 @@ import aiosqlite
 _COLUMNS = (
     "id, project_id, workflow, title, config_json, context_manifest_json, status, stage, "
     "verdict, synthesis_summary, estimated_cost_usd, actual_cost_usd, budget_usd, session_id, "
-    "trace_id, started_at, finished_at, created_at, skills_manifest_json"
+    "trace_id, started_at, finished_at, created_at, skills_manifest_json, verdict_rationale, "
+    "synthesis_findings_json, action_items_json"
 )
 
 #: Terminal statuses (CHECK-enforced in the schema).
@@ -53,6 +54,9 @@ class OrchestrationRun:
     finished_at: str | None
     created_at: str
     skills_manifest: list
+    verdict_rationale: str | None
+    synthesis_findings: list
+    action_items: list
 
 
 def _row_to_run(row: tuple) -> OrchestrationRun:
@@ -76,6 +80,9 @@ def _row_to_run(row: tuple) -> OrchestrationRun:
         finished_at=row[16],
         created_at=row[17],
         skills_manifest=json.loads(row[18]) if row[18] else [],
+        verdict_rationale=row[19],
+        synthesis_findings=json.loads(row[20]) if row[20] else [],
+        action_items=json.loads(row[21]) if row[21] else [],
     )
 
 
@@ -141,15 +148,33 @@ class OrchestrationStore:
         status: str,
         verdict: str | None = None,
         synthesis_summary: str | None = None,
+        verdict_rationale: str | None = None,
+        synthesis_findings: list[dict] | None = None,
+        action_items: list[dict] | None = None,
         actual_cost_usd: float | None = None,
     ) -> None:
-        """Write the terminal state. ``synthesis_summary`` is a SHORT summary, never a verbatim
-        transcript."""
+        """Write the terminal state and bounded head-generated result metadata.
+
+        Raw child reports and prompts remain outside this record. ``synthesis_findings`` and
+        ``action_items`` are small, inert head syntheses—not child transcripts or scheduler work.
+        """
         async with self.lock:
             await self.db.execute(
                 "UPDATE orchestration_runs SET status = ?, verdict = ?, synthesis_summary = ?, "
-                "actual_cost_usd = ?, finished_at = ? WHERE id = ?",
-                (status, verdict, synthesis_summary, actual_cost_usd, _now(), run_id),
+                "verdict_rationale = ?, synthesis_findings_json = ?, action_items_json = ?, "
+                "actual_cost_usd = ?, "
+                "finished_at = ? WHERE id = ?",
+                (
+                    status,
+                    verdict,
+                    synthesis_summary,
+                    verdict_rationale,
+                    json.dumps(synthesis_findings or []),
+                    json.dumps(action_items or []),
+                    actual_cost_usd,
+                    _now(),
+                    run_id,
+                ),
             )
             await self.db.commit()
 

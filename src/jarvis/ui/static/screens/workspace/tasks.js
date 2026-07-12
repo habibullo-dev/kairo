@@ -1,23 +1,21 @@
-// Workspace › Tasks tab (Phase 11 T10). Scheduled reminders and jobs for this project —
-// each row shows kind/status/next-run; active tasks can be cancelled in place.
+// Workspace › Tasks tab. Team follow-ups are inert head-synthesis planning items, deliberately
+// distinct from scheduled reminders/jobs: model findings never schedule or execute work.
 import { emptyState, chip, row, actionButton, section } from "./_util.js";
 
 export async function render(container, api, ctx) {
   container.textContent = "";
-  const data = await api.get("/api/tasks?project_id=" + ctx.projectId);
-  if (!data) {
+  const [data, runsData] = await Promise.all([
+    api.get("/api/tasks?project_id=" + ctx.projectId),
+    api.get("/api/orchestration?project_id=" + ctx.projectId),
+  ]);
+  if (!data && !runsData) {
     container.appendChild(emptyState("Unavailable", "Couldn't load this tab — it'll refresh shortly."));
     return;
   }
-  const tasks = Array.isArray(data) ? data : data.tasks || [];
-  if (!tasks.length) {
-    container.appendChild(
-      section("Tasks", [
-        emptyState("No tasks scheduled", "Reminders and jobs you schedule for this project will appear here."),
-      ])
-    );
-    return;
-  }
+  const tasks = Array.isArray(data) ? data : (data && data.tasks) || [];
+  const runs = (runsData && runsData.runs) || [];
+  const followUps = runs.flatMap((run) => (Array.isArray(run.action_items) ? run.action_items : [])
+    .map((item) => ({ ...item, runId: run.id, runTitle: run.title || run.workflow || "Team run" })));
   const rerender = () => render(container, api, ctx);
   const rows = tasks.map((t) => {
     const when = t.next_run_at ? t.next_run_at.slice(0, 16).replace("T", " ") : "";
@@ -28,5 +26,14 @@ export async function render(container, api, ctx) {
         : chip(t.status);
     return row("⏰", t.title, sub, { trailing });
   });
-  container.appendChild(section("Tasks", rows));
+  const followRows = followUps.map((item) => row("→", item.title, `${item.runTitle} · ${item.goal}`, {
+    trailing: chip(item.priority || "medium"),
+    onClick: () => { location.hash = `studio/${item.runId}`; },
+  }));
+  container.appendChild(section("Team follow-ups", followRows.length ? followRows : [
+    emptyState("No follow-ups yet", "Completed team reviews will place their recommended next steps here. They never schedule work automatically."),
+  ]));
+  container.appendChild(section("Scheduled tasks", rows.length ? rows : [
+    emptyState("No tasks scheduled", "Reminders and jobs you schedule for this project will appear here."),
+  ]));
 }

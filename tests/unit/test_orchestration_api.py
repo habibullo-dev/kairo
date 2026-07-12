@@ -212,7 +212,9 @@ async def _stores(tmp_path: Path):
     return OrchestrationStore(db, lock), AgentRunStore(db, lock)
 
 
-async def test_run_detail_is_bodies_free(tmp_path: Path) -> None:
+async def test_run_detail_exposes_head_synthesis_but_never_raw_child_reports(
+    tmp_path: Path,
+) -> None:
     store, run_store = await _stores(tmp_path)
     rid = await store.begin_run(
         project_id=1,
@@ -223,7 +225,23 @@ async def test_run_detail_is_bodies_free(tmp_path: Path) -> None:
         estimated_cost_usd=0.4,
         budget_usd=2.0,
     )
-    await store.complete_run(rid, status="ok", verdict="accept", synthesis_summary="looks fine")
+    await store.complete_run(
+        rid,
+        status="ok",
+        verdict="accept",
+        synthesis_summary="looks fine",
+        verdict_rationale="the scoped checks passed",
+        synthesis_findings=[
+            {"member": "sec_lead", "title": "Security Lead", "finding": "no blocker found"}
+        ],
+        action_items=[
+            {
+                "title": "Review release checklist",
+                "goal": "Confirm the scoped checks remain green.",
+                "priority": "medium",
+            }
+        ],
+    )
     # A member run carrying a secret prompt + report — neither may surface in the read model.
     mid = await run_store.begin_run(
         parent_session_id=None,
@@ -243,11 +261,22 @@ async def test_run_detail_is_bodies_free(tmp_path: Path) -> None:
     assert "SECRET-PROMPT-CANARY" not in blob and "SECRET-REPORT-CANARY" not in blob
     assert detail["run"]["synthesis_summary"] == "looks fine"
     assert detail["run"]["verdict"] == "accept"
+    assert detail["run"]["verdict_rationale"] == "the scoped checks passed"
+    assert detail["run"]["synthesis_findings"] == [
+        {"member": "sec_lead", "title": "Security Lead", "finding": "no blocker found"}
+    ]
+    assert detail["run"]["action_items"] == [
+        {
+            "title": "Review release checklist",
+            "goal": "Confirm the scoped checks remain green.",
+            "priority": "medium",
+        }
+    ]
     member = detail["members"][0]
     assert (
         member["role"] == "security" and member["stage"] == "council" and member["status"] == "ok"
     )
-    assert "prompt" not in member and "result_text" not in member  # bodies-free
+    assert "prompt" not in member and "result_text" not in member  # raw bodies stay private
 
 
 async def test_runs_view_lists_summaries(tmp_path: Path) -> None:
