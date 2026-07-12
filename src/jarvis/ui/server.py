@@ -765,27 +765,47 @@ def create_app(
     # passthrough — no response-model inference over a Response|data union.
 
     @app.get("/api/memory")
-    async def memory(type: str | None = None, project_id: int | None = None) -> JSONResponse:
-        # project_id scopes to "what Kairo knows about this project" (project + global). Absent
-        # ⇒ unscoped (every live memory). The ANY sentinel is the readmodel default.
+    async def memory(
+        request: Request, type: str | None = None, project_id: int | None = None
+    ) -> JSONResponse:
+        # A project workspace always sees its own + global memories. The optional query parameter
+        # is a compatibility echo, never a browser-controlled cross-project selector.
         from jarvis.ui.readmodels import _MEM_ANY_PROJECT
 
         svc = app.state.services.memory
         if svc is None:
             return _unavailable("memory")
-        scope = _MEM_ANY_PROJECT if project_id is None else project_id
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            active_project_id = workspace.context.project_id
+            if project_id is not None and project_id != active_project_id:
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
+            scope = active_project_id if active_project_id is not None else _MEM_ANY_PROJECT
+        else:
+            scope = _MEM_ANY_PROJECT if project_id is None else project_id
         return JSONResponse(await list_memories(svc, type_filter=type, project_id=scope))
 
     @app.get("/api/tasks")
-    async def tasks(project_id: int | None = None) -> JSONResponse:
-        # project_id scopes to a project page (P + global); absent ⇒ every task (the global
-        # Tasks screen). A project page passes ?project_id= to filter out other projects.
+    async def tasks(request: Request, project_id: int | None = None) -> JSONResponse:
+        # A project workspace sees its project + global tasks. The global workspace retains the
+        # aggregate screen, while an optional query id is only an active-project compatibility echo.
         from jarvis.scheduler.store import ANY_PROJECT
 
         svc = app.state.services.tasks
         if svc is None:
             return _unavailable("tasks")
-        scope = ANY_PROJECT if project_id is None else project_id
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None:
+            active_project_id = workspace.context.project_id
+            if project_id is not None and project_id != active_project_id:
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
+            scope = active_project_id if active_project_id is not None else ANY_PROJECT
+        else:
+            scope = ANY_PROJECT if project_id is None else project_id
         return JSONResponse(await list_tasks(svc, project_id=scope))
 
     @app.get("/api/tasks/{task_id}/runs")
@@ -2165,13 +2185,18 @@ def create_app(
         return JSONResponse(card)
 
     @app.get("/api/graph/suggestions")
-    async def graph_suggestions(project_id: int) -> JSONResponse:
+    async def graph_suggestions(project_id: int, request: Request) -> JSONResponse:
         # The project's QUARANTINED review queue (bodies-free previews + evidence pointers).
         svc = app.state.services
         if svc.graph is None:
             return JSONResponse(
                 {"project_id": project_id, "suggestions": [], "counts": {"by_trust": {}}}
             )
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if workspace is not None and project_id != workspace.context.project_id:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
         return JSONResponse(await suggestions_view(svc.graph, project_id))
 
     @app.post("/api/graph/suggestions/{suggestion_id}/approve")

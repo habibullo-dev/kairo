@@ -24,6 +24,7 @@ from jarvis.core.execution import (
     current_execution_context,
 )
 from jarvis.graph import GraphStore
+from jarvis.memory.store import MemoryStore
 from jarvis.permissions.gate import Decision
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
@@ -343,6 +344,7 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
         project_id=None,
     )
     graph = GraphStore(workspace_a.session.sessions.db, workspace_a.session.sessions.lock)
+    memory = SimpleNamespace(store=MemoryStore(workspace_a.session.sessions.db))
     journal = ConnectorWriteJournal(
         workspace_a.session.sessions.db, workspace_a.session.sessions.lock
     )
@@ -382,6 +384,7 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
     app.state.services = UiServices(
         sessions=workspace_a.session.sessions,
         tasks=tasks,
+        memory=memory,
         projects=projects,
         connectors=connectors,
         graph=graph,
@@ -409,6 +412,8 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
     # Global tasks deliberately remain visible from either workspace, just like the scoped task
     # list. The guard is project isolation, not an accidental removal of global reminders.
     assert client.get(f"/api/tasks/{global_task.id}/runs", headers=foreign).status_code == 200
+    assert client.get(f"/api/tasks?project_id={project_a}", headers=foreign).status_code == 404
+    assert client.get(f"/api/memory?project_id={project_a}", headers=foreign).status_code == 404
 
     # Connector-write audit rows follow the same server-owned workspace scope. The browser has
     # no project selector and no remote/rollback handles to turn a numeric id into authority.
@@ -427,6 +432,9 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
         f"/api/graph/suggestions/{foreign_suggestion}/reject", headers=own_post
     ).status_code == 404
     assert (await graph.get_suggestion(foreign_suggestion)).status == "pending"
+    assert client.get(
+        f"/api/graph/suggestions?project_id={project_a}", headers=foreign
+    ).status_code == 404
     assert client.post(
         f"/api/graph/suggestions/{own_suggestion}/approve", headers=own_post
     ).json()["ok"] is True
