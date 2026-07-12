@@ -81,6 +81,11 @@ sub_agents:
   max_parallel: 4               # concurrency semaphore (a resource bound, NOT a safety bound)
   max_spawn_calls_per_turn: 8   # runaway/UX guard: cap spawn calls in one parent turn (not a safety bound)
 
+skills:
+  # Reviewed local role playbooks. OFF is byte-identical to the pre-Skill-Forge runtime.
+  mode: "off"
+  enabled: []
+
 modes:
   # Run modes (Phase 10): plan | approval | auto. Backend-enforced in the agent loop; never
   # a bypass of the PermissionGate or the Phase 9 egress-taint guard. Applies to interactive
