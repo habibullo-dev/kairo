@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +33,40 @@ from jarvis.observability import get_logger
 _TELEGRAM_API = "https://api.telegram.org"
 _MAX_REPLY_CHARS = 3_800  # leave room below Telegram's 4096-character transport ceiling
 _RETRY_SECONDS = 5.0
+
+
+def compact_remote_model_reply(text: str, *, max_chars: int = 600) -> str:
+    """Normalize model prose for Telegram's intentionally plain-text transport.
+
+    Deterministic command/proposal replies bypass this helper. Model prose loses common Markdown
+    markers and is sentence-bounded so a style miss cannot turn into a wall of generic text.
+    """
+    value = (text or "Kairo did not return a response.").strip()
+    value = re.sub(r"```(?:[A-Za-z0-9_+-]+)?\s*", "", value)
+    value = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", value)
+    value = re.sub(r"\*\*(.+?)\*\*", r"\1", value, flags=re.DOTALL)
+    value = re.sub(r"__(.+?)__", r"\1", value, flags=re.DOTALL)
+    value = value.replace("`", "")
+    lines: list[str] = []
+    blank = False
+    for raw in value.splitlines():
+        line = re.sub(r"^\s*[-*•]\s+", "", raw).strip()
+        if not line:
+            if lines and not blank:
+                lines.append("")
+            blank = True
+            continue
+        lines.append(re.sub(r"\s+", " ", line))
+        blank = False
+    value = "\n".join(lines).strip()
+    if len(value) <= max_chars:
+        return value
+    prefix = value[: max_chars + 1]
+    endings = [match.end() for match in re.finditer(r"[.!?](?=\s|$)", prefix)]
+    if endings and endings[-1] >= max_chars // 2:
+        return prefix[: endings[-1]].rstrip()
+    clipped = prefix[:max_chars].rsplit(" ", 1)[0].rstrip()
+    return (clipped or prefix[:max_chars].rstrip()) + "…"
 
 
 def _now() -> str:

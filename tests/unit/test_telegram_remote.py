@@ -14,6 +14,7 @@ from jarvis.persistence.db import connect
 from jarvis.remote.telegram import (
     TelegramRemoteControl,
     TelegramRemoteControlStore,
+    compact_remote_model_reply,
     parse_telegram_update,
 )
 
@@ -115,6 +116,16 @@ def test_parse_update_requires_text_message_shape() -> None:
     ) is None
     parsed = parse_telegram_update(_update(1, chat_type="group", text="hello"))
     assert parsed is not None and parsed.chat_type == "group"  # authorization is controller-owned
+
+
+def test_model_reply_is_plain_compact_and_clips_at_a_sentence_boundary() -> None:
+    reply = compact_remote_model_reply(
+        "**Seoul weather**\n\n- **Temperature:** 35°C\n- **Conditions:** Mostly sunny.\n\n"
+        "`Extra` detail that should remain plain.",
+        max_chars=70,
+    )
+    assert "**" not in reply and "`" not in reply
+    assert reply == "Seoul weather\n\nTemperature: 35°C\nConditions: Mostly sunny."
 
 
 async def test_first_poll_discards_retained_updates_then_handles_fresh_private_owner_message(

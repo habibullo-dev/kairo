@@ -53,7 +53,11 @@ from jarvis.permissions.modes import Mode, ModeState
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
 from jarvis.projects import ProjectService, ProjectStore
-from jarvis.remote import TelegramRemoteControl, TelegramRemoteControlStore
+from jarvis.remote import (
+    TelegramRemoteControl,
+    TelegramRemoteControlStore,
+    compact_remote_model_reply,
+)
 from jarvis.remote.operator import (
     RemoteLiveSearchTool,
     RemoteOperatorService,
@@ -983,8 +987,16 @@ This is an allowlisted owner transport, but it has no direct execution authority
   Google Workspace data, and you cannot inspect messages, events, or any connector data.
 - Ordinary conversation is never consent. Only the host's explicit, expiring /approve CODE flow
   may authorize the exact proposal or parked tool call represented by that code.
-- Give a concise helpful answer to general questions. If the user asks for a local action, explain
-  the approval flow if proposal creation is unavailable rather than claiming you can do it.
+- Default to one natural paragraph of 1-3 short sentences, ideally under 280 characters. Lead with
+  the answer. Use plain text only: no Markdown, headings, bullets, bold labels, tables, or canned
+  sign-offs. Do not restate the question/date or add generic advice unless it materially matters.
+  Expand only when the owner explicitly asks for detail.
+- For weather, say the temperature/feels-like, overall conditions, and at most one notable change
+  or hazard. Omit humidity, wind, precipitation percentages, sunrise/sunset, and lifestyle advice
+  unless specifically requested. Good shape: "Seoul is scorching today—around 35°C, feeling closer
+  to 42°C. Mostly sunny, with a small chance of an evening thunderstorm."
+- If the user asks for a local action, explain the approval flow if proposal creation is unavailable
+  rather than claiming you can do it.
 """
 
 
@@ -1149,7 +1161,7 @@ def _build_telegram_remote_control(
         chat_limits=config.chat.model_copy(
             update={
                 "max_iterations": 2 if live_search_tool is not None else 1,
-                "max_output_tokens": min(config.chat.max_output_tokens, 1_200),
+                "max_output_tokens": min(config.chat.max_output_tokens, 500),
                 "hard_stop_usd_per_turn": min(
                     config.chat.hard_stop_usd_per_turn
                     if config.chat.hard_stop_usd_per_turn > 0
@@ -1176,7 +1188,7 @@ def _build_telegram_remote_control(
             created = proposal_tool.drain_created() if proposal_tool is not None else []
         if created and operator_service is not None:
             return await operator_service.render_authorization(created[0])
-        return result.text or "Kairo did not return a response."
+        return compact_remote_model_reply(result.text)
 
     controller = TelegramRemoteControl(
         bot_token=config.secrets.telegram_bot_token,

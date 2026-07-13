@@ -4,6 +4,7 @@ from jarvis.remote.telegram import (
     TelegramRemoteControl,
     TelegramRemoteControlStore,
     TelegramRemoteMessage,
+    compact_remote_model_reply,
     parse_telegram_update,
 )
 
@@ -11,5 +12,6 @@ __all__ = [
     "TelegramRemoteControl",
     "TelegramRemoteControlStore",
     "TelegramRemoteMessage",
+    "compact_remote_model_reply",
     "parse_telegram_update",
 ]

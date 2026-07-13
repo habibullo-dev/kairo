@@ -67,7 +67,7 @@ async def test_remote_wiring_uses_utility_model_and_exposes_no_tools_or_history(
     config.secrets = config.secrets.model_copy(update={"telegram_bot_token": "BOT-CANARY"})
     db = await connect(tmp_path / "remote.db")
     try:
-        fake = FakeClient([text_message("safe remote reply")])
+        fake = FakeClient([text_message("**Safe** remote reply")])
         store = SessionStore(db)
         repl = SimpleNamespace(
             tasks=None,
@@ -99,9 +99,10 @@ async def test_remote_wiring_uses_utility_model_and_exposes_no_tools_or_history(
         assert call["model"] == config.models.utility
         assert call["tools"] == []
         assert call["messages"] == [{"role": "user", "content": "what should I focus on?"}]
-        assert call["max_tokens"] == 1_200
+        assert call["max_tokens"] == 500
         assert "no direct execution authority" in call["system"]
-        assert http.sent[0]["text"] == "safe remote reply"
+        assert "ideally under 280 characters" in call["system"]
+        assert http.sent[0]["text"] == "Safe remote reply"
     finally:
         await db.close()
 
