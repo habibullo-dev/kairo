@@ -34,6 +34,10 @@ class FilesystemPolicy(BaseModel):
     # allowlist — provenance-managed trees (the knowledge base) must be written only
     # via their tracking tools (write_wiki_page / ingest_source). Denylist wins.
     write_denylist: list[str] = Field(default_factory=lambda: ["data/knowledge"])
+    # Reads inside the project root are silent by default. Reads outside this explicit
+    # directory allowlist are escalated from allow to ask, so arbitrary machine files
+    # cannot silently enter model context.
+    read_allowlist: list[str] = Field(default_factory=lambda: ["."])
     # Extra fnmatch patterns that deny reads, *on top of* the built-in secret/key
     # floor in jarvis.paths.is_sensitive_path (which cannot be disabled from YAML).
     read_denylist: list[str] = Field(default_factory=list)

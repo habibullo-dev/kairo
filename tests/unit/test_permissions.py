@@ -6,11 +6,14 @@ from pathlib import Path
 
 import pytest
 
+from jarvis.config import load_config
+from jarvis.core import ToolCall
 from jarvis.permissions import (
     PermissionGate,
     Policy,
     ShellRule,
     load_policy,
+    persist_always,
     save_policy,
 )
 from jarvis.permissions.policy import FilesystemPolicy, ShellPolicy
@@ -31,6 +34,7 @@ def test_load_missing_file_gives_safe_defaults(tmp_path: Path) -> None:
     assert p.default is ASK
     assert p.tools == {}
     assert p.filesystem.write_allowlist == ["."]
+    assert p.filesystem.read_allowlist == ["."]
 
 
 def test_load_and_roundtrip(tmp_path: Path) -> None:
@@ -95,7 +99,7 @@ def test_ingest_source_sensitive_path_denied_by_default_gate(tmp_path: Path) -> 
     assert g.check("ingest_source", {"path": ".env"}).permission is DENY
 
 
-def test_gate_read_write_tools_have_path_field() -> None:
+def test_gate_read_write_tools_have_correct_path_fields() -> None:
     # Self-consistency: every tool the gate does path-checking for must actually have a
     # `path` param, or the check silently reads None and the floor never runs. This
     # class of misconfiguration passes every functional test otherwise.
@@ -104,12 +108,19 @@ def test_gate_read_write_tools_have_path_field() -> None:
     reg = ToolRegistry()
     reg.discover("jarvis.tools.builtin", ToolContext())  # phase-1 tools always register
     g = PermissionGate(Policy(), Path("."))
-    for name in g.path_tools | g.read_tools:
+    for name in g.path_tools:
         tool = reg.get(name)
         if tool is None:
             continue  # optional tools (ingest_source) may be absent without a service
         assert g.path_field in tool.Params.model_fields, (
             f"{name} is gate-path-checked but has no '{g.path_field}' param"
+        )
+    for name, field in g.read_path_fields.items():
+        tool = reg.get(name)
+        if tool is None:
+            continue  # optional tools (ingest_source) may be absent without a service
+        assert field in tool.Params.model_fields, (
+            f"{name} is read-path-checked but has no '{field}' param"
         )
 
 
@@ -258,6 +269,68 @@ def test_write_ask_base_stays_ask_even_inside_allowlist(tmp_path: Path) -> None:
     assert g.check("write_file", {"path": "x.txt"}).permission is ASK
 
 
+# --- filesystem read allowlist ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input"),
+    [
+        ("read_file", {"path": "notes/todo.txt"}),
+        ("list_dir", {"path": "notes"}),
+        ("glob_search", {"root": "notes", "pattern": "*.txt"}),
+    ],
+)
+def test_project_read_surfaces_keep_allow(
+    tmp_path: Path, tool_name: str, tool_input: dict[str, str]
+) -> None:
+    g = gate(Policy(), tmp_path)
+    assert g.check(tool_name, tool_input, tool_default=ALLOW).permission is ALLOW
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input"),
+    [
+        ("read_file", {"path": "outside/note.txt"}),
+        ("list_dir", {"path": "outside"}),
+        ("glob_search", {"root": "outside", "pattern": "*.txt"}),
+    ],
+)
+def test_external_read_surfaces_escalate_allow_to_ask(
+    tmp_path: Path, tool_name: str, tool_input: dict[str, str]
+) -> None:
+    outside = tmp_path.parent / "outside"
+    rewritten = {
+        key: str(outside / value) if key in {"path", "root"} else value
+        for key, value in tool_input.items()
+    }
+    g = gate(Policy(), tmp_path)
+    decision = g.check(tool_name, rewritten, tool_default=ALLOW)
+    assert decision.permission is ASK
+    assert "outside allowlist" in decision.reason
+
+
+def test_read_allowlist_permits_one_external_directory_not_its_parent(tmp_path: Path) -> None:
+    external = tmp_path.parent / "external" / "shared"
+    policy = Policy(filesystem=FilesystemPolicy(read_allowlist=[".", str(external)]))
+    g = gate(policy, tmp_path)
+    assert (
+        g.check("read_file", {"path": str(external / "note.txt")}, tool_default=ALLOW).permission
+        is ALLOW
+    )
+    assert (
+        g.check(
+            "read_file", {"path": str(external.parent / "private.txt")}, tool_default=ALLOW
+        ).permission
+        is ASK
+    )
+
+
+def test_read_scope_never_loosens_an_ask_base(tmp_path: Path) -> None:
+    g = gate(Policy(tools={"read_file": ASK}), tmp_path)
+    assert g.check("read_file", {"path": "notes/todo.txt"}).permission is ASK
+    assert g.check("read_file", {"path": str(tmp_path.parent / "outside.txt")}).permission is ASK
+
+
 # --- persistence -----------------------------------------------------------
 
 
@@ -300,6 +373,62 @@ def test_persist_write_dir(tmp_path: Path) -> None:
     g = gate(load_policy(src), tmp_path, source_path=src)
     g.persist_write_dir("exports")
     assert "exports" in load_policy(src).filesystem.write_allowlist
+
+
+def test_persist_read_dir(tmp_path: Path) -> None:
+    src = tmp_path / "permissions.yaml"
+    save_policy(Policy(), src)
+    g = gate(load_policy(src), tmp_path, source_path=src)
+    g.persist_read_dir("reference")
+    assert "reference" in load_policy(src).filesystem.read_allowlist
+
+
+def test_always_on_external_read_persists_only_the_read_directory(tmp_path: Path) -> None:
+    config = load_config(root=tmp_path, env_file=None)
+    external = tmp_path.parent / f"{tmp_path.name}-external" / "reference"
+    external.mkdir(parents=True)
+    g = gate(Policy(), tmp_path)
+    saved = persist_always(
+        g,
+        config,
+        ToolCall(id="c1", name="read_file", input={"path": str(external / "brief.md")}),
+    )
+    assert saved == f"read dir {external}"
+    assert g.policy.tools == {}
+    assert (
+        g.check("read_file", {"path": str(external / "brief.md")}, tool_default=ALLOW).permission
+        is ALLOW
+    )
+    assert (
+        g.check(
+            "read_file", {"path": str(external.parent / "other.md")}, tool_default=ALLOW
+        ).permission
+        is ASK
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "tool_input"),
+    [
+        ("list_dir", {"path": "external/reference"}),
+        ("glob_search", {"root": "external/reference", "pattern": "*.md"}),
+    ],
+)
+def test_always_on_external_directory_read_persists_that_directory(
+    tmp_path: Path, name: str, tool_input: dict[str, str]
+) -> None:
+    config = load_config(root=tmp_path, env_file=None)
+    external = tmp_path.parent / f"{tmp_path.name}-external" / "reference"
+    external.mkdir(parents=True)
+    rewritten = {
+        key: str(external) if key in {"path", "root"} else value
+        for key, value in tool_input.items()
+    }
+    g = gate(Policy(), tmp_path)
+    saved = persist_always(g, config, ToolCall(id="c1", name=name, input=rewritten))
+    assert saved == f"read dir {external}"
+    assert g.policy.tools == {}
+    assert g.check(name, rewritten, tool_default=ALLOW).permission is ALLOW
 
 
 # --- hardening: shell chaining / redirection cannot bypass an allow rule ----

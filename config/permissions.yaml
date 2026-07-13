@@ -24,6 +24,8 @@ filesystem:
   write_denylist:
   - data/knowledge
   - config/skills
+  read_allowlist:
+  - .
   read_denylist: []
 shell:
   rules:

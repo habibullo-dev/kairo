@@ -141,7 +141,8 @@ straight from disk (memory safety), and list/glob output is capped.
 Base decision precedence: per-tool entry → the tool's own default → policy default.
 Refinements: a **sensitive-path floor** (`jarvis/paths.py`) denies reads and writes
 of secrets/keys regardless of policy; filesystem writes are checked against an
-allowlist (can only tighten); shell commands match longest-prefix rules at a token
+allowlist (can only tighten); filesystem reads outside the project/read allowlist
+escalate to an explicit approval; shell commands match longest-prefix rules at a token
 boundary, with an `allow` downgraded to `ask` when shell metacharacters could chain
 or redirect; a tool-level `deny` is absolute. The gate and the filesystem tools
 resolve paths through the *same* `resolve_path` (against the workspace root), so a

@@ -422,8 +422,9 @@ model call, tool call, and permission decision is written to an append-only JSON
 audit log at `logs/jarvis-YYYY-MM-DD.jsonl`, correlated by a per-turn `trace_id`.
 
 - **Decisions are `allow` / `ask` / `deny`**, configured in
-  [`config/permissions.yaml`](config/permissions.yaml). Safe defaults: reads are
-  allowed; writes, shell, and network (`web_search` / `web_fetch`) ask first.
+  [`config/permissions.yaml`](config/permissions.yaml). Reads inside the project are
+  allowed; an external filesystem read asks unless its directory is explicitly allowlisted.
+  Writes and shell ask first; web-search posture is shown in Settings.
 - **Secrets are off-limits by a code floor.** Reads *and* writes of credential
   paths (`.env`, SSH/GPG keys, `.aws/credentials`, `.npmrc`, `*.pem`, …) are
   denied outright — a floor in `jarvis/paths.py` that policy can extend but not

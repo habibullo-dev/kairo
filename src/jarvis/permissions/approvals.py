@@ -1,7 +1,7 @@
 """Shared 'always allow' persistence — one truth for every interface (Phase 8).
 
-The narrow-persist discipline (persist a shell rule by prefix, a write by its *resolved*
-parent dir, refuse over-broad/sensitive dirs, and never persist a deferred-execution sink)
+The narrow-persist discipline (persist a shell rule by prefix, filesystem access by its
+resolved directory, refuse over-broad/sensitive dirs, and never persist a deferred-execution sink)
 originated inside the REPL. The workstation UI must apply the exact same rule when a human
 clicks "Always allow (narrow)", so drift here is a safety bug. Extracting it to a pure
 function over ``(gate, config, call)`` gives the REPL and the UI one implementation — the
@@ -40,6 +40,8 @@ def persist_always(gate: PermissionGate, config: Config, call: ToolCall, *, log=
       ``git status …`` but not ``git push``).
     * ``write_file`` → the *resolved* parent directory (resolved against the workspace root
       exactly as the gate resolves it), unless it is a drive root / home / sensitive path.
+    * ``read_file`` → its resolved parent directory; ``list_dir`` / ``glob_search`` → their
+      resolved target directory. This is a read-scope grant, never a global tool allow.
     * anything else → a tool-level allow.
     """
     log = log or get_logger("jarvis.permissions.approvals")
@@ -62,6 +64,18 @@ def persist_always(gate: PermissionGate, config: Config, call: ToolCall, *, log=
             gate.persist_write_dir(str(parent))
             return f"write dir {parent}"
         log.warning("always_allow_not_persisted", dir=str(parent), reason="too broad/sensitive")
+        return None
+    if call.name in {"read_file", "list_dir", "glob_search"}:
+        field = gate.read_path_fields[call.name]
+        raw = inp.get(field)
+        if not raw:
+            return None
+        target = resolve_path(raw, config.root)
+        directory = target.parent if call.name == "read_file" else target
+        if is_safe_to_persist_dir(directory):
+            gate.persist_read_dir(str(directory))
+            return f"read dir {directory}"
+        log.warning("always_allow_not_persisted", dir=str(directory), reason="too broad/sensitive")
         return None
     gate.persist_allow(call.name)
     return f"tool {call.name}"

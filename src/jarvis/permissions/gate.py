@@ -11,7 +11,8 @@ then refine that base:
 * **Filesystem writes** — a write whose target falls outside the allowlist is
   never silently allowed; an ``allow`` base is escalated to ``ask``.
 * **Filesystem reads** — additionally denied if they match the policy's
-  ``read_denylist`` (on top of the sensitive-path floor).
+  ``read_denylist`` (on top of the sensitive-path floor), and an otherwise-allowed
+  read outside ``read_allowlist`` is escalated to ``ask``.
 * **Shell commands** — the longest matching prefix rule wins and overrides the
   base, *unless* the tool is denied outright (a tool-level ``deny`` is absolute).
   An ``allow`` never survives shell metacharacters (``;``, ``|``, redirection,
@@ -39,6 +40,15 @@ from jarvis.tools.base import Permission
 # command output. If any appear, an "allow" shell decision is downgraded to "ask".
 # ``&&`` / ``||`` are covered by ``&`` / ``|``; newlines cover multi-statement input.
 _SHELL_METACHARACTERS: tuple[str, ...] = (";", "|", "&", "`", "$(", "${", ">", "<", "\n", "\r")
+
+# The gate must inspect the exact filesystem target for every built-in read surface.
+# ``glob_search`` is the one exception to the usual ``path`` parameter name.
+_DEFAULT_READ_PATH_FIELDS: dict[str, str] = {
+    "read_file": "path",
+    "ingest_source": "path",
+    "list_dir": "path",
+    "glob_search": "root",
+}
 
 
 def _has_shell_metacharacters(command: str) -> bool:
@@ -95,10 +105,10 @@ class PermissionGate:
         *,
         source_path: Path | None = None,
         path_tools: frozenset[str] = frozenset({"write_file"}),
-        # ingest_source's file leg is a read of an arbitrary path — gate it like one so
-        # the sensitive-path floor applies before any converter opens the file. Its
-        # ``path`` field name must match ``path_field`` (pinned by a gate test).
-        read_tools: frozenset[str] = frozenset({"read_file", "ingest_source"}),
+        # ``read_tools`` remains as a compatibility override for callers that use the
+        # legacy one-field shape. New built-in read surfaces use ``read_path_fields``.
+        read_tools: frozenset[str] | None = None,
+        read_path_fields: dict[str, str] | None = None,
         path_field: str = "path",
         shell_tools: frozenset[str] = frozenset({"run_shell"}),
         command_field: str = "command",
@@ -107,7 +117,13 @@ class PermissionGate:
         self.project_root = project_root.resolve()
         self.source_path = source_path
         self.path_tools = path_tools
-        self.read_tools = read_tools
+        if read_path_fields is not None:
+            self.read_path_fields = dict(read_path_fields)
+        elif read_tools is not None:
+            self.read_path_fields = {name: path_field for name in read_tools}
+        else:
+            self.read_path_fields = dict(_DEFAULT_READ_PATH_FIELDS)
+        self.read_tools = frozenset(self.read_path_fields)
         self.path_field = path_field
         self.shell_tools = shell_tools
         self.command_field = command_field
@@ -131,7 +147,7 @@ class PermissionGate:
             return self._check_shell(tool_name, tool_input, base)
         if tool_name in self.path_tools:
             return self._check_path(tool_name, tool_input, base)
-        if tool_name in self.read_tools:
+        if tool_name in self.read_path_fields:
             return self._check_read_path(tool_name, tool_input, base)
         return Decision(base, f"policy for '{tool_name}': {base}")
 
@@ -206,13 +222,18 @@ class PermissionGate:
         return None
 
     def _check_read_path(self, tool_name: str, tool_input: dict, base: Permission) -> Decision:
-        raw = tool_input.get(self.path_field)
+        field = self.read_path_fields[tool_name]
+        raw = tool_input.get(field)
         if not raw:
             return Decision(base, f"policy for '{tool_name}' (no path given): {base}")
         target = resolve_path(raw, self.project_root)
 
         if is_sensitive_path(target) or matches_any(target, self.policy.filesystem.read_denylist):
             return Decision(Permission.DENY, f"read of sensitive path denied: {target}")
+        if self._within_read_allowlist(target):
+            return Decision(base, f"read within allowlist: {target}")
+        if base is Permission.ALLOW:
+            return Decision(Permission.ASK, f"read outside allowlist, escalated to ask: {target}")
         return Decision(base, f"read of '{target}': {base}")
 
     def _within_allowlist(self, target: Path) -> bool:
@@ -227,6 +248,13 @@ class PermissionGate:
         the tracking tools, not the generic write_file — even though it's inside the
         allowlisted project root. Denylist wins over the allowlist."""
         for entry in self.policy.filesystem.write_denylist:
+            base_dir = resolve_path(entry, self.project_root)
+            if target == base_dir or target.is_relative_to(base_dir):
+                return True
+        return False
+
+    def _within_read_allowlist(self, target: Path) -> bool:
+        for entry in self.policy.filesystem.read_allowlist:
             base_dir = resolve_path(entry, self.project_root)
             if target == base_dir or target.is_relative_to(base_dir):
                 return True
@@ -251,6 +279,12 @@ class PermissionGate:
         """Persist a directory into the write allowlist."""
         if directory not in self.policy.filesystem.write_allowlist:
             self.policy.filesystem.write_allowlist.append(directory)
+        self._save()
+
+    def persist_read_dir(self, directory: str) -> None:
+        """Persist one external directory as a scoped silent-read area."""
+        if directory not in self.policy.filesystem.read_allowlist:
+            self.policy.filesystem.read_allowlist.append(directory)
         self._save()
 
     def _save(self) -> None:
