@@ -34,6 +34,68 @@ _TELEGRAM_API = "https://api.telegram.org"
 _MAX_REPLY_CHARS = 3_800  # leave room below Telegram's 4096-character transport ceiling
 _RETRY_SECONDS = 5.0
 
+_ACTION_VERBS = (
+    r"(?:add|approve|build|cancel|change|create|delete|deny|edit|fix|launch|open|"
+    r"remind|repair|run|schedule|send|start|update|work on|write)"
+)
+_ACTION_REQUEST = re.compile(
+    rf"^(?:(?:hey )?kairo )?(?:please )?{_ACTION_VERBS}\b|"
+    rf"^(?:kairo )?(?:can|could|would|will) (?:you|kairo) (?:please )?{_ACTION_VERBS}\b|"
+    rf"\b(?:i need|i want) (?:you|kairo) to {_ACTION_VERBS}\b"
+)
+
+
+def natural_remote_read_command(text: str) -> str | None:
+    """Map clear natural-language read questions to the same host-owned slash commands.
+
+    The model has deliberately limited local access. Routing common read intents before the
+    model means ordinary owner language gets verified live state without widening model tools.
+    Action requests are excluded so phrases such as "create a task" still reach Remote Operator.
+    """
+    value = re.sub(r"[^a-z0-9']+", " ", text.casefold()).strip()
+    if not value or _ACTION_REQUEST.search(value):
+        return None
+
+    if re.search(
+        r"\b(?:kairo|you)\b.*\b(?:busy|doing|running|working)\b|"
+        r"\b(?:busy|running|working)\b.*\b(?:jobs?|projects?|tasks?|work)\b",
+        value,
+    ):
+        return "/status"
+    if re.search(r"\b(?:briefing|daily overview|today's overview)\b", value):
+        return "/briefing"
+    if re.search(r"\b(?:inbox|e ?mail|mail)\b", value) and re.search(
+        r"\b(?:anything|check|how many|new|status|unread|what|what's)\b", value
+    ):
+        return "/inbox"
+    if re.search(r"\b(?:appointments?|calendar|events?|meetings?)\b", value) and re.search(
+        r"\b(?:check|next|status|today|upcoming|what|what's)\b", value
+    ):
+        return "/calendar"
+    if re.search(r"\bapprovals?\b", value) and re.search(
+        r"\b(?:any|check|list|pending|show|status|what|what's)\b", value
+    ):
+        return "/approvals"
+    if re.search(r"\bprojects?\b", value) and re.search(
+        r"\b(?:available|have|list|registered|show|what|which)\b", value
+    ):
+        return "/projects"
+    if re.search(r"\bjobs?\b", value) and re.search(
+        r"\b(?:active|any|check|list|pending|remote|show|status|what|what's)\b", value
+    ):
+        return "/jobs"
+    if re.search(r"\b(?:reminders?|tasks?)\b", value) and re.search(
+        r"\b(?:active|any|check|list|pending|scheduled|show|status|upcoming|what|what's)\b",
+        value,
+    ):
+        return "/tasks"
+    if re.search(
+        r"\b(?:are you online|check kairo|kairo status|system status|what's kairo doing)\b",
+        value,
+    ):
+        return "/status"
+    return None
+
 
 def compact_remote_model_reply(text: str, *, max_chars: int = 600) -> str:
     """Normalize model prose for Telegram's intentionally plain-text transport.
@@ -442,6 +504,8 @@ class TelegramRemoteControl:
         parts = stripped.split(maxsplit=1)
         command = parts[0].lower().split("@", 1)[0] if parts else ""
         argument = parts[1].strip() if len(parts) > 1 else ""
+        if command and not command.startswith("/"):
+            command = natural_remote_read_command(stripped) or command
         if command in {"/start", "/help"}:
             operator_help = (
                 "\n/projects — registered project aliases\n"

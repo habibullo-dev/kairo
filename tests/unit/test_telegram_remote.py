@@ -15,6 +15,7 @@ from jarvis.remote.telegram import (
     TelegramRemoteControl,
     TelegramRemoteControlStore,
     compact_remote_model_reply,
+    natural_remote_read_command,
     parse_telegram_update,
 )
 
@@ -126,6 +127,33 @@ def test_model_reply_is_plain_compact_and_clips_at_a_sentence_boundary() -> None
     )
     assert "**" not in reply and "`" not in reply
     assert reply == "Seoul weather\n\nTemperature: 35°C\nConditions: Mostly sunny."
+
+
+def test_natural_read_intents_route_to_verified_host_commands() -> None:
+    assert natural_remote_read_command("Is Kairo working on any projects now?") == "/status"
+    assert natural_remote_read_command("What's the status of my inbox?") == "/inbox"
+    assert natural_remote_read_command("What meetings are on my calendar today?") == "/calendar"
+    assert natural_remote_read_command("What time does my next meeting start?") == "/calendar"
+    assert natural_remote_read_command("Show my registered projects") == "/projects"
+    assert natural_remote_read_command("Do I have any active tasks?") == "/tasks"
+
+    # Natural action requests must reach Remote Operator instead of being mistaken for reads.
+    assert natural_remote_read_command("Create a task to check the project status") is None
+
+
+async def test_natural_work_status_bypasses_stateless_model_chat(tmp_path: Path) -> None:
+    controller, http, calls, db = await _controller(
+        tmp_path,
+        batches=[[], [_update(1, text="Is Kairo working on any projects now?")]],
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 1
+        assert calls["status"] == ["called"]
+        assert calls["chat"] == []
+        assert [message["text"] for message in http.sent] == ["STATUS"]
+    finally:
+        await db.close()
 
 
 async def test_first_poll_discards_retained_updates_then_handles_fresh_private_owner_message(

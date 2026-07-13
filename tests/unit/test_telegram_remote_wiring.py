@@ -107,6 +107,63 @@ async def test_remote_wiring_uses_utility_model_and_exposes_no_tools_or_history(
         await db.close()
 
 
+async def test_natural_project_work_question_reads_live_host_state(tmp_path: Path) -> None:
+    config = load_config(root=tmp_path, env_file=None)
+    config.connectors.telegram.remote_control.enabled = True
+    config.connectors.telegram.remote_control.allowed_chat_id = "123"
+    config.connectors.telegram.remote_control.operator.enabled = True
+    config.secrets = config.secrets.model_copy(update={"telegram_bot_token": "BOT-CANARY"})
+    db = await connect(tmp_path / "live-status.db")
+    controller = None
+    try:
+        lock = asyncio.Lock()
+        session_store = SessionStore(db, lock)
+        project_store = ProjectStore(db, lock)
+        await project_store.create(name="Jarvis", repos=[str(tmp_path)])
+        projects = ProjectService(project_store)
+        task_service = TaskService(TaskStore(db, lock), config.scheduler)
+        runner = _Runner()
+        fake = FakeClient([])
+        repl = SimpleNamespace(
+            tasks=task_service,
+            projects=projects,
+            turn_lock=asyncio.Lock(),
+            registry=ToolRegistry(),
+            client=fake,
+            executor=ToolExecutor(
+                timeout=config.limits.tool_timeout_seconds,
+                max_result_chars=config.limits.max_tool_result_chars,
+            ),
+            gate=object(),
+            cost_ledger=SimpleNamespace(pricing=load_pricing(Path("config/pricing.yaml"))),
+            connectors=None,
+        )
+        controller = _build_telegram_remote_control(
+            config,
+            repl=repl,
+            store=session_store,
+            runner=runner,  # type: ignore[arg-type]
+            console=Console(file=io.StringIO()),
+        )
+        assert controller is not None
+        http = _TelegramHttp(
+            [[], [_update(1, text="Is Kairo working on any projects now?")]]
+        )
+        await controller.poll_once(http=http)
+        assert await controller.poll_once(http=http) == 1
+
+        assert fake.calls == []
+        assert http.sent[-1]["text"] == (
+            "No—Kairo is online, but no project work is running right now.\n"
+            "Scheduled tasks: 0. Registered projects: 1.\n"
+            "Remote Operator: enabled."
+        )
+    finally:
+        if controller is not None:
+            await controller.stop()
+        await db.close()
+
+
 async def test_remote_operator_exposes_only_proposal_then_host_approval_queues_job(
     tmp_path: Path,
 ) -> None:

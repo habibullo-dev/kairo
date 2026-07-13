@@ -1026,25 +1026,42 @@ def _build_telegram_remote_control(
         get_logger("jarvis.remote.telegram").warning("telegram_remote_disabled", reason="no_token")
         return None
 
+    orchestration_store = OrchestrationStore(store.db, store.lock)
+
     async def status() -> str:
-        if repl.tasks is None:
-            scheduler = "off"
+        active_tasks = await repl.tasks.store.list() if repl.tasks is not None else []
+        projects = (
+            await repl.projects.store.list(status="active")
+            if repl.projects is not None
+            else []
+        )
+        project_names = {project.id: project.name for project in projects}
+        running_orchestrations = [
+            run for run in await orchestration_store.list(limit=20) if run.status == "running"
+        ]
+        current: list[str] = []
+        if runner is not None and runner.in_flight:
+            current.append(f'background job "{runner.in_flight}"')
+        for run in running_orchestrations[:3]:
+            project = project_names.get(run.project_id, f"project #{run.project_id}")
+            stage = f", {run.stage}" if run.stage else ""
+            current.append(f'"{run.title}" ({project}{stage})')
+        if repl.turn_lock.locked() and not current:
+            current.append("an interactive model turn")
+
+        if current:
+            work = "Yes—Kairo is working now: " + "; ".join(current) + "."
         else:
-            active = await repl.tasks.store.list()
-            scheduler = f"on ({len(active)} active task(s))"
-        work = "busy" if repl.turn_lock.locked() else "idle"
-        background = "running" if runner is not None and runner.in_flight else "idle"
+            work = "No—Kairo is online, but no project work is running right now."
         remote_mode = (
-            "proposal-based Remote Operator enabled"
+            "enabled"
             if operator_service is not None
-            else "safe chat/status only"
+            else "read-only"
         )
         return (
-            "Kairo is online.\n"
-            f"Model work: {work}\n"
-            f"Scheduler: {scheduler}\n"
-            f"Background jobs: {background}\n\n"
-            f"Remote control: {remote_mode}."
+            f"{work}\n"
+            f"Scheduled tasks: {len(active_tasks)}. Registered projects: {len(projects)}.\n"
+            f"Remote Operator: {remote_mode}."
         )
 
     async def tasks() -> str:
