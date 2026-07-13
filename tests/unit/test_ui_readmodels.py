@@ -174,6 +174,8 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/tasks/create"),  # Phase 10: human-authority task create (promote target)
         ("POST", "/api/orchestration/run"),  # Phase 10B: launch a team+workflow run
         ("POST", "/api/orchestration/{run_id}/cancel"),  # Phase 10B: cancel the in-flight run
+        # A human re-enters the original brief to claim a pre-execution recovery checkpoint.
+        ("POST", "/api/orchestration/{run_id}/resume"),
         ("POST", "/api/voice/listen"),
         ("POST", "/api/voice/meeting"),
         # Phase 15.5 full browser voice: a browser-captured utterance runs a voice turn through the

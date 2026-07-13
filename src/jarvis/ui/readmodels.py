@@ -1225,6 +1225,9 @@ def serialize_orchestration_run(run: Any, *, include_skills_manifest: bool = Fal
         "actual_cost_usd": run.actual_cost_usd,
         "budget_usd": run.budget_usd,
         "context_manifest": run.context_manifest,  # refs/hashes/token-est only (bodies-free)
+        # Deliberately expose only eligibility.  The bounded synthesis checkpoint itself never
+        # leaves the store through a read model, just as prompts and child reports never do.
+        "can_resume": run.status == "aborted" and run.resume_state == "ready",
         "started_at": run.started_at,
         "finished_at": run.finished_at,
     }

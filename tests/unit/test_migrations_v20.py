@@ -80,3 +80,29 @@ async def test_v22_adds_idempotent_parked_approval_columns() -> None:
         assert "idx_task_runs_parked" in indexes
     finally:
         await db.close()
+
+
+async def test_v23_adds_idempotent_bodies_free_resume_metadata() -> None:
+    db = await _build_v19()
+    try:
+        await M._migrate_v20(db)
+        await db.executescript(M._SCHEMA_V21)
+        await M._migrate_v22(db)
+        await M._migrate_v23(db)
+        await M._migrate_v23(db)  # a version-marker rewind stays recoverable
+        columns = {
+            row[1]
+            for row in await (
+                await db.execute("PRAGMA table_info(orchestration_runs)")
+            ).fetchall()
+        }
+        assert {"resume_state", "resume_checkpoint_json"} <= columns
+        indexes = {
+            row[1]
+            for row in await (
+                await db.execute("PRAGMA index_list(orchestration_runs)")
+            ).fetchall()
+        }
+        assert "idx_orch_runs_resume_ready" in indexes
+    finally:
+        await db.close()

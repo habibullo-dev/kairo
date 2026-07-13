@@ -99,6 +99,9 @@ export function onEvent(state, evt) {
   if (k === "orchestration_started") {
     S.live = { run_id: evt.run_id, team: evt.team, workflow: evt.workflow, title: evt.title,
                stage: "starting", agents: [], status: "running", est: evt.estimated_cost_usd };
+  } else if (k === "orchestration_resumed") {
+    S.live = { run_id: evt.run_id, team: evt.team, workflow: evt.workflow, title: evt.title,
+               stage: evt.stage || "execution", agents: [], status: "running" };
   } else if (S.live && evt.run_id === S.live.run_id) {
     if (k === "orchestration_stage") S.live.stage = evt.stage;
     else if (k === "orchestration_agent")
@@ -261,13 +264,20 @@ function renderDetail(container) {
         <div class="dim run-actions-note">Added to this project's Team follow-ups. They are not scheduled or run automatically.</div>
         ${actions}<button class="plain-button ghost run-actions-open" data-project-tasks="${r.project_id}">Open project Tasks</button></section>`
     : `<div class="dim run-findings-note">This earlier run did not record a structured follow-up plan. Run the review again to create one.</div>`;
+  const resumeBlock = r.can_resume
+    ? `<section class="run-actions"><div class="synth-head">Recover safely</div>
+        <div class="dim run-actions-note">This run stopped after synthesis and before any writer began. Re-enter the exact original task brief to continue from that bounded synthesis. The original brief and team reports were not stored.</div>
+        <textarea id="st-resume-task" rows="3" placeholder="Re-enter the exact original task brief"></textarea>
+        <button id="st-resume" class="plain-button ghost">Continue from synthesis</button>
+        <div id="st-resume-note" class="dim run-actions-note"></div></section>`
+    : "";
   el.innerHTML = `<div class="card rise">
     <div class="card-label">Run #${r.id} · ${esc(r.title)} ${statusPill(r.status, r.verdict)}</div>
     <div class="dim">est ${money(r.estimated_cost_usd)} · actual ${money(r.actual_cost_usd)}
       ${r.budget_usd != null ? ` · cap ${money(r.budget_usd)}` : ""}</div>
     ${roiLine}${bdLine}
     ${r.synthesis_summary ? `<div class="synth"><div class="synth-head">What the team found ${headBadge(S.head)}</div>${esc(r.synthesis_summary)}</div>` : ""}
-    ${actionBlock}${findingBlock}${verdictBlock}
+    ${actionBlock}${resumeBlock}${findingBlock}${verdictBlock}
     <table style="margin-top:.4rem">${members || '<tr><td class="dim">no members</td></tr>'}</table>
     <div class="dim" style="margin-top:.4rem">context: ${manifest || "—"}</div>
     <div class="dim" style="margin-top:.4rem">Skill packs recorded at run start: ${skillManifest || "No skill packs recorded for this run."}</div>
@@ -289,6 +299,17 @@ function renderDetail(container) {
         priority: item.priority,
       }, api_());
     });
+  });
+  el.querySelector("#st-resume")?.addEventListener("click", async () => {
+    const task = el.querySelector("#st-resume-task")?.value.trim() || "";
+    const note = el.querySelector("#st-resume-note");
+    if (!task) { if (note) note.textContent = "Re-enter the original task brief first."; return; }
+    const response = await api_().post(`/api/orchestration/${r.id}/resume`, { task });
+    if (!response.ok) {
+      if (note) note.textContent = response.data?.message || `HTTP ${response.status}`;
+      return;
+    }
+    if (note) note.textContent = "Continuation started. The checkpoint has been consumed before any writer runs.";
   });
 }
 

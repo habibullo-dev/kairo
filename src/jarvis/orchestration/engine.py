@@ -85,6 +85,14 @@ class ProviderClientError(RuntimeError):
     """A resolved provider route has no compatible client factory."""
 
 
+class ResumeUnavailableError(ValueError):
+    """A crash checkpoint cannot safely be continued in place.
+
+    This is deliberately not a best-effort replay error.  The caller must start a new run when
+    the checkpoint, roster, skills, or freshly assembled bodies-free context no longer matches.
+    """
+
+
 _RECORD_SYNTHESIS = {
     "name": "record_synthesis",
     "description": "Merge the council reports into a short synthesis for the execution stage.",
@@ -656,6 +664,245 @@ class OrchestrationEngine:
         )
         return run_id
 
+    @staticmethod
+    def _skills_manifest(skill_plans: dict[tuple[str, str], CompiledSkills]) -> list[dict]:
+        """Flatten the deterministic compiled-plan evidence stored with one run."""
+        return [entry for plan in skill_plans.values() for entry in plan.manifest]
+
+    def validate_resume(
+        self,
+        run: object,
+        *,
+        project_id: int,
+        team: TeamProfile,
+        workflow: WorkflowTemplate,
+        context: ContextBundle,
+    ) -> tuple[dict, dict[tuple[str, str], CompiledSkills]]:
+        """Validate the narrow, safe post-synthesis continuation boundary.
+
+        A running orchestration deliberately persists neither prompt/context bodies nor child
+        reports.  Consequently the only checkpoint we can continue is a completed synthesis
+        before a writer was entered.  The caller supplies the task brief again; its freshly
+        assembled manifest must exactly match the original audit record.  Any drift creates a
+        new deliberate run instead of silently applying an old plan to new input.
+        """
+        if getattr(run, "project_id", None) != project_id:
+            raise ResumeUnavailableError("orchestration checkpoint belongs to another project")
+        if (
+            getattr(run, "status", None) != "aborted"
+            or getattr(run, "resume_state", None) != "ready"
+        ):
+            raise ResumeUnavailableError("this interrupted run has no safe continuation checkpoint")
+        if getattr(run, "workflow", None) != workflow.id:
+            raise ResumeUnavailableError("workflow changed since the checkpoint; start a new run")
+        config = getattr(run, "config", {})
+        if config.get("team") != team.id or config.get("members") != [m.id for m in team.members]:
+            raise ResumeUnavailableError(
+                "team roster changed since the checkpoint; start a new run"
+            )
+        if context.manifest() != getattr(run, "context_manifest", []):
+            raise ResumeUnavailableError(
+                "re-enter the exact original task brief; its safe context fingerprint did not match"
+            )
+        self.validate_team_workflow(team, workflow)
+        self.check_provider_context(team, context)
+        skill_plans = self._skill_plans(team, workflow)
+        if self._skills_manifest(skill_plans) != getattr(run, "skills_manifest", []):
+            raise ResumeUnavailableError(
+                "skill packs changed since the checkpoint; start a new run"
+            )
+        checkpoint = getattr(run, "resume_checkpoint", {})
+        if not isinstance(checkpoint, dict) or checkpoint.get("v") != 1:
+            raise ResumeUnavailableError("checkpoint format is not supported")
+        if checkpoint.get("kind") != "post_synthesis_pre_execution":
+            raise ResumeUnavailableError("checkpoint is not safe to continue")
+        if not _bounded_text(checkpoint.get("summary"), limit=2000):
+            raise ResumeUnavailableError("checkpoint is missing its bounded synthesis summary")
+        return checkpoint, skill_plans
+
+    async def _continue_from_synthesis(
+        self,
+        *,
+        run_id: int,
+        project_id: int,
+        team: TeamProfile,
+        context: ContextBundle,
+        summary: str,
+        synthesis_findings: list[dict[str, str]],
+        skill_plans: dict[tuple[str, str], CompiledSkills],
+        ledger_failure_generation: int | None,
+    ) -> int:
+        """Run the write/review/verdict tail after a trusted bounded synthesis.
+
+        The checkpoint is removed before the execution stage marker or writer spawn.  A crash
+        after this boundary may have produced a side effect and is intentionally never resumable.
+        """
+        await self.store.clear_resume_checkpoint(run_id)
+        framed_ctx = context.framed()
+        verdict = "accept"
+        verdict_rationale: str | None = None
+        action_items: list[dict[str, str]] = []
+        for round_i in range(self.max_rounds):
+            if round_i and not await self._budget_ok(run_id):
+                return await self._finish(
+                    run_id,
+                    status="budget_stopped",
+                    synthesis_summary=summary,
+                    synthesis_findings=synthesis_findings,
+                    ledger_failure_generation=ledger_failure_generation,
+                )
+            # C. Execution — ONE writer, under the shared turn lock
+            await self._stage(run_id, "execution")
+            writer = self._members(team, "execution")
+            exec_prompt = f"Implement per the synthesis.\n\n{summary}\n\n{framed_ctx}"
+            exec_results: list[StageResult] = []
+            if writer:
+                async with self.turn_lock:
+                    exec_results = [
+                        await self._spawn_member(
+                            writer[0],
+                            stage="execution",
+                            team_id=team.id,
+                            run_id=run_id,
+                            project_id=project_id,
+                            prompt=exec_prompt,
+                            context=context,
+                            skills=skill_plans.get((writer[0].id, "execution")),
+                        )
+                    ]
+            if not await self._budget_ok(run_id):
+                return await self._finish(
+                    run_id,
+                    status="budget_stopped",
+                    synthesis_summary=summary,
+                    synthesis_findings=synthesis_findings,
+                    ledger_failure_generation=ledger_failure_generation,
+                )
+            # D. Review (parallel, read-only, over the produced artifact)
+            await self._stage(run_id, "review")
+            reviews = await self._parallel(
+                self._members(team, "review"),
+                stage="review",
+                team_id=team.id,
+                run_id=run_id,
+                project_id=project_id,
+                prompt=f"Review the work.\n\n{self._framed(exec_results)}",
+                context=context,
+                skill_plans=skill_plans,
+            )
+            if not await self._budget_ok(run_id):
+                return await self._finish(
+                    run_id,
+                    status="budget_stopped",
+                    synthesis_summary=summary,
+                    synthesis_findings=synthesis_findings,
+                    ledger_failure_generation=ledger_failure_generation,
+                )
+            # E. Verdict
+            await self._stage(run_id, "verdict")
+            v = await self._head_call(
+                _RECORD_VERDICT,
+                self._framed(exec_results + reviews),
+                run_id=run_id,
+                project_id=project_id,
+                team_id=team.id,
+                stage="verdict",
+            )
+            verdict = v.get("verdict", "revise")
+            verdict_rationale = _bounded_text(v.get("rationale"), limit=1000) or None
+            action_items = _synthesis_actions(v.get("action_items"))
+            await self._emit("orchestration_round", run_id=run_id, round=round_i, verdict=verdict)
+            if verdict != "revise":
+                break
+        status = _VERDICT_TO_STATUS.get(verdict, "error")
+        return await self._finish(
+            run_id,
+            status=status,
+            verdict=verdict,
+            synthesis_summary=summary,
+            verdict_rationale=verdict_rationale,
+            synthesis_findings=synthesis_findings,
+            action_items=action_items,
+            ledger_failure_generation=ledger_failure_generation,
+        )
+
+    async def resume(
+        self,
+        *,
+        run_id: int,
+        project_id: int,
+        team: TeamProfile,
+        workflow: WorkflowTemplate,
+        context: ContextBundle,
+        execution_context: ExecutionContext | None = None,
+        on_event: Callable[[dict], Awaitable[None]] | None = None,
+    ) -> int:
+        """Explicitly continue one crash-aborted run from its pre-execution checkpoint.
+
+        This does not replay the old prompt or a partial write.  It requires a fresh, exact
+        manifest match and atomically consumes the checkpoint before the writer can run.
+        """
+        if execution_context is not None and execution_context.project_id != project_id:
+            raise ValueError("orchestration execution context/project mismatch")
+        run = await self.store.get(run_id)
+        if run is None:
+            raise ResumeUnavailableError("no such orchestration run")
+        checkpoint, skill_plans = self.validate_resume(
+            run, project_id=project_id, team=team, workflow=workflow, context=context
+        )
+        claimed = await self.store.claim_resume_checkpoint(run_id)
+        if claimed is None:
+            raise ResumeUnavailableError(
+                "checkpoint was already consumed or is no longer available"
+            )
+        # Validate the atomically claimed representation too, rather than trusting a stale read.
+        if claimed != checkpoint:
+            await self._finish(
+                run_id,
+                status="error",
+                synthesis_summary="checkpoint changed while being claimed",
+            )
+            raise ResumeUnavailableError("checkpoint changed while being claimed; start a new run")
+        self._on_event = on_event
+        self._execution_context = execution_context
+        summary = _bounded_text(claimed.get("summary"), limit=2000)
+        synthesis_findings = _synthesis_findings(
+            claimed.get("findings"), self._members(team, "council")
+        )
+        ledger_failure_generation = self._ledger_failure_generation()
+        await self._emit(
+            "orchestration_resumed",
+            run_id=run_id,
+            team=team.id,
+            workflow=workflow.id,
+            title=run.title,
+            stage="execution",
+        )
+        try:
+            return await self._continue_from_synthesis(
+                run_id=run_id,
+                project_id=project_id,
+                team=team,
+                context=context,
+                summary=summary,
+                synthesis_findings=synthesis_findings,
+                skill_plans=skill_plans,
+                ledger_failure_generation=ledger_failure_generation,
+            )
+        except asyncio.CancelledError:
+            await self._finish(
+                run_id, status="cancelled", ledger_failure_generation=ledger_failure_generation
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 - a resumed run must close its audit record
+            self.log.warning("orchestration_resume_error", run_id=run_id, error=repr(exc))
+            return await self._finish(
+                run_id,
+                status="error",
+                synthesis_summary=str(exc)[:200],
+                ledger_failure_generation=ledger_failure_generation,
+            )
+
     async def run(
         self,
         *,
@@ -696,9 +943,7 @@ class OrchestrationEngine:
                 estimated_cost_usd = estimate.total_usd
 
         skill_plans = self._skill_plans(team, workflow)
-        skills_manifest = [
-            entry for plan in skill_plans.values() for entry in plan.manifest
-        ]
+        skills_manifest = self._skills_manifest(skill_plans)
         run_id = await self.store.begin_run(
             project_id=project_id,
             workflow=workflow.id,
@@ -787,101 +1032,50 @@ class OrchestrationEngine:
                     ledger_failure_generation=ledger_failure_generation,
                 )
 
+            # This is the sole safe recovery boundary.  Council reports and the task brief stay
+            # in memory only; the bounded head synthesis is enough to continue the writer later
+            # after the caller has proved the same fresh context manifest.  Once execution is
+            # entered the checkpoint is consumed, because a writer may have side effects.
+            if has_execution:
+                # A malformed/empty forced-tool response still follows the established execution
+                # path, but it is not a recovery point: there is no bounded directive to safely
+                # carry across a process boundary.
+                if summary:
+                    await self.store.set_resume_checkpoint(
+                        run_id,
+                        {
+                            "v": 1,
+                            "kind": "post_synthesis_pre_execution",
+                            "summary": summary,
+                            "findings": synthesis_findings,
+                        },
+                    )
+                return await self._continue_from_synthesis(
+                    run_id=run_id,
+                    project_id=project_id,
+                    team=team,
+                    context=context,
+                    summary=summary,
+                    synthesis_findings=synthesis_findings,
+                    skill_plans=skill_plans,
+                    ledger_failure_generation=ledger_failure_generation,
+                )
+
             verdict = "accept"
             verdict_rationale: str | None = None
             action_items: list[dict[str, str]] = []
-            if has_execution:
-                for round_i in range(self.max_rounds):
-                    # The post-synthesis check covers the first execution. A revise loop needs
-                    # a fresh check before it spends on its next execution stage.
-                    if round_i and not await self._budget_ok(run_id):
-                        return await self._finish(
-                            run_id,
-                            status="budget_stopped",
-                            synthesis_summary=summary,
-                            ledger_failure_generation=ledger_failure_generation,
-                        )
-                    # C. Execution — ONE writer, under the shared turn lock
-                    await self._stage(run_id, "execution")
-                    writer = self._members(team, "execution")
-                    exec_prompt = f"Implement per the synthesis.\n\n{summary}\n\n{framed_ctx}"
-                    exec_results: list[StageResult] = []
-                    if writer:
-                        async with self.turn_lock:
-                            exec_results = [
-                                await self._spawn_member(
-                                    writer[0],
-                                    stage="execution",
-                                    team_id=team.id,
-                                    run_id=run_id,
-                                    project_id=project_id,
-                                    prompt=exec_prompt,
-                                    context=context,
-                                    skills=skill_plans.get((writer[0].id, "execution")),
-                                )
-                            ]
-                    # Never launch the parallel review after a writer has exhausted the cap.
-                    if not await self._budget_ok(run_id):
-                        return await self._finish(
-                            run_id,
-                            status="budget_stopped",
-                            synthesis_summary=summary,
-                            synthesis_findings=synthesis_findings,
-                            ledger_failure_generation=ledger_failure_generation,
-                        )
-                    # D. Review (parallel, read-only, over the produced artifact)
-                    await self._stage(run_id, "review")
-                    reviews = await self._parallel(
-                        self._members(team, "review"),
-                        stage="review",
-                        team_id=team.id,
-                        run_id=run_id,
-                        project_id=project_id,
-                        prompt=f"Review the work.\n\n{self._framed(exec_results)}",
-                        context=context,
-                        skill_plans=skill_plans,
-                    )
-                    # A review fan-out can itself be expensive; do not pay for the verdict once
-                    # the hard cap is already reached.
-                    if not await self._budget_ok(run_id):
-                        return await self._finish(
-                            run_id,
-                            status="budget_stopped",
-                            synthesis_summary=summary,
-                            synthesis_findings=synthesis_findings,
-                            ledger_failure_generation=ledger_failure_generation,
-                        )
-                    # E. Verdict
-                    await self._stage(run_id, "verdict")
-                    v = await self._head_call(
-                        _RECORD_VERDICT,
-                        self._framed(exec_results + reviews),
-                        run_id=run_id,
-                        project_id=project_id,
-                        team_id=team.id,
-                        stage="verdict",
-                    )
-                    verdict = v.get("verdict", "revise")
-                    verdict_rationale = _bounded_text(v.get("rationale"), limit=1000) or None
-                    action_items = _synthesis_actions(v.get("action_items"))
-                    await self._emit(
-                        "orchestration_round", run_id=run_id, round=round_i, verdict=verdict
-                    )
-                    if verdict != "revise":
-                        break
-            else:
-                await self._stage(run_id, "verdict")
-                v = await self._head_call(
-                    _RECORD_VERDICT,
-                    self._framed(council),
-                    run_id=run_id,
-                    project_id=project_id,
-                    team_id=team.id,
-                    stage="verdict",
-                )
-                verdict = v.get("verdict", "accept")
-                verdict_rationale = _bounded_text(v.get("rationale"), limit=1000) or None
-                action_items = _synthesis_actions(v.get("action_items"))
+            await self._stage(run_id, "verdict")
+            v = await self._head_call(
+                _RECORD_VERDICT,
+                self._framed(council),
+                run_id=run_id,
+                project_id=project_id,
+                team_id=team.id,
+                stage="verdict",
+            )
+            verdict = v.get("verdict", "accept")
+            verdict_rationale = _bounded_text(v.get("rationale"), limit=1000) or None
+            action_items = _synthesis_actions(v.get("action_items"))
 
             status = _VERDICT_TO_STATUS.get(verdict, "error")
             return await self._finish(

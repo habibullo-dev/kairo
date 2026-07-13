@@ -1131,6 +1131,39 @@ async def _migrate_v22(db: aiosqlite.Connection) -> None:
     )
 
 
+# Orchestration recovery keeps the existing terminal ``aborted`` status and records whether a
+# crash happened after a safe, pre-execution checkpoint.  No prompt, context body, child report,
+# tool output, or approval can enter this checkpoint: a caller must reassemble and prove the
+# original bodies-free manifest before the engine may continue.  This is intentionally additive;
+# widening the v7 status CHECK for an ``interrupted`` value would require a table rebuild.
+async def _migrate_v23(db: aiosqlite.Connection) -> None:
+    exists = await (
+        await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='orchestration_runs'"
+        )
+    ).fetchone()
+    if exists is None:
+        return
+    columns = {
+        row[1]
+        for row in await (await db.execute("PRAGMA table_info(orchestration_runs)")).fetchall()
+    }
+    if "resume_state" not in columns:
+        await db.execute(
+            "ALTER TABLE orchestration_runs ADD COLUMN resume_state "
+            "TEXT NOT NULL DEFAULT 'none' CHECK (resume_state IN ('none','ready'))"
+        )
+    if "resume_checkpoint_json" not in columns:
+        await db.execute(
+            "ALTER TABLE orchestration_runs ADD COLUMN resume_checkpoint_json "
+            "TEXT NOT NULL DEFAULT '{}'"
+        )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_orch_runs_resume_ready "
+        "ON orchestration_runs(resume_state, id) WHERE resume_state = 'ready'"
+    )
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1159,6 +1192,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (20, _migrate_v20),
     (21, _SCHEMA_V21),
     (22, _migrate_v22),
+    (23, _migrate_v23),
 ]
 
 

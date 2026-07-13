@@ -31,7 +31,11 @@ from jarvis.orchestration import (
     resolve_team,
 )
 from jarvis.orchestration.context import ContextItem, Provenance
-from jarvis.orchestration.engine import ProviderContextError, TeamWorkflowError
+from jarvis.orchestration.engine import (
+    ProviderContextError,
+    ResumeUnavailableError,
+    TeamWorkflowError,
+)
 from jarvis.skills import SkillPackError
 
 if TYPE_CHECKING:
@@ -271,6 +275,112 @@ class OrchestrationController:
             pass  # the engine already recorded 'cancelled' (shielded) before re-raising
         except Exception:  # noqa: BLE001 - a background run must not crash the server
             self.log.exception("orchestration_run_failed")
+        finally:
+            self._current_run_id = None
+            self._current_context = None
+
+    async def resume(
+        self,
+        run_id: int,
+        *,
+        task: str,
+        execution_context: ExecutionContext | None = None,
+        project: ProjectContext | None = None,
+    ) -> tuple[dict, int]:
+        """Explicitly continue the one safe post-synthesis checkpoint.
+
+        The original brief was never persisted.  The user therefore re-enters it here; the
+        engine compares only its bodies-free manifest before it can atomically consume a
+        checkpoint and let the writer run.
+        """
+        if self.busy:
+            return {"ok": False, "message": "an orchestration run is already in flight"}, 409
+        if not task.strip():
+            return {"ok": False, "message": "re-enter the original task brief to continue"}, 400
+        pid = (
+            execution_context.project_id
+            if execution_context is not None
+            else await self._active_project_id()
+        )
+        if pid is None:
+            return {"ok": False, "message": "select a project first"}, 400
+        run = await self.engine.store.get(run_id)
+        if run is None or run.project_id != pid:
+            return {"ok": False, "message": "no such orchestration run"}, 404
+        team_id = str(run.config.get("team") or "")
+        if not team_id or run.workflow not in WORKFLOWS:
+            return {"ok": False, "message": "checkpoint configuration is no longer available"}, 400
+        try:
+            team = await self._resolve(team_id, pid)
+            context = self._build_context(task, project)
+            # Fail before the background task is launched so Studio can show a useful recovery
+            # message instead of merely logging a rejected continuation.
+            self.engine.validate_resume(
+                run,
+                project_id=pid,
+                team=team,
+                workflow=WORKFLOWS[run.workflow],
+                context=context,
+            )
+        except (
+            ProviderContextError,
+            ResumeUnavailableError,
+            RouteError,
+            SkillPackError,
+            TeamWorkflowError,
+        ) as exc:
+            return {"ok": False, "message": str(exc)}, 400
+        self._current_run_id = run_id
+        self._current_context = execution_context
+        self._task = asyncio.create_task(
+            self._resume_run(
+                run_id,
+                pid,
+                team,
+                WORKFLOWS[run.workflow],
+                context,
+                execution_context,
+            )
+        )
+        return {"ok": True, "resumed": True, "run_id": run_id}, 202
+
+    async def _resume_run(
+        self,
+        run_id: int,
+        project_id: int,
+        team: TeamProfile,
+        workflow,
+        context: ContextBundle,
+        execution_context: ExecutionContext | None,
+    ) -> None:
+        try:
+            async def sink(payload: dict) -> None:
+                await self._sink(payload, execution_context)
+
+            if execution_context is None:
+                await self.engine.resume(
+                    run_id=run_id,
+                    project_id=project_id,
+                    team=team,
+                    workflow=workflow,
+                    context=context,
+                    on_event=sink,
+                )
+            else:
+                with bind_execution_context(execution_context):
+                    await self.engine.resume(
+                        run_id=run_id,
+                        project_id=project_id,
+                        team=team,
+                        workflow=workflow,
+                        context=context,
+                        execution_context=execution_context,
+                        on_event=sink,
+                    )
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 - a background recovery must not crash the server
+            self.log.exception("orchestration_resume_failed")
         finally:
             self._current_run_id = None
             self._current_context = None

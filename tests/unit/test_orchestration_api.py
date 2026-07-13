@@ -332,6 +332,33 @@ async def test_runs_view_lists_summaries(tmp_path: Path) -> None:
     assert len(view["runs"]) == 1 and view["runs"][0]["team"] == "research"
 
 
+async def test_run_detail_exposes_resume_eligibility_not_checkpoint_body(tmp_path: Path) -> None:
+    store, run_store = await _stores(tmp_path)
+    rid = await store.begin_run(
+        project_id=1,
+        workflow="implement",
+        title="Backend · Implement",
+        config={"team": "backend", "members": ["architect", "be_implementer", "data_analyst"]},
+        context_manifest=[],
+        estimated_cost_usd=None,
+        budget_usd=None,
+    )
+    await store.set_resume_checkpoint(
+        rid,
+        {
+            "v": 1,
+            "kind": "post_synthesis_pre_execution",
+            "summary": "SECRET-RECOVERY-SUMMARY-CANARY",
+            "findings": [],
+        },
+    )
+    await store.sweep_orphans()
+    detail = await orchestration_run_detail(store, run_store, rid)
+    assert detail["run"]["can_resume"] is True
+    assert "resume_checkpoint" not in str(detail)
+    assert "SECRET-RECOVERY-SUMMARY-CANARY" not in str(detail)
+
+
 async def test_run_store_records_source_interactive_session(tmp_path: Path) -> None:
     store, _rs = await _stores(tmp_path)
     session_id = await SessionStore(store.db, store.lock).create_session(project_id=1)

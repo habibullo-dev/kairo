@@ -2570,6 +2570,29 @@ def create_app(
             }
         )
 
+    @app.post("/api/orchestration/{run_id}/resume")
+    async def orchestration_resume(run_id: int, request: Request) -> JSONResponse:
+        # A human explicitly re-enters the original brief before the engine can claim the
+        # single pre-execution checkpoint.  It never replays a task body or a partial writer.
+        orch = app.state.orchestrator
+        if orch is None:
+            return _unavailable("orchestration")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        body = await request.json()
+        if workspace is not None:
+            async with app.state.workspaces.transition_lock:
+                result, code = await orch.resume(
+                    run_id,
+                    task=str(body.get("task", "")),
+                    execution_context=workspace.context,
+                    project=workspace.project,
+                )
+        else:
+            result, code = await orch.resume(run_id, task=str(body.get("task", "")))
+        return JSONResponse(result, status_code=code)
+
     # --- voice: status + push-to-talk + meeting capture (unreviewed source) ------------
 
     @app.get("/api/voice/status")

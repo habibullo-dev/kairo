@@ -38,7 +38,11 @@ from jarvis.orchestration import (
     resolve_team,
 )
 from jarvis.orchestration.context import ContextItem, Provenance
-from jarvis.orchestration.engine import ProviderClientError, TeamWorkflowError
+from jarvis.orchestration.engine import (
+    ProviderClientError,
+    ResumeUnavailableError,
+    TeamWorkflowError,
+)
 from jarvis.orchestration.roles import Capability
 from jarvis.permissions import PermissionGate, Policy
 from jarvis.persistence import SessionStore
@@ -165,6 +169,147 @@ async def test_store_sweep_orphans(tmp_path: Path) -> None:
     assert (await store.get(b)).status == "aborted"  # the orphan
     assert (await store.get(a)).status == "ok"  # already-terminal untouched
     assert await store.sweep_orphans() == []  # idempotent — nothing left running
+
+
+async def test_store_preserves_only_ready_pre_execution_checkpoint_on_crash(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    rid = await store.begin_run(
+        project_id=1,
+        workflow="implement",
+        title="recoverable",
+        config={"team": "backend", "members": [m.id for m in resolve_team("backend").members]},
+        context_manifest=_CTX.manifest(),
+        estimated_cost_usd=None,
+        budget_usd=None,
+    )
+    await store.set_resume_checkpoint(
+        rid,
+        {
+            "v": 1,
+            "kind": "post_synthesis_pre_execution",
+            "summary": "bounded synthesis",
+            "findings": [],
+        },
+    )
+    await store.sweep_orphans()
+    run = await store.get(rid)
+    assert run is not None and run.status == "aborted" and run.resume_state == "ready"
+    assert run.resume_checkpoint["summary"] == "bounded synthesis"
+    # The single atomic claim consumes evidence before any writer can start.
+    claimed = await store.claim_resume_checkpoint(rid)
+    assert claimed is not None and claimed["kind"] == "post_synthesis_pre_execution"
+    claimed_run = await store.get(rid)
+    assert claimed_run is not None
+    assert claimed_run.status == "running" and claimed_run.resume_state == "none"
+    assert claimed_run.resume_checkpoint == {}
+    assert await store.claim_resume_checkpoint(rid) is None
+
+
+async def test_store_rejects_raw_or_unbounded_resume_checkpoint_fields(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    rid = await store.begin_run(
+        project_id=1,
+        workflow="implement",
+        title="recoverable",
+        config={},
+        context_manifest=[],
+        estimated_cost_usd=None,
+        budget_usd=None,
+    )
+    with pytest.raises(ValueError, match="invalid orchestration resume checkpoint"):
+        await store.set_resume_checkpoint(
+            rid,
+            {
+                "v": 1,
+                "kind": "post_synthesis_pre_execution",
+                "summary": "bounded",
+                "findings": [],
+                "raw_child_report": "SECRET-REPORT-CANARY",
+            },
+        )
+
+
+async def test_resume_requires_exact_context_and_never_replays_council(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    team = resolve_team("backend")
+    rid = await store.begin_run(
+        project_id=1,
+        workflow="implement",
+        title="recoverable",
+        config={"team": team.id, "members": [m.id for m in team.members]},
+        context_manifest=_CTX.manifest(),
+        estimated_cost_usd=None,
+        budget_usd=None,
+    )
+    await store.set_resume_checkpoint(
+        rid,
+        {
+            "v": 1,
+            "kind": "post_synthesis_pre_execution",
+            "summary": "implement the reviewed change",
+            "findings": [
+                {
+                    "member": "architect",
+                    "title": "Architect",
+                    "finding": "keep the scope narrow",
+                }
+            ],
+        },
+    )
+    await store.sweep_orphans()
+    calls: list[dict] = []
+
+    async def fake_spawn(**kw) -> ToolResult:
+        calls.append(kw)
+        return ToolResult(content=f"report:{kw['stage']}", is_error=False)
+
+    engine = OrchestrationEngine(
+        spawn=fake_spawn,
+        store=store,
+        head_client=FakeClient([_verdict("accept")]),
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+    )
+    with pytest.raises(ResumeUnavailableError, match="exact original task brief"):
+        await engine.resume(
+            run_id=rid,
+            project_id=1,
+            team=team,
+            workflow=WORKFLOWS["implement"],
+            context=ContextBundle(
+                items=(
+                    ContextItem(
+                        kind="repo_file",
+                        ref="a.py",
+                        provenance=Provenance.REPO_CODE,
+                        text="different",
+                    ),
+                )
+            ),
+        )
+    still_ready = await store.get(rid)
+    assert still_ready is not None and still_ready.resume_state == "ready"
+
+    resumed = await engine.resume(
+        run_id=rid,
+        project_id=1,
+        team=team,
+        workflow=WORKFLOWS["implement"],
+        context=_CTX,
+    )
+    assert resumed == rid
+    assert {call["stage"] for call in calls} == {"execution", "review"}
+    assert not any(call["stage"] == "council" for call in calls)
+    run = await store.get(rid)
+    assert run is not None and run.status == "ok" and run.resume_state == "none"
+    with pytest.raises(ResumeUnavailableError, match="no safe continuation"):
+        await engine.resume(
+            run_id=rid,
+            project_id=1,
+            team=team,
+            workflow=WORKFLOWS["implement"],
+            context=_CTX,
+        )
 
 
 # --- Engine: read-only workflow (council → synthesis → verdict) -------------
