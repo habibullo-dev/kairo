@@ -170,9 +170,11 @@ class AgentLoop:
         router: object | None = None,
         client_selector: Callable[[object], object | None] | None = None,
         on_route: Callable[[object], None] | None = None,
-        # Browser chat alone supplies these lower limits. Other loop owners retain config.limits.
+        # Browser chat supplies these lower limits. An orchestration child may separately supply
+        # a per-member dollar ceiling while retaining the general loop limits.
         chat_limits: ChatConfig | None = None,
         pricing: PricingTable | None = None,
+        turn_budget_usd: float | None = None,
         provider_override: Callable[[], str | None] | None = None,
         cost_purpose: str = "turn",
         add_time_context: bool = False,
@@ -213,6 +215,7 @@ class AgentLoop:
         self.on_route = on_route
         self.chat_limits = chat_limits
         self.pricing = pricing
+        self.turn_budget_usd = turn_budget_usd
         self.provider_override = provider_override
         self._auto_allow: frozenset[str] = frozenset(config.modes.auto_allow_tools)
         # Phase 10 cost ledger: the purpose recorded for this loop's completions ("turn" for
@@ -292,11 +295,11 @@ class AgentLoop:
         # The lower limits apply only where the UI composition opted in below; all other loop
         # owners (voice, REPL, subagents, orchestration) continue to use the shared limits.
         limits = self.chat_limits or self.config.limits
-        turn_budget_usd = (
-            self.chat_limits.hard_stop_usd_per_turn
-            if self.chat_limits is not None and self.chat_limits.hard_stop_usd_per_turn > 0
-            else None
-        )
+        turn_budget_usd = self.turn_budget_usd
+        if turn_budget_usd is not None and turn_budget_usd <= 0:
+            turn_budget_usd = None
+        if turn_budget_usd is None and self.chat_limits is not None:
+            turn_budget_usd = self.chat_limits.hard_stop_usd_per_turn or None
         turn_cost_usd = 0.0
         pricing_known = True
         # ``initial_taint`` is used only by the durable unattended-resume path.  Its first tool

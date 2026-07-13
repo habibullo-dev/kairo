@@ -42,7 +42,7 @@ from jarvis.core.events import SubAgentCompleted, SubAgentEvent
 from jarvis.core.execution import current_execution_context
 from jarvis.core.prompts import build_system
 from jarvis.observability import get_logger, get_trace_id
-from jarvis.observability.cost import Usage, cost_of, price_for
+from jarvis.observability.cost import Usage, cost_of, load_pricing, price_for
 from jarvis.observability.ledger import CostContext, cost_context
 from jarvis.permissions.subagent import SubAgentGate
 from jarvis.permissions.unattended import HeadlessApprover
@@ -230,6 +230,7 @@ class SubAgentService:
         skill_text: str | None = None,
         skill_manifest: list[dict] | None = None,
         allow_toolless: bool = False,
+        turn_budget_usd: float | None = None,
     ) -> ToolResult | str:
         """Run one scoped sub-agent and return its framed report (or an error result).
 
@@ -298,6 +299,7 @@ class SubAgentService:
             project_id=project_id,
             skill_text=skill_text,
             skill_manifest=skill_manifest,
+            turn_budget_usd=turn_budget_usd,
         )
 
     async def _run(
@@ -316,6 +318,7 @@ class SubAgentService:
         project_id: int | None = None,
         skill_text: str | None = None,
         skill_manifest: list[dict] | None = None,
+        turn_budget_usd: float | None = None,
     ) -> ToolResult | str:
         execution_context = current_execution_context()
         # Ordinary chat delegation receives its project from the task-local workspace context.
@@ -367,6 +370,12 @@ class SubAgentService:
             ),
             context_manager=self.make_context_manager() if self.make_context_manager else None,
             memory=None,  # isolation: no auto-recall, no personal memory
+            pricing=(
+                load_pricing(self.config.root / "config" / "pricing.yaml")
+                if turn_budget_usd is not None and turn_budget_usd > 0
+                else None
+            ),
+            turn_budget_usd=turn_budget_usd,
             # Cost attribution: an orchestration child records purpose="orchestration", a plain
             # spawn "subagent". run_turn overlays purpose/trace and preserves the team/role/run
             # /stage set just below (it has no project provider, so the effective project

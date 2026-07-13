@@ -121,6 +121,29 @@ async def test_chat_turn_over_cap_refuses_before_model_call() -> None:
     assert client.calls == []
 
 
+async def test_explicit_child_budget_refuses_without_browser_chat_limits() -> None:
+    """Orchestration children use this seam; their general loop limits stay unchanged."""
+    client = FakeClient([text_message("must not be used", model="claude-sonnet-5")])
+    registry = ToolRegistry()
+    registry.register(_Echo())
+    loop = AgentLoop(
+        client=client,
+        registry=registry,
+        executor=ToolExecutor(),
+        gate=PermissionGate(Policy(), Path.cwd()),
+        config=_config(ChatConfig()),
+        pricing=_pricing(),
+        provider_override=lambda: "anthropic",
+        turn_budget_usd=0.0001,
+    )
+
+    result = await loop.run_turn([{"role": "user", "content": "hello"}])
+
+    assert result.stop_reason == "cost_cap"
+    assert result.budget_usd == 0.0001
+    assert client.calls == []
+
+
 async def test_mid_loop_cap_stops_before_tools_or_another_model_call() -> None:
     client = FakeClient(
         [

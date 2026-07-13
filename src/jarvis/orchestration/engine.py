@@ -446,6 +446,13 @@ class OrchestrationEngine:
             if self.factory is not None:
                 client = self.factory.for_route(route)
         scope = [] if tool_less else self._member_scope(member, stage, context)
+        # The estimate gate rejects a worst-case overrun before a run starts. Carry the same
+        # member allocation into the child loop so a multi-call child cannot exceed it at runtime.
+        member_budget = (
+            member.max_cost_usd or self.budgets.per_role_max_usd
+            if self.budgets is not None
+            else None
+        )
         result = await self.spawn(
             title=f"{team_id}:{member.id}",
             prompt=prompt,
@@ -461,6 +468,7 @@ class OrchestrationEngine:
             skill_text=skills.text if skills is not None else None,
             skill_manifest=list(skills.manifest) if skills is not None else None,
             allow_toolless=tool_less,
+            turn_budget_usd=member_budget,
         )
         # Trust the RUN RECORD: spawn's is_error is derived from the child's agent_runs status,
         # not its report text. The report is untrusted data for the synthesizer only.
