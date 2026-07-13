@@ -30,7 +30,9 @@ from jarvis.actions.requests import (
     CalendarCancelRequest,
     CalendarCreateRequest,
     CalendarUpdateRequest,
+    DocAppendOp,
     DocCreateRequest,
+    DocReplaceOp,
     DocUpdateRequest,
     request_from_dict,
 )
@@ -178,10 +180,12 @@ class WriteExecutor:
         if isinstance(request, DocUpdateRequest):
             reqs: list[dict] = []
             for op in request.operations:
-                if hasattr(op, "find"):
+                if isinstance(op, DocReplaceOp):
                     reqs.append(docs.replace_all_text_request(op.find, op.replace))
-                else:
+                elif isinstance(op, DocAppendOp):
                     reqs.append(docs.append_text_request(op.text))
+                else:  # pragma: no cover - DocUpdateRequest's typed tuple closes this union.
+                    raise TypeError(f"unsupported document operation {type(op).__name__}")
             await docs.batch_update(c, request.document_id, reqs)
             return ({"remote_id": request.document_id}, ("none", None))
         raise TypeError(f"no executor for {type(request).__name__}")

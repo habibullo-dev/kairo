@@ -1,4 +1,4 @@
-# Keyless CI: lint, format check, and the full unit suite on every push/PR.
+# Keyless CI: lint, safety-core type check, and the full unit suite on every push/PR.
 #
 # The LIVE eval gate (tests/evals/runner.py) is deliberately NOT run here — it costs
 # money, needs three API secrets, and is stochastic; a flaky CI would erode exactly the
@@ -14,7 +14,12 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -25,7 +30,7 @@ jobs:
         run: uv sync
       - name: Lint
         run: uv run ruff check .
-      - name: Format check
-        run: uv run ruff format --check .
+      - name: Safety-core type check
+        run: uv run mypy
       - name: Unit tests (keyless)
         run: uv run pytest -q

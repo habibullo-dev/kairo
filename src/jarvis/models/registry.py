@@ -10,7 +10,7 @@ tools — pre-mortem constraint).
 
 from __future__ import annotations
 
-from jarvis.models.providers import TRUSTED_AUTHORITY_PROVIDERS, provider_spec
+from jarvis.models.providers import TRUSTED_AUTHORITY_PROVIDERS, ProviderRegistry, provider_spec
 from jarvis.models.roles import (
     DEFAULT_ROUTES,
     FINAL_AUTHORITY_ROLES,
@@ -82,7 +82,10 @@ class ModelRegistry:
     never a silent downgrade. Omitted (pure/tests) ⇒ only authority + shape are validated."""
 
     def __init__(
-        self, settings_routes: dict | None = None, *, provider_registry: object | None = None
+        self,
+        settings_routes: dict | None = None,
+        *,
+        provider_registry: ProviderRegistry | None = None,
     ) -> None:
         self.settings_routes = settings_routes or {}
         self.provider_registry = provider_registry
