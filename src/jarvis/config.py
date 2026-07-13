@@ -331,9 +331,9 @@ class GoogleConnectorConfig(BaseModel):
 class TelegramRemoteOperatorConfig(BaseModel):
     """Opt-in project work proposed and approved through the private Telegram channel.
 
-    The operator never receives the ordinary Kairo registry.  Approved jobs get only this
-    fixed local-engineering subset, and every side effect still passes through the unattended
-    gate's exact-call parking flow.
+    The remote model never receives the ordinary Kairo registry. Approved jobs get only this
+    fixed local-engineering subset, every side effect still passes through the unattended gate's
+    exact-call parking flow, and optional public search remains one-query and authority-free.
     """
 
     enabled: bool = False
@@ -342,6 +342,9 @@ class TelegramRemoteOperatorConfig(BaseModel):
     default_status_interval_minutes: int = Field(default=15, ge=0, le=60)
     allowed_status_intervals: list[int] = Field(default_factory=lambda: [0, 1, 5, 15, 30, 60])
     max_active_jobs: int = Field(default=3, ge=1, le=10)
+    live_web_search_enabled: bool = False
+    live_web_search_max_results: int = Field(default=5, ge=1, le=5)
+    default_live_location: str = Field(default="", max_length=120)
     allowed_tools: list[str] = Field(
         default_factory=lambda: [
             "read_file",
@@ -354,6 +357,7 @@ class TelegramRemoteOperatorConfig(BaseModel):
 
     @model_validator(mode="after")
     def _operator_bounds(self) -> TelegramRemoteOperatorConfig:
+        self.default_live_location = " ".join(self.default_live_location.split())
         allowed_intervals = {0, 1, 5, 15, 30, 60}
         intervals = self.allowed_status_intervals
         if not intervals or len(intervals) != len(set(intervals)):
@@ -375,10 +379,10 @@ class TelegramRemoteOperatorConfig(BaseModel):
 class TelegramRemoteControlConfig(BaseModel):
     """Opt-in, single-owner Telegram remote control.
 
-    This is intentionally a narrow, polling-only channel: it accepts messages from one
-    configured *private* chat and is never an approval or workstation-control surface.
-    The bot token remains a secret in ``.env``; the allowed chat id is a routing identifier
-    safe to keep in settings.
+    This is intentionally a narrow, polling-only channel accepting one configured *private* chat.
+    Its optional Remote Operator resolves expiring exact capabilities rather than conversational
+    consent. The bot token remains a secret in ``.env``; the allowed chat id is a routing
+    identifier safe to keep in settings.
     """
 
     enabled: bool = False

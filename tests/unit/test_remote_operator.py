@@ -6,11 +6,15 @@ import asyncio
 import datetime as dt
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from jarvis.config import SchedulerConfig, TelegramRemoteOperatorConfig
 from jarvis.persistence.db import connect
 from jarvis.persistence.sessions import SessionStore
 from jarvis.projects.store import ProjectStore
 from jarvis.remote.operator import (
+    RemoteLiveSearchParams,
+    RemoteLiveSearchTool,
     RemoteOperatorService,
     RemoteOperatorStore,
     RemoteProposalParams,
@@ -19,6 +23,7 @@ from jarvis.remote.operator import (
 )
 from jarvis.scheduler.service import TaskService
 from jarvis.scheduler.store import ParkedContinuation, TaskStore
+from jarvis.tools.base import Tool
 
 
 async def _stores(tmp_path: Path):
@@ -40,6 +45,25 @@ class _Runner:
         self.resumed.append((run_id, action))
         self.resumed_event.set()
         return True
+
+
+class _SearchParams(BaseModel):
+    query: str
+    max_results: int
+
+
+class _SearchSource(Tool):
+    name = "web_search"
+    description = "test search source"
+    Params = _SearchParams
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[_SearchParams] = []
+
+    async def run(self, params: _SearchParams) -> str:
+        self.calls.append(params)
+        return "Current public weather: sunny, 28 C."
 
 
 def _service(
@@ -121,6 +145,21 @@ async def test_only_one_proposal_can_be_created_per_model_turn(tmp_path: Path) -
         assert len(tool.drain_created()) == 1
     finally:
         await db.close()
+
+
+async def test_live_search_is_bounded_to_one_fixed_size_public_query_per_turn() -> None:
+    source = _SearchSource()
+    tool = RemoteLiveSearchTool(source=source, max_results=3)
+    tool.begin_turn()
+
+    first = await tool.run(RemoteLiveSearchParams(query="  weather   Seoul today  "))
+    second = await tool.run(RemoteLiveSearchParams(query="weather Busan today"))
+
+    assert first == "Current public weather: sunny, 28 C."
+    assert len(source.calls) == 1
+    assert source.calls[0].query == "weather Seoul today"
+    assert source.calls[0].max_results == 3
+    assert "Only one live public search" in str(second)
 
 
 async def test_reissuing_proposal_code_invalidates_the_previous_code(tmp_path: Path) -> None:

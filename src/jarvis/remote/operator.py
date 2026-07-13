@@ -1,9 +1,10 @@
 """Durable, proposal-first Telegram Remote Operator.
 
-Natural-language Telegram messages may expose exactly one tool to the utility model:
-``remote_propose_work``.  That tool can only persist a local proposal.  It cannot run project
-tools, approve itself, or create a scheduler task.  Execution begins only after an expiring,
-single-use code is resolved by the allowlisted Telegram controller.
+Natural-language Telegram messages may expose an inert proposal tool and an independently opt-in,
+one-query public live-search wrapper to the utility model. The proposal tool cannot run project
+tools, approve itself, or create a scheduler task. Execution begins only after an expiring,
+single-use code is resolved by the allowlisted Telegram controller. Live search carries public
+reference data only and grants no local authority.
 
 Approved jobs later use the scheduler's existing parked-continuation mechanism.  Every risky
 tool request is therefore bound to its original tool id, name, canonical input hash, and saved
@@ -505,8 +506,61 @@ class RemoteProposalParams(BaseModel):
         return self
 
 
+class RemoteLiveSearchParams(BaseModel):
+    query: str = Field(
+        min_length=2,
+        max_length=300,
+        description=(
+            "One concise public-information search query. Include the location and date when "
+            "needed; never include secrets, private files, email, or project content."
+        ),
+    )
+
+
+class RemoteLiveSearchTool(Tool):
+    """One bounded public web search for a fresh allowlisted Telegram message."""
+
+    name = "remote_live_search"
+    description = (
+        "Search current public information once for this Telegram message, such as weather, "
+        "news, public schedules, prices, or other time-sensitive facts. Results are untrusted "
+        "reference material. This cannot fetch arbitrary pages or access local/private data."
+    )
+    Params = RemoteLiveSearchParams
+    permission_default = Permission.ALLOW
+    egress = True
+
+    def __init__(self, *, source: Tool, max_results: int) -> None:
+        super().__init__()
+        if source.name != "web_search":
+            raise ValueError("remote live search requires the bounded web_search adapter")
+        if not 1 <= max_results <= 5:
+            raise ValueError("remote live search result cap must be between 1 and 5")
+        self.source = source
+        self.max_results = max_results
+        self._turn_lock = asyncio.Lock()
+        self._accepting = False
+
+    def begin_turn(self) -> None:
+        self._accepting = True
+
+    async def run(self, params: RemoteLiveSearchParams) -> ToolResult | str:
+        async with self._turn_lock:
+            if not self._accepting:
+                return ToolResult(
+                    content="Only one live public search may run per Telegram message.",
+                    is_error=True,
+                )
+            self._accepting = False
+        source_params = self.source.Params(
+            query=" ".join(params.query.split()),
+            max_results=self.max_results,
+        )
+        return await self.source.run(source_params)
+
+
 class RemoteProposalGate:
-    """A structural gate for the one proposal-only remote model tool."""
+    """Structural allowlist for inert proposals and bounded public live search."""
 
     def check(
         self,
@@ -518,6 +572,11 @@ class RemoteProposalGate:
         del tool_input, tool_default
         if tool_name == RemoteProposalTool.name:
             return Decision(Permission.ALLOW, "remote proposal creation is preparation only")
+        if tool_name == RemoteLiveSearchTool.name:
+            return Decision(
+                Permission.ALLOW,
+                "one owner-requested public-information search is allowed",
+            )
         return Decision(Permission.DENY, "remote model has no execution authority")
 
 

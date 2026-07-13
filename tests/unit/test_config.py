@@ -232,6 +232,9 @@ def test_connectors_config_defaults(tmp_path: Path) -> None:
     assert c.telegram.remote_control.allowed_chat_id == ""
     assert c.telegram.remote_control.max_read_requests_per_hour == 60
     assert c.telegram.remote_control.operator.enabled is False
+    assert c.telegram.remote_control.operator.live_web_search_enabled is False
+    assert c.telegram.remote_control.operator.live_web_search_max_results == 5
+    assert c.telegram.remote_control.operator.default_live_location == ""
     assert c.telegram.remote_control.operator.allowed_tools == [
         "read_file",
         "list_dir",
@@ -281,6 +284,30 @@ def test_telegram_remote_control_requires_one_positive_private_chat_id(tmp_path:
         )
         with pytest.raises(ConfigError, match="allowed_chat_id"):
             load_config(root=tmp_path, env_file=None)
+
+
+def test_telegram_remote_live_search_configuration_is_bounded(tmp_path: Path) -> None:
+    _write_settings(
+        tmp_path,
+        "connectors:\n  telegram:\n    remote_control:\n      operator:\n"
+        "        live_web_search_enabled: true\n"
+        "        live_web_search_max_results: 3\n"
+        "        default_live_location: '  Seoul,   South Korea  '\n",
+    )
+    operator = load_config(
+        root=tmp_path, env_file=None
+    ).connectors.telegram.remote_control.operator
+    assert operator.live_web_search_enabled is True
+    assert operator.live_web_search_max_results == 3
+    assert operator.default_live_location == "Seoul, South Korea"
+
+    _write_settings(
+        tmp_path,
+        "connectors:\n  telegram:\n    remote_control:\n      operator:\n"
+        "        live_web_search_max_results: 6\n",
+    )
+    with pytest.raises(ConfigError):
+        load_config(root=tmp_path, env_file=None)
 
 
 def test_attention_config_yaml_override(tmp_path: Path) -> None:
