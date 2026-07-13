@@ -295,6 +295,10 @@ def test_model_reply_is_plain_compact_and_clips_at_a_sentence_boundary() -> None
 def test_natural_read_intents_route_to_verified_host_commands() -> None:
     assert natural_remote_read_command("Is Kairo working on any projects now?") == "/status"
     assert natural_remote_read_command("What's the status of my inbox?") == "/inbox"
+    assert natural_remote_read_command("Tell me about today's emails") == "/inbox"
+    assert natural_remote_read_command("Read today's emails") == "/inbox"
+    assert natural_remote_read_command("Show me my emails from today") == "/inbox"
+    assert natural_remote_read_command("Do I have email today?") == "/inbox"
     assert natural_remote_read_command("What meetings are on my calendar today?") == "/calendar"
     assert natural_remote_read_command("What time does my next meeting start?") == "/calendar"
     assert natural_remote_read_command("Show my registered projects") == "/projects"
@@ -302,6 +306,8 @@ def test_natural_read_intents_route_to_verified_host_commands() -> None:
 
     # Natural action requests must reach Remote Operator instead of being mistaken for reads.
     assert natural_remote_read_command("Create a task to check the project status") is None
+    assert natural_remote_read_command("Draft an email to Alex") is None
+    assert natural_remote_read_command("Reply to today's email") is None
 
 
 async def test_natural_work_status_bypasses_stateless_model_chat(tmp_path: Path) -> None:
@@ -315,6 +321,21 @@ async def test_natural_work_status_bypasses_stateless_model_chat(tmp_path: Path)
         assert calls["status"] == ["called"]
         assert calls["chat"] == []
         assert [message["text"] for message in http.sent] == ["STATUS"]
+    finally:
+        await db.close()
+
+
+async def test_natural_inbox_question_bypasses_stateless_model_chat(tmp_path: Path) -> None:
+    controller, http, calls, db = await _controller(
+        tmp_path,
+        batches=[[], [_update(1, text="Show me my emails from today")]],
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 1
+        assert calls["inbox"] == ["called"]
+        assert calls["chat"] == []
+        assert [message["text"] for message in http.sent] == ["INBOX"]
     finally:
         await db.close()
 

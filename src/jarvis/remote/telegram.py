@@ -37,8 +37,9 @@ _MAX_REPLY_CHARS = 3_800  # leave room below Telegram's 4096-character transport
 _RETRY_SECONDS = 5.0
 
 _ACTION_VERBS = (
-    r"(?:add|approve|build|cancel|change|create|delete|deny|edit|fix|launch|open|"
-    r"remind|repair|run|schedule|send|start|update|work on|write)"
+    r"(?:add|approve|archive|build|cancel|change|compose|create|delete|deny|draft|edit|"
+    r"fix|forward|launch|mark|move|open|remind|repair|reply|respond|run|schedule|send|"
+    r"start|update|work on|write)"
 )
 _ACTION_REQUEST = re.compile(
     rf"^(?:(?:hey )?kairo )?(?:please )?{_ACTION_VERBS}\b|"
@@ -66,8 +67,10 @@ def natural_remote_read_command(text: str) -> str | None:
         return "/status"
     if re.search(r"\b(?:briefing|daily overview|today's overview)\b", value):
         return "/briefing"
-    if re.search(r"\b(?:inbox|e ?mail|mail)\b", value) and re.search(
-        r"\b(?:anything|check|how many|new|status|unread|what|what's)\b", value
+    if re.search(r"\b(?:inbox|e ?mails?|mail)\b", value) and re.search(
+        r"\b(?:anything|check|do i have|have i|how many|latest|list|new|read|received|"
+        r"recent|show|status|today|unread|what|what's|which)\b",
+        value,
     ):
         return "/inbox"
     if re.search(r"\b(?:appointments?|calendar|events?|meetings?)\b", value) and re.search(
