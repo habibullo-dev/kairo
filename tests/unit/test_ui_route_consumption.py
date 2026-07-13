@@ -21,7 +21,6 @@ STATIC_DIR = ROOT / "src" / "jarvis" / "ui" / "static"
 # A non-browser route is a deliberate product/API decision, not an accidental gap.  Keep each
 # reason short so adding an exemption is a visible review decision.
 INTENTIONALLY_NON_BROWSER: dict[str, str] = {
-    "/api/agents": "Agent-run history awaits a scoped evidence surface.",
     "/api/approvals": "Approval state is delivered to the modal over the WebSocket.",
     "/api/artifacts/{param}": "The list and hardened content route cover the current artifact UI.",
     "/api/graph/search": "Federated palette search supersedes the graph-specific query surface.",

@@ -22,9 +22,9 @@ from dataclasses import dataclass
 
 import aiosqlite
 
-# Explicit column order (never SELECT *), matching the agent_runs schema (v5).
+# Explicit column order (never SELECT *), matching the agent_runs schema (v7).
 _COLS = (
-    "id, parent_session_id, parent_trace_id, child_session_id, child_trace_id, "
+    "id, project_id, parent_session_id, parent_trace_id, child_session_id, child_trace_id, "
     "title, prompt, tools_scope, status, iterations, denied_count, input_tokens, "
     "output_tokens, cost_usd, result_text, error, started_at, finished_at, created_at, "
     "skills_manifest_json"
@@ -56,6 +56,7 @@ class AgentRun:
     """One row of ``agent_runs`` — a single delegated sub-agent run."""
 
     id: int
+    project_id: int | None
     parent_session_id: int | None
     parent_trace_id: str | None
     child_session_id: int | None
@@ -80,25 +81,26 @@ class AgentRun:
 def _row_to_run(row: tuple) -> AgentRun:
     return AgentRun(
         id=row[0],
-        parent_session_id=row[1],
-        parent_trace_id=row[2],
-        child_session_id=row[3],
-        child_trace_id=row[4],
-        title=row[5],
-        prompt=row[6],
-        tools_scope=json.loads(row[7]) if row[7] else [],
-        status=row[8],
-        iterations=row[9],
-        denied_count=row[10],
-        input_tokens=row[11],
-        output_tokens=row[12],
-        cost_usd=row[13],
-        result_text=row[14],
-        error=row[15],
-        started_at=row[16],
-        finished_at=row[17],
-        created_at=row[18],
-        skills_manifest=_skills_manifest(row[19]),
+        project_id=row[1],
+        parent_session_id=row[2],
+        parent_trace_id=row[3],
+        child_session_id=row[4],
+        child_trace_id=row[5],
+        title=row[6],
+        prompt=row[7],
+        tools_scope=json.loads(row[8]) if row[8] else [],
+        status=row[9],
+        iterations=row[10],
+        denied_count=row[11],
+        input_tokens=row[12],
+        output_tokens=row[13],
+        cost_usd=row[14],
+        result_text=row[15],
+        error=row[16],
+        started_at=row[17],
+        finished_at=row[18],
+        created_at=row[19],
+        skills_manifest=_skills_manifest(row[20]),
     )
 
 
@@ -199,19 +201,31 @@ class AgentRunStore:
         return _row_to_run(row) if row else None
 
     async def list(
-        self, *, limit: int = 50, parent_session_id: int | None = None
+        self,
+        *,
+        limit: int = 50,
+        parent_session_id: int | None = None,
+        project_id: int | None = None,
     ) -> list[AgentRun]:
-        """Most-recent runs first. Optionally scoped to one parent session."""
+        """Most-recent runs first, optionally scoped to a parent session and/or project.
+
+        ``project_id=None`` remains the administrative aggregate; callers that hold a live
+        project workspace pass its concrete id. This keeps project scoping server-owned rather
+        than turning a browser query parameter into a history-enumeration capability.
+        """
+        clauses: list[str] = []
+        params: list[object] = []
         if parent_session_id is not None:
-            cursor = await self.db.execute(
-                f"SELECT {_COLS} FROM agent_runs WHERE parent_session_id = ? "
-                "ORDER BY id DESC LIMIT ?",
-                (parent_session_id, limit),
-            )
-        else:
-            cursor = await self.db.execute(
-                f"SELECT {_COLS} FROM agent_runs ORDER BY id DESC LIMIT ?", (limit,)
-            )
+            clauses.append("parent_session_id = ?")
+            params.append(parent_session_id)
+        if project_id is not None:
+            clauses.append("project_id = ?")
+            params.append(project_id)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        cursor = await self.db.execute(
+            f"SELECT {_COLS} FROM agent_runs{where} ORDER BY id DESC LIMIT ?",
+            (*params, limit),
+        )
         return [_row_to_run(row) for row in await cursor.fetchall()]
 
     async def member_runs(self, orchestration_run_id: int) -> list[dict]:

@@ -28,6 +28,10 @@ export async function render(container, api) {
       <div id="gate-notices" class="dim">loading…</div>
     </div>
     <div class="card rise">
+      <div class="card-label">Delegation history · this scope</div>
+      <div id="gate-agents" class="dim">loading…</div>
+    </div>
+    <div class="card rise">
       <div class="card-label">Earlier today · audit</div>
       <div id="gate-audit" class="dim">loading…</div>
     </div>
@@ -276,6 +280,43 @@ export async function render(container, api) {
     }
   }
   await fillNoticeHistory();
+
+  // Delegated-run history is a server-scoped, metadata-only audit. The browser supplies no
+  // project selector; it receives only the current live workspace's rows (or the global
+  // administrative aggregate). Prompts, results, errors, and trace IDs never cross this seam.
+  const agentHistory = container.querySelector("#gate-agents");
+  async function fillAgentHistory() {
+    const data = await api.get("/api/agents");
+    agentHistory.className = "";
+    agentHistory.textContent = "";
+    if (!Array.isArray(data)) {
+      agentHistory.className = "dim";
+      agentHistory.textContent = "Delegation history is unavailable.";
+      return;
+    }
+    if (!data.length) {
+      agentHistory.className = "dim";
+      agentHistory.textContent = "No delegated runs in this scope.";
+      return;
+    }
+    for (const run of data) {
+      const row = document.createElement("div");
+      row.className = "toolline";
+      const tools = Array.isArray(run.tools_scope) ? run.tools_scope.join(", ") : "";
+      const cost = typeof run.cost_usd === "number" ? `$${run.cost_usd.toFixed(4)}` : "unpriced";
+      row.textContent = [
+        run.title,
+        run.status,
+        tools ? `tools: ${tools}` : "no tools recorded",
+        `${Number(run.iterations) || 0} iterations`,
+        `${Number(run.denied_count) || 0} denied`,
+        cost,
+        run.started_at,
+      ].filter((value) => typeof value === "string" && value).join(" · ");
+      agentHistory.appendChild(row);
+    }
+  }
+  await fillAgentHistory();
 
   const audit = await api.get("/api/audit/today");
   const at = container.querySelector("#gate-audit");

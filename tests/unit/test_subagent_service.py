@@ -18,10 +18,12 @@ from jarvis.agents.service import _IN_SUBAGENT
 from jarvis.config import load_config
 from jarvis.core.client import ToolCall, text_message, tool_use_message
 from jarvis.core.events import SubAgentCompleted, SubAgentEvent
+from jarvis.core.execution import ExecutionContext, bind_execution_context
 from jarvis.observability import bind_trace, clear_trace, get_trace_id
 from jarvis.permissions import PermissionGate, Policy
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
+from jarvis.projects import ProjectStore
 from jarvis.tools import ToolContext, ToolExecutor, ToolRegistry
 
 # --- fake clients ------------------------------------------------------------
@@ -130,6 +132,25 @@ async def test_happy_path_forwards_events_persists_and_frames(tmp_path: Path) ->
         # child transcript persisted as a subagent session
         child_msgs = await sessions.load_messages(run.child_session_id)
         assert child_msgs and child_msgs[0]["role"] == "user"
+    finally:
+        await db.close()
+
+
+async def test_spawn_inherits_live_workspace_project_provenance(tmp_path: Path) -> None:
+    svc, runs, sessions, db = await _service(tmp_path, _SleepClient(0, text="done"))
+    try:
+        project_id = await ProjectStore(db, runs.lock).create(name="Scoped")
+        parent_session_id = await sessions.create_session(title="parent", project_id=project_id)
+        with bind_execution_context(
+            ExecutionContext(session_id=parent_session_id, project_id=project_id)
+        ):
+            result = await svc.spawn(title="research", prompt="inspect", tools=["read_file"])
+
+        assert not result.is_error
+        run = (await runs.list())[0]
+        assert run.project_id == project_id
+        child = await sessions.get_meta(run.child_session_id)
+        assert child is not None and child.project_id == project_id
     finally:
         await db.close()
 

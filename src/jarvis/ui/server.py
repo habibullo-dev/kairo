@@ -1148,11 +1148,18 @@ def create_app(
         )
 
     @app.get("/api/agents")
-    async def agents() -> JSONResponse:
+    async def agents(request: Request) -> JSONResponse:
         svc = app.state.services.run_store
         if svc is None:
             return _unavailable("agents")
-        return JSONResponse(await list_agent_runs(svc))
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        # The project is server-selected from the live workspace. A global workspace is the
+        # deliberate administrative aggregate; a project workspace cannot enumerate another
+        # project's delegated history by adding a query string or guessing a run id.
+        project_id = workspace.context.project_id if workspace is not None else None
+        return JSONResponse(await list_agent_runs(svc, project_id=project_id))
 
     @app.get("/api/sessions")
     async def sessions_list(

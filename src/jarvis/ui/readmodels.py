@@ -1070,6 +1070,12 @@ async def vault_lint(knowledge: KnowledgeService) -> dict:
 
 
 def serialize_agent_run(run: AgentRun) -> dict:
+    """Metadata-only delegation history for the Notifications screen.
+
+    The audit row contains prompts, results, errors, and trace identifiers for local debug
+    tooling. None of those belong in this browser projection: they can carry untrusted text or
+    become cross-surface correlation identifiers. Keep this allowlist intentionally narrow.
+    """
     return {
         "id": run.id,
         "title": run.title,
@@ -1078,14 +1084,17 @@ def serialize_agent_run(run: AgentRun) -> dict:
         "iterations": run.iterations,
         "denied_count": run.denied_count,
         "cost_usd": run.cost_usd,
-        "parent_trace_id": run.parent_trace_id,
-        "child_trace_id": run.child_trace_id,
         "started_at": run.started_at,
     }
 
 
-async def list_agent_runs(run_store: AgentRunStore, *, limit: int = 50) -> list[dict]:
-    return [serialize_agent_run(r) for r in await run_store.list(limit=limit)]
+async def list_agent_runs(
+    run_store: AgentRunStore, *, project_id: int | None = None, limit: int = 50
+) -> list[dict]:
+    return [
+        serialize_agent_run(r)
+        for r in await run_store.list(project_id=project_id, limit=limit)
+    ]
 
 
 # --- orchestration (Studio): runs + team/workflow catalog (metadata only) ---

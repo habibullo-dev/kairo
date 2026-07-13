@@ -12,6 +12,7 @@ from pathlib import Path
 from jarvis.agents import AgentRun, AgentRunStore
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
+from jarvis.projects import ProjectStore
 
 
 async def _store(tmp_path: Path) -> tuple[AgentRunStore, SessionStore]:
@@ -110,6 +111,46 @@ async def test_list_is_recent_first_and_scopes_by_parent(tmp_path: Path) -> None
         assert all_ids == [r3, r2, r1]  # most recent first
         a_ids = [r.id for r in await runs.list(parent_session_id=parent_a)]
         assert a_ids == [r3, r1]  # only parent A's runs, recent first
+    finally:
+        await runs.db.close()
+
+
+async def test_list_scopes_to_a_concrete_project_without_including_global_rows(
+    tmp_path: Path,
+) -> None:
+    runs, _sessions = await _store(tmp_path)
+    try:
+        projects = ProjectStore(runs.db, runs.lock)
+        project_a = await projects.create(name="Project A")
+        project_b = await projects.create(name="Project B")
+        a_run = await runs.begin_run(
+            parent_session_id=None,
+            parent_trace_id=None,
+            title="A",
+            prompt="private A prompt",
+            tools_scope=[],
+            project_id=project_a,
+        )
+        await runs.begin_run(
+            parent_session_id=None,
+            parent_trace_id=None,
+            title="global",
+            prompt="global prompt",
+            tools_scope=[],
+        )
+        await runs.begin_run(
+            parent_session_id=None,
+            parent_trace_id=None,
+            title="B",
+            prompt="private B prompt",
+            tools_scope=[],
+            project_id=project_b,
+        )
+
+        scoped = await runs.list(project_id=project_a)
+        assert [run.id for run in scoped] == [a_run]
+        assert scoped[0].project_id == project_a
+        assert [run.title for run in await runs.list()] == ["B", "global", "A"]
     finally:
         await runs.db.close()
 

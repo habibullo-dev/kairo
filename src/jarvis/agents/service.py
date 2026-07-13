@@ -318,6 +318,11 @@ class SubAgentService:
         skill_manifest: list[dict] | None = None,
     ) -> ToolResult | str:
         execution_context = current_execution_context()
+        # Ordinary chat delegation receives its project from the task-local workspace context.
+        # Orchestration always provides an explicit project, which continues to take precedence.
+        effective_project_id = project_id or (
+            execution_context.project_id if execution_context is not None else None
+        )
         run_id = await self.run_store.begin_run(
             # The UI's source session is task-local.  ``bound_session_id`` remains the REPL
             # fallback, but it must not let another browser workspace overwrite child provenance.
@@ -330,7 +335,7 @@ class SubAgentService:
             title=title,
             prompt=prompt,
             tools_scope=sorted(scope),
-            project_id=project_id,
+            project_id=effective_project_id,
             orchestration_run_id=orchestration_run_id,
             role=role,
             stage=stage,
@@ -338,7 +343,7 @@ class SubAgentService:
         )
         agent_id = str(run_id)
         child_session_id = await self.session_store.create_session(
-            title=f"sub-agent: {title}"[:120], kind="subagent"
+            title=f"sub-agent: {title}"[:120], kind="subagent", project_id=effective_project_id
         )
 
         gate = SubAgentGate(self.gate, scope=scope, project_root=self.config.root)
@@ -364,7 +369,8 @@ class SubAgentService:
             memory=None,  # isolation: no auto-recall, no personal memory
             # Cost attribution: an orchestration child records purpose="orchestration", a plain
             # spawn "subagent". run_turn overlays purpose/trace and preserves the team/role/run
-            # /stage set just below (it has no project provider ⇒ project_id rides through too).
+            # /stage set just below (it has no project provider, so the effective project
+            # rides through too).
             cost_purpose="orchestration" if orchestration_run_id is not None else "subagent",
             add_time_context=True,
         )
@@ -385,11 +391,10 @@ class SubAgentService:
         token = _IN_SUBAGENT.set(True)
         # Cost attribution set INSIDE this coroutine (a parallel council's gather can't share
         # one role — pre-mortem #8). run_turn merges purpose/trace/project over this, keeping
-        # team/role/run/stage. A plain spawn sets all-None (byte-identical attribution to a
-        # normal turn other than purpose="subagent").
+        # team/role/run/stage. A plain spawn inherits the live workspace project when available.
         cost_token = cost_context.set(
             CostContext(
-                project_id=project_id,
+                project_id=effective_project_id,
                 orchestration_run_id=orchestration_run_id,
                 agent_role=role,
                 team=team,

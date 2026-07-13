@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from jarvis.actions.intents import IntentStore
 from jarvis.actions.journal import ConnectorWriteJournal
+from jarvis.agents import AgentRunStore
 from jarvis.attention.store import AttentionKind, AttentionStore
 from jarvis.config import load_config
 from jarvis.core.client import ToolCall
@@ -706,6 +707,89 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
     assert global_scope.status_code == 200
     assert client.get(f"/api/tasks/{admin_task.id}/runs", headers=own).status_code == 200
     assert client.post(f"/api/tasks/{admin_task.id}/cancel", headers=own_post).json()["ok"] is True
+
+
+async def test_delegation_history_is_scoped_by_the_live_workspace(tmp_path: Path) -> None:
+    registry, connections, projects = await _registry(tmp_path)
+    project_a = await projects.store.create(name="Project A")
+    project_b = await projects.store.create(name="Project B")
+    auth = AuthManager(token="tok")
+    owner_a, owner_b, owner_global = auth.mint_session(), auth.mint_session(), auth.mint_session()
+    workspace_a = await registry.attach(
+        connections.register(_Socket(), owner_session=owner_a), owner_session=owner_a
+    )
+    workspace_b = await registry.attach(
+        connections.register(_Socket(), owner_session=owner_b), owner_session=owner_b
+    )
+    global_workspace = await registry.attach(
+        connections.register(_Socket(), owner_session=owner_global), owner_session=owner_global
+    )
+    await workspace_a.select_project(project_a)
+    await workspace_b.select_project(project_b)
+    registry.refresh_context(workspace_a)
+    registry.refresh_context(workspace_b)
+    run_store = AgentRunStore(workspace_a.session.sessions.db, workspace_a.session.sessions.lock)
+    run_a = await run_store.begin_run(
+        parent_session_id=None,
+        parent_trace_id="parent-a",
+        title="A delegation",
+        prompt="PRIVATE-A-PROMPT",
+        tools_scope=["read_file"],
+        project_id=project_a,
+    )
+    await run_store.begin_run(
+        parent_session_id=None,
+        parent_trace_id="parent-b",
+        title="B delegation",
+        prompt="PRIVATE-B-PROMPT",
+        tools_scope=["web_search"],
+        project_id=project_b,
+    )
+    await run_store.begin_run(
+        parent_session_id=None,
+        parent_trace_id="parent-global",
+        title="Global delegation",
+        prompt="GLOBAL-PROMPT",
+        tools_scope=[],
+    )
+
+    app = create_app(load_config(root=tmp_path, env_file=None), auth=auth, connections=connections)
+    app.state.projects = projects
+    app.state.services = UiServices(sessions=workspace_a.session.sessions, run_store=run_store)
+    app.state.workspaces = registry
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    def headers(owner: str, workspace_id: str) -> dict[str, str]:
+        return {"cookie": f"{SESSION_COOKIE}={owner}", WORKSPACE_HEADER: workspace_id}
+
+    a_rows = client.get("/api/agents", headers=headers(owner_a, workspace_a.workspace_id))
+    b_rows = client.get("/api/agents", headers=headers(owner_b, workspace_b.workspace_id))
+    global_rows = client.get(
+        "/api/agents", headers=headers(owner_global, global_workspace.workspace_id)
+    )
+    assert a_rows.status_code == b_rows.status_code == global_rows.status_code == 200
+    assert [row["id"] for row in a_rows.json()] == [run_a]
+    assert [row["title"] for row in b_rows.json()] == ["B delegation"]
+    assert [row["title"] for row in global_rows.json()] == [
+        "Global delegation",
+        "B delegation",
+        "A delegation",
+    ]
+    assert set(a_rows.json()[0]) == {
+        "id",
+        "title",
+        "status",
+        "tools_scope",
+        "iterations",
+        "denied_count",
+        "cost_usd",
+        "started_at",
+    }
+    assert "PRIVATE-A-PROMPT" not in a_rows.text and "parent-a" not in a_rows.text
+    missing_workspace = client.get(
+        "/api/agents", headers={"cookie": f"{SESSION_COOKIE}={owner_a}"}
+    )
+    assert missing_workspace.status_code == 409
 
 
 async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
