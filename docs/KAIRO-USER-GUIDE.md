@@ -80,6 +80,9 @@ connectors:
       allowed_chat_id: '123456789'
       operator:
         enabled: true
+        live_web_search_enabled: true
+        live_web_search_max_results: 5
+        default_live_location: 'Seoul, South Korea'
         default_status_interval_minutes: 15
         allowed_status_intervals: [0, 1, 5, 15, 30, 60]
         max_active_jobs: 3
@@ -93,6 +96,15 @@ summaries. Retained Telegram messages from before the first enable are intention
 they cannot become work after a restart. Ordinary remote questions and proposal preparation use
 Kairo's economical utility model, preserving the expensive Fable model for its deliberate
 skills-authoring workflow.
+
+When `live_web_search_enabled` is true and `TAVILY_API_KEY` is configured, an ordinary message may
+perform one bounded public search before answering. This covers current weather, news, public
+schedules, prices, and other time-sensitive facts. The search cannot fetch arbitrary pages or read
+local files, mail, memory, connectors, or project content. Its query leaves the workstation and its
+results are framed as untrusted third-party reference material. `default_live_location` supplies a
+fallback for questions such as “What is today’s weather?”; a location written in the message takes
+priority. Each Telegram message can trigger at most one search and the existing remote model-message
+hourly limit also caps live-search requests.
 
 With `operator.enabled: true`, use `/projects` to see the aliases already registered in Kairo.
 Then speak naturally, for example:
@@ -108,7 +120,7 @@ schedule, update cadence, and a random code. Nothing is scheduled until you send
 codes for pending proposals or tool calls, and `/cancel ID` to cancel an active Remote Operator
 job. Refreshing `/approvals` invalidates an older unconsumed code for the same item.
 
-An approved job receives only `read_file`, `list_dir`, `glob_search`, `write_file`, and
+An approved project job receives only `read_file`, `list_dir`, `glob_search`, `write_file`, and
 `run_shell`. It has the selected registered project's linked-repository context, but it receives no
 memory, connectors, email, browser, sub-agent, or notification tools. Reads can proceed; a write or
 shell command parks the exact saved model continuation and sends a second preview with the tool,
@@ -134,7 +146,8 @@ negative): remote control deliberately accepts one private chat only.
 When Remote Operator is disabled, remote chat has no Kairo tools, memory, project context, approval
 route, shell, scheduler, or connector access. The deterministic workspace commands perform fixed
 read-only calls outside the model and disclose only the minimized summaries above. When Remote
-Operator is enabled, the proposal and exact-code protocol is the only additional authority path.
+Operator is enabled, the proposal and exact-code protocol is the only additional execution
+authority path; optional bounded live search adds public reference data but no local authority.
 
 ## Voice
 

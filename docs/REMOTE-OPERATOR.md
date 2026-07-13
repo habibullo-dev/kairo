@@ -8,8 +8,10 @@ execution authority.
 ## Authority flow
 
 1. A fresh, allowlisted Telegram message reaches a stateless utility-model turn.
-2. The turn has either no tools or exactly one tool: `remote_propose_work`.
-3. That tool stores an inert proposal. It cannot create a scheduler task or call another tool.
+2. The turn has no tools by default. Configured instances may expose `remote_propose_work`,
+   `remote_live_search`, or both. Live search is bounded to one public query for that message.
+3. The proposal tool stores an inert proposal. It cannot create a scheduler task or call another
+   tool. Live search cannot fetch arbitrary URLs or access local/private sources.
 4. The host renders the stored fields and a random 12-hex-character, single-use approval code.
 5. `/approve CODE` atomically consumes the code and creates a server-tagged scheduler task.
 6. The job runner recognizes that server-owned origin and exposes only its configured local tool
@@ -30,7 +32,12 @@ execution authority.
 - Proposal approval is separate from tool approval. Approving a job never pre-approves later writes
   or commands.
 - The remote model never receives filesystem, shell, scheduler, project-content, memory, connector,
-  sub-agent, or approval tools. Its only optional tool stores a proposal.
+  sub-agent, arbitrary-fetch, or approval tools. Its optional tools store an inert proposal and/or
+  make one bounded public search.
+- Live search is separately opt-in, requires the local Tavily credential, normalizes and limits the
+  query to 300 characters, fixes the result cap at five or fewer, and runs at most once per Telegram
+  message. The query leaves the machine, egress is audited without logging the query, and returned
+  snippets remain explicitly framed as untrusted content.
 - Remote scheduler tasks carry a server-owned `remote_operator` origin and a fixed project foreign
   key. They cannot inherit an interactive session's provenance or full tool registry.
 - Default execution tools are `read_file`, `list_dir`, `glob_search`, `write_file`, and `run_shell`.
