@@ -205,6 +205,16 @@ class RemoteOperatorStore:
         ).fetchall()
         return [_row_to_proposal(row) for row in rows]
 
+    async def approved_without_task(self) -> list[RemoteProposal]:
+        """Return approvals that were not durably bound to a scheduler task."""
+        rows = await (
+            await self.db.execute(
+                f"SELECT {_PROPOSAL_COLUMNS} FROM remote_operator_proposals "
+                "WHERE state = 'approved' AND task_id IS NULL ORDER BY id"
+            )
+        ).fetchall()
+        return [_row_to_proposal(row) for row in rows]
+
     async def expire_pending(self, *, now: dt.datetime | None = None) -> int:
         moment = _iso(now or _utc_now())
         async with self.lock:
@@ -411,15 +421,16 @@ class RemoteOperatorStore:
             await self.db.commit()
         return cursor.rowcount == 1
 
-    async def mark_failed(self, proposal_id: int, error: str) -> None:
+    async def mark_failed(self, proposal_id: int, error: str) -> bool:
         now = _iso(_utc_now())
         async with self.lock:
-            await self.db.execute(
+            cursor = await self.db.execute(
                 "UPDATE remote_operator_proposals SET state = 'failed', error = ?, "
                 "updated_at = ? WHERE id = ? AND state = 'approved'",
                 (error[:500], now, proposal_id),
             )
             await self.db.commit()
+        return cursor.rowcount == 1
 
     async def mark_cancelled(self, proposal_id: int) -> bool:
         now = _iso(_utc_now())
@@ -767,7 +778,29 @@ class RemoteOperatorService:
         self.sender = sender
 
     async def start(self) -> None:
-        """Restore host-only heartbeat monitors for remote tasks still active after restart."""
+        """Reconcile interrupted approvals and restore monitors after restart."""
+        cancelled_orphan = False
+        for task in await self.tasks.store.list():
+            if task.origin != "remote_operator":
+                continue
+            if await self.store.proposal_for_task(task.id) is not None:
+                continue
+            if await self.tasks.cancel(task.id) is not None:
+                cancelled_orphan = True
+        if cancelled_orphan:
+            self.runner.kick()
+
+        for proposal in await self.store.approved_without_task():
+            failed = await self.store.mark_failed(
+                proposal.id,
+                "Kairo restarted before the approved proposal was durably bound to a task",
+            )
+            if failed:
+                await self._safe_send(
+                    f"Remote proposal #{proposal.id} was interrupted during queueing and was "
+                    "closed without running work. Please send the request again."
+                )
+
         for proposal in await self.store.list(limit=100):
             if proposal.state != "queued" or proposal.task_id is None:
                 continue

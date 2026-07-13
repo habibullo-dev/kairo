@@ -337,6 +337,61 @@ async def test_service_denial_never_creates_a_scheduler_task(tmp_path: Path) -> 
         await db.close()
 
 
+async def test_service_start_closes_interrupted_approval_and_cancels_unbound_task(
+    tmp_path: Path,
+) -> None:
+    db, store, projects, tasks = await _stores(tmp_path)
+    runner = _Runner()
+    sent: list[str] = []
+
+    async def sender(text: str) -> None:
+        sent.append(text)
+
+    service = _service(store, projects, tasks, runner, sender=sender)
+    try:
+        authorization = await store.create_proposal(
+            kind="job",
+            title="Interrupted approval",
+            instruction="This work must not survive a partial queue transaction.",
+            project_id=None,
+            schedule_kind="immediate",
+            schedule_spec="",
+            status_interval_minutes=0,
+            proposal_ttl_minutes=30,
+            approval_ttl_minutes=15,
+        )
+        assert await store.consume_token(
+            authorization.approval_code, resolution="approve"
+        ) is not None
+        orphan_task_id = await tasks.add(
+            kind="job",
+            title="Interrupted approval",
+            payload="This work must not survive a partial queue transaction.",
+            schedule_kind="once",
+            schedule_spec="2099-01-01T00:00:00",
+            timezone="UTC",
+            next_run_at="2099-01-01T00:00:00+00:00",
+            created_by="user",
+            origin="remote_operator",
+        )
+
+        await service.start()
+
+        proposal = await store.get(authorization.proposal.id)
+        assert proposal is not None and proposal.state == "failed" and proposal.task_id is None
+        assert proposal.error is not None and "restarted" in proposal.error
+        assert (await tasks.get(orphan_task_id)).status == "cancelled"  # type: ignore[union-attr]
+        assert await store.active_count() == 0
+        assert runner.kicks == 1
+        assert sent == [
+            f"Remote proposal #{proposal.id} was interrupted during queueing and was closed "
+            "without running work. Please send the request again."
+        ]
+    finally:
+        await service.stop()
+        await db.close()
+
+
 async def test_service_parked_approval_resumes_only_the_saved_run(tmp_path: Path) -> None:
     db, store, projects, tasks = await _stores(tmp_path)
     runner = _Runner()
