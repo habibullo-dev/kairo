@@ -24,7 +24,6 @@ INTENTIONALLY_NON_BROWSER: dict[str, str] = {
     "/api/agents": "Agent-run history awaits a scoped evidence surface.",
     "/api/approvals": "Approval state is delivered to the modal over the WebSocket.",
     "/api/artifacts/{param}": "The list and hardened content route cover the current artifact UI.",
-    "/api/budgets": "Ephemeral budget tuning stays hidden until it is durable.",
     "/api/graph/search": "Federated palette search supersedes the graph-specific query surface.",
     "/api/health": "Unauthenticated health check is for local monitoring, not the browser UI.",
     "/api/intents/{param}": (
@@ -32,8 +31,6 @@ INTENTIONALLY_NON_BROWSER: dict[str, str] = {
     ),
     "/api/orchestration/{param}/cancel": "Per-run cancellation awaits a scoped Studio control.",
     "/api/projects/{param}/services": "Service narrowing awaits a project-settings safety surface.",
-    "/api/views/save": "Saved views await a create-and-manage UI.",
-    "/api/views/{param}/delete": "Saved views await a create-and-manage UI.",
     "/api/voice/listen": "Server-mic capture is superseded by browser voice capture.",
 }
 

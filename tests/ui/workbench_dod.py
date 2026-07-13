@@ -373,7 +373,6 @@ def _base() -> dict:
             "active_project_id": None,
         },
         "/api/projects/overview": _PROJECT_OVERVIEW,
-        "/api/views": {"views": []},
         "/api/workspace/1": _WORKSPACE,
         "/api/studio": _STUDIO,
         "/api/orchestration": {"runs": [_RUN]},

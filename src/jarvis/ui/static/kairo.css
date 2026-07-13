@@ -985,8 +985,8 @@ tr.clickable:hover td { color: var(--cyan); }
 .list-row.attention .list-icon { color: var(--attention); background: rgba(var(--attention-rgb), .16); }
 .list-row.cost-tone { border-color: rgba(var(--cost-rgb), .26); background: rgba(var(--cost-rgb), .09); }
 
-/* card family (projects / artifacts / saved views / runs / agents) */
-.project-card, .artifact-card, .saved-view, .run-card, .agent-card {
+/* card family (projects / artifacts / runs / agents) */
+.project-card, .artifact-card, .run-card, .agent-card {
   border: 1px solid var(--line); background: var(--panel); border-radius: 8px;
   box-shadow: var(--shadow-soft); padding: 15px; min-width: 0; }
 .project-card.pinned, .artifact-card.pinned { border-color: rgba(var(--accent-rgb), .4); }

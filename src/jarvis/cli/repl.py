@@ -1447,11 +1447,6 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
     orch_store = (
         OrchestrationStore(repl.store.db, repl.store.lock) if repl.store is not None else None
     )
-    from jarvis.persistence.saved_views import SavedViewStore
-
-    views_store = (
-        SavedViewStore(repl.store.db, repl.store.lock) if repl.store is not None else None
-    )
     app.state.services = UiServices(
         memory=repl.memory,
         tasks=repl.tasks,
@@ -1464,7 +1459,6 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
         budgets=repl.budgets,  # Phase 10: Costs screen rollups + limits
         orchestration=orch_store,  # Phase 10B: Studio runs
         artifacts=artifacts,  # Phase 11: Artifacts Library + global search + content route
-        views=views_store,  # Phase 11: saved views / smart collections
         intents=repl.intents,  # Phase 12: the outward-write approval queue
         write_journal=repl.write_journal,  # Phase 12: the metadata-only write journal
         graph=GraphStore(repl.store.db, repl.store.lock) if repl.store is not None else None,

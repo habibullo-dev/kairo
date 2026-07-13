@@ -77,7 +77,6 @@ from jarvis.ui.readmodels import (
     teams_catalog,
     vault_lint,
     vault_overview,
-    views_list,
     workflows_catalog,
     workspace_overview,
 )
@@ -604,29 +603,6 @@ def create_app(
         status["routed"] = _routed_dict()
         status["auto_may_classify"] = status["routing"] == "auto"
         return JSONResponse(status)
-
-    @app.post("/api/budgets")
-    async def set_budgets(request: Request) -> JSONResponse:
-        # Tighten/loosen the live budget limits for this session (durable changes go in
-        # settings.yaml / a project's settings). Only known numeric limit fields are accepted.
-        budgets = app.state.services.budgets
-        if budgets is None:
-            return _unavailable("costs")
-        body = await request.json()
-        allowed = {
-            "soft_warn_usd_per_run",
-            "hard_stop_usd_per_run",
-            "project_monthly_usd",
-            "per_role_max_usd",
-            "confirm_above_usd",
-            "hourly_rate_usd",
-        }
-        updates = {k: v for k, v in body.items() if k in allowed}
-        try:
-            budgets.config = budgets.config.model_copy(update=updates)
-        except Exception as exc:  # noqa: BLE001 - a bad value is a 400, not a 500
-            return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
-        return JSONResponse({"ok": True, "limits": (await budgets.status())["limits"]})
 
     @app.post("/api/mode")
     async def set_mode(request: Request) -> JSONResponse:
@@ -1997,9 +1973,9 @@ def create_app(
         )
         return JSONResponse({"ok": True, "active_project_id": ctx.project_id})
 
-    # --- Phase 11: projects pin + artifacts + saved views + global search + workspace ---------
-    # All reads are scoped in SQL (search/artifacts); the mutations are metadata-only (pin/label/
-    # save/delete), mirroring sessions/pin — no new authority. The palette calls the GETs only.
+    # --- Phase 11: projects pin + artifacts + global search + workspace ------------------------
+    # All reads are scoped in SQL (search/artifacts); the mutations are metadata-only pin/label
+    # actions, mirroring sessions/pin — no new authority. The palette calls the GETs only.
     @app.get("/api/projects/overview")
     async def projects_overview_route() -> JSONResponse:
         # The Projects grid: active projects + per-project health chips + archived list. Read-only.
@@ -2354,49 +2330,6 @@ def create_app(
         else:
             results = await _federated_search(store.db, q, project_id=project_id, limit=capped)
         return JSONResponse({"results": results})
-
-    @app.get("/api/views")
-    async def views_index(scope: str | None = None, project_id: int | None = None) -> JSONResponse:
-        store = app.state.services.views
-        if store is None:
-            return _unavailable("views")
-        return JSONResponse(await views_list(store, scope=scope, project_id=project_id))
-
-    @app.post("/api/views/save")
-    async def views_save(request: Request) -> JSONResponse:
-        store = app.state.services.views
-        if store is None:
-            return _unavailable("views")
-        body = await request.json()
-        query = body.get("query") or {}
-        project_id = body.get("project_id")
-        if not isinstance(query, dict):
-            return JSONResponse(
-                {"ok": False, "message": "query must be an object"}, status_code=400
-            )
-        if project_id is not None and not isinstance(project_id, int):
-            return JSONResponse(
-                {"ok": False, "message": "project_id must be an int"}, status_code=400
-            )
-        try:
-            vid = await store.save(
-                name=str(body.get("name", "")).strip() or "Untitled",
-                scope=str(body.get("scope", "")),
-                query=query,
-                project_id=project_id,
-                view_id=body.get("id"),
-            )
-        except ValueError as exc:
-            return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
-        return JSONResponse({"ok": True, "id": vid})
-
-    @app.post("/api/views/{view_id}/delete")
-    async def views_delete(view_id: int) -> JSONResponse:
-        store = app.state.services.views
-        if store is None:
-            return _unavailable("views")
-        ok = await store.delete(view_id)
-        return JSONResponse({"ok": ok})
 
     @app.get("/api/workspace/{project_id}")
     async def workspace(project_id: int, request: Request) -> JSONResponse:

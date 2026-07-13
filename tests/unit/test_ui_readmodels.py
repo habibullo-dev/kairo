@@ -145,6 +145,9 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
     }
     assert mutating == {
         ("POST", "/api/approvals/{decision_id}/resolve"),
+        # A live local Workspace may review one hash-pinned parked task continuation. The route
+        # only delegates to the host-owned resume seam after workspace + nonce revalidation.
+        ("POST", "/api/parked-task-approvals/{run_id}/resolve"),
         ("POST", "/api/turn"),
         ("POST", "/api/turn/cancel"),
         ("POST", "/api/runner/pause"),
@@ -167,7 +170,6 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/projects/{project_id}/archive"),  # Phase 10: archive a project
         ("POST", "/api/projects/select"),  # Phase 10: set the active-project scope
         ("POST", "/api/mode"),  # Phase 10: set the interactive run mode
-        ("POST", "/api/budgets"),  # Phase 10: tune live budget limits
         ("POST", "/api/memory/remember"),  # Phase 10: human-authority remember (promote target)
         ("POST", "/api/tasks/create"),  # Phase 10: human-authority task create (promote target)
         ("POST", "/api/orchestration/run"),  # Phase 10B: launch a team+workflow run
@@ -184,8 +186,6 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         ("POST", "/api/projects/{project_id}/services"),  # Phase 13: narrow-only service selection
         ("POST", "/api/artifacts/{artifact_id}/pin"),  # Phase 11: pin/unpin an artifact
         ("POST", "/api/artifacts/{artifact_id}/label"),  # Phase 11: set an artifact's labels
-        ("POST", "/api/views/save"),  # Phase 11: create/update a saved view
-        ("POST", "/api/views/{view_id}/delete"),  # Phase 11: delete a saved view (UI bookmark)
         # Phase 12: the outward-write approval queue — human-only. approve EXECUTES the stored
         # intent (the only path that performs a connector write); reject/undo close the loop.
         ("POST", "/api/intents/{intent_id}/approve"),

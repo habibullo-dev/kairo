@@ -60,10 +60,8 @@ class UiServices:
     budgets: Any = None  # a BudgetService; None when cost tracking isn't composed
     # Phase 10B: the orchestration run store backs the Studio history + run detail read models.
     orchestration: Any = None  # an OrchestrationStore; None when orchestration isn't composed
-    # Phase 11: the artifact store backs the Artifacts Library + global search + content route;
-    # the saved-view store backs smart collections on Projects/Artifacts/Search.
+    # Phase 11: the artifact store backs the Artifacts Library + global search + content route.
     artifacts: Any = None  # an ArtifactStore; None when artifacts aren't composed
-    views: Any = None  # a SavedViewStore; None when the DB isn't composed
     # Phase 12: the intent store backs the approval queue; the write journal backs the outbox
     # read model + undo. Both None when the write substrate isn't composed.
     intents: Any = None  # an IntentStore
@@ -459,28 +457,6 @@ async def artifacts_list(
         project_id=scope, include_global=include_global, kind=kind, pinned=pinned, limit=limit
     )
     return {"artifacts": [serialize_artifact(a) for a in rows]}
-
-
-def serialize_view(v) -> dict:
-    return {
-        "id": v.id,
-        "name": v.name,
-        "scope": v.scope,
-        "query": v.query,
-        "project_id": v.project_id,
-        "created_by": v.created_by,
-        "created_at": v.created_at,
-        "updated_at": v.updated_at,
-    }
-
-
-async def views_list(
-    store: Any, *, scope: str | None = None, project_id: int | None = None
-) -> dict:
-    """Saved views / smart collections. A None project_id lists every view; a concrete id lists
-    that project's views + global ones."""
-    p: object = _ANY_PROJECT if project_id is None else project_id
-    return {"views": [serialize_view(v) for v in await store.list(scope=scope, project_id=p)]}
 
 
 async def workspace_overview(services: UiServices, project_id: int) -> dict:

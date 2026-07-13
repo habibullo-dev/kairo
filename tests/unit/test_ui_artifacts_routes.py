@@ -1,4 +1,4 @@
-"""Phase 11 T4 routes: artifacts / saved views / global search / workspace + the content route.
+"""Phase 11 T4 routes: artifacts / global search / workspace + the content route.
 
 Safety-critical (Checkpoint E): the /api/artifacts/{id}/content route serves ONLY registered,
 in-managed-root, non-sensitive, non-quarantined, allowlisted-type files; and a manual secret
@@ -15,7 +15,6 @@ from fastapi.testclient import TestClient
 
 from jarvis.persistence.artifacts import ArtifactStore
 from jarvis.persistence.db import connect
-from jarvis.persistence.saved_views import SavedViewStore
 from jarvis.projects import ProjectService, ProjectStore
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
 from jarvis.ui.readmodels import UiServices
@@ -47,10 +46,9 @@ async def _setup(tmp_path: Path, *, auth_token: str = "tok", secret_update: dict
     art_root = cfg.data_dir / "artifacts"
     art_root.mkdir(parents=True, exist_ok=True)
     store = ArtifactStore(db, lock, data_dir=cfg.data_dir, managed_roots={"artifacts": art_root})
-    views = SavedViewStore(db, lock)
     auth = AuthManager(token=auth_token)
     app = create_app(
-        cfg, auth=auth, services=UiServices(artifacts=store, views=views, projects=projects)
+        cfg, auth=auth, services=UiServices(artifacts=store, projects=projects)
     )
     app.state.projects = projects
     client = TestClient(app, base_url="http://127.0.0.1")
@@ -252,28 +250,6 @@ async def test_artifacts_label_rejects_non_list(tmp_path: Path) -> None:
     assert r.status_code == 400
 
 
-# --- saved views: save / list / delete -----------------------------------------------
-async def test_views_save_list_delete(tmp_path: Path) -> None:
-    client, auth, *_ = await _setup(tmp_path)
-    saved = client.post(
-        "/api/views/save",
-        json={"name": "Recent", "scope": "artifacts", "query": {"pinned": True}},
-        headers=_post(auth),
-    )
-    vid = saved.json()["id"]
-    assert saved.json()["ok"]
-    listed = client.get("/api/views", headers=_get(auth)).json()
-    assert [v["id"] for v in listed["views"]] == [vid]
-    assert client.post(f"/api/views/{vid}/delete", headers=_post(auth)).json()["ok"]
-    assert client.get("/api/views", headers=_get(auth)).json()["views"] == []
-
-
-async def test_views_save_rejects_bad_scope(tmp_path: Path) -> None:
-    client, auth, *_ = await _setup(tmp_path)
-    r = client.post("/api/views/save", json={"name": "X", "scope": "bogus"}, headers=_post(auth))
-    assert r.status_code == 400
-
-
 # --- search + workspace + projects pin ------------------------------------------------
 async def test_search_route(tmp_path: Path) -> None:
     client, auth, _db, _lock, store, _cfg, pid, art_root = await _setup(tmp_path)
@@ -329,7 +305,6 @@ async def test_no_secret_on_parameterized_gets(tmp_path: Path) -> None:
         f"/api/artifacts/{aid}/content",
         f"/api/workspace/{pid}",
         "/api/artifacts",
-        "/api/views",
         "/api/search?q=A",
     ):
         r = client.get(path, headers={"cookie": f"{SESSION_COOKIE}={sid}"})

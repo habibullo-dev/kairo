@@ -1,6 +1,6 @@
 // Projects — the workspace grid (Phase 11 T9). Each project is a card: color tile, name, editable
 // category label, pinned star, status, and health chips (open tasks · chats this week · last run ·
-// month spend). A collections row surfaces built-in smart collections + user saved views. The card
+// month spend). A collections row surfaces built-in navigation presets. The card
 // opens the project Workspace (#workspace/{id}, T10). Every write is an existing/enumerated
 // metadata mutation (create/select/archive/pin/label) — no new authority. Built entirely with
 // el() so a project name/label can never inject markup.
@@ -267,17 +267,11 @@ function projectCard(p, activeId, api, refresh) {
   return card;
 }
 
-async function collectionsRow(container, api) {
-  const views = await api.get("/api/views");
+function collectionsRow() {
   const chips = [];
   for (const [key, label] of BUILTIN_VIEWS) {
     const c = el("button", { class: "collection-chip" }, [label]);
     c.addEventListener("click", () => { location.hash = `artifacts/${key}`; });
-    chips.push(c);
-  }
-  for (const v of (views && views.views) || []) {
-    const c = el("button", { class: "collection-chip user" }, [v.name || "View"]);
-    c.addEventListener("click", () => { location.hash = `artifacts/view-${v.id}`; });
     chips.push(c);
   }
   return el("div", { class: "surface rise" }, [
@@ -322,7 +316,7 @@ export async function render(container, api) {
   ]));
 
   // Collections row
-  container.appendChild(await collectionsRow(container, api));
+  container.appendChild(collectionsRow());
 
   const active = data.projects || [];
   if (!active.length) {

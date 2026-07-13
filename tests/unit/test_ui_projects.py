@@ -53,9 +53,9 @@ def test_health_chips_present() -> None:
 
 
 def test_collections_row_navigates_only() -> None:
-    # Built-in smart collections + user saved views navigate (hash) — never mutate.
+    # Built-in collection presets navigate (hash) — never mutate or depend on a hidden API.
     assert "collection-chip" in PROJECTS_JS
-    assert "/api/views" in PROJECTS_JS  # user saved views (a GET)
+    assert "/api/views" not in PROJECTS_JS
     assert "location.hash" in PROJECTS_JS
 
 
