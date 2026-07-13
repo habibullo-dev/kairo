@@ -228,6 +228,8 @@ def test_connectors_config_defaults(tmp_path: Path) -> None:
     assert c.google.enabled is False and c.google.calendar_id == "primary"
     assert c.telegram.enabled is False and c.telegram.chat_id == ""
     assert c.telegram.notify_reminders is False
+    assert c.telegram.remote_control.enabled is False
+    assert c.telegram.remote_control.allowed_chat_id == ""
     assert c.kakao.enabled is False and c.kakao.redirect_port == 8788
     assert c.digest.enabled is False and c.digest.deliver == ["ui"]
     assert c.digest.rich_notify is False
@@ -250,6 +252,26 @@ def test_connectors_config_yaml_override(tmp_path: Path) -> None:
     assert c.telegram.enabled is True and c.telegram.chat_id == "12345"
     assert c.repos == [".", "../other"]
     assert c.kakao.enabled is False  # unspecified keeps default
+
+
+def test_telegram_remote_control_requires_one_positive_private_chat_id(tmp_path: Path) -> None:
+    _write_settings(
+        tmp_path,
+        "connectors:\n  telegram:\n    remote_control:\n      enabled: true\n"
+        "      allowed_chat_id: '12345'\n",
+    )
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.connectors.telegram.remote_control.enabled is True
+    assert cfg.connectors.telegram.remote_control.allowed_chat_id == "12345"
+
+    for invalid in ("", "-100123", "a-private-chat"):
+        _write_settings(
+            tmp_path,
+            "connectors:\n  telegram:\n    remote_control:\n      enabled: true\n"
+            f"      allowed_chat_id: {invalid!r}\n",
+        )
+        with pytest.raises(ConfigError, match="allowed_chat_id"):
+            load_config(root=tmp_path, env_file=None)
 
 
 def test_attention_config_yaml_override(tmp_path: Path) -> None:

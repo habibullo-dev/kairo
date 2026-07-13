@@ -127,3 +127,28 @@ async def test_v24_adds_idempotent_expected_output_verification_columns() -> Non
         assert {"verification_status", "verification_summary"} <= run_columns
     finally:
         await db.close()
+
+
+async def test_v25_remote_control_state_is_bodies_free_and_idempotent() -> None:
+    db = await _build_v19()
+    try:
+        await M._migrate_v20(db)
+        await db.executescript(M._SCHEMA_V21)
+        await M._migrate_v22(db)
+        await M._migrate_v23(db)
+        await M._migrate_v24(db)
+        await db.executescript(M._SCHEMA_V25)
+        await db.executescript(M._SCHEMA_V25)
+        rows = await (
+            await db.execute("PRAGMA table_info(telegram_remote_control_state)")
+        ).fetchall()
+        columns = {row[1] for row in rows}
+        assert {
+            "initialized",
+            "next_update_id",
+            "rate_window_started_at",
+            "rate_window_count",
+        } <= columns
+        assert not (columns & {"token", "chat_id", "message", "body", "content", "prompt", "reply"})
+    finally:
+        await db.close()

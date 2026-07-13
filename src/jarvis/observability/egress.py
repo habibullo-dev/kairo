@@ -26,6 +26,8 @@ EGRESS_CATEGORIES: frozenset[str] = frozenset(
         "web_fetch",
         "gmail_draft",
         "notify_telegram",
+        # Replies to the separately enabled, allowlisted Telegram remote-control channel.
+        "telegram_remote_reply",
         "notify_kakao",
         "digest_delivery",
         # Phase 12: an approved outward connector write left the box (calendar event / Drive Doc).

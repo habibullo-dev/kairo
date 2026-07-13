@@ -166,6 +166,14 @@ def show_status(config: Config, *, emit=print) -> int:
     # the value (a routing id, but there's no need to print it).
     ready = bool(config.secrets.telegram_bot_token and resolve_telegram_chat_id(config))
     emit(f"  telegram: {'configured' if ready else 'not configured'}")
+    remote = config.connectors.telegram.remote_control
+    if remote.enabled:
+        remote_ready = bool(config.secrets.telegram_bot_token)
+        emit(
+            "  telegram remote control: "
+            f"{'configured' if remote_ready else 'missing TELEGRAM_BOT_TOKEN'} "
+            "(starts only while Kairo is running)"
+        )
     return 0
 
 

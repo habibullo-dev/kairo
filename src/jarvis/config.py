@@ -36,7 +36,7 @@ _REQUIRED_KEYS: dict[str, tuple[str, str]] = {
     "zai": ("zai_api_key", "ZAI_API_KEY"),  # GLM / Z.ai worker (Phase 10C)
     "gemini": ("gemini_api_key", "GEMINI_API_KEY"),  # Gemini text-only worker (Phase 10C)
     "google": ("google_client_id", "GOOGLE_CLIENT_ID"),  # Workspace connectors (Phase 9)
-    "telegram": ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),  # send-only notifier (Phase 9)
+    "telegram": ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),  # notifier / remote control
     "kakao": ("kakao_rest_api_key", "KAKAO_REST_API_KEY"),  # send-to-me notifier (Phase 9)
 }
 
@@ -328,13 +328,51 @@ class GoogleConnectorConfig(BaseModel):
     max_results: int = 25  # default page size cap for list calls (tools clamp their own ≤50)
 
 
+class TelegramRemoteControlConfig(BaseModel):
+    """Opt-in, single-owner Telegram remote control.
+
+    This is intentionally a narrow, polling-only channel: it accepts messages from one
+    configured *private* chat and is never an approval or workstation-control surface.
+    The bot token remains a secret in ``.env``; the allowed chat id is a routing identifier
+    safe to keep in settings.
+    """
+
+    enabled: bool = False
+    allowed_chat_id: str = ""
+    poll_timeout_seconds: int = Field(default=25, ge=1, le=50)
+    max_model_messages_per_hour: int = Field(default=20, ge=1, le=100)
+    max_input_chars: int = Field(default=2_000, ge=1, le=4_000)
+
+    @model_validator(mode="after")
+    def _enabled_control_requires_private_chat(self) -> TelegramRemoteControlConfig:
+        if not self.enabled:
+            return self
+        value = self.allowed_chat_id.strip()
+        # Telegram private user chat ids are positive decimal ids.  Reject a group/channel
+        # id (normally negative) instead of treating a shared chat as an owner identity.
+        if not value.isdecimal() or int(value) <= 0:
+            raise ValueError(
+                "connectors.telegram.remote_control.allowed_chat_id must be one positive "
+                "private Telegram chat id when remote_control is enabled"
+            )
+        self.allowed_chat_id = value
+        return self
+
+
 class TelegramConfig(BaseModel):
-    """Telegram send-only notifier (Phase 9). Bot token in .env (TELEGRAM_BOT_TOKEN); chat_id
-    here (a routing id, NOT a secret). Kairo never reads Telegram — delivery only."""
+    """Telegram delivery plus an independently opt-in remote-control channel.
+
+    ``enabled`` and ``chat_id`` configure the existing outbound notifier.  Remote control
+    deliberately has its own explicit ``allowed_chat_id`` so turning on notifications can never
+    accidentally grant inbound authority.
+    """
 
     enabled: bool = False
     chat_id: str = ""  # numeric chat id as a string; a routing id, safe to commit
     notify_reminders: bool = False  # mirror scheduler reminders here (host code, not a tool)
+    remote_control: TelegramRemoteControlConfig = Field(
+        default_factory=TelegramRemoteControlConfig
+    )
 
 
 class KakaoConfig(BaseModel):

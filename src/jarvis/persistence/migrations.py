@@ -1200,6 +1200,20 @@ async def _migrate_v24(db: aiosqlite.Connection) -> None:
             await db.execute("ALTER TABLE task_runs ADD COLUMN verification_summary TEXT")
 
 
+# The Telegram remote-control state intentionally keeps only a cursor and model-rate metadata.
+# No bot token, chat id, message body, sender identity, prompt, or reply can be persisted here.
+_SCHEMA_V25 = """
+CREATE TABLE IF NOT EXISTS telegram_remote_control_state (
+    id                     INTEGER PRIMARY KEY CHECK (id = 1),
+    initialized            INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1)),
+    next_update_id         INTEGER NOT NULL DEFAULT 0,
+    rate_window_started_at TEXT,
+    rate_window_count      INTEGER NOT NULL DEFAULT 0,
+    updated_at             TEXT NOT NULL
+);
+"""
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1230,6 +1244,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (22, _migrate_v22),
     (23, _migrate_v23),
     (24, _migrate_v24),
+    (25, _SCHEMA_V25),
 ]
 
 

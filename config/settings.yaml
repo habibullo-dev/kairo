@@ -171,6 +171,15 @@ connectors:
     enabled: true                # count-only nudges; needs TELEGRAM_BOT_TOKEN in .env
     chat_id: ''                  # numeric chat id as a string (a routing id, NOT a secret)
     notify_reminders: false      # also mirror scheduler reminders to Telegram
+    # Remote chat is independent of notifications and OFF by default. It accepts messages only
+    # from one positive private chat id; it cannot approve, write, schedule, run shell, or use
+    # Kairo tools. Start Kairo locally, then send /start or /status from this exact chat.
+    remote_control:
+      enabled: false
+      allowed_chat_id: ''
+      poll_timeout_seconds: 25
+      max_model_messages_per_hour: 20
+      max_input_chars: 2000
   kakao:
     enabled: false               # "send to me" memo; needs KAKAO_REST_API_KEY + `jarvis connect kakao`
     redirect_port: 8788          # MUST match the redirect URI registered in the Kakao dev console

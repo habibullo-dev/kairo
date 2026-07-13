@@ -66,6 +66,35 @@ count-only attention nudges (for example, how many approvals are waiting), never
 It can remind you to open Kairo, but the authenticated local Gate remains the only place that can
 approve or reject an action.
 
+### Telegram remote control
+
+Kairo can also answer a small set of Telegram messages while the Kairo process is running at home.
+Put the bot token in `.env`, then configure one **private** Telegram chat id in
+`config/settings.yaml`:
+
+```yaml
+connectors:
+  telegram:
+    remote_control:
+      enabled: true
+      allowed_chat_id: '123456789'
+```
+
+Start Kairo normally (`uv run jarvis --ui` or `uv run jarvis`), then send a fresh `/start` from
+that exact chat. `/status` reports whether Kairo and its scheduler are running; `/tasks` lists
+active task metadata; a short ordinary message gets a bounded, tool-less Kairo response. Retained
+Telegram messages from before the first enable are intentionally discarded, so they cannot become
+work after a restart. Ordinary remote questions use Kairo's economical utility model, preserving
+the expensive Fable model for its deliberate skills-authoring workflow.
+
+If you already use Kairo's Telegram notifications for your personal conversation, reuse that same
+positive chat ID as `allowed_chat_id`. Do not use a group or channel ID (those are normally
+negative): remote control deliberately accepts one private chat only.
+
+Remote chat has no Kairo tools, memory, project context, approval route, shell, scheduler, or
+connector access. It cannot execute work, alter schedules, or approve an action. Keep the local
+workstation running for the channel to be available; this is not a cloud relay or remote wake-up.
+
 ## Voice
 
 The composer has two modes:

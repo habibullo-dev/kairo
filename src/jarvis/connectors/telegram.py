@@ -23,12 +23,17 @@ _MAX_MESSAGE_CHARS = 4096  # Telegram's hard limit
 
 
 async def send_telegram_message(
-    *, bot_token: str, chat_id: str, text: str, http: Any = None
+    *,
+    bot_token: str,
+    chat_id: str,
+    text: str,
+    http: Any = None,
+    egress_category: str = "notify_telegram",
 ) -> None:
     """Send one plain-text message to ``chat_id``. Raises :class:`ConnectorError` (friendly
     message only) on failure. Logs an egress event with channel type only — never the token,
     the chat id, or the body."""
-    log_egress(category="notify_telegram", destination_type="telegram")
+    log_egress(category=egress_category, destination_type="telegram")
     url = f"{_TELEGRAM_API}/bot{bot_token}/sendMessage"
     data = {
         "chat_id": chat_id,

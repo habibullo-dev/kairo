@@ -1459,6 +1459,20 @@ def connector_hub_overview(config: Config, *, connectors: dict | None = None) ->
             return {"state": state, "chat_id_set": chat_id_set}
         return {"state": state}
 
+    telegram = notifier("telegram")
+    remote = config.connectors.telegram.remote_control
+    remote_ready = bool(remote.enabled and sec.telegram_bot_token)
+    # Telegram's Hub card represents both independent capabilities: the legacy outbound
+    # notifier and the new narrowly allowlisted remote channel.  A ready remote channel must
+    # not look "disabled" merely because notification delivery has no destination configured.
+    if remote.enabled:
+        telegram["state"] = "configured" if remote_ready else "missing_key"
+    telegram["remote_control"] = {
+        "enabled": remote.enabled,
+        "ready": remote_ready,
+        "max_model_messages_per_hour": remote.max_model_messages_per_hour,
+    }
+
     return {
         "google": {
             "state": google_state,
@@ -1490,7 +1504,7 @@ def connector_hub_overview(config: Config, *, connectors: dict | None = None) ->
                 "permissions, then use the status command to confirm."
             ),
         },
-        "telegram": {**notifier("telegram"), "command": "uv run jarvis connect telegram --test"},
+        "telegram": {**telegram, "command": "uv run jarvis connect telegram --test"},
         "kakao": {
             **notifier("kakao"),
             "redirect_uri": kakao_redirect_display,

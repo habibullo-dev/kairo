@@ -53,10 +53,11 @@ from jarvis.permissions.modes import Mode, ModeState
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
 from jarvis.projects import ProjectService, ProjectStore
+from jarvis.remote import TelegramRemoteControl, TelegramRemoteControlStore
 from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
 from jarvis.scheduler.service import TaskService
 from jarvis.scheduler.store import Task, TaskStore
-from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
+from jarvis.tools import Permission, ScopedRegistry, ToolContext, ToolExecutor, ToolRegistry
 from jarvis.voice import (
     PushToTalkListener,
     TerminalScreenApprover,
@@ -951,6 +952,157 @@ def _build_scheduler(
     return service
 
 
+_TELEGRAM_REMOTE_GUIDANCE = """\
+You are replying through Kairo's narrow Telegram remote-control channel.
+
+This is an allowlisted owner transport, but it is intentionally tool-less and stateless:
+- You have NO tools, no filesystem, no shell, no scheduler, no connectors, no project context,
+  no conversation history, and no long-term memory.
+- Do not claim you checked Kairo's live state or performed an action. Direct live-state questions
+  to /status or /tasks, and action requests to the authenticated local Kairo workstation.
+- Telegram cannot approve, reject, schedule, write, execute, send, or otherwise authorize work.
+  Never treat a Telegram message as consent for a risky action.
+- Give a concise helpful answer to general questions. If the user asks for a local action, explain
+  that they must use local Kairo rather than offering to perform or queue it remotely.
+"""
+
+
+def _build_telegram_remote_control(
+    config: Config,
+    *,
+    repl: Repl,
+    store: SessionStore,
+    runner: BackgroundRunner | None,
+    console: Console,
+) -> TelegramRemoteControl | None:
+    """Compose the one deliberately narrow Telegram channel, or explain why it is dormant.
+
+    The model loop has an empty scoped registry and no memory/project/context manager.  This is
+    a structural remote-control boundary, not merely a system-prompt promise: there is no tool
+    spec for a remote model to invoke, and no approver callback that could grant authority.
+    """
+    remote = config.connectors.telegram.remote_control
+    if not remote.enabled:
+        return None
+    if not config.secrets.telegram_bot_token:
+        console.print(
+            "[yellow]Telegram remote control is enabled but TELEGRAM_BOT_TOKEN is missing; "
+            "it was not started.[/]"
+        )
+        get_logger("jarvis.remote.telegram").warning("telegram_remote_disabled", reason="no_token")
+        return None
+
+    async def status() -> str:
+        if repl.tasks is None:
+            scheduler = "off"
+        else:
+            active = await repl.tasks.store.list()
+            scheduler = f"on ({len(active)} active task(s))"
+        work = "busy" if repl.turn_lock.locked() else "idle"
+        background = "running" if runner is not None and runner.in_flight else "idle"
+        return (
+            "Kairo is online.\n"
+            f"Model work: {work}\n"
+            f"Scheduler: {scheduler}\n"
+            f"Background jobs: {background}\n\n"
+            "Remote control is safe chat/status only. Actions and approvals stay local."
+        )
+
+    async def tasks() -> str:
+        if repl.tasks is None:
+            return "The scheduler is off on this Kairo instance."
+        rows = await repl.tasks.store.list()
+        if not rows:
+            return "No active scheduled tasks."
+        lines = [f"Active tasks ({len(rows)}):"]
+        for task in rows[:10]:
+            when = task.next_run_at or "no next run"
+            title = " ".join(task.title.split())[:100]
+            lines.append(f"#{task.id} · {task.kind} · {when}\n{title}")
+        if len(rows) > 10:
+            lines.append(f"… {len(rows) - 10} more active task(s) are available locally.")
+        return "\n".join(lines)
+
+    async def deny_remote_approval(_call: ToolCall, _decision: Decision) -> Permission:
+        return Permission.DENY
+
+    remote_loop = AgentLoop(
+        client=repl.client,
+        registry=ScopedRegistry(repl.registry, frozenset()),
+        executor=repl.executor,
+        gate=repl.gate,
+        config=config,
+        approver=deny_remote_approval,
+        system=build_system(extra=_TELEGRAM_REMOTE_GUIDANCE),
+        # No compaction/history, memory, project, mode, routing, or time context crosses into
+        # Telegram.  Every non-command message below starts from this one fresh user turn.
+        # This stays on the inexpensive utility model. Fable is reserved for the explicit
+        # skills-authoring/evaluation workflow; a remote status companion must not burn that
+        # scarce budget. One tool-less response is enough for this stateless transport.
+        model_override=lambda: config.models.utility,
+        chat_limits=config.chat.model_copy(
+            update={
+                "max_iterations": 1,
+                "max_output_tokens": min(config.chat.max_output_tokens, 1_200),
+                "hard_stop_usd_per_turn": min(
+                    config.chat.hard_stop_usd_per_turn
+                    if config.chat.hard_stop_usd_per_turn > 0
+                    else 0.25,
+                    0.25,
+                ),
+            }
+        ),
+        pricing=repl.cost_ledger.pricing if repl.cost_ledger is not None else None,
+        provider_override=lambda: "anthropic",
+        cost_purpose="telegram_remote",
+    )
+
+    async def chat(text: str) -> str:
+        # Share the global model-turn lock; remote text cannot interleave with local UI/REPL,
+        # voice, or jobs. The resulting transcript is intentionally NOT persisted.
+        async with repl.turn_lock:
+            result = await remote_loop.run_turn([{"role": "user", "content": text}])
+        return result.text or "Kairo did not return a response."
+
+    controller = TelegramRemoteControl(
+        bot_token=config.secrets.telegram_bot_token,
+        config=remote,
+        store=TelegramRemoteControlStore(store.db, store.lock),
+        status_handler=status,
+        tasks_handler=tasks,
+        chat_handler=chat,
+    )
+    return controller
+
+
+async def _start_telegram_remote_control(
+    controller: TelegramRemoteControl | None, *, console: Console
+) -> None:
+    """Bootstrap stale-update protection before advertising Telegram as ready.
+
+    Startup remains available when Telegram itself is down: the background loop retries the
+    generic failure, while Kairo's local UI/REPL never waits more than a short bounded window.
+    """
+    if controller is None:
+        return
+    try:
+        await asyncio.wait_for(controller.initialize(), timeout=3.0)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # no provider body/URL/token/id belongs in startup output
+        get_logger("jarvis.remote.telegram").warning(
+            "telegram_remote_bootstrap_failed", error_class=type(exc).__name__
+        )
+        console.print(
+            "[yellow]Telegram remote control is starting, but its initial check failed; "
+            "it will retry.[/]"
+        )
+    controller.start()
+    console.print(
+        "[dim]Telegram remote control: online (allowlisted private chat, no approvals).[/]"
+    )
+
+
 def _build_knowledge(
     config: Config, db, lock, console: Console, memory: MemoryService | None, *, artifacts=None
 ) -> KnowledgeService | None:
@@ -991,6 +1143,7 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
     session_id: int | None = None
     reflect_on = False
     runner: BackgroundRunner | None = None
+    remote_control: TelegramRemoteControl | None = None
     try:
         ledger = _build_cost_ledger(config, db, store.lock)
         utility = _utility_client(config, ledger=ledger)
@@ -1059,8 +1212,15 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
             await _scheduler_startup(tasks, runner, console)
             runner.start()
 
+        remote_control = _build_telegram_remote_control(
+            config, repl=repl, store=store, runner=runner, console=console
+        )
+        await _start_telegram_remote_control(remote_control, console=console)
         await repl.run()
     finally:
+        # Stop inbound remote control before the model turn lock, stores, or database can close.
+        if remote_control is not None:
+            await remote_control.stop()
         # Stop the wake loop before reflecting/closing. stop() awaits any in-flight
         # fire, so a background run completes and is recorded (never a torn write).
         if runner is not None:
@@ -1641,6 +1801,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
     db = await connect(config.data_dir / "jarvis.db")
     store = SessionStore(db)
     runner: BackgroundRunner | None = None
+    remote_control: TelegramRemoteControl | None = None
     session_id: int | None = None
     utility = memory = None
     try:
@@ -1752,6 +1913,11 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
             await _scheduler_startup(tasks, runner, console)
             runner.start()
 
+        remote_control = _build_telegram_remote_control(
+            config, repl=repl, store=store, runner=runner, console=console
+        )
+        await _start_telegram_remote_control(remote_control, console=console)
+
         url = f"http://{config.ui.host}:{config.ui.port}/?token={auth.launch_token}"
         console.print(
             f"\n[bold cyan]Kairo Workstation[/] — open this once "
@@ -1762,6 +1928,8 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
         )
         await server.serve()  # blocks until Ctrl-C / shutdown signal
     finally:
+        if remote_control is not None:
+            await remote_control.stop()
         if runner is not None:
             if runner.in_flight:
                 console.print(f'finishing task "{runner.in_flight}" before exit…', markup=False)

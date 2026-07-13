@@ -63,9 +63,16 @@ function googleCard(google = {}) {
 }
 
 function telegramCard(telegram = {}) {
+  const remote = telegram.remote_control || {};
+  const remoteText = !remote.enabled
+    ? "Off. Enable one allowlisted private chat in settings to use it."
+    : remote.ready
+      ? `Ready while Kairo is running; /status, /tasks, and up to ${remote.max_model_messages_per_hour || 20} short model replies per hour.`
+      : "Enabled, but TELEGRAM_BOT_TOKEN is missing.";
   return card("Telegram", telegram.state || "disabled", [
     rule("Can", "Send one-way notifications to a configured destination."),
-    rule("Cannot", "Read messages, act as a chat channel, or expose the destination ID.", true),
+    rule("Remote chat", remoteText),
+    rule("Cannot", "Remote chat cannot approve, use tools or memory, write, schedule, run commands, or expose chat IDs.", true),
     rule("Destination", telegram.chat_id_set ? "Set" : "Not set"),
     el("div", { class: "hub-detail-label" }, ["Test from the terminal"]),
     copyCommand(telegram.command || "uv run jarvis connect telegram --test"),

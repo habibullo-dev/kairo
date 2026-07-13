@@ -79,6 +79,22 @@ def test_expired_google_and_notifiers_get_actionable_safe_states(tmp_path: Path)
     assert overview["kakao"]["redirect_uri"].startswith("http://127.0.0.1:")
 
 
+def test_hub_surfaces_remote_control_without_disclosing_its_allowed_chat(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.connectors.telegram.remote_control.enabled = True
+    cfg.connectors.telegram.remote_control.allowed_chat_id = "123456789"
+    cfg.secrets = cfg.secrets.model_copy(update={"telegram_bot_token": "bot"})
+    overview = connector_hub_overview(cfg, connectors={"google": None, "notifiers": {}})
+    telegram = overview["telegram"]
+    assert telegram["state"] == "configured"
+    assert telegram["remote_control"] == {
+        "enabled": True,
+        "ready": True,
+        "max_model_messages_per_hour": 20,
+    }
+    assert "123456789" not in str(telegram)
+
+
 def test_connector_hub_is_presence_only_and_keeps_provider_policy(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     secret = "CONNECTOR-HUB-SECRET-CANARY"
@@ -138,6 +154,7 @@ def test_hub_ui_is_copy_only_and_states_gmail_drive_notification_limits(tmp_path
     assert "rule(\"Cannot\"" in source
     assert "google.services" in source
     assert "telegramCard" in source and "kakaoCard" in source
+    assert "Remote chat" in source and "cannot approve" in source
     for command in (
         "uv run jarvis connect google", "uv run jarvis connect status",
         "uv run jarvis connect telegram --test", "uv run jarvis connect kakao",
