@@ -130,6 +130,46 @@ async def test_promote_to_task_bad_schedule_is_400(tmp_path: Path) -> None:
     assert r.status_code == 400
 
 
+async def test_promote_to_job_persists_expected_output_contract(tmp_path: Path) -> None:
+    client, auth, _m, _db, _lock, _pid = await _app(tmp_path)
+    r = client.post(
+        "/api/tasks/create",
+        json={
+            "kind": "job",
+            "title": "report",
+            "payload": "write a report",
+            "schedule_kind": "cron",
+            "schedule_spec": "0 9 * * *",
+            "verify_contains": ["STATUS: complete", "FILES-CHANGED"],
+        },
+        headers=_hdr(auth, post=True),
+    )
+    assert r.status_code == 200 and r.json()["ok"] is True
+    rows = client.get("/api/tasks", headers=_hdr(auth)).json()
+    assert rows[0]["verification"] == {
+        "kind": "contains_all",
+        "terms": ["STATUS: complete", "FILES-CHANGED"],
+    }
+
+
+async def test_promote_to_reminder_rejects_expected_output_contract(tmp_path: Path) -> None:
+    client, auth, _m, _db, _lock, _pid = await _app(tmp_path)
+    r = client.post(
+        "/api/tasks/create",
+        json={
+            "kind": "reminder",
+            "title": "reminder",
+            "payload": "remember",
+            "schedule_kind": "cron",
+            "schedule_spec": "0 9 * * *",
+            "verify_contains": ["DONE"],
+        },
+        headers=_hdr(auth, post=True),
+    )
+    assert r.status_code == 400
+    assert "only for job tasks" in r.json()["message"]
+
+
 async def test_a2_no_verbatim_prompt_on_cost_project_session_surfaces(tmp_path: Path) -> None:
     # Seed a canary into an agent_runs prompt (the debug-only verbatim store) + a model_calls
     # row. The Costs / Projects / sessions surfaces must NOT echo the verbatim prompt (A2).

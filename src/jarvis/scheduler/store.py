@@ -25,11 +25,12 @@ from typing import Literal
 import aiosqlite
 
 from jarvis.persistence.db import transaction
+from jarvis.scheduler.verification import VerificationContract
 
 _TASK_COLUMNS = (
     "id, kind, title, payload, schedule_kind, schedule_spec, timezone, next_run_at, "
     "status, created_by, source_session_id, consecutive_failures, last_run_at, "
-    "last_error, created_at, updated_at, project_id"
+    "last_error, created_at, updated_at, project_id, verification_json"
 )
 
 #: Sentinel for "any project" (no scope filter) in list() — distinct from ``None`` (global
@@ -38,7 +39,8 @@ ANY_PROJECT: object = object()
 
 _RUN_COLUMNS = (
     "id, task_id, scheduled_for, started_at, finished_at, status, session_id, "
-    "result_text, denied_count, error, cost_usd, created_at, continuation_json, approval_state"
+    "result_text, denied_count, error, cost_usd, created_at, continuation_json, approval_state, "
+    "verification_status, verification_summary"
 )
 
 
@@ -68,6 +70,7 @@ class Task:
     created_at: str
     updated_at: str
     project_id: int | None = None  # Phase 10: scope (None == global)
+    verification: VerificationContract | None = None
 
 
 @dataclass(frozen=True)
@@ -352,6 +355,8 @@ class TaskRun:
     created_at: str
     continuation: ParkedContinuation | None = None
     approval_state: str = "none"  # none | pending | approved | rejected
+    verification_status: str = "not_configured"
+    verification_summary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -385,6 +390,7 @@ class TaskStore:
         created_by: str,
         source_session_id: int | None = None,
         project_id: int | None = None,
+        verification: VerificationContract | None = None,
     ) -> int:
         """Insert an active task with its first fire time. Returns its id. ``project_id``
         scopes the task to a project (None == global; existing tasks stay global)."""
@@ -393,8 +399,8 @@ class TaskStore:
             cursor = await self.db.execute(
                 "INSERT INTO tasks (kind, title, payload, schedule_kind, schedule_spec, "
                 "timezone, next_run_at, status, created_by, source_session_id, "
-                "created_at, updated_at, project_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
+                "created_at, updated_at, project_id, verification_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
                 (
                     kind,
                     title,
@@ -408,6 +414,7 @@ class TaskStore:
                     now,
                     now,
                     project_id,
+                    verification.to_json() if verification is not None else "{}",
                 ),
             )
             await self.db.commit()
@@ -701,6 +708,8 @@ class TaskStore:
         denied_count: int = 0,
         error: str | None = None,
         cost_usd: float | None = None,
+        verification_status: str = "not_configured",
+        verification_summary: str | None = None,
         advance: TaskAdvance | None = None,
     ) -> None:
         """Close a run and (optionally) advance its task — one atomic transaction.
@@ -718,6 +727,8 @@ class TaskStore:
                 denied_count=denied_count,
                 error=error,
                 cost_usd=cost_usd,
+                verification_status=verification_status,
+                verification_summary=verification_summary,
                 advance=advance,
                 now=now,
             )
@@ -732,6 +743,8 @@ class TaskStore:
         denied_count: int = 0,
         error: str | None = None,
         cost_usd: float | None = None,
+        verification_status: str = "not_configured",
+        verification_summary: str | None = None,
         advance: TaskAdvance | None = None,
         now: str | None = None,
     ) -> None:
@@ -744,21 +757,48 @@ class TaskStore:
         now = now or _now()
         await self.db.execute(
             "UPDATE task_runs SET finished_at = ?, status = ?, session_id = ?, "
-            "result_text = ?, denied_count = ?, error = ?, cost_usd = ? WHERE id = ?",
-            (now, status, session_id, result_text, denied_count, error, cost_usd, run_id),
+            "result_text = ?, denied_count = ?, error = ?, cost_usd = ?, "
+            "verification_status = ?, verification_summary = ? WHERE id = ?",
+            (
+                now,
+                status,
+                session_id,
+                result_text,
+                denied_count,
+                error,
+                cost_usd,
+                verification_status,
+                verification_summary,
+                run_id,
+            ),
         )
         if advance is not None:
             await self._apply_advance(advance, now)
 
-    async def record_missed(self, task_id: int, scheduled_for: str, advance: TaskAdvance) -> int:
+    async def record_missed(
+        self,
+        task_id: int,
+        scheduled_for: str,
+        advance: TaskAdvance,
+        *,
+        verification_status: str = "not_configured",
+        verification_summary: str | None = None,
+    ) -> int:
         """Record a run that never happened (fire time missed beyond grace) and
         advance the task, atomically. The row has no ``started_at`` — nothing ran."""
         now = _now()
         async with transaction(self.db, self.lock):
             cursor = await self.db.execute(
-                "INSERT INTO task_runs (task_id, scheduled_for, finished_at, status, "
-                "created_at) VALUES (?, ?, ?, 'missed', ?)",
-                (task_id, scheduled_for, now, now),
+                "INSERT INTO task_runs (task_id, scheduled_for, finished_at, status, created_at, "
+                "verification_status, verification_summary) VALUES (?, ?, ?, 'missed', ?, ?, ?)",
+                (
+                    task_id,
+                    scheduled_for,
+                    now,
+                    now,
+                    verification_status,
+                    verification_summary,
+                ),
             )
             await self._apply_advance(advance, now)
         assert cursor.lastrowid is not None
@@ -825,14 +865,21 @@ class TaskStore:
 
 
 def _row_to_task(row: tuple) -> Task:
-    return Task(*row)
+    *base, verification_json = row
+    return Task(*base, verification=VerificationContract.from_json(verification_json))
 
 
 def _row_to_run(row: tuple) -> TaskRun:
-    *base, continuation_json, approval_state = row
+    *base, continuation_json, approval_state, verification_status, verification_summary = row
     continuation = (
         ParkedContinuation.from_json(continuation_json)
         if isinstance(continuation_json, str)
         else None
     )
-    return TaskRun(*base, continuation=continuation, approval_state=approval_state)
+    return TaskRun(
+        *base,
+        continuation=continuation,
+        approval_state=approval_state,
+        verification_status=verification_status,
+        verification_summary=verification_summary,
+    )

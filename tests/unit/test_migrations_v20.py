@@ -106,3 +106,24 @@ async def test_v23_adds_idempotent_bodies_free_resume_metadata() -> None:
         assert "idx_orch_runs_resume_ready" in indexes
     finally:
         await db.close()
+
+
+async def test_v24_adds_idempotent_expected_output_verification_columns() -> None:
+    db = await _build_v19()
+    try:
+        await M._migrate_v20(db)
+        await db.executescript(M._SCHEMA_V21)
+        await M._migrate_v22(db)
+        await M._migrate_v23(db)
+        await M._migrate_v24(db)
+        await M._migrate_v24(db)  # a version-marker rewind remains recoverable
+        task_columns = {
+            row[1] for row in await (await db.execute("PRAGMA table_info(tasks)")).fetchall()
+        }
+        run_columns = {
+            row[1] for row in await (await db.execute("PRAGMA table_info(task_runs)")).fetchall()
+        }
+        assert "verification_json" in task_columns
+        assert {"verification_status", "verification_summary"} <= run_columns
+    finally:
+        await db.close()

@@ -216,6 +216,22 @@ export function openTaskDraft(source, api) {
       el("option", { value: "reminder", text: "Reminder (notify me)" }),
       el("option", { value: "job", text: "Job (starts an unattended task run)" }),
     ]);
+    const verification = el("textarea", {
+      class: "dialog-input task-draft-payload", rows: "3",
+      "aria-label": "Required phrases in the final job answer",
+      placeholder: "STATUS: complete\nFILES-CHANGED",
+    });
+    const verificationField = field(
+      "Expected final-answer phrases (optional)", verification,
+      "One literal phrase per line. This checks only the final answer text; it does not prove an external action occurred."
+    );
+    const syncVerification = () => {
+      const isJob = kind.value === "job";
+      verificationField.hidden = !isJob;
+      verification.disabled = !isJob;
+    };
+    syncVerification();
+    kind.addEventListener("change", syncVerification);
     const scheduleKind = el("select", { class: "dialog-input", "aria-label": "Schedule type" }, [
       el("option", { value: "once", text: "Run once" }),
       el("option", { value: "cron", text: "Recurring calendar schedule" }),
@@ -237,7 +253,7 @@ export function openTaskDraft(source, api) {
       el("div", { class: "task-draft-grid" }, [
         field("Task kind", kind), field("Schedule", scheduleKind),
       ]),
-      schedule, error,
+      schedule, verificationField, error,
       el("div", { class: "dialog-actions" }, [cancel, submit]),
     ]);
     card.append(form);
@@ -253,6 +269,9 @@ export function openTaskDraft(source, api) {
       event.preventDefault();
       if (owner?.saving) return;
       const spec = schedule.querySelector("input")?.value.trim() || "";
+      const verifyContains = kind.value === "job"
+        ? verification.value.split("\n").map((value) => value.trim()).filter(Boolean)
+        : [];
       if (!title.value.trim() || !payload.value.trim() || !spec) {
         showError("Title, instructions, and a schedule are required.");
         return;
@@ -268,6 +287,7 @@ export function openTaskDraft(source, api) {
       title.disabled = true;
       payload.disabled = true;
       kind.disabled = true;
+      verification.disabled = true;
       scheduleKind.disabled = true;
       schedule.querySelector("input")?.setAttribute("disabled", "");
       error.hidden = true;
@@ -278,6 +298,7 @@ export function openTaskDraft(source, api) {
           payload: payload.value.trim(),
           schedule_kind: scheduleKind.value,
           schedule_spec: spec,
+          verify_contains: verifyContains.length ? verifyContains : null,
           expected_context: expectedContext,
         });
         if (result.ok && result.data?.ok) {
@@ -294,6 +315,7 @@ export function openTaskDraft(source, api) {
         title.disabled = false;
         payload.disabled = false;
         kind.disabled = false;
+        syncVerification();
         scheduleKind.disabled = false;
         schedule.querySelector("input")?.removeAttribute("disabled");
         showError(result.data?.message);
@@ -306,6 +328,7 @@ export function openTaskDraft(source, api) {
         title.disabled = false;
         payload.disabled = false;
         kind.disabled = false;
+        syncVerification();
         scheduleKind.disabled = false;
         schedule.querySelector("input")?.removeAttribute("disabled");
         showError("Task could not be scheduled. Check your connection and try again.");
@@ -337,7 +360,11 @@ function runText(run) {
   if (run.approval_state === "pending") {
     return "This run is parked before a tool call. Review its exact saved approval before it can continue.";
   }
-  if (run.error) return `Error: ${run.error}`;
+  if (run.error) {
+    return run.result_text
+      ? `Error: ${run.error}\n\nFinal output:\n${run.result_text}`
+      : `Error: ${run.error}`;
+  }
   if (run.result_text) return run.result_text;
   if (run.status === "running") return "This run is still in progress.";
   if (run.status === "missed") return "This scheduled occurrence was missed; it was not executed.";
@@ -372,9 +399,15 @@ export async function openTaskHistory(task, api) {
         const entry = el("article", { class: "task-history-run" }, [
           el("div", { class: "task-history-run-head" }, [
             el("strong", { text: `Run #${run.id} · ${run.status || "unknown"}` }),
+            run.verification_status && run.verification_status !== "not_configured"
+              ? el("span", { class: "dim", text: `verification: ${run.verification_status}` })
+              : null,
             run.cost_usd == null ? null : el("span", { class: "dim", text: `$${Number(run.cost_usd).toFixed(4)}` }),
           ]),
           el("div", { class: "dim mono", text: dates }),
+          run.verification_summary
+            ? el("div", { class: "dim", text: run.verification_summary })
+            : null,
           el("pre", { class: "task-history-result", text: runText(run) }),
         ]);
         if (run.approval_state === "pending" && run.continuation) {
@@ -409,6 +442,19 @@ export async function openTaskHistory(task, api) {
           text: task.payload || "No instructions were recorded.",
         }),
       ]),
+      task.verification?.terms?.length
+        ? el("div", { class: "task-history-provenance" }, [
+          el("strong", { text: "Expected final-answer phrases" }),
+          el("pre", {
+            class: "task-history-result task-history-payload",
+            text: task.verification.terms.join("\n"),
+          }),
+          el("p", {
+            class: "dialog-message",
+            text: "This is a literal final-answer check, not proof that an external action occurred.",
+          }),
+        ])
+        : null,
       body,
       el("div", { class: "dialog-actions" }, [closeButton]),
     );

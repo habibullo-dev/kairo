@@ -24,12 +24,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from jarvis.attention.routing import notify_attention_counts
 from jarvis.observability import get_logger
 from jarvis.scheduler.service import Due, TaskService
 from jarvis.scheduler.store import ParkedContinuation, Task
+from jarvis.scheduler.verification import verify_final_text
 
 #: Never sleep longer than this between due-checks even if the next task is far off:
 #: asyncio timers don't advance through system suspend, so a laptop that slept past
@@ -73,6 +74,37 @@ ResumeJob = Callable[[Task, int, int, ParkedContinuation], Awaitable[JobOutcome]
 # Emits one user-facing notification line.
 Notify = Callable[[str], None]
 TaskNotify = Callable[[str, Task], None]
+
+
+def _verify_outcome(task: Task, outcome: JobOutcome) -> tuple[JobOutcome, str, str | None]:
+    """Return the terminal result plus metadata for one expected-output contract.
+
+    Verification runs only after a clean model completion.  A failed check is a
+    terminal error with retries disabled: the task may already have performed a
+    side effect, so re-running it to improve a final answer would be unsafe.
+    """
+    if task.verification is None:
+        return outcome, "not_configured", None
+    if outcome.error is not None:
+        return outcome, "not_run", "required-output check did not run because the job failed"
+    result = verify_final_text(task.verification, outcome.text)
+    if result.status == "passed":
+        return outcome, result.status, result.summary
+    return (
+        replace(
+            outcome,
+            error=f"verification failed: {result.summary}",
+            retry_safe=False,
+        ),
+        result.status,
+        result.summary,
+    )
+
+
+def _not_run_verification(task: Task, reason: str) -> tuple[str, str | None]:
+    if task.verification is None:
+        return "not_configured", None
+    return "not_run", f"required-output check did not run because {reason}"
 
 
 class BackgroundRunner:
@@ -152,7 +184,17 @@ class BackgroundRunner:
         except Exception as exc:  # a job blowing up must not kill the wake loop
             self.log.exception("job_crashed", task_id=task.id)
             detail = f"{type(exc).__name__}: {exc}"
-            await self.service.complete_run(due, run_id, ok=False, error=detail)
+            verification_status, verification_summary = _not_run_verification(
+                task, "the job crashed"
+            )
+            await self.service.complete_run(
+                due,
+                run_id,
+                ok=False,
+                error=detail,
+                verification_status=verification_status,
+                verification_summary=verification_summary,
+            )
             self._notify(f'✗ job #{task.id} "{task.title}" failed: {detail}', task)
             return None
         finally:
@@ -167,6 +209,7 @@ class BackgroundRunner:
             )
             return await self._parked_approval_push(task)
 
+        outcome, verification_status, verification_summary = _verify_outcome(task, outcome)
         ok = outcome.error is None
         await self.service.complete_run(
             due,
@@ -178,6 +221,8 @@ class BackgroundRunner:
             error=outcome.error,
             cost_usd=outcome.cost_usd,
             retry_safe=outcome.retry_safe,
+            verification_status=verification_status,
+            verification_summary=verification_summary,
         )
         self._notify_job_done(task, outcome, ok)
         return None
@@ -221,6 +266,9 @@ class BackgroundRunner:
             if claim.resolution == "reject":
                 # A reject is a completed owner decision, not a retryable model failure.  The
                 # original tool batch never starts and the normal schedule advances once.
+                verification_status, verification_summary = _not_run_verification(
+                    task, "the owner rejected the parked action"
+                )
                 await self.service.complete_run(
                     due,
                     run_id,
@@ -228,6 +276,8 @@ class BackgroundRunner:
                     session_id=run.session_id,
                     result_text="Owner rejected the parked unattended action; no tool executed.",
                     denied_count=1,
+                    verification_status=verification_status,
+                    verification_summary=verification_summary,
                 )
                 self._notify(
                     f'⊘ job #{task.id} "{task.title}" approval rejected; no tool executed', task
@@ -236,12 +286,17 @@ class BackgroundRunner:
 
             continuation = claim.continuation
             if continuation is None:  # defensive: approved claims are the only executable form
+                verification_status, verification_summary = _not_run_verification(
+                    task, "the approval claim was malformed"
+                )
                 await self.service.complete_run(
                     due,
                     run_id,
                     ok=False,
                     error="parked approval claim had no executable continuation",
                     retry_safe=False,
+                    verification_status=verification_status,
+                    verification_summary=verification_summary,
                 )
                 return True
             self.in_flight = task.title
@@ -252,8 +307,17 @@ class BackgroundRunner:
                 # but unresumable record from trapping the task forever or being retried later.
                 self.log.exception("parked_job_resume_failed", task_id=task.id, run_id=run_id)
                 detail = f"parked resume failed: {type(exc).__name__}: {exc}"
+                verification_status, verification_summary = _not_run_verification(
+                    task, "parked resume failed"
+                )
                 await self.service.complete_run(
-                    due, run_id, ok=False, error=detail, retry_safe=False
+                    due,
+                    run_id,
+                    ok=False,
+                    error=detail,
+                    retry_safe=False,
+                    verification_status=verification_status,
+                    verification_summary=verification_summary,
                 )
                 self._notify(f'✗ job #{task.id} "{task.title}" could not resume: {detail}', task)
                 return True
@@ -268,6 +332,7 @@ class BackgroundRunner:
                 )
                 attention_push = await self._parked_approval_push(task)
             else:
+                outcome, verification_status, verification_summary = _verify_outcome(task, outcome)
                 ok = outcome.error is None
                 await self.service.complete_run(
                     due,
@@ -279,6 +344,8 @@ class BackgroundRunner:
                     error=outcome.error,
                     cost_usd=outcome.cost_usd,
                     retry_safe=outcome.retry_safe,
+                    verification_status=verification_status,
+                    verification_summary=verification_summary,
                 )
                 self._notify_job_done(task, outcome, ok)
                 return True

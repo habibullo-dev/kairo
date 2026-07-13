@@ -39,6 +39,7 @@ from jarvis.config import SchedulerConfig
 from jarvis.persistence.db import transaction
 from jarvis.scheduler.store import Task, TaskAdvance, TaskStore
 from jarvis.scheduler.triggers import compute_next, validate
+from jarvis.scheduler.verification import VerificationContract
 
 #: Stored per-run result text is bounded (the full transcript lives in the run's
 #: session anyway); generous because the result is the product of a job.
@@ -116,10 +117,13 @@ class TaskService:
         created_by: str,
         timezone: str | None = None,
         project_id: int | None = None,
+        verification: VerificationContract | None = None,
     ) -> Task:
         """Validate and insert a task; returns it. Raises :class:`ScheduleError`
         with a model-readable message when the spec is unusable."""
         tz = timezone or get_localzone_name()
+        if verification is not None and kind != "job":
+            raise ScheduleError("an expected-output verification is supported only for job tasks")
         problem = validate(schedule_kind, schedule_spec, tz)
         if problem is not None:
             raise ScheduleError(problem)
@@ -148,6 +152,7 @@ class TaskService:
             created_by=created_by,
             source_session_id=self.bound_session_id,
             project_id=project_id,
+            verification=verification,
         )
         task = await self.store.get(task_id)
         assert task is not None
@@ -203,6 +208,8 @@ class TaskService:
         error: str | None = None,
         cost_usd: float | None = None,
         retry_safe: bool = False,
+        verification_status: str = "not_configured",
+        verification_summary: str | None = None,
     ) -> Task:
         """Close a run and advance its task atomically. Returns the updated task."""
         task = due.task
@@ -226,6 +233,9 @@ class TaskService:
             )
         if result_text is not None and len(result_text) > MAX_RESULT_CHARS:
             result_text = result_text[:MAX_RESULT_CHARS] + " …[truncated]"
+        if task.verification is not None and verification_status == "not_configured":
+            verification_status = "not_run"
+            verification_summary = "required-output check did not run"
         await self._finish_run(
             task,
             run_id,
@@ -235,6 +245,8 @@ class TaskService:
             denied_count=denied_count,
             error=error,
             cost_usd=cost_usd,
+            verification_status=verification_status,
+            verification_summary=verification_summary,
             advance=advance,
         )
         updated = await self.store.get(task.id)
@@ -264,7 +276,17 @@ class TaskService:
                 consecutive_failures=task.consecutive_failures,
                 last_error=task.last_error,
             )
-        await self.store.record_missed(task.id, due.scheduled_for, advance)
+        await self.store.record_missed(
+            task.id,
+            due.scheduled_for,
+            advance,
+            verification_status="not_run" if task.verification is not None else "not_configured",
+            verification_summary=(
+                "required-output check did not run because this occurrence was missed"
+                if task.verification is not None
+                else None
+            ),
+        )
         updated = await self.store.get(task.id)
         assert updated is not None
         return updated
@@ -288,6 +310,14 @@ class TaskService:
                     run.id,
                     "aborted",
                     error="interrupted: process died mid-run",
+                    verification_status=(
+                        "not_run" if task.verification is not None else "not_configured"
+                    ),
+                    verification_summary=(
+                        "required-output check did not run because execution was interrupted"
+                        if task.verification is not None
+                        else None
+                    ),
                     advance=advance,
                 )
             title = task.title if task else f"task {run.task_id}"
@@ -309,6 +339,8 @@ class TaskService:
         denied_count: int = 0,
         error: str | None = None,
         cost_usd: float | None = None,
+        verification_status: str = "not_configured",
+        verification_summary: str | None = None,
         advance: TaskAdvance | None = None,
     ) -> None:
         """Finish a task run and its terminal dead-letter alert as one transaction."""
@@ -321,6 +353,8 @@ class TaskService:
                 denied_count=denied_count,
                 error=error,
                 cost_usd=cost_usd,
+                verification_status=verification_status,
+                verification_summary=verification_summary,
                 advance=advance,
             )
             return
@@ -334,6 +368,8 @@ class TaskService:
                 denied_count=denied_count,
                 error=error,
                 cost_usd=cost_usd,
+                verification_status=verification_status,
+                verification_summary=verification_summary,
                 advance=advance,
                 now=now,
             )

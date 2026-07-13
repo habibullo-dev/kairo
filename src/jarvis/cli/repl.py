@@ -96,9 +96,15 @@ def _call_summary(call: ToolCall) -> str:
     if call.name == "schedule_task":
         # full payload, NOT truncated + computed fire time — the human consents to
         # the actual future action, and can catch a wrong-timezone datetime.
+        verification = inp.get("verify_contains")
+        verification_preview = ""
+        if isinstance(verification, list):
+            verification_preview = "\n    required final phrases:\n      " + "\n      ".join(
+                str(value) for value in verification
+            )
         return (
             f'schedule {inp.get("kind", "?")} "{inp.get("title", "")}" '
-            f"[{_schedule_preview(inp)}]:\n    {inp.get('payload', '')}"
+            f"[{_schedule_preview(inp)}]:\n    {inp.get('payload', '')}{verification_preview}"
         )
     if call.name == "cancel_task":
         return f"cancel task #{inp.get('task_id', '?')}"

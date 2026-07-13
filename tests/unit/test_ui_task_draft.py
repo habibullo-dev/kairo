@@ -20,6 +20,10 @@ def test_task_draft_requires_explicit_review_and_submission() -> None:
     # schedules into.
     assert "project_id: expectedContext" not in DRAFT
     assert "innerHTML" not in DRAFT
+    assert "Expected final-answer phrases" in DRAFT
+    assert "verify_contains: verifyContains.length ? verifyContains : null" in DRAFT
+    assert "does not prove an external action occurred" in DRAFT
+    assert "Final output:" in DRAFT
 
 
 def test_task_draft_recovers_from_a_failed_or_stale_submit() -> None:

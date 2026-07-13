@@ -33,6 +33,7 @@ from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.modes import Mode
 from jarvis.persistence.artifacts import ArtifactPathError
 from jarvis.routing import RoutingMode
+from jarvis.scheduler.verification import VerificationContract
 from jarvis.search import search as _federated_search
 from jarvis.tools import Permission
 from jarvis.ui.approver import (
@@ -1700,6 +1701,12 @@ def create_app(
             else (projects.current().project_id if projects is not None else None)
         )
         try:
+            raw_verification = body.get("verify_contains")
+            verification = (
+                None
+                if raw_verification is None
+                else VerificationContract.contains_all(raw_verification)
+            )
             scope = (
                 bind_execution_context(checked_context)
                 if checked_context is not None
@@ -1714,6 +1721,7 @@ def create_app(
                     schedule_spec=str(body.get("schedule_spec", "")),
                     created_by="user",
                     project_id=pid,  # a promoted task belongs to the active project
+                    verification=verification,
                 )
         except Exception as exc:  # noqa: BLE001 - a bad schedule is a 400, not a 500
             return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)

@@ -98,6 +98,23 @@ On startup and every wake, for `status='active'` with `next_run_at <= now`:
 
 After each run: `next_run_at = compute_next(..., after=scheduled_fire_time)` — from the *scheduled* time, not completion, so intervals don't drift by run duration. Once → `done`. On error: `consecutive_failures += 1`, `last_error` set; at `max_consecutive_failures` (3) the task flips `failed` + announced — a broken recurring job must not silently burn a model call per interval forever. Success resets the counter.
 
+### D6a — Expected final-output verification (bounded, not a side-effect proof)
+
+A scheduled **job** may opt into one exact output contract: `verify_contains`, a bounded list
+of up to eight literal phrases. After a clean model completion, the runner compares the final
+answer case-insensitively against every phrase. It records a per-run verdict of `passed`,
+`failed`, or `not_run` alongside a cardinality-only summary such as “missing 1 of 2 phrases.”
+
+- The contract is explicit user-reviewed task data, stored separately from the job prompt and
+  shown in the scheduling confirmation and task history.
+- A failed check turns the run into a non-retryable error. The job may already have performed a
+  side effect, so retrying merely to improve its final wording could duplicate work.
+- A missed, crashed, interrupted, or owner-rejected run is `not_run`; it is never mislabeled a
+  pass. Existing jobs remain `not_configured`.
+- This is intentionally **not** a general assertion engine: no shell commands, filesystem checks,
+  regexes, arbitrary expressions, or model-as-judge calls. It verifies only final answer text and
+  never proves that an external action occurred.
+
 ### D7 — Timezones
 
 All stored timestamps UTC ISO-8601 (existing `_now()` convention — lexicographic `WHERE next_run_at <= ?` stays correct). Cron is human intent: each task stores an IANA `timezone` captured at creation (local via `tzlocal`); `compute_next` evaluates in that zone, returns UTC. One regression test crosses a DST boundary (`America/New_York` spring-forward).

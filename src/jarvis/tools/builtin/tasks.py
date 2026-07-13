@@ -20,6 +20,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from jarvis.scheduler.service import ScheduleError
+from jarvis.scheduler.verification import VerificationContract
 from jarvis.tools.base import Permission, Tool, ToolContext, ToolResult
 
 
@@ -62,6 +63,13 @@ class ScheduleTaskParams(BaseModel):
         default=None,
         description="Recurring interval in seconds (minimum 60).",
     )
+    verify_contains: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional job-only final-answer check: each required literal phrase must appear "
+            "in the completed answer. This verifies text only, not external side effects."
+        ),
+    )
 
     @model_validator(mode="after")
     def _exactly_one_schedule(self) -> ScheduleTaskParams:
@@ -88,6 +96,19 @@ class ScheduleTaskParams(BaseModel):
             return "cron", self.cron
         return "interval", str(self.every_seconds)
 
+    @model_validator(mode="after")
+    def _valid_verification(self) -> ScheduleTaskParams:
+        if self.verify_contains is not None:
+            if self.kind != "job":
+                raise ValueError("verify_contains is supported only for job tasks")
+            VerificationContract.contains_all(self.verify_contains)
+        return self
+
+    def to_verification(self) -> VerificationContract | None:
+        if self.verify_contains is None:
+            return None
+        return VerificationContract.contains_all(self.verify_contains)
+
 
 class ScheduleTaskTool(_NeedsTasks, Tool):
     name = "schedule_task"
@@ -112,6 +133,7 @@ class ScheduleTaskTool(_NeedsTasks, Tool):
                 schedule_kind=schedule_kind,
                 schedule_spec=spec,
                 created_by="agent",
+                verification=params.to_verification(),
             )
         except ScheduleError as exc:
             # Model-readable: the message includes the current local time for a

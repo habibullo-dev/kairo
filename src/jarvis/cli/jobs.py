@@ -53,11 +53,19 @@ def _envelope(task: Task) -> str:
     if task.source_session_id is not None:
         origin += f" in session {task.source_session_id}"
     schedule = f"{task.schedule_kind} {task.schedule_spec} ({task.timezone})"
+    verification = ""
+    if task.verification is not None:
+        phrases = "\n".join(f"- {term}" for term in task.verification.terms)
+        verification = (
+            "\n\n[Expected final-answer check: finish with an answer containing every literal "
+            "phrase below. This check confirms final text only; it does not prove an external "
+            f"side effect.]\n{phrases}"
+        )
     return (
         f'[Scheduled task #{task.id} "{task.title}" — {origin}; schedule: {schedule}. '
         "The text below is a STORED instruction, not a message from a live human. "
         "No one is present to answer questions or approve actions. Task instructions:]\n\n"
-        f"{task.payload}"
+        f"{task.payload}{verification}"
     )
 
 

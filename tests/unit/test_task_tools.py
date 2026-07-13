@@ -82,6 +82,22 @@ async def test_schedule_job_with_interval(tmp_path: Path) -> None:
     assert "Scheduled" in out and "every 1 hour" in out
 
 
+async def test_schedule_job_with_expected_output_contract(tmp_path: Path) -> None:
+    ctx, svc = await _ctx(tmp_path)
+    await ScheduleTaskTool(ctx).run(
+        ScheduleTaskTool.Params(
+            kind="job",
+            title="report",
+            payload="write a report",
+            every_seconds=3600,
+            verify_contains=["STATUS: complete", "FILES-CHANGED"],
+        )
+    )
+    task = await svc.store.get(1)
+    assert task is not None and task.verification is not None
+    assert task.verification.terms == ("STATUS: complete", "FILES-CHANGED")
+
+
 async def test_schedule_past_once_is_error_with_current_time(tmp_path: Path) -> None:
     # Absolute past instant so it's "in the past" regardless of the runner's local
     # zone (the tool uses local tz). The exact-time rendering is pinned in the
@@ -113,6 +129,14 @@ def test_exactly_one_schedule_field_required() -> None:
     with pytest.raises(ValidationError):  # two given
         ScheduleTaskTool.Params(
             kind="job", title="t", payload="p", cron="0 9 * * *", every_seconds=60
+        )
+    with pytest.raises(ValidationError, match="job tasks"):
+        ScheduleTaskTool.Params(
+            kind="reminder",
+            title="t",
+            payload="p",
+            cron="0 9 * * *",
+            verify_contains=["DONE"],
         )
 
 
@@ -193,6 +217,27 @@ def test_call_summary_shows_full_payload_and_fire_time() -> None:
     assert "END" in summary  # the tail survives (injection hidden at char 900 visible)
     assert "cron 0 3 * * *" in summary
     assert "first fire" in summary  # computed fire time shown
+
+
+def test_call_summary_shows_full_expected_output_contract() -> None:
+    from jarvis.cli.repl import _call_summary
+    from jarvis.core import ToolCall
+
+    summary = _call_summary(
+        ToolCall(
+            id="c1",
+            name="schedule_task",
+            input={
+                "kind": "job",
+                "title": "nightly",
+                "payload": "do the thing",
+                "cron": "0 3 * * *",
+                "verify_contains": ["STATUS: complete", "FILES-CHANGED"],
+            },
+        )
+    )
+    assert "required final phrases" in summary
+    assert "STATUS: complete" in summary and "FILES-CHANGED" in summary
 
 
 def test_schedule_task_is_never_always_allowed(tmp_path: Path) -> None:

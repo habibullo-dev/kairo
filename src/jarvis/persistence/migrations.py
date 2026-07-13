@@ -1164,6 +1164,42 @@ async def _migrate_v23(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_v24(db: aiosqlite.Connection) -> None:
+    """Add bounded expected-output contracts and their per-run verdicts.
+
+    The contract is an inert JSON value owned by a job.  A run records only a
+    status and a cardinality summary, never the final output or required phrases
+    a second time.  Existing tasks/runs intentionally remain ``not_configured``.
+    """
+    tasks = await (
+        await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'")
+    ).fetchone()
+    if tasks is not None:
+        columns = {
+            row[1] for row in await (await db.execute("PRAGMA table_info(tasks)")).fetchall()
+        }
+        if "verification_json" not in columns:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN verification_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
+    runs = await (
+        await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'")
+    ).fetchone()
+    if runs is not None:
+        columns = {
+            row[1] for row in await (await db.execute("PRAGMA table_info(task_runs)")).fetchall()
+        }
+        if "verification_status" not in columns:
+            await db.execute(
+                "ALTER TABLE task_runs ADD COLUMN verification_status TEXT NOT NULL "
+                "DEFAULT 'not_configured' CHECK (verification_status IN "
+                "('not_configured','passed','failed','not_run'))"
+            )
+        if "verification_summary" not in columns:
+            await db.execute("ALTER TABLE task_runs ADD COLUMN verification_summary TEXT")
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1193,6 +1229,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (21, _SCHEMA_V21),
     (22, _migrate_v22),
     (23, _migrate_v23),
+    (24, _migrate_v24),
 ]
 
 
