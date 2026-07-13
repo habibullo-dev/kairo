@@ -19,7 +19,7 @@ from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
 from jarvis.permissions import PermissionGate, Policy
 from jarvis.persistence.db import connect
 from jarvis.persistence.sessions import SessionStore
-from jarvis.projects import ProjectStore
+from jarvis.projects import ProjectService, ProjectStore
 from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
 from jarvis.scheduler.service import TaskService
 from jarvis.scheduler.store import TaskStore
@@ -74,6 +74,7 @@ async def _schedule(service: TaskService, **kw):
         created_by=kw.get("created_by", "user"),
         timezone="UTC",
         project_id=kw.get("project_id"),
+        origin=kw.get("origin", "local"),
     )
 
 
@@ -319,7 +320,11 @@ async def _job_runner(tmp_path: Path, client, policy: Policy | None = None) -> J
 
 
 async def _parkable_job_runner(
-    tmp_path: Path, client, task_store: TaskStore, policy: Policy | None = None
+    tmp_path: Path,
+    client,
+    task_store: TaskStore,
+    policy: Policy | None = None,
+    projects: ProjectService | None = None,
 ) -> JobRunner:
     """A JobRunner with the explicitly shared store required for durable parking."""
     cfg = load_config(root=tmp_path, env_file=None)
@@ -337,6 +342,7 @@ async def _parkable_job_runner(
         gate=PermissionGate(policy or Policy(), cfg.root),
         config=cfg,
         task_store=task_store,
+        projects=projects,
     )
 
 
@@ -407,6 +413,92 @@ async def test_unattended_denial_flows_back_and_is_counted(tmp_path: Path) -> No
     assert tool_results and tool_results[0]["is_error"] is True  # model saw the denial
     assert not (tmp_path / "out.txt").exists()  # nothing was written
     assert not outcome.parked and not outcome.retry_safe
+
+
+async def test_remote_operator_job_exposes_local_subset_and_parks_allowed_write(
+    tmp_path: Path,
+) -> None:
+    service, clock, store = await _service(tmp_path)
+    task = await _schedule(
+        service,
+        kind="job",
+        title="remote repair",
+        origin="remote_operator",
+    )
+    policy = Policy(tools={"write_file": Permission.ALLOW})
+    client = FakeClient(
+        [
+            tool_use_message(
+                [
+                    ToolCall(
+                        id="remote-write",
+                        name="write_file",
+                        input={"path": "remote.txt", "content": "approved only"},
+                    )
+                ]
+            )
+        ]
+    )
+    job_runner = await _parkable_job_runner(tmp_path, client, store, policy=policy)
+    runner = BackgroundRunner(
+        service,
+        notify=Recorder().notify,
+        run_job=job_runner.run,
+        turn_lock=asyncio.Lock(),
+    )
+
+    clock.advance(hours=1, minutes=1)
+    assert await runner.check_due() == 1
+
+    expected = set(
+        job_runner.config.connectors.telegram.remote_control.operator.allowed_tools
+    ) & set(job_runner.registry.names())
+    assert {spec["name"] for spec in client.calls[0]["tools"]} == expected
+    (run,) = await store.runs_for(task.id)
+    assert run.status == "running" and run.approval_state == "pending"
+    assert run.continuation is not None and run.continuation.tool_id == "remote-write"
+    assert not (tmp_path / "remote.txt").exists()
+
+
+async def test_remote_operator_job_pins_project_context_and_session_scope(
+    tmp_path: Path,
+) -> None:
+    service, _clock, store = await _service(tmp_path)
+    project_store = ProjectStore(store.db, store.lock)
+    repo = tmp_path / "frontend"
+    repo.mkdir()
+    project_id = await project_store.create(
+        name="Frontend Repair",
+        description="The user-approved frontend workspace.",
+        repos=[str(repo)],
+    )
+    task = await _schedule(
+        service,
+        kind="job",
+        title="inspect frontend",
+        project_id=project_id,
+        origin="remote_operator",
+    )
+    client = FakeClient([text_message("Inspection complete.")])
+    job_runner = await _parkable_job_runner(
+        tmp_path,
+        client,
+        store,
+        projects=ProjectService(project_store),
+    )
+
+    outcome = await job_runner.run(task)
+
+    assert outcome.error is None and outcome.session_id is not None
+    system = client.calls[0]["system"]
+    assert "Active project: Frontend Repair" in system
+    assert str(repo) in system
+    row = await (
+        await store.db.execute(
+            "SELECT kind, project_id FROM sessions WHERE id = ?", (outcome.session_id,)
+        )
+    ).fetchone()
+    assert row == ("task", project_id)
 
 
 async def test_job_ask_parks_exact_call_and_runner_does_not_complete_it(tmp_path: Path) -> None:

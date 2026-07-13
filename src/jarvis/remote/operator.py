@@ -13,12 +13,15 @@ model transcript before a second Telegram approval can resume it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import hashlib
 import json
 import secrets
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+from zoneinfo import ZoneInfo
 
 import aiosqlite
 from pydantic import BaseModel, Field, model_validator
@@ -28,9 +31,13 @@ from jarvis.config import TelegramRemoteOperatorConfig
 from jarvis.permissions.gate import Decision
 from jarvis.persistence.db import transaction
 from jarvis.projects.store import Project, ProjectStore
-from jarvis.scheduler.store import ParkedContinuation
+from jarvis.scheduler.service import ScheduleError, TaskService
+from jarvis.scheduler.store import ParkedContinuation, Task
 from jarvis.scheduler.triggers import validate
 from jarvis.tools.base import Permission, Tool, ToolResult
+
+if TYPE_CHECKING:
+    from jarvis.scheduler.runner import BackgroundRunner
 
 _PROPOSAL_COLUMNS = (
     "id, kind, title, instruction, project_id, schedule_kind, schedule_spec, "
@@ -240,7 +247,7 @@ class RemoteOperatorStore:
                 "FROM task_runs r JOIN tasks t ON t.id = r.task_id "
                 "JOIN remote_operator_proposals p ON p.task_id = t.id "
                 "WHERE r.status = 'running' AND r.approval_state = 'pending' "
-                "AND t.status = 'active' AND p.state = 'queued' "
+                "AND t.status = 'active' AND t.origin = 'remote_operator' "
                 "ORDER BY r.id"
             )
         ).fetchall()
@@ -412,6 +419,29 @@ class RemoteOperatorStore:
                 (error[:500], now, proposal_id),
             )
             await self.db.commit()
+
+    async def mark_cancelled(self, proposal_id: int) -> bool:
+        now = _iso(_utc_now())
+        async with self.lock:
+            cursor = await self.db.execute(
+                "UPDATE remote_operator_proposals SET state = 'cancelled', updated_at = ? "
+                "WHERE id = ? AND state IN ('approved', 'queued')",
+                (now, proposal_id),
+            )
+            await self.db.commit()
+        return cursor.rowcount == 1
+
+    async def record_status_update(self, proposal_id: int, *, limit: int = 100) -> bool:
+        now = _iso(_utc_now())
+        async with self.lock:
+            cursor = await self.db.execute(
+                "UPDATE remote_operator_proposals SET last_status_at = ?, "
+                "status_updates_sent = status_updates_sent + 1, updated_at = ? "
+                "WHERE id = ? AND state = 'queued' AND status_updates_sent < ?",
+                (now, now, proposal_id, limit),
+            )
+            await self.db.commit()
+        return cursor.rowcount == 1
 
     async def proposal_for_task(self, task_id: int) -> RemoteProposal | None:
         row = await (
@@ -644,3 +674,277 @@ def render_tool_approval(pending: RemotePendingTool, approval_code: str) -> str:
         f"Deny: /deny {approval_code}\n"
         "The code is single-use and bound to this exact saved tool call."
     )
+
+
+RemoteSender = Callable[[str], Awaitable[None]]
+RemoteSleep = Callable[[float], Awaitable[None]]
+
+
+class RemoteOperatorService:
+    """Host-side proposal resolution, scheduling, parked-call approval, and status delivery."""
+
+    def __init__(
+        self,
+        *,
+        store: RemoteOperatorStore,
+        config: TelegramRemoteOperatorConfig,
+        tasks: TaskService,
+        projects: ProjectStore | None,
+        runner: BackgroundRunner,
+        sender: RemoteSender | None = None,
+        sleep: RemoteSleep = asyncio.sleep,
+    ) -> None:
+        self.store = store
+        self.config = config
+        self.tasks = tasks
+        self.projects = projects
+        self.runner = runner
+        self.sender = sender
+        self.sleep = sleep
+        self._background: set[asyncio.Task[None]] = set()
+        self._monitors: dict[int, asyncio.Task[None]] = {}
+
+    def set_sender(self, sender: RemoteSender) -> None:
+        self.sender = sender
+
+    async def start(self) -> None:
+        """Restore host-only heartbeat monitors for remote tasks still active after restart."""
+        for proposal in await self.store.list(limit=100):
+            if proposal.state != "queued" or proposal.task_id is None:
+                continue
+            task = await self.tasks.store.get(proposal.task_id)
+            if task is not None and task.status == "active":
+                self._start_monitor(proposal)
+
+    async def stop(self) -> None:
+        pending = [*self._monitors.values(), *self._background]
+        self._monitors.clear()
+        self._background.clear()
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    def _spawn(self, coroutine: Awaitable[None]) -> None:
+        task = asyncio.create_task(coroutine)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _safe_send(self, text: str) -> None:
+        if self.sender is None:
+            return
+        with contextlib.suppress(Exception):
+            await self.sender(text[:3_800])
+
+    async def render_authorization(self, authorization: RemoteAuthorization) -> str:
+        project = (
+            await self.projects.get(authorization.proposal.project_id)
+            if self.projects is not None and authorization.proposal.project_id is not None
+            else None
+        )
+        return render_proposal(authorization, project)
+
+    async def projects_text(self) -> str:
+        if self.projects is None:
+            return "Projects are unavailable on this Kairo instance."
+        projects = await self.projects.list(status="active")
+        if not projects:
+            return "No active Kairo projects. Create and link a project on the local workstation."
+        lines = ["Registered project aliases:"]
+        for project in projects[:20]:
+            lines.append(f"{project.slug} — {project.name} ({len(project.repos)} linked repo(s))")
+        return "\n".join(lines)
+
+    async def jobs_text(self) -> str:
+        proposals = await self.store.list(limit=20)
+        if not proposals:
+            return "No Telegram Remote Operator jobs yet."
+        lines = ["Remote Operator jobs:"]
+        for proposal in proposals[:10]:
+            state = proposal.state
+            if proposal.task_id is not None:
+                task = await self.tasks.store.get(proposal.task_id)
+                if task is not None:
+                    state = task.status
+                state += f" · task #{proposal.task_id}"
+            lines.append(f"#{proposal.id} [{state}] {proposal.title}")
+        return "\n".join(lines)
+
+    async def approvals_text(self) -> str:
+        blocks: list[str] = []
+        for proposal in await self.store.list(limit=20):
+            if proposal.state != "pending":
+                continue
+            authorization = await self.store.issue_proposal_token(
+                proposal.id, ttl_minutes=self.config.approval_ttl_minutes
+            )
+            if authorization is not None:
+                blocks.append(await self.render_authorization(authorization))
+            if len(blocks) >= 2:
+                break
+        if len(blocks) < 2:
+            for pending in (await self.store.pending_tools())[: 2 - len(blocks)]:
+                issued = await self.store.issue_parked_token(
+                    pending.run_id, ttl_minutes=self.config.approval_ttl_minutes
+                )
+                if issued is not None:
+                    current, code = issued
+                    blocks.append(render_tool_approval(current, code))
+        return "\n\n---\n\n".join(blocks) if blocks else "No pending remote approvals."
+
+    async def resolve(self, code: str, *, resolution: Literal["approve", "deny"]) -> str:
+        if len(code.strip()) != 12:
+            return "Invalid or expired approval code. Send /approvals for fresh pending codes."
+        grant = await self.store.consume_token(code, resolution=resolution)
+        if grant is None:
+            return "Invalid or expired approval code. Send /approvals for fresh pending codes."
+        if grant.subject_type == "proposal":
+            proposal = await self.store.get(grant.subject_id)
+            if proposal is None:
+                return "That proposal no longer exists."
+            if resolution == "deny":
+                return f"Denied remote proposal #{proposal.id}. Nothing was scheduled or run."
+            return await self._queue_proposal(proposal)
+
+        pending = await self.store.pending_tool(grant.subject_id)
+        if pending is None or pending.continuation.tool_input_hash != grant.binding_hash:
+            return "That exact tool request is no longer pending. Nothing was executed."
+        self._spawn(self._resume_parked(pending, resolution))
+        verb = "approved" if resolution == "approve" else "denied"
+        return (
+            f"Tool request {verb} for task #{pending.task_id}. "
+            "Kairo is processing the saved continuation."
+        )
+
+    async def _queue_proposal(self, proposal: RemoteProposal) -> str:
+        if await self.store.active_count() >= self.config.max_active_jobs:
+            await self.store.mark_failed(proposal.id, "remote active-job limit reached")
+            return (
+                f"Proposal #{proposal.id} was approved but not queued: the remote active-job "
+                f"limit ({self.config.max_active_jobs}) is reached."
+            )
+        timezone = get_localzone_name()
+        schedule_kind = proposal.schedule_kind
+        schedule_spec = proposal.schedule_spec
+        if schedule_kind == "immediate":
+            # A short future edge guarantees the origin + proposal mapping commits before the
+            # scheduler can observe the task, even if its wake loop is polling concurrently.
+            local = (self.tasks.now() + dt.timedelta(seconds=5)).astimezone(ZoneInfo(timezone))
+            schedule_kind = "once"
+            schedule_spec = local.replace(tzinfo=None).isoformat(timespec="seconds")
+        try:
+            task = await self.tasks.schedule(
+                kind=proposal.kind,
+                title=proposal.title,
+                payload=proposal.instruction,
+                schedule_kind=schedule_kind,
+                schedule_spec=schedule_spec,
+                created_by="user",
+                timezone=timezone,
+                project_id=proposal.project_id,
+                origin="remote_operator",
+                source_session_id=None,
+            )
+        except (ScheduleError, ValueError) as exc:
+            await self.store.mark_failed(proposal.id, str(exc))
+            return f"Proposal #{proposal.id} was approved but could not be queued: {exc}"
+        if not await self.store.mark_queued(proposal.id, task.id):
+            await self.tasks.cancel(task.id)
+            await self.store.mark_failed(proposal.id, "could not bind the scheduled task")
+            return "Kairo could not bind the approved proposal safely; the task was cancelled."
+        self.runner.kick()
+        queued = await self.store.get(proposal.id)
+        if queued is not None:
+            self._start_monitor(queued)
+        return (
+            f"Approved and queued remote proposal #{proposal.id} as task #{task.id}. "
+            "Kairo will send milestones and request separate approval for risky tools."
+        )
+
+    async def _resume_parked(
+        self, pending: RemotePendingTool, resolution: Literal["approve", "deny"]
+    ) -> None:
+        action = "approve" if resolution == "approve" else "reject"
+        ok = await self.runner.resume_parked(pending.run_id, action)
+        if not ok:
+            await self._safe_send(
+                f"Task #{pending.task_id} could not consume that parked approval safely. "
+                "Nothing was replayed; send /approvals to inspect current state."
+            )
+
+    async def cancel(self, proposal_id_text: str) -> str:
+        try:
+            proposal_id = int(proposal_id_text.lstrip("#"))
+        except ValueError:
+            return "Usage: /cancel <remote-job-id>"
+        proposal = await self.store.get(proposal_id)
+        if proposal is None or proposal.task_id is None or proposal.state != "queued":
+            return f"No active remote job #{proposal_id} to cancel."
+        task = await self.tasks.cancel(proposal.task_id)
+        if task is None:
+            return f"Remote job #{proposal_id} is no longer active."
+        await self.store.mark_cancelled(proposal_id)
+        monitor = self._monitors.pop(proposal_id, None)
+        if monitor is not None:
+            monitor.cancel()
+        return f"Cancelled remote job #{proposal_id} (task #{proposal.task_id})."
+
+    async def handle_task_event(self, line: str, task: Task) -> None:
+        if task.origin != "remote_operator":
+            return
+        proposal = await self.store.proposal_for_task(task.id)
+        if "waiting for your approval" in line:
+            pending = next(
+                (item for item in await self.store.pending_tools() if item.task_id == task.id),
+                None,
+            )
+            if pending is not None:
+                issued = await self.store.issue_parked_token(
+                    pending.run_id, ttl_minutes=self.config.approval_ttl_minutes
+                )
+                if issued is not None:
+                    current, code = issued
+                    await self._safe_send(render_tool_approval(current, code))
+                    return
+        prefix = f"Remote job #{proposal.id}: " if proposal is not None else "Remote job: "
+        await self._safe_send(prefix + line)
+
+    def dispatch_task_event(self, line: str, task: Task) -> None:
+        """Schedule best-effort Telegram delivery from the runner's synchronous callback."""
+        self._spawn(self.handle_task_event(line, task))
+
+    def _start_monitor(self, proposal: RemoteProposal) -> None:
+        if (
+            proposal.task_id is None
+            or proposal.status_interval_minutes <= 0
+            or proposal.id in self._monitors
+        ):
+            return
+        monitor = asyncio.create_task(self._monitor(proposal.id, proposal.task_id))
+        self._monitors[proposal.id] = monitor
+        monitor.add_done_callback(lambda _task: self._monitors.pop(proposal.id, None))
+
+    async def _monitor(self, proposal_id: int, task_id: int) -> None:
+        proposal = await self.store.get(proposal_id)
+        if proposal is None:
+            return
+        interval = proposal.status_interval_minutes * 60
+        while interval > 0:
+            await self.sleep(interval)
+            task = await self.tasks.store.get(task_id)
+            if task is None or task.status != "active":
+                return
+            if not await self.store.record_status_update(proposal_id):
+                return
+            runs = await self.tasks.store.runs_for(task_id, limit=1)
+            state = "waiting to run"
+            if runs and runs[0].status == "running":
+                state = (
+                    "waiting for tool approval"
+                    if runs[0].approval_state == "pending"
+                    else "running"
+                )
+            await self._safe_send(
+                f"Remote job #{proposal_id} is still {state}: {proposal.title}"
+            )

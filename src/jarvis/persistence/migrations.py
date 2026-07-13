@@ -1288,6 +1288,18 @@ CREATE INDEX IF NOT EXISTS idx_remote_operator_tokens_subject
 """
 
 
+async def _migrate_v28(db: aiosqlite.Connection) -> None:
+    """Give scheduler tasks a server-owned origin used for remote tool scoping."""
+    columns = {
+        row[1] for row in await (await db.execute("PRAGMA table_info(tasks)")).fetchall()
+    }
+    if "origin" not in columns:
+        await db.execute(
+            "ALTER TABLE tasks ADD COLUMN origin TEXT NOT NULL DEFAULT 'local' "
+            "CHECK (origin IN ('local', 'remote_operator'))"
+        )
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1321,6 +1333,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (25, _SCHEMA_V25),
     (26, _migrate_v26),
     (27, _SCHEMA_V27),
+    (28, _migrate_v28),
 ]
 
 

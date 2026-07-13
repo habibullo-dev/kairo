@@ -54,6 +54,12 @@ from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
 from jarvis.projects import ProjectService, ProjectStore
 from jarvis.remote import TelegramRemoteControl, TelegramRemoteControlStore
+from jarvis.remote.operator import (
+    RemoteOperatorService,
+    RemoteOperatorStore,
+    RemoteProposalGate,
+    RemoteProposalTool,
+)
 from jarvis.remote.workspace import calendar_status, inbox_status
 from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
 from jarvis.scheduler.service import TaskService
@@ -956,18 +962,24 @@ def _build_scheduler(
 _TELEGRAM_REMOTE_GUIDANCE = """\
 You are replying through Kairo's narrow Telegram remote-control channel.
 
-This is an allowlisted owner transport, but it is intentionally tool-less and stateless:
-- You have NO tools, no filesystem, no shell, no scheduler, no connectors, no project context,
-  no conversation history, and no long-term memory.
+This is an allowlisted owner transport, but it has no direct execution authority and is stateless:
+- You have no filesystem, shell, scheduler, connectors, project content, conversation history,
+  or long-term memory.
+- If and only if remote_propose_work is available, use it when the owner clearly asks Kairo to
+  perform work, open/work on a registered project, create a task, or create a reminder. The tool
+  only prepares one proposal; it never schedules or executes. Use the project alias exactly as
+  the owner wrote it. If none was supplied, do not invent one.
+- Never claim proposed work is approved, scheduled, running, or complete. The host will replace
+  your response with the exact approval preview when a proposal was created.
 - Do not claim you checked Kairo's live state or performed an action. Direct live-state questions
   to /status, /tasks, /inbox, /calendar, or /briefing as appropriate; action requests belong at
-  the authenticated local Kairo workstation.
+  the authenticated local workstation unless remote_propose_work is available.
 - The deterministic remote commands are handled outside this model. You never receive their
   Google Workspace data, and you cannot inspect messages, events, or any connector data.
-- Telegram cannot approve, reject, schedule, write, execute, send, or otherwise authorize work.
-  Never treat a Telegram message as consent for a risky action.
+- Ordinary conversation is never consent. Only the host's explicit, expiring /approve CODE flow
+  may authorize the exact proposal or parked tool call represented by that code.
 - Give a concise helpful answer to general questions. If the user asks for a local action, explain
-  that they must use local Kairo rather than offering to perform or queue it remotely.
+  the approval flow if proposal creation is unavailable rather than claiming you can do it.
 """
 
 
@@ -981,9 +993,9 @@ def _build_telegram_remote_control(
 ) -> TelegramRemoteControl | None:
     """Compose the one deliberately narrow Telegram channel, or explain why it is dormant.
 
-    The model loop has an empty scoped registry and no memory/project/context manager.  This is
-    a structural remote-control boundary, not merely a system-prompt promise: there is no tool
-    spec for a remote model to invoke, and no approver callback that could grant authority.
+    The model loop has no memory/project/context manager. Its registry is empty unless Remote
+    Operator is explicitly enabled, in which case it contains exactly one inert proposal tool.
+    No remote model call receives a project, shell, filesystem, connector, or approval tool.
     """
     remote = config.connectors.telegram.remote_control
     if not remote.enabled:
@@ -1004,12 +1016,17 @@ def _build_telegram_remote_control(
             scheduler = f"on ({len(active)} active task(s))"
         work = "busy" if repl.turn_lock.locked() else "idle"
         background = "running" if runner is not None and runner.in_flight else "idle"
+        remote_mode = (
+            "proposal-based Remote Operator enabled"
+            if operator_service is not None
+            else "safe chat/status only"
+        )
         return (
             "Kairo is online.\n"
             f"Model work: {work}\n"
             f"Scheduler: {scheduler}\n"
             f"Background jobs: {background}\n\n"
-            "Remote control is safe chat/status only. Actions and approvals stay local."
+            f"Remote control: {remote_mode}."
         )
 
     async def tasks() -> str:
@@ -1054,11 +1071,41 @@ def _build_telegram_remote_control(
     async def deny_remote_approval(_call: ToolCall, _decision: Decision) -> Permission:
         return Permission.DENY
 
+    operator_service: RemoteOperatorService | None = None
+    proposal_tool: RemoteProposalTool | None = None
+    remote_registry: object = ScopedRegistry(repl.registry, frozenset())
+    remote_gate: object = repl.gate
+    operator_config = remote.operator
+    if operator_config.enabled:
+        if repl.tasks is None or runner is None or repl.projects is None:
+            console.print(
+                "[yellow]Telegram Remote Operator needs the scheduler, runner, and projects; "
+                "natural-language actions are disabled.[/]"
+            )
+        else:
+            operator_store = RemoteOperatorStore(store.db, store.lock)
+            proposal_tool = RemoteProposalTool(
+                store=operator_store,
+                projects=repl.projects.store,
+                config=operator_config,
+            )
+            proposal_registry = ToolRegistry()
+            proposal_registry.register(proposal_tool)
+            remote_registry = proposal_registry
+            remote_gate = RemoteProposalGate()
+            operator_service = RemoteOperatorService(
+                store=operator_store,
+                config=operator_config,
+                tasks=repl.tasks,
+                projects=repl.projects.store,
+                runner=runner,
+            )
+
     remote_loop = AgentLoop(
         client=repl.client,
-        registry=ScopedRegistry(repl.registry, frozenset()),
+        registry=remote_registry,
         executor=repl.executor,
-        gate=repl.gate,
+        gate=remote_gate,
         config=config,
         approver=deny_remote_approval,
         system=build_system(extra=_TELEGRAM_REMOTE_GUIDANCE),
@@ -1066,7 +1113,7 @@ def _build_telegram_remote_control(
         # Telegram.  Every non-command message below starts from this one fresh user turn.
         # This stays on the inexpensive utility model. Fable is reserved for the explicit
         # skills-authoring/evaluation workflow; a remote status companion must not burn that
-        # scarce budget. One tool-less response is enough for this stateless transport.
+        # scarce budget. One bounded response is enough for this stateless transport.
         model_override=lambda: config.models.utility,
         chat_limits=config.chat.model_copy(
             update={
@@ -1089,7 +1136,12 @@ def _build_telegram_remote_control(
         # Share the global model-turn lock; remote text cannot interleave with local UI/REPL,
         # voice, or jobs. The resulting transcript is intentionally NOT persisted.
         async with repl.turn_lock:
+            if proposal_tool is not None:
+                proposal_tool.begin_turn()
             result = await remote_loop.run_turn([{"role": "user", "content": text}])
+            created = proposal_tool.drain_created() if proposal_tool is not None else []
+        if created and operator_service is not None:
+            return await operator_service.render_authorization(created[0])
         return result.text or "Kairo did not return a response."
 
     controller = TelegramRemoteControl(
@@ -1102,7 +1154,36 @@ def _build_telegram_remote_control(
         calendar_handler=calendar,
         briefing_handler=briefing,
         chat_handler=chat,
+        projects_handler=operator_service.projects_text if operator_service is not None else None,
+        jobs_handler=operator_service.jobs_text if operator_service is not None else None,
+        approvals_handler=(
+            operator_service.approvals_text if operator_service is not None else None
+        ),
+        operator_resolution_handler=(
+            (lambda code, resolution: operator_service.resolve(code, resolution=resolution))
+            if operator_service is not None
+            else None
+        ),
+        operator_cancel_handler=(
+            operator_service.cancel if operator_service is not None else None
+        ),
+        operator_startup_handler=(
+            operator_service.start if operator_service is not None else None
+        ),
+        operator_shutdown_handler=(
+            operator_service.stop if operator_service is not None else None
+        ),
     )
+    if operator_service is not None and runner is not None:
+        operator_service.set_sender(controller.notify)
+        prior_task_notify = runner.task_notify
+
+        def notify_remote_operator(line: str, task: Task) -> None:
+            if prior_task_notify is not None:
+                prior_task_notify(line, task)
+            operator_service.dispatch_task_event(line, task)
+
+        runner.task_notify = notify_remote_operator
     return controller
 
 
@@ -1128,9 +1209,21 @@ async def _start_telegram_remote_control(
             "[yellow]Telegram remote control is starting, but its initial check failed; "
             "it will retry.[/]"
         )
+    try:
+        await controller.start_operator()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        get_logger("jarvis.remote.operator").warning(
+            "telegram_remote_operator_restore_failed", error_class=type(exc).__name__
+        )
+        console.print(
+            "[yellow]Telegram Remote Operator could not restore its status monitors; "
+            "Telegram polling will still start.[/]"
+        )
     controller.start()
     console.print(
-        "[dim]Telegram remote control: online (allowlisted private chat, no approvals).[/]"
+        "[dim]Telegram remote control: online (allowlisted private chat, exact-code approvals).[/]"
     )
 
 
@@ -1307,6 +1400,7 @@ def _build_runner(
         # paths keep HeadlessApprover's deny posture, so they cannot create a task no local Gate
         # can later resolve.
         task_store=tasks.store if enable_parked_approvals else None,
+        projects=repl.projects,
     )
 
     def notify(line: str) -> None:

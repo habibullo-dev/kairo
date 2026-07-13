@@ -131,10 +131,15 @@ class UnattendedGate:
         *,
         allow_tools: frozenset[str] = frozenset(),
         egress_tools: frozenset[str] = frozenset(),
+        demote_to_ask: bool = False,
     ) -> None:
         self.inner = inner
         self.allow_tools = allow_tools
         self.egress_tools = egress_tools
+        # Remote Operator runs have a real but asynchronous owner channel.  A standing ALLOW
+        # therefore becomes an exact-call ASK instead of inheriting unattended authority.  The
+        # ordinary scheduler keeps the historical DENY behavior by default.
+        self.demote_to_ask = demote_to_ask
         self.demoted = 0
 
     def check(
@@ -161,6 +166,13 @@ class UnattendedGate:
             and demotable
             and tool_name not in self.allow_tools
         ):
+            if self.demote_to_ask:
+                return Decision(
+                    Permission.ASK,
+                    f"'{tool_name}' standing allow requires one exact remote approval; "
+                    f"was: {decision.reason}",
+                    persistable=False,
+                )
             self.demoted += 1
             return Decision(
                 Permission.DENY,

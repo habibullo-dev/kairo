@@ -1,9 +1,10 @@
-"""Allowlisted, tool-less Telegram remote control.
+"""Allowlisted, proposal-first Telegram remote control.
 
 This is intentionally *not* a general Telegram bot integration.  It long-polls only while
 Kairo is running locally, ignores every chat except one configured private owner chat, and
-offers deterministic status/task commands plus a bounded tool-less model conversation.  It has
-no route to approvals, tools, memory, project scope, shell, schedules, or connector writes.
+offers deterministic status/task commands plus a bounded stateless model conversation.  When
+Remote Operator is explicitly enabled, that model may prepare one inert proposal and the host
+may resolve expiring approval codes; the model itself never receives execution authority.
 
 The durable cursor is advanced before a message is handled.  A crash can therefore lose one
 reply (the owner may resend), but never replay a model request or an accidental future effect.
@@ -207,6 +208,9 @@ class TelegramRemoteControlStore:
 
 ReplyHandler = Callable[[], Awaitable[str]]
 ChatHandler = Callable[[str], Awaitable[str]]
+OperatorResolutionHandler = Callable[[str, str], Awaitable[str]]
+OperatorCancelHandler = Callable[[str], Awaitable[str]]
+LifecycleHandler = Callable[[], Awaitable[None]]
 
 
 class TelegramRemoteControl:
@@ -224,6 +228,13 @@ class TelegramRemoteControl:
         calendar_handler: ReplyHandler,
         briefing_handler: ReplyHandler,
         chat_handler: ChatHandler,
+        projects_handler: ReplyHandler | None = None,
+        jobs_handler: ReplyHandler | None = None,
+        approvals_handler: ReplyHandler | None = None,
+        operator_resolution_handler: OperatorResolutionHandler | None = None,
+        operator_cancel_handler: OperatorCancelHandler | None = None,
+        operator_startup_handler: LifecycleHandler | None = None,
+        operator_shutdown_handler: LifecycleHandler | None = None,
         http: Any = None,
         log: Any = None,
     ) -> None:
@@ -240,6 +251,13 @@ class TelegramRemoteControl:
         self._calendar_handler = calendar_handler
         self._briefing_handler = briefing_handler
         self._chat_handler = chat_handler
+        self._projects_handler = projects_handler
+        self._jobs_handler = jobs_handler
+        self._approvals_handler = approvals_handler
+        self._operator_resolution_handler = operator_resolution_handler
+        self._operator_cancel_handler = operator_cancel_handler
+        self._operator_startup_handler = operator_startup_handler
+        self._operator_shutdown_handler = operator_shutdown_handler
         self._http = http
         self._log = log or get_logger("jarvis.remote.telegram")
         self._task: asyncio.Task[None] | None = None
@@ -257,11 +275,22 @@ class TelegramRemoteControl:
     async def stop(self) -> None:
         """Cancel polling promptly; an interrupted claimed message is never replayed."""
         task, self._task = self._task, None
-        if task is None:
-            return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        if self._operator_shutdown_handler is not None:
+            await self._operator_shutdown_handler()
+
+    async def start_operator(self) -> None:
+        """Restore Remote Operator monitors after Telegram backlog bootstrap is durable."""
+        if self._operator_startup_handler is not None:
+            await self._operator_startup_handler()
+
+    async def notify(self, text: str) -> None:
+        """Send a host-generated Remote Operator milestone to the same allowlisted owner."""
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            await self._send(text, http=http)
 
     async def _fetch_updates(
         self, *, offset: int, http: Any, timeout_seconds: int | None = None
@@ -375,8 +404,20 @@ class TelegramRemoteControl:
 
     async def _reply_for(self, text: str) -> str:
         stripped = text.strip()
-        command = stripped.split(maxsplit=1)[0].lower().split("@", 1)[0] if stripped else ""
+        parts = stripped.split(maxsplit=1)
+        command = parts[0].lower().split("@", 1)[0] if parts else ""
+        argument = parts[1].strip() if len(parts) > 1 else ""
         if command in {"/start", "/help"}:
+            operator_help = (
+                "\n/projects — registered project aliases\n"
+                "/jobs — Remote Operator job status\n"
+                "/approvals — refresh pending approval codes\n"
+                "/approve CODE or /deny CODE — resolve one exact proposal/tool call\n"
+                "/cancel ID — cancel one Remote Operator job\n"
+                "Natural action requests — prepare a proposal for approval\n"
+                if self._operator_resolution_handler is not None
+                else ""
+            )
             return (
                 "Kairo remote control is online.\n\n"
                 "/status — Kairo and scheduler state\n"
@@ -384,10 +425,11 @@ class TelegramRemoteControl:
                 "/inbox — unread inbox count only\n"
                 "/calendar — next-24-hours count and next start time\n"
                 "/briefing — combined status, inbox, calendar, and task count\n"
-                "Any other message — a bounded, tool-less Kairo reply\n\n"
+                f"{operator_help}"
+                "Any other message — a bounded reply or Remote Operator proposal\n\n"
                 "This channel cannot approve actions, write files, run commands, change schedules, "
-                "or access tools or memory. Workspace commands are read-only and never show "
-                "mail/event content. Use local Kairo for actions."
+                "or access tools or memory unless Remote Operator is enabled and you use an "
+                "explicit single-use approval code. Workspace commands remain read-only."
             )
         if command == "/status":
             return await self._status_handler()
@@ -407,10 +449,34 @@ class TelegramRemoteControl:
                 "/briefing": self._briefing_handler,
             }
             return await handlers[command]()
+        operator_reads = {
+            "/projects": self._projects_handler,
+            "/jobs": self._jobs_handler,
+            "/approvals": self._approvals_handler,
+        }
+        if command in operator_reads and operator_reads[command] is not None:
+            if not await self._store.reserve_read_request(
+                max_per_hour=self._config.max_read_requests_per_hour
+            ):
+                return (
+                    "Remote checks have reached their hourly limit. "
+                    "/status and /tasks still work."
+                )
+            handler = operator_reads[command]
+            assert handler is not None
+            return await handler()
+        if command in {"/approve", "/deny"} and self._operator_resolution_handler is not None:
+            if not argument:
+                return f"Usage: {command} CODE"
+            return await self._operator_resolution_handler(
+                argument, "approve" if command == "/approve" else "deny"
+            )
+        if command == "/cancel" and self._operator_cancel_handler is not None:
+            return await self._operator_cancel_handler(argument)
         if command.startswith("/"):
             return "Unknown command. Send /help for the safe remote-control commands."
         if not stripped:
-            return "Send /help, /status, /tasks, /inbox, /calendar, /briefing, or a short question."
+            return "Send /help to see remote commands, or send a short question/request."
         if len(text) > self._config.max_input_chars:
             return (
                 "That message is too long for remote chat "

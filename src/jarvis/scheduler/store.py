@@ -30,7 +30,7 @@ from jarvis.scheduler.verification import VerificationContract
 _TASK_COLUMNS = (
     "id, kind, title, payload, schedule_kind, schedule_spec, timezone, next_run_at, "
     "status, created_by, source_session_id, consecutive_failures, last_run_at, "
-    "last_error, created_at, updated_at, project_id, verification_json"
+    "last_error, created_at, updated_at, project_id, verification_json, origin"
 )
 
 #: Sentinel for "any project" (no scope filter) in list() — distinct from ``None`` (global
@@ -71,6 +71,7 @@ class Task:
     updated_at: str
     project_id: int | None = None  # Phase 10: scope (None == global)
     verification: VerificationContract | None = None
+    origin: str = "local"  # server-owned provenance; never accepted from a model tool
 
 
 @dataclass(frozen=True)
@@ -391,6 +392,7 @@ class TaskStore:
         source_session_id: int | None = None,
         project_id: int | None = None,
         verification: VerificationContract | None = None,
+        origin: str = "local",
     ) -> int:
         """Insert an active task with its first fire time. Returns its id. ``project_id``
         scopes the task to a project (None == global; existing tasks stay global)."""
@@ -399,8 +401,8 @@ class TaskStore:
             cursor = await self.db.execute(
                 "INSERT INTO tasks (kind, title, payload, schedule_kind, schedule_spec, "
                 "timezone, next_run_at, status, created_by, source_session_id, "
-                "created_at, updated_at, project_id, verification_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
+                "created_at, updated_at, project_id, verification_json, origin) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)",
                 (
                     kind,
                     title,
@@ -415,6 +417,7 @@ class TaskStore:
                     now,
                     project_id,
                     verification.to_json() if verification is not None else "{}",
+                    origin,
                 ),
             )
             await self.db.commit()
@@ -865,8 +868,12 @@ class TaskStore:
 
 
 def _row_to_task(row: tuple) -> Task:
-    *base, verification_json = row
-    return Task(*base, verification=VerificationContract.from_json(verification_json))
+    *base, verification_json, origin = row
+    return Task(
+        *base,
+        verification=VerificationContract.from_json(verification_json),
+        origin=origin,
+    )
 
 
 def _row_to_run(row: tuple) -> TaskRun:

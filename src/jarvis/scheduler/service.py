@@ -49,6 +49,11 @@ MAX_RESULT_CHARS = 10_000
 #: rejected — scheduling "in one minute" must not lose a race with the clock.
 PAST_TOLERANCE = _dt.timedelta(minutes=2)
 
+# ``None`` is a meaningful provenance value: it says a task was created outside
+# any interactive session.  A private sentinel lets ordinary callers continue
+# inheriting ``bound_session_id`` while trusted host-side services can opt out.
+_USE_BOUND_SESSION = object()
+
 
 def utc_now() -> _dt.datetime:
     # Eval determinism hook (E6b): honor a fixed JARVIS_EVAL_CLOCK so scheduler timing
@@ -118,6 +123,8 @@ class TaskService:
         timezone: str | None = None,
         project_id: int | None = None,
         verification: VerificationContract | None = None,
+        origin: str = "local",
+        source_session_id: int | None | object = _USE_BOUND_SESSION,
     ) -> Task:
         """Validate and insert a task; returns it. Raises :class:`ScheduleError`
         with a model-readable message when the spec is unusable."""
@@ -141,6 +148,12 @@ class TaskService:
                     f"{local:%Y-%m-%d %H:%M} in {tz}. Give a future time."
                 )
 
+        task_source_session = (
+            self.bound_session_id
+            if source_session_id is _USE_BOUND_SESSION
+            else source_session_id
+        )
+        assert task_source_session is None or isinstance(task_source_session, int)
         task_id = await self.store.add(
             kind=kind,
             title=title,
@@ -150,9 +163,10 @@ class TaskService:
             timezone=tz,
             next_run_at=_iso(first),
             created_by=created_by,
-            source_session_id=self.bound_session_id,
+            source_session_id=task_source_session,
             project_id=project_id,
             verification=verification,
+            origin=origin,
         )
         task = await self.store.get(task_id)
         assert task is not None

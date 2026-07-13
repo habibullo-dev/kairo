@@ -26,6 +26,7 @@ from jarvis.core.agent import AgentLoop
 from jarvis.core.client import LLMClient, ToolCall
 from jarvis.core.context import ContextManager
 from jarvis.core.events import ToolDecision, ToolStarted
+from jarvis.core.execution import ExecutionContext, bind_execution_context
 from jarvis.core.prompts import build_system
 from jarvis.observability import get_logger
 from jarvis.observability.cost import cost_of
@@ -37,10 +38,12 @@ from jarvis.permissions.unattended import (
     UnattendedGate,
 )
 from jarvis.persistence.sessions import SessionStore
+from jarvis.projects.context import GLOBAL, ProjectContext, build_project_context
+from jarvis.projects.service import ProjectService
 from jarvis.scheduler.runner import JobOutcome
 from jarvis.scheduler.store import ParkedContinuation, PendingToolCall, Task, TaskStore
 from jarvis.tools.executor import ToolExecutor
-from jarvis.tools.registry import ToolRegistry
+from jarvis.tools.registry import ScopedRegistry, ToolRegistry
 
 # stop_reason values that mean the job ran to a clean finish. Anything else
 # (max_iterations, max_context) is a failure to report, never silence.
@@ -85,6 +88,7 @@ class JobRunner:
         knowledge: object | None = None,
         make_context_manager: Callable[[], ContextManager] | None = None,
         task_store: TaskStore | None = None,
+        projects: ProjectService | None = None,
     ) -> None:
         self.session_store = session_store
         self.client = client
@@ -104,21 +108,51 @@ class JobRunner:
         ):
             raise ValueError("job parking store must share the session store's connection and lock")
         self.task_store = task_store
+        self.projects = projects
         self.log = get_logger("jarvis.scheduler.job")
 
-    def _build_loop(self, *, park_asks: bool) -> tuple[AgentLoop, UnattendedGate, object]:
+    def _registry_for(self, task: Task) -> ToolRegistry | ScopedRegistry:
+        if task.origin != "remote_operator":
+            return self.registry
+        allowed = frozenset(
+            self.config.connectors.telegram.remote_control.operator.allowed_tools
+        )
+        return ScopedRegistry(self.registry, allowed)
+
+    async def _project_for(self, task: Task) -> ProjectContext:
+        if task.project_id is None:
+            return GLOBAL
+        if self.projects is None:
+            raise RuntimeError("project-scoped job has no project service")
+        project = await self.projects.store.get(task.project_id)
+        if project is None or project.status == "archived":
+            raise RuntimeError(f"project #{task.project_id} is unavailable")
+        return build_project_context(project)
+
+    def _build_loop(
+        self,
+        *,
+        park_asks: bool,
+        task: Task,
+        project: ProjectContext,
+    ) -> tuple[AgentLoop, UnattendedGate, object]:
         """Compose the current unattended gate for a fresh task/resume turn."""
+        registry = self._registry_for(task)
+        egress_tools = frozenset(
+            name
+            for name in registry.names()
+            if (tool := registry.get(name)) is not None and getattr(tool, "egress", False)
+        )
         ugate = UnattendedGate(
             self.gate,
             allow_tools=frozenset(self.config.scheduler.unattended_allow_tools),
-            egress_tools=frozenset(
-                t.name for t in self.registry.all() if getattr(t, "egress", False)
-            ),
+            egress_tools=egress_tools,
+            demote_to_ask=task.origin == "remote_operator",
         )
         approver = ParkingApprover() if park_asks else HeadlessApprover()
         loop = AgentLoop(
             client=self.client,
-            registry=self.registry,
+            registry=registry,
             executor=self.executor,
             gate=ugate,
             config=self.config,
@@ -130,19 +164,30 @@ class JobRunner:
             ),
             context_manager=self.make_context_manager() if self.make_context_manager else None,
             memory=self.memory,
+            project=lambda: project,
         )
         return loop, ugate, approver
 
     async def run(self, task: Task) -> JobOutcome:
         # Fresh, second-class session: kind='task' keeps it out of --resume and
         # (by default) out of reflection.
+        project = await self._project_for(task)
         session_id = await self.session_store.create_session(
-            title=f"task #{task.id}: {task.title}"[:120], kind="task"
+            title=f"task #{task.id}: {task.title}"[:120],
+            kind="task",
+            project_id=task.project_id,
         )
+        execution = ExecutionContext(session_id=session_id, project_id=task.project_id)
+        if self.projects is not None:
+            self.projects.bind_execution_context(execution, project)
         # The unattended gate is built HERE — the only gate a job ever sees. The egress-tool
         # set is derived from the live registry so any tool marked ``egress`` is demoted
         # ALLOW→DENY unattended (Phase 9), not just the hand-listed DEMOTE_ALLOW names.
-        loop, ugate, approver = self._build_loop(park_asks=self.task_store is not None)
+        loop, ugate, approver = self._build_loop(
+            park_asks=self.task_store is not None,
+            task=task,
+            project=project,
+        )
         self.log.info("job_start", task_id=task.id, session_id=session_id)
         tool_started = False
         denied = False
@@ -159,9 +204,10 @@ class JobRunner:
         if self.knowledge is not None:
             self.knowledge.bound_unattended = True
         try:
-            result = await loop.run_turn(
-                [{"role": "user", "content": _envelope(task)}], on_event=observe
-            )
+            with bind_execution_context(execution):
+                result = await loop.run_turn(
+                    [{"role": "user", "content": _envelope(task)}], on_event=observe
+                )
         except ApprovalParked as parked:
             # A ParkingApprover never grants permission.  Persist the assistant's exact tool-use
             # prefix, its canonical call/hash, and the task-run state in one transaction before
@@ -267,7 +313,15 @@ class JobRunner:
             ToolCall(id=call.tool_id, name=call.tool_name, input=call.tool_input)
             for call in approved_pending
         ]
-        loop, ugate, approver = self._build_loop(park_asks=True)
+        project = await self._project_for(task)
+        execution = ExecutionContext(session_id=session_id, project_id=task.project_id)
+        if self.projects is not None:
+            self.projects.bind_execution_context(execution, project)
+        loop, ugate, approver = self._build_loop(
+            park_asks=True,
+            task=task,
+            project=project,
+        )
         tool_started = False
         denied = False
 
@@ -309,12 +363,13 @@ class JobRunner:
             self.knowledge.bound_unattended = True
         try:
             try:
-                results, initial_taint = await loop.execute_parked_batch(
-                    messages,
-                    calls,
-                    approved_calls=approved_calls,
-                    on_event=observe,
-                )
+                with bind_execution_context(execution):
+                    results, initial_taint = await loop.execute_parked_batch(
+                        messages,
+                        calls,
+                        approved_calls=approved_calls,
+                        on_event=observe,
+                    )
             except ApprovalParked as parked:
                 # ``execute_parked_batch`` performs all permission decisions before execution.
                 # Thus this re-park has no partial tool effects from the unfinished provider
@@ -322,11 +377,12 @@ class JobRunner:
                 return await repark(parked, messages, carried_approvals=approved_pending)
             messages.append({"role": "user", "content": results})
             try:
-                result = await loop.run_turn(
-                    messages,
-                    on_event=observe,
-                    initial_taint=initial_taint,
-                )
+                with bind_execution_context(execution):
+                    result = await loop.run_turn(
+                        messages,
+                        on_event=observe,
+                        initial_taint=initial_taint,
+                    )
             except ApprovalParked as parked:
                 if parked.messages is None:
                     raise RuntimeError("unattended parked turn lost its transcript") from parked

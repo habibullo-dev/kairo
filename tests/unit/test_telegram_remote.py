@@ -327,3 +327,113 @@ async def test_rate_reservation_resets_after_one_hour(tmp_path: Path) -> None:
         assert await store.reserve_read_request(max_per_hour=1, now=start + dt.timedelta(hours=1))
     finally:
         await db.close()
+
+
+async def test_operator_commands_are_host_routed_and_never_reach_model_chat(
+    tmp_path: Path,
+) -> None:
+    db = await connect(tmp_path / "operator-commands.db")
+    calls: list[tuple[str, str]] = []
+
+    async def fixed(name: str) -> str:
+        calls.append((name, ""))
+        return name.upper()
+
+    async def resolve(code: str, resolution: str) -> str:
+        calls.append((resolution, code))
+        return f"{resolution}:{code}"
+
+    async def cancel(value: str) -> str:
+        calls.append(("cancel", value))
+        return f"cancel:{value}"
+
+    async def chat(text: str) -> str:
+        raise AssertionError(f"operator command reached model chat: {text}")
+
+    http = _TelegramHttp(
+        [
+            [],
+            [
+                _update(1, text="/projects"),
+                _update(2, text="/jobs"),
+                _update(3, text="/approvals"),
+                _update(4, text="/approve A1B2C3D4E5F6"),
+                _update(5, text="/deny 112233445566"),
+                _update(6, text="/cancel 7"),
+            ],
+        ]
+    )
+    controller = TelegramRemoteControl(
+        bot_token="BOT-CANARY",
+        config=TelegramRemoteControlConfig(enabled=True, allowed_chat_id="123"),
+        store=TelegramRemoteControlStore(db, asyncio.Lock()),
+        status_handler=lambda: fixed("status"),
+        tasks_handler=lambda: fixed("tasks"),
+        inbox_handler=lambda: fixed("inbox"),
+        calendar_handler=lambda: fixed("calendar"),
+        briefing_handler=lambda: fixed("briefing"),
+        chat_handler=chat,
+        projects_handler=lambda: fixed("projects"),
+        jobs_handler=lambda: fixed("jobs"),
+        approvals_handler=lambda: fixed("approvals"),
+        operator_resolution_handler=resolve,
+        operator_cancel_handler=cancel,
+        http=http,
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 6
+        assert calls == [
+            ("projects", ""),
+            ("jobs", ""),
+            ("approvals", ""),
+            ("approve", "A1B2C3D4E5F6"),
+            ("deny", "112233445566"),
+            ("cancel", "7"),
+        ]
+        assert [message["text"] for message in http.sent] == [
+            "PROJECTS",
+            "JOBS",
+            "APPROVALS",
+            "approve:A1B2C3D4E5F6",
+            "deny:112233445566",
+            "cancel:7",
+        ]
+    finally:
+        await db.close()
+
+
+async def test_operator_lifecycle_stops_even_when_poller_was_never_started(
+    tmp_path: Path,
+) -> None:
+    db = await connect(tmp_path / "operator-lifecycle.db")
+    events: list[str] = []
+
+    async def event(name: str) -> None:
+        events.append(name)
+
+    async def reply() -> str:
+        return "ok"
+
+    async def chat(_text: str) -> str:
+        return "ok"
+
+    controller = TelegramRemoteControl(
+        bot_token="BOT-CANARY",
+        config=TelegramRemoteControlConfig(enabled=True, allowed_chat_id="123"),
+        store=TelegramRemoteControlStore(db, asyncio.Lock()),
+        status_handler=reply,
+        tasks_handler=reply,
+        inbox_handler=reply,
+        calendar_handler=reply,
+        briefing_handler=reply,
+        chat_handler=chat,
+        operator_startup_handler=lambda: event("start"),
+        operator_shutdown_handler=lambda: event("stop"),
+    )
+    try:
+        await controller.start_operator()
+        await controller.stop()
+        assert events == ["start", "stop"]
+    finally:
+        await db.close()
