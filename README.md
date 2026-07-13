@@ -325,7 +325,11 @@ the eventual local AI workstation experience.
 ```pwsh
 uv sync                 # create the venv, fetch Python 3.13, install deps
 cp .env.example .env     # then fill in your API keys
+uv run jarvis doctor     # local read-only check: configuration, optional extras, DB, and disk
 ```
+
+`jarvis doctor` never contacts a provider or changes local data. It reports credential names and
+presence only (never their values), so run it before the first `jarvis` or `jarvis --ui` session.
 
 `.env`:
 
