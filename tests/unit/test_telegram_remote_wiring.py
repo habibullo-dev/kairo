@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from rich.console import Console
 from tests.unit.test_telegram_remote import _TelegramHttp, _update
 
-from jarvis.cli.repl import _build_telegram_remote_control
+from jarvis.cli.repl import _build_telegram_remote_control, _start_runtime_services
 from jarvis.config import load_config
 from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
 from jarvis.observability.cost import load_pricing
@@ -57,6 +57,49 @@ class _WebSearch(Tool):
     async def run(self, params: _WebSearchParams) -> str:
         self.calls.append(params)
         return "Public result: Seoul is 28 C with light rain today."
+
+
+async def test_runtime_reconciles_operator_before_scheduler_catchup_and_polling() -> None:
+    events: list[str] = []
+
+    class Tasks:
+        async def sweep_stale_runs(self) -> list[str]:
+            events.append("sweep-stale-runs")
+            return []
+
+    class Runner:
+        async def check_due(self) -> int:
+            events.append("scheduler-catchup")
+            return 0
+
+        def start(self) -> None:
+            events.append("runner-start")
+
+    class RemoteControl:
+        async def initialize(self) -> None:
+            events.append("telegram-cursor")
+
+        async def start_operator(self) -> None:
+            events.append("operator-reconcile")
+
+        def start(self) -> None:
+            events.append("telegram-polling")
+
+    await _start_runtime_services(  # type: ignore[arg-type]
+        tasks=Tasks(),
+        runner=Runner(),
+        remote_control=RemoteControl(),
+        console=Console(file=io.StringIO(), force_terminal=False),
+    )
+
+    assert events == [
+        "telegram-cursor",
+        "operator-reconcile",
+        "sweep-stale-runs",
+        "scheduler-catchup",
+        "runner-start",
+        "telegram-polling",
+    ]
 
 
 def _test_png() -> bytes:

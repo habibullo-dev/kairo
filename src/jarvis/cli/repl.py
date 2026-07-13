@@ -1461,10 +1461,10 @@ def _build_telegram_remote_control(
     return controller
 
 
-async def _start_telegram_remote_control(
+async def _prepare_telegram_remote_control(
     controller: TelegramRemoteControl | None, *, console: Console
 ) -> None:
-    """Bootstrap stale-update protection before advertising Telegram as ready.
+    """Bootstrap stale-update protection and reconcile operator state before catch-up.
 
     Startup remains available when Telegram itself is down: the background loop retries the
     generic failure, while Kairo's local UI/REPL never waits more than a short bounded window.
@@ -1495,10 +1495,34 @@ async def _start_telegram_remote_control(
             "[yellow]Telegram Remote Operator could not restore its status monitors; "
             "Telegram polling will still start.[/]"
         )
+
+
+def _activate_telegram_remote_control(
+    controller: TelegramRemoteControl | None, *, console: Console
+) -> None:
+    """Start polling only after scheduler reconciliation and catch-up are complete."""
+    if controller is None:
+        return
     controller.start()
     console.print(
         "[dim]Telegram remote control: online (allowlisted private chat, exact-code approvals).[/]"
     )
+
+
+async def _start_runtime_services(
+    *,
+    tasks: TaskService | None,
+    runner: BackgroundRunner | None,
+    remote_control: TelegramRemoteControl | None,
+    console: Console,
+) -> None:
+    """Reconcile remote ownership before scheduler catch-up, then expose inbound polling."""
+    await _prepare_telegram_remote_control(remote_control, console=console)
+    if tasks is not None:
+        assert runner is not None
+        await _scheduler_startup(tasks, runner, console)
+        runner.start()
+    _activate_telegram_remote_control(remote_control, console=console)
 
 
 def _build_knowledge(
@@ -1607,13 +1631,16 @@ async def run_repl(config: Config, *, resume: bool = False, console: Console | N
                 digest_store=digest_store,
             )
             await ensure_digest_task(tasks, config)
-            await _scheduler_startup(tasks, runner, console)
-            runner.start()
 
         remote_control = _build_telegram_remote_control(
             config, repl=repl, store=store, runner=runner, console=console
         )
-        await _start_telegram_remote_control(remote_control, console=console)
+        await _start_runtime_services(
+            tasks=tasks,
+            runner=runner,
+            remote_control=remote_control,
+            console=console,
+        )
         await repl.run()
     finally:
         # Stop inbound remote control before the model turn lock, stores, or database can close.
@@ -2309,13 +2336,16 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
             app.state.runner = runner
             app.state.resume_parked = runner.resume_parked
             await ensure_digest_task(tasks, config)
-            await _scheduler_startup(tasks, runner, console)
-            runner.start()
 
         remote_control = _build_telegram_remote_control(
             config, repl=repl, store=store, runner=runner, console=console
         )
-        await _start_telegram_remote_control(remote_control, console=console)
+        await _start_runtime_services(
+            tasks=tasks,
+            runner=runner,
+            remote_control=remote_control,
+            console=console,
+        )
 
         url = f"http://{config.ui.host}:{config.ui.port}/?token={auth.launch_token}"
         console.print(
