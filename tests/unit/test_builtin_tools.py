@@ -253,6 +253,42 @@ async def test_web_search_without_key_is_error() -> None:
     assert "TAVILY_API_KEY" in content_of(result)
 
 
+async def test_public_search_slices_provider_overflow_and_removes_unsafe_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, int]] = []
+
+    async def fake_search(api_key: str, query: str, max_results: int) -> dict:
+        calls.append((api_key, query, max_results))
+        return {
+            "answer": "a" * 3_000,
+            "results": [
+                {"title": "Local", "url": "http://127.0.0.1/private", "content": "one"},
+                {"title": "Script", "url": "javascript:alert(1)", "content": "two"},
+                {
+                    "title": "Credentials",
+                    "url": "https://user:pass@example.com/story",
+                    "content": "three",
+                },
+                {"title": "Public", "url": "https://example.com/story", "content": "four"},
+                {"title": "Fifth", "url": "https://example.org/five", "content": "five"},
+                {"title": "Overflow", "url": "https://example.net/six", "content": "six"},
+            ],
+        }
+
+    monkeypatch.setattr(web, "_tavily_search", fake_search)
+    result = await web.search_public_web(
+        api_key="tvly-key",
+        query="  today's   news  ",
+        max_results=5,
+    )
+    assert calls == [("tvly-key", "today's news", 5)]
+    assert len(result.answer) == 2_000
+    assert len(result.results) == 5
+    assert [item.url for item in result.results[:4]] == ["", "", "", "https://example.com/story"]
+    assert all(item.title != "Overflow" for item in result.results)
+
+
 async def test_web_fetch_extracts_main_text(monkeypatch: pytest.MonkeyPatch) -> None:
     html = """
     <html><head><title>Doc</title></head><body>

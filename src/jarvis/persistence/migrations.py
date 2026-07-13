@@ -1305,6 +1305,53 @@ async def _migrate_v28(db: aiosqlite.Connection) -> None:
         )
 
 
+# A news brief is a fixed host workflow, not a generic Remote Operator job.  Its exact public
+# search scope, renderer contract, retention choice, and Telegram destination fingerprint are
+# persisted before any egress.  Approval tokens are random capabilities stored only as hashes.
+_SCHEMA_V29 = """
+CREATE TABLE IF NOT EXISTS telegram_news_brief_requests (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    query              TEXT NOT NULL,
+    scope              TEXT NOT NULL,
+    local_date         TEXT NOT NULL,
+    timezone           TEXT NOT NULL,
+    max_results        INTEGER NOT NULL CHECK (max_results BETWEEN 1 AND 5),
+    renderer_version   TEXT NOT NULL,
+    max_pdf_bytes      INTEGER NOT NULL CHECK (max_pdf_bytes BETWEEN 1 AND 10000000),
+    max_pages          INTEGER NOT NULL CHECK (max_pages BETWEEN 1 AND 20),
+    retention          TEXT NOT NULL CHECK (retention IN ('artifact')),
+    destination_hash   TEXT NOT NULL,
+    state              TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (state IN ('pending', 'approved', 'running', 'rendered', 'sending',
+                                        'sent', 'denied', 'expired', 'cancelled', 'failed',
+                                        'delivery_unknown')),
+    artifact_id        INTEGER REFERENCES artifacts(id),
+    local_path         TEXT,
+    created_at         TEXT NOT NULL,
+    expires_at         TEXT NOT NULL,
+    resolved_at        TEXT,
+    completed_at       TEXT,
+    updated_at         TEXT NOT NULL,
+    error              TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_news_brief_requests_state
+    ON telegram_news_brief_requests(state, id DESC);
+
+CREATE TABLE IF NOT EXISTS telegram_news_brief_tokens (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash    TEXT NOT NULL UNIQUE,
+    request_id    INTEGER NOT NULL REFERENCES telegram_news_brief_requests(id),
+    binding_hash  TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    expires_at    TEXT NOT NULL,
+    consumed_at   TEXT,
+    resolution    TEXT CHECK (resolution IN ('approve', 'deny'))
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_news_brief_tokens_request
+    ON telegram_news_brief_tokens(request_id, consumed_at);
+"""
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1339,6 +1386,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (26, _migrate_v26),
     (27, _SCHEMA_V27),
     (28, _migrate_v28),
+    (29, _SCHEMA_V29),
 ]
 
 

@@ -134,6 +134,18 @@ fallback for questions such as “What is today’s weather?”; a location writ
 priority. Each Telegram message can trigger at most one search and the existing remote model-message
 hourly limit also caps live-search requests.
 
+News PDF requests use a stricter host-owned path. Say “get today’s news and send me a nice PDF” or
+use `/news-pdf [public topic]`. Kairo first returns a `N-...` approval code showing the exact date,
+scope, one-search/five-source limit, PDF limits, retention, and this Telegram chat as the fixed
+destination. No search, model call, file write, or document send happens until you return that exact
+`/approve N-...` code. Kairo then performs one public search, renders the results locally as inert
+text (including Korean), saves the PDF under Kairo Artifacts, and sends it with Telegram’s document
+transport. Search text never becomes instructions and the general Telegram model receives no PDF,
+filesystem, or send tool. Use `/jobs` for `N<ID>` state, `/approvals` for a fresh pending code, and
+`/cancel N<ID>` before delivery. Kairo will not automatically retry an ambiguous send, because doing
+so could deliver a duplicate. This path permits at most three new requests per hour and prepares one
+brief at a time.
+
 Remote model replies use plain conversational text—normally one short paragraph of one to three
 sentences, without Markdown headings or bold markers. Weather answers lead with the useful summary
 instead of listing every available metric. Ask “give me the detailed forecast” when you want the

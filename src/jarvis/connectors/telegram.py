@@ -11,6 +11,7 @@ This module owns the low-level send used both by ``jarvis connect telegram --tes
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
@@ -20,6 +21,8 @@ from jarvis.observability import log_egress
 
 _TELEGRAM_API = "https://api.telegram.org"
 _MAX_MESSAGE_CHARS = 4096  # Telegram's hard limit
+_MAX_DOCUMENT_BYTES = 10_000_000
+_SAFE_PDF_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,119}\.pdf")
 
 
 async def send_telegram_message(
@@ -53,6 +56,57 @@ async def send_telegram_message(
                 "Telegram send failed — check TELEGRAM_BOT_TOKEN in .env and "
                 "connectors.telegram.chat_id in settings."
             ),
+        )
+
+
+async def send_telegram_document(
+    *,
+    bot_token: str,
+    chat_id: str,
+    filename: str,
+    content: bytes,
+    caption: str,
+    http: Any = None,
+    egress_category: str = "telegram_remote_document",
+) -> None:
+    """Send one host-produced, byte-bounded PDF to the fixed Telegram destination.
+
+    This intentionally accepts bytes rather than a path: callers cannot turn the connector into
+    an arbitrary-file sender.  The filename is ASCII/server-owned, the caption is plain text, and
+    logs contain only the egress category and destination type.
+    """
+    if not _SAFE_PDF_NAME.fullmatch(filename) or not filename.isascii():
+        raise ConnectorError("telegram", user_message="Telegram refused an unsafe PDF filename.")
+    if (
+        not content.startswith(b"%PDF-")
+        or b"%%EOF" not in content[-1_024:]
+        or not 1 <= len(content) <= _MAX_DOCUMENT_BYTES
+    ):
+        raise ConnectorError("telegram", user_message="Telegram refused an invalid PDF artifact.")
+    log_egress(category=egress_category, destination_type="telegram")
+    url = f"{_TELEGRAM_API}/bot{bot_token}/sendDocument"
+    data = {"chat_id": chat_id, "caption": caption[:1_024]}
+    files = {"document": (filename, content, "application/pdf")}
+    if http is not None:
+        response = await http.post(url, data=data, files=files)
+    else:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, data=data, files=files)
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    result = body.get("result") if isinstance(body, dict) else None
+    if (
+        response.status_code != 200
+        or not isinstance(body, dict)
+        or body.get("ok") is not True
+        or not isinstance(result, dict)
+        or not isinstance(result.get("message_id"), int)
+    ):
+        raise ConnectorError(
+            "telegram",
+            user_message="Telegram could not deliver the PDF. Check the bot configuration.",
         )
 
 

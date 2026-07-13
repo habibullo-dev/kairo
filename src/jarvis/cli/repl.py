@@ -17,6 +17,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
+from tzlocal import get_localzone_name
 
 from jarvis.actions import ConnectorWriteJournal, IntentStore
 from jarvis.agents import AgentRunStore, SubAgentService
@@ -61,6 +62,7 @@ from jarvis.remote import (
     compact_remote_model_reply,
 )
 from jarvis.remote.attachments import RemoteAttachment, RemoteAttachmentProcessor
+from jarvis.remote.news_brief import NewsBriefRequest, NewsBriefService, NewsBriefStore
 from jarvis.remote.operator import (
     RemoteLiveSearchTool,
     RemoteOperatorService,
@@ -73,6 +75,7 @@ from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
 from jarvis.scheduler.service import TaskService
 from jarvis.scheduler.store import Task, TaskStore
 from jarvis.tools import Permission, ScopedRegistry, ToolContext, ToolExecutor, ToolRegistry
+from jarvis.tools.builtin.web import search_public_web
 from jarvis.voice import (
     PushToTalkListener,
     TerminalScreenApprover,
@@ -1131,6 +1134,7 @@ def _build_telegram_remote_control(
         return Permission.DENY
 
     operator_service: RemoteOperatorService | None = None
+    news_brief_service: NewsBriefService | None = None
     proposal_tool: RemoteProposalTool | None = None
     live_search_tool: RemoteLiveSearchTool | None = None
     remote_registry: object = ScopedRegistry(repl.registry, frozenset())
@@ -1151,6 +1155,43 @@ def _build_telegram_remote_control(
                     max_results=operator_config.live_web_search_max_results,
                 )
                 remote_tools.register(live_search_tool)
+                async def search_news(query: str, max_results: int):
+                    return await search_public_web(
+                        api_key=config.secrets.tavily_api_key,
+                        query=query,
+                        max_results=max_results,
+                    )
+
+                async def register_news_artifact(
+                    request: NewsBriefRequest, path: Path, content_hash: str
+                ) -> int | None:
+                    register = getattr(repl.artifacts, "register", None)
+                    if register is None:
+                        return None
+                    return await register(
+                        origin_type="telegram_news_brief",
+                        origin_id=str(request.id),
+                        kind="report",
+                        title=f"News brief - {request.local_date}",
+                        created_by="system",
+                        local_path=path,
+                        content_hash=content_hash,
+                        sensitivity="low",
+                        provenance_class="untrusted_external_content",
+                        labels=["telegram", "news", "pdf"],
+                    )
+
+                news_brief_service = NewsBriefService(
+                    store=NewsBriefStore(store.db, store.lock),
+                    search=search_news,
+                    artifact_dir=config.data_dir / "artifacts" / "telegram-news",
+                    scope=operator_config.default_live_location or "Global",
+                    timezone=get_localzone_name(),
+                    destination_chat_id=remote.allowed_chat_id,
+                    proposal_ttl_minutes=operator_config.proposal_ttl_minutes,
+                    approval_ttl_minutes=operator_config.approval_ttl_minutes,
+                    register_artifact=register_news_artifact,
+                )
         if repl.tasks is None or runner is None or repl.projects is None:
             console.print(
                 "[yellow]Telegram Remote Operator needs the scheduler, runner, and projects; "
@@ -1291,6 +1332,60 @@ def _build_telegram_remote_control(
             )
         return compact_remote_model_reply(result.text)
 
+    async def approvals() -> str:
+        blocks: list[str] = []
+        if news_brief_service is not None:
+            news = await news_brief_service.approvals_text()
+            if not news.startswith("No pending"):
+                blocks.append(news)
+        if operator_service is not None:
+            operator = await operator_service.approvals_text()
+            if operator != "No pending remote approvals.":
+                blocks.append(operator)
+        return "\n\n---\n\n".join(blocks) if blocks else "No pending remote approvals."
+
+    async def remote_jobs() -> str:
+        blocks: list[str] = []
+        if news_brief_service is not None:
+            blocks.append(await news_brief_service.jobs_text())
+        if operator_service is not None:
+            blocks.append(await operator_service.jobs_text())
+        return "\n\n".join(blocks) if blocks else "No Telegram remote jobs yet."
+
+    async def resolve_remote(code: str, resolution: str) -> str:
+        if news_brief_service is not None and code.strip().upper().startswith("N-"):
+            result = await news_brief_service.resolve(
+                code, resolution="approve" if resolution == "approve" else "deny"
+            )
+            assert result is not None
+            return result
+        if operator_service is not None:
+            return await operator_service.resolve(
+                code, resolution="approve" if resolution == "approve" else "deny"
+            )
+        return "Invalid or expired approval code. Send /approvals for fresh pending codes."
+
+    async def cancel_remote(value: str) -> str:
+        if news_brief_service is not None and value.strip().upper().startswith("N"):
+            result = await news_brief_service.cancel(value)
+            if result is not None:
+                return result
+        if operator_service is not None:
+            return await operator_service.cancel(value)
+        return "Usage: /cancel <remote-job-id>"
+
+    async def start_remote_services() -> None:
+        if operator_service is not None:
+            await operator_service.start()
+        if news_brief_service is not None:
+            await news_brief_service.start()
+
+    async def stop_remote_services() -> None:
+        if news_brief_service is not None:
+            await news_brief_service.stop()
+        if operator_service is not None:
+            await operator_service.stop()
+
     controller = TelegramRemoteControl(
         bot_token=config.secrets.telegram_bot_token,
         config=remote,
@@ -1303,25 +1398,38 @@ def _build_telegram_remote_control(
         chat_handler=chat,
         attachment_handler=attachment_chat if attachment_processor is not None else None,
         projects_handler=operator_service.projects_text if operator_service is not None else None,
-        jobs_handler=operator_service.jobs_text if operator_service is not None else None,
+        jobs_handler=(
+            remote_jobs if operator_service is not None or news_brief_service is not None else None
+        ),
         approvals_handler=(
-            operator_service.approvals_text if operator_service is not None else None
+            approvals if operator_service is not None or news_brief_service is not None else None
         ),
         operator_resolution_handler=(
-            (lambda code, resolution: operator_service.resolve(code, resolution=resolution))
-            if operator_service is not None
+            resolve_remote
+            if operator_service is not None or news_brief_service is not None
             else None
         ),
         operator_cancel_handler=(
-            operator_service.cancel if operator_service is not None else None
+            cancel_remote
+            if operator_service is not None or news_brief_service is not None
+            else None
+        ),
+        news_brief_handler=(
+            news_brief_service.propose if news_brief_service is not None else None
         ),
         operator_startup_handler=(
-            operator_service.start if operator_service is not None else None
+            start_remote_services
+            if operator_service is not None or news_brief_service is not None
+            else None
         ),
         operator_shutdown_handler=(
-            operator_service.stop if operator_service is not None else None
+            stop_remote_services
+            if operator_service is not None or news_brief_service is not None
+            else None
         ),
     )
+    if news_brief_service is not None:
+        news_brief_service.set_senders(text=controller.notify, document=controller.notify_document)
     if operator_service is not None and runner is not None:
         operator_service.set_sender(controller.notify)
         prior_task_notify = runner.task_notify

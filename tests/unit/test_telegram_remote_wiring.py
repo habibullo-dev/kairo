@@ -65,6 +65,76 @@ def _test_png() -> bytes:
     return output.getvalue()
 
 
+async def test_news_pdf_request_routes_to_host_approval_before_search_or_model(
+    tmp_path: Path,
+) -> None:
+    config = load_config(root=tmp_path, env_file=None)
+    config.connectors.telegram.remote_control.enabled = True
+    config.connectors.telegram.remote_control.allowed_chat_id = "123"
+    config.connectors.telegram.remote_control.operator.enabled = True
+    config.connectors.telegram.remote_control.operator.live_web_search_enabled = True
+    config.connectors.telegram.remote_control.operator.default_live_location = (
+        "Seoul, South Korea"
+    )
+    config.secrets = config.secrets.model_copy(
+        update={"telegram_bot_token": "BOT-CANARY", "tavily_api_key": "TVLY-CANARY"}
+    )
+    db = await connect(tmp_path / "news-routing.db")
+    controller = None
+    try:
+        source = _WebSearch()
+        registry = ToolRegistry()
+        registry.register(source)
+        fake = FakeClient([])
+        repl = SimpleNamespace(
+            tasks=None,
+            projects=None,
+            artifacts=None,
+            turn_lock=asyncio.Lock(),
+            registry=registry,
+            client=fake,
+            executor=ToolExecutor(
+                timeout=config.limits.tool_timeout_seconds,
+                max_result_chars=config.limits.max_tool_result_chars,
+            ),
+            gate=object(),
+            cost_ledger=SimpleNamespace(pricing=load_pricing(Path("config/pricing.yaml"))),
+            connectors=None,
+        )
+        controller = _build_telegram_remote_control(
+            config,
+            repl=repl,
+            store=SessionStore(db),
+            runner=None,
+            console=Console(file=io.StringIO()),
+        )
+        assert controller is not None
+        http = _TelegramHttp(
+            [
+                [],
+                [
+                    _update(
+                        1,
+                        text="get latest news for today and send me one nice pdf of those",
+                    )
+                ],
+            ]
+        )
+        await controller.poll_once(http=http)
+        assert await controller.poll_once(http=http) == 1
+
+        assert fake.calls == []
+        assert source.calls == []
+        preview = http.sent[-1]["text"]
+        assert "News brief N1" in preview
+        assert re.search(r"Approve: /approve N-[0-9A-F]{12}", preview)
+        assert "Nothing is searched, created, or sent before approval." in preview
+    finally:
+        if controller is not None:
+            await controller.stop()
+        await db.close()
+
+
 async def test_remote_wiring_uses_utility_model_and_exposes_no_tools_or_history(
     tmp_path: Path,
 ) -> None:

@@ -28,7 +28,7 @@ import httpx
 
 from jarvis.config import TelegramRemoteControlConfig
 from jarvis.connectors.base import ConnectorError
-from jarvis.connectors.telegram import send_telegram_message
+from jarvis.connectors.telegram import send_telegram_document, send_telegram_message
 from jarvis.observability import get_logger
 from jarvis.remote.attachments import RemoteAttachment, RemoteAttachmentError
 
@@ -478,6 +478,7 @@ InboxHandler = Callable[[InboxRequest], Awaitable[InboxHandlerResult]]
 AttachmentHandler = Callable[[RemoteAttachment, bytes, str], Awaitable[str]]
 OperatorResolutionHandler = Callable[[str, str], Awaitable[str]]
 OperatorCancelHandler = Callable[[str], Awaitable[str]]
+NewsBriefHandler = Callable[[str], Awaitable[str | None]]
 LifecycleHandler = Callable[[], Awaitable[None]]
 
 
@@ -502,6 +503,7 @@ class TelegramRemoteControl:
         approvals_handler: ReplyHandler | None = None,
         operator_resolution_handler: OperatorResolutionHandler | None = None,
         operator_cancel_handler: OperatorCancelHandler | None = None,
+        news_brief_handler: NewsBriefHandler | None = None,
         operator_startup_handler: LifecycleHandler | None = None,
         operator_shutdown_handler: LifecycleHandler | None = None,
         http: Any = None,
@@ -527,6 +529,7 @@ class TelegramRemoteControl:
         self._approvals_handler = approvals_handler
         self._operator_resolution_handler = operator_resolution_handler
         self._operator_cancel_handler = operator_cancel_handler
+        self._news_brief_handler = news_brief_handler
         self._operator_startup_handler = operator_startup_handler
         self._operator_shutdown_handler = operator_shutdown_handler
         self._http = http
@@ -602,6 +605,18 @@ class TelegramRemoteControl:
         """Send a host-generated Remote Operator milestone to the same allowlisted owner."""
         async with httpx.AsyncClient(timeout=30.0) as http:
             await self._send(text, http=http)
+
+    async def notify_document(self, filename: str, content: bytes, caption: str) -> None:
+        """Deliver one already-validated host PDF to this controller's allowlisted owner."""
+        async with httpx.AsyncClient(timeout=60.0) as http:
+            await send_telegram_document(
+                bot_token=self._bot_token,
+                chat_id=self._config.allowed_chat_id,
+                filename=filename,
+                content=content,
+                caption=caption,
+                http=http,
+            )
 
     async def _fetch_updates(
         self, *, offset: int, http: Any, timeout_seconds: int | None = None
@@ -838,6 +853,7 @@ class TelegramRemoteControl:
                 "/approvals — refresh pending approval codes\n"
                 "/approve CODE or /deny CODE — resolve one exact proposal/tool call\n"
                 "/cancel ID — cancel one Remote Operator job\n"
+                "/news-pdf [topic] — propose a sourced PDF news brief\n"
                 "Natural action requests — prepare a proposal for approval\n"
                 if self._operator_resolution_handler is not None
                 else ""
@@ -911,6 +927,9 @@ class TelegramRemoteControl:
             )
         if command == "/cancel" and self._operator_cancel_handler is not None:
             return await self._operator_cancel_handler(argument)
+        if command == "/news-pdf" and self._news_brief_handler is not None:
+            proposal = await self._news_brief_handler(stripped)
+            return proposal or "Usage: /news-pdf [public topic]"
         if command.startswith("/"):
             return "Unknown command. Send /help for the safe remote-control commands."
         if not stripped:
@@ -921,6 +940,10 @@ class TelegramRemoteControl:
                 f"({self._config.max_input_chars} characters max). "
                 "Please shorten it and resend."
             )
+        if self._news_brief_handler is not None:
+            proposal = await self._news_brief_handler(text)
+            if proposal is not None:
+                return proposal
         if not await self._store.reserve_model_message(
             max_per_hour=self._config.max_model_messages_per_hour
         ):
