@@ -78,6 +78,7 @@ connectors:
     remote_control:
       enabled: true
       allowed_chat_id: '123456789'
+      reference_context_ttl_minutes: 30
       attachments:
         enabled: true
         max_download_bytes: 20000000
@@ -108,7 +109,11 @@ skills-authoring workflow.
 Add plain search terms after `/inbox` to filter today's view, for example `/inbox YGP`, or ask
 naturally: “Get only YGP related emails.” Kairo extracts the meaningful terms and applies them
 inside the same local-day boundary; the email text remains display-only and never enters the
-remote model or action loop.
+remote model or action loop. The resulting numbered list creates a 30-minute, memory-only typed
+reference. An immediate “summarize each of them” locally extracts a bounded summary from the exact
+displayed messages; “show number 2” expands one. Message IDs and bodies are never persisted or sent
+to the remote model. A different successful turn, `/clear`, restart, or expiry removes the
+reference, so an old “them” cannot silently bind to newer data.
 
 With `attachments.enabled: true`, that same private chat can send one photo, supported document,
 voice note, or audio file per message. Add a caption such as “What is wrong in this screenshot?” or

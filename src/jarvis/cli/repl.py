@@ -54,6 +54,8 @@ from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
 from jarvis.projects import ProjectService, ProjectStore
 from jarvis.remote import (
+    InboxHandlerResult,
+    InboxRequest,
     TelegramRemoteControl,
     TelegramRemoteControlStore,
     compact_remote_model_reply,
@@ -66,7 +68,7 @@ from jarvis.remote.operator import (
     RemoteProposalGate,
     RemoteProposalTool,
 )
-from jarvis.remote.workspace import calendar_status, inbox_status, inbox_today_summary
+from jarvis.remote.workspace import calendar_status, inbox_status, inbox_today_view
 from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
 from jarvis.scheduler.service import TaskService
 from jarvis.scheduler.store import Task, TaskStore
@@ -1100,8 +1102,15 @@ def _build_telegram_remote_control(
         active = await repl.tasks.store.list()
         return f"Tasks: {len(active)} active scheduled task(s)."
 
-    async def inbox(filter_terms: str) -> str:
-        return await inbox_today_summary(repl.connectors, filter_terms=filter_terms)
+    async def inbox(request: InboxRequest) -> InboxHandlerResult:
+        result = await inbox_today_view(
+            repl.connectors,
+            filter_terms=request.filter_terms,
+            mode=request.mode,
+            item_index=request.item_index,
+            message_ids=request.message_ids,
+        )
+        return InboxHandlerResult(text=result.text, message_ids=result.message_ids)
 
     async def calendar() -> str:
         return await calendar_status(

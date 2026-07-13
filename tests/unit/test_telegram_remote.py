@@ -12,10 +12,13 @@ import httpx
 from jarvis.config import TelegramRemoteControlConfig
 from jarvis.persistence.db import connect
 from jarvis.remote.telegram import (
+    InboxHandlerResult,
+    InboxRequest,
     TelegramRemoteControl,
     TelegramRemoteControlStore,
     compact_remote_model_reply,
     natural_inbox_filter,
+    natural_inbox_followup,
     natural_remote_read_command,
     parse_telegram_update,
 )
@@ -30,6 +33,10 @@ def _update(
     }
 
 
+async def _fixed_inbox(handler) -> InboxHandlerResult:
+    return InboxHandlerResult(text=await handler())
+
+
 @dataclass
 class _TelegramHttp:
     batches: list[list[object]]
@@ -37,6 +44,7 @@ class _TelegramHttp:
     requests: list[tuple[str, dict[str, str]]] = field(default_factory=list)
     sent: list[dict[str, str]] = field(default_factory=list)
     downloaded: list[str] = field(default_factory=list)
+    fail_sends: int = 0
 
     async def post(self, url: str, data: dict[str, str]) -> httpx.Response:
         self.requests.append((url, data))
@@ -51,6 +59,9 @@ class _TelegramHttp:
                 200, json={"ok": True, "result": {"file_path": f"attachments/{file_id}"}}
             )
         assert url.endswith("/sendMessage")
+        if self.fail_sends:
+            self.fail_sends -= 1
+            return httpx.Response(500, json={"ok": False})
         self.sent.append(data)
         return httpx.Response(200, json={"ok": True, "result": {}})
 
@@ -69,6 +80,8 @@ async def _controller(
     max_per_hour: int = 20,
     max_read_per_hour: int = 60,
     max_input_chars: int = 2_000,
+    clock=None,
+    fail_sends: int = 0,
 ) -> tuple[TelegramRemoteControl, _TelegramHttp, dict[str, list[str]], object]:
     db = await connect(tmp_path / "remote.db")
     calls: dict[str, list[str]] = {
@@ -88,9 +101,11 @@ async def _controller(
         calls["tasks"].append("called")
         return "TASKS"
 
-    async def inbox(filter_terms: str) -> str:
-        calls["inbox"].append(filter_terms)
-        return "INBOX"
+    async def inbox(request: InboxRequest) -> InboxHandlerResult:
+        calls["inbox"].append(f"{request.mode}:{request.filter_terms}")
+        ids = request.message_ids or ("mail-1", "mail-2")
+        text = "INBOX" if request.mode == "list" else "SUMMARIES"
+        return InboxHandlerResult(text=text, message_ids=ids)
 
     async def calendar() -> str:
         calls["calendar"].append("called")
@@ -104,7 +119,7 @@ async def _controller(
         calls["chat"].append(text)
         return f"reply: {text}"
 
-    http = _TelegramHttp(batches)
+    http = _TelegramHttp(batches, fail_sends=fail_sends)
     controller = TelegramRemoteControl(
         bot_token="BOT-CANARY",
         config=TelegramRemoteControlConfig(
@@ -122,6 +137,7 @@ async def _controller(
         briefing_handler=briefing,
         chat_handler=chat,
         http=http,
+        clock=clock,
     )
     return controller, http, calls, db
 
@@ -224,7 +240,7 @@ async def test_allowlisted_attachment_downloads_once_and_reaches_handler(tmp_pat
         store=store,
         status_handler=fixed,
         tasks_handler=fixed,
-        inbox_handler=lambda _query: fixed(),
+        inbox_handler=lambda _request: _fixed_inbox(fixed),
         calendar_handler=fixed,
         briefing_handler=fixed,
         chat_handler=chat,
@@ -267,7 +283,7 @@ async def test_unknown_chat_attachment_is_never_downloaded(tmp_path: Path) -> No
         store=store,
         status_handler=fixed,
         tasks_handler=fixed,
-        inbox_handler=lambda _query: fixed(),
+        inbox_handler=lambda _request: _fixed_inbox(fixed),
         calendar_handler=fixed,
         briefing_handler=fixed,
         chat_handler=chat,
@@ -305,6 +321,8 @@ def test_natural_read_intents_route_to_verified_host_commands() -> None:
     assert natural_inbox_filter("Get only YGP related emails") == "YGP"
     assert natural_inbox_filter("Show emails from DaeYoung PARK") == "DaeYoung PARK"
     assert natural_inbox_filter("Gimme summary of my todays inbox emails") == ""
+    assert natural_inbox_followup("Gimme summary for each of them") is not None
+    assert natural_inbox_followup("Reply to each of them") is None
     assert natural_remote_read_command("What meetings are on my calendar today?") == "/calendar"
     assert natural_remote_read_command("What time does my next meeting start?") == "/calendar"
     assert natural_remote_read_command("Show my registered projects") == "/projects"
@@ -339,7 +357,7 @@ async def test_natural_inbox_question_bypasses_stateless_model_chat(tmp_path: Pa
     try:
         await controller.poll_once()
         assert await controller.poll_once() == 1
-        assert calls["inbox"] == [""]
+        assert calls["inbox"] == ["list:"]
         assert calls["chat"] == []
         assert [message["text"] for message in http.sent] == ["INBOX"]
     finally:
@@ -354,9 +372,98 @@ async def test_natural_filtered_inbox_question_passes_only_search_terms(tmp_path
     try:
         await controller.poll_once()
         assert await controller.poll_once() == 1
-        assert calls["inbox"] == ["YGP"]
+        assert calls["inbox"] == ["list:YGP"]
         assert calls["chat"] == []
         assert [message["text"] for message in http.sent] == ["INBOX"]
+    finally:
+        await db.close()
+
+
+async def test_inbox_pronoun_followup_uses_exact_active_selection_without_model(
+    tmp_path: Path,
+) -> None:
+    controller, http, calls, db = await _controller(
+        tmp_path,
+        batches=[
+            [],
+            [_update(1, text="Get only YGP related emails")],
+            [_update(2, text="Gimme summary for each of them")],
+        ],
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 1
+        assert await controller.poll_once() == 1
+        assert calls["inbox"] == ["list:YGP", "summarize_each:YGP"]
+        assert calls["chat"] == []
+        assert [message["text"] for message in http.sent] == ["INBOX", "SUMMARIES"]
+    finally:
+        await db.close()
+
+
+async def test_inbox_followup_without_context_is_deterministic_and_model_free(
+    tmp_path: Path,
+) -> None:
+    controller, http, calls, db = await _controller(
+        tmp_path,
+        batches=[[], [_update(1, text="Gimme summary for each of them")]],
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 1
+        assert calls["inbox"] == [] and calls["chat"] == []
+        assert "selection is no longer active" in http.sent[-1]["text"]
+    finally:
+        await db.close()
+
+
+async def test_inbox_reference_expires_and_unrelated_turn_clears_it(tmp_path: Path) -> None:
+    now = [dt.datetime(2026, 7, 13, 9, 0, tzinfo=dt.UTC)]
+    controller, http, calls, db = await _controller(
+        tmp_path,
+        clock=lambda: now[0],
+        batches=[
+            [],
+            [_update(1, text="/inbox YGP")],
+            [_update(2, text="/status")],
+            [_update(3, text="summarize each of them")],
+            [_update(4, text="/inbox YGP")],
+            [_update(5, text="summarize each of them")],
+        ],
+    )
+    try:
+        await controller.poll_once()
+        await controller.poll_once()
+        await controller.poll_once()  # successful unrelated response clears adjacency
+        await controller.poll_once()
+        assert calls["inbox"] == ["list:YGP"]
+        assert "selection is no longer active" in http.sent[-1]["text"]
+
+        await controller.poll_once()
+        now[0] += dt.timedelta(minutes=31)
+        await controller.poll_once()
+        assert calls["inbox"] == ["list:YGP", "list:YGP"]
+        assert "selection is no longer active" in http.sent[-1]["text"]
+    finally:
+        await db.close()
+
+
+async def test_failed_inbox_delivery_does_not_commit_unseen_reference(tmp_path: Path) -> None:
+    controller, http, calls, db = await _controller(
+        tmp_path,
+        fail_sends=1,
+        batches=[
+            [],
+            [_update(1, text="/inbox YGP")],
+            [_update(2, text="summarize each of them")],
+        ],
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 0
+        assert await controller.poll_once() == 1
+        assert calls["inbox"] == ["list:YGP"]
+        assert "selection is no longer active" in http.sent[-1]["text"]
     finally:
         await db.close()
 
@@ -524,7 +631,7 @@ async def test_workspace_commands_are_deterministic_and_do_not_reach_remote_chat
     try:
         await controller.poll_once()
         assert await controller.poll_once() == 3
-        assert calls["inbox"] == [""]
+        assert calls["inbox"] == ["list:"]
         assert calls["calendar"] == ["called"]
         assert calls["briefing"] == ["called"]
         assert calls["chat"] == []
@@ -543,7 +650,7 @@ async def test_workspace_commands_have_a_separate_hourly_limit(tmp_path: Path) -
         await controller.poll_once()
         await controller.poll_once()
         await controller.poll_once()
-        assert calls["inbox"] == [""]
+        assert calls["inbox"] == ["list:"]
         assert calls["calendar"] == []
         assert [message["text"] for message in http.sent] == [
             "INBOX",
@@ -613,7 +720,7 @@ async def test_operator_commands_are_host_routed_and_never_reach_model_chat(
         store=TelegramRemoteControlStore(db, asyncio.Lock()),
         status_handler=lambda: fixed("status"),
         tasks_handler=lambda: fixed("tasks"),
-        inbox_handler=lambda _query: fixed("inbox"),
+        inbox_handler=lambda _request: _fixed_inbox(lambda: fixed("inbox")),
         calendar_handler=lambda: fixed("calendar"),
         briefing_handler=lambda: fixed("briefing"),
         chat_handler=chat,
@@ -668,7 +775,7 @@ async def test_operator_lifecycle_stops_even_when_poller_was_never_started(
         store=TelegramRemoteControlStore(db, asyncio.Lock()),
         status_handler=reply,
         tasks_handler=reply,
-        inbox_handler=lambda _query: reply(),
+        inbox_handler=lambda _request: _fixed_inbox(reply),
         calendar_handler=reply,
         briefing_handler=reply,
         chat_handler=chat,

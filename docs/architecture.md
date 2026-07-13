@@ -361,6 +361,16 @@ gate layer: per-turn taint in `AgentLoop` (private read ⇒ egress ALLOW→non-p
 DENY, `glob`/`list_dir` redaction). `observability/egress.py`: the `log_egress` "what left the
 box" ledger (category + destination type only).
 
+**Telegram typed reference context.** Remote chat's general model loop remains stateless and has
+no connector access. Host-owned inbox reads return a rendered reply plus at most eight ordered
+Gmail IDs. Only after Telegram successfully delivers that numbered list does the controller place
+those IDs and the filter in one RAM-only, 30-minute reference slot. A narrow action-rejecting
+resolver maps adjacent phrases such as “summarize each of them” or “show number 2” to the exact
+displayed IDs. The workspace helper fetches only those bodies, caps each/aggregate input, removes
+quoted history and links, and produces local extractive text; nothing enters a model, tool,
+proposal, approval, log, or database. A new list replaces the slot; unrelated successful turns,
+`/clear`, stop/restart, and expiry clear it. Failed delivery never commits an unseen selection.
+
 **`digest/`** — the Daily Digest. `builder.py`: fail-soft collectors (schedule/email/repo/tasks/
 kb, each `ok|degraded|failed`) + one **tool-less** `models.utility` summarize; UI/DB-first
 delivery then best-effort notifiers; `ensure_digest_task` (host-created only). `store.py`:

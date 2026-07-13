@@ -413,6 +413,7 @@ class TelegramRemoteControlConfig(BaseModel):
     max_model_messages_per_hour: int = Field(default=20, ge=1, le=100)
     max_read_requests_per_hour: int = Field(default=60, ge=1, le=500)
     max_input_chars: int = Field(default=2_000, ge=1, le=4_000)
+    reference_context_ttl_minutes: int = Field(default=30, ge=1, le=120)
     attachments: TelegramRemoteAttachmentsConfig = Field(
         default_factory=TelegramRemoteAttachmentsConfig
     )

@@ -21,7 +21,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 import aiosqlite
 import httpx
@@ -116,6 +116,83 @@ def natural_inbox_filter(text: str) -> str:
     value = _INBOX_FILTER_FILLER.sub(" ", text)
     value = re.sub(r"[^\w@.+-]+", " ", value, flags=re.UNICODE)
     return " ".join(value.split())[:160]
+
+
+InboxReadMode = Literal["list", "summarize_each", "detail"]
+
+
+@dataclass(frozen=True)
+class InboxRequest:
+    """One host-owned inbox read; never a model tool request or action authorization."""
+
+    filter_terms: str = ""
+    mode: InboxReadMode = "list"
+    item_index: int | None = None
+    message_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class InboxHandlerResult:
+    text: str
+    message_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class InboxReferenceContext:
+    """Non-sensitive reference to the most recent inbox view."""
+
+    filter_terms: str
+    message_ids: tuple[str, ...]
+    created_at: dt.datetime
+
+
+@dataclass(frozen=True)
+class InboxFollowup:
+    mode: Literal["summarize_each", "detail"]
+    item_index: int | None = None
+
+
+_ORDINALS = {
+    "one": 1,
+    "first": 1,
+    "two": 2,
+    "second": 2,
+    "three": 3,
+    "third": 3,
+    "four": 4,
+    "fourth": 4,
+    "five": 5,
+    "fifth": 5,
+    "six": 6,
+    "sixth": 6,
+    "seven": 7,
+    "seventh": 7,
+    "eight": 8,
+    "eighth": 8,
+}
+
+
+def natural_inbox_followup(text: str) -> InboxFollowup | None:
+    """Resolve safe read-only pronoun/ordinal follow-ups against a typed inbox context."""
+    value = re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
+    if not value or _ACTION_REQUEST.search(value):
+        return None
+    if re.search(r"\b(?:summarize|summary)\b", value) and re.search(
+        r"\b(?:all|each|emails?|messages?|ones|them|these|those)\b", value
+    ):
+        return InboxFollowup(mode="summarize_each")
+    if not re.search(r"\b(?:about|detail|more|read|show|summarize|summary|what)\b", value):
+        return None
+    match = re.search(
+        r"\b(?:number\s+)?(8|7|6|5|4|3|2|1|one|first|two|second|three|third|"
+        r"four|fourth|five|fifth|six|sixth|seven|seventh|eight|eighth)\b",
+        value,
+    )
+    if match is None:
+        return None
+    token = match.group(1)
+    item_index = int(token) if token.isdigit() else _ORDINALS[token]
+    return InboxFollowup(mode="detail", item_index=item_index)
 
 
 def compact_remote_model_reply(text: str, *, max_chars: int = 600) -> str:
@@ -397,7 +474,7 @@ class TelegramRemoteControlStore:
 
 ReplyHandler = Callable[[], Awaitable[str]]
 ChatHandler = Callable[[str], Awaitable[str]]
-InboxHandler = Callable[[str], Awaitable[str]]
+InboxHandler = Callable[[InboxRequest], Awaitable[InboxHandlerResult]]
 AttachmentHandler = Callable[[RemoteAttachment, bytes, str], Awaitable[str]]
 OperatorResolutionHandler = Callable[[str, str], Awaitable[str]]
 OperatorCancelHandler = Callable[[str], Awaitable[str]]
@@ -429,6 +506,7 @@ class TelegramRemoteControl:
         operator_shutdown_handler: LifecycleHandler | None = None,
         http: Any = None,
         log: Any = None,
+        clock: Callable[[], dt.datetime] | None = None,
     ) -> None:
         if not bot_token:
             raise ValueError("Telegram remote control requires a bot token")
@@ -453,7 +531,45 @@ class TelegramRemoteControl:
         self._operator_shutdown_handler = operator_shutdown_handler
         self._http = http
         self._log = log or get_logger("jarvis.remote.telegram")
+        self._clock = clock or (lambda: dt.datetime.now(dt.UTC))
+        self._inbox_context: InboxReferenceContext | None = None
+        self._pending_context_update = False
+        self._pending_inbox_context: InboxReferenceContext | None = None
         self._task: asyncio.Task[None] | None = None
+
+    def _active_inbox_context(self) -> InboxReferenceContext | None:
+        context = self._inbox_context
+        if context is None:
+            return None
+        now = self._clock()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=dt.UTC)
+        created = context.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=dt.UTC)
+        if now - created > dt.timedelta(minutes=self._config.reference_context_ttl_minutes):
+            self._inbox_context = None
+            return None
+        return context
+
+    def _begin_reference_update(self) -> None:
+        # An unrelated successfully-delivered owner turn clears adjacency by default.
+        self._pending_context_update = True
+        self._pending_inbox_context = None
+
+    def _queue_inbox_context(self, context: InboxReferenceContext | None) -> None:
+        self._pending_context_update = True
+        self._pending_inbox_context = context
+
+    def _commit_reference_update(self) -> None:
+        if self._pending_context_update:
+            self._inbox_context = self._pending_inbox_context
+        self._pending_context_update = False
+        self._pending_inbox_context = None
+
+    def _discard_reference_update(self) -> None:
+        self._pending_context_update = False
+        self._pending_inbox_context = None
 
     @property
     def running(self) -> bool:
@@ -472,6 +588,8 @@ class TelegramRemoteControl:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        self._inbox_context = None
+        self._discard_reference_update()
         if self._operator_shutdown_handler is not None:
             await self._operator_shutdown_handler()
 
@@ -642,12 +760,14 @@ class TelegramRemoteControl:
                 or message.chat_id != self._config.allowed_chat_id
             ):
                 continue  # Never acknowledge unknown chats; it would reveal a live control bot.
+            self._begin_reference_update()
             try:
                 if message.attachment is None:
                     reply = await self._reply_for(message.text)
                 else:
                     reply = await self._reply_for_attachment(message, http=client)
                 await self._send(reply, http=client)
+                self._commit_reference_update()
                 handled += 1
             except asyncio.CancelledError:
                 raise
@@ -657,6 +777,8 @@ class TelegramRemoteControl:
                     await self._send(
                         "Kairo could not answer that message. Please try again.", http=client
                     )
+            finally:
+                self._discard_reference_update()
         return handled
 
     async def _reply_for_attachment(self, message: TelegramRemoteMessage, *, http: Any) -> str:
@@ -684,12 +806,31 @@ class TelegramRemoteControl:
         parts = stripped.split(maxsplit=1)
         command = parts[0].lower().split("@", 1)[0] if parts else ""
         argument = parts[1].strip() if len(parts) > 1 else ""
-        inbox_filter = argument
+        inbox_request = InboxRequest(filter_terms=argument)
+        reference_created_at = self._clock()
         if command and not command.startswith("/"):
-            natural_command = natural_remote_read_command(stripped)
-            command = natural_command or command
-            if natural_command == "/inbox":
-                inbox_filter = natural_inbox_filter(stripped)
+            followup = natural_inbox_followup(stripped)
+            if followup is not None:
+                context = self._active_inbox_context()
+                if context is None:
+                    return (
+                        "That inbox selection is no longer active. Ask for the inbox/filter again, "
+                        "then refer to those results within "
+                        f"{self._config.reference_context_ttl_minutes} minutes."
+                    )
+                command = "/inbox"
+                reference_created_at = context.created_at
+                inbox_request = InboxRequest(
+                    filter_terms=context.filter_terms,
+                    mode=followup.mode,
+                    item_index=followup.item_index,
+                    message_ids=context.message_ids,
+                )
+            else:
+                natural_command = natural_remote_read_command(stripped)
+                command = natural_command or command
+                if natural_command == "/inbox":
+                    inbox_request = InboxRequest(filter_terms=natural_inbox_filter(stripped))
         if command in {"/start", "/help"}:
             operator_help = (
                 "\n/projects — registered project aliases\n"
@@ -706,6 +847,7 @@ class TelegramRemoteControl:
                 "/status — Kairo and scheduler state\n"
                 "/tasks — active task summary\n"
                 "/inbox [filter] — today's recent sender, subject, and snippet summary\n"
+                "/clear — forget the current Telegram reference selection\n"
                 "/calendar — next-24-hours count and next start time\n"
                 "/briefing — combined status, inbox, calendar, and task count\n"
                 "Photos/files/voice — attach one item with an optional question\n"
@@ -719,6 +861,9 @@ class TelegramRemoteControl:
             return await self._status_handler()
         if command == "/tasks":
             return await self._tasks_handler()
+        if command == "/clear":
+            self._inbox_context = None
+            return "Telegram reference context cleared."
         if command in {"/inbox", "/calendar", "/briefing"}:
             if not await self._store.reserve_read_request(
                 max_per_hour=self._config.max_read_requests_per_hour
@@ -726,9 +871,20 @@ class TelegramRemoteControl:
                 return (
                     "Remote workspace checks have reached their hourly limit. "
                     "/status and /tasks still work."
-                )
+            )
             if command == "/inbox":
-                return await self._inbox_handler(inbox_filter)
+                result = await self._inbox_handler(inbox_request)
+                if result.message_ids:
+                    self._queue_inbox_context(
+                        InboxReferenceContext(
+                            filter_terms=inbox_request.filter_terms,
+                            message_ids=result.message_ids,
+                            created_at=reference_created_at,
+                        )
+                    )
+                elif inbox_request.mode == "list":
+                    self._queue_inbox_context(None)
+                return result.text
             handlers = {"/calendar": self._calendar_handler, "/briefing": self._briefing_handler}
             return await handlers[command]()
         operator_reads = {

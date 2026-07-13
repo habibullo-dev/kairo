@@ -231,6 +231,7 @@ def test_connectors_config_defaults(tmp_path: Path) -> None:
     assert c.telegram.remote_control.enabled is False
     assert c.telegram.remote_control.allowed_chat_id == ""
     assert c.telegram.remote_control.max_read_requests_per_hour == 60
+    assert c.telegram.remote_control.reference_context_ttl_minutes == 30
     assert c.telegram.remote_control.attachments.enabled is False
     assert c.telegram.remote_control.attachments.max_download_bytes == 20_000_000
     assert c.telegram.remote_control.attachments.max_image_bytes == 5_000_000
