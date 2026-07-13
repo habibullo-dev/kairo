@@ -1007,7 +1007,10 @@ class TelegramRemoteControl:
         if command == "/cancel" and self._operator_cancel_handler is not None:
             return await self._operator_cancel_handler(argument)
         if command == "/news-pdf" and self._news_brief_handler is not None:
-            proposal = await self._news_brief_handler(stripped)
+            try:
+                proposal = await self._news_brief_handler(stripped)
+            except ValueError as exc:
+                return str(exc)
             return proposal or "Usage: /news-pdf [public topic]"
         if command.startswith("/"):
             return "Unknown command. Send /help for the safe remote-control commands."
@@ -1020,7 +1023,10 @@ class TelegramRemoteControl:
                 "Please shorten it and resend."
             )
         if self._news_brief_handler is not None:
-            proposal = await self._news_brief_handler(text)
+            try:
+                proposal = await self._news_brief_handler(text)
+            except ValueError as exc:
+                return str(exc)
             if proposal is not None:
                 return proposal
         if not await self._store.reserve_model_message(

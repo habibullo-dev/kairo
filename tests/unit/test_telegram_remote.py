@@ -85,6 +85,7 @@ async def _controller(
     conversation_max_chars: int = 6_000,
     clock=None,
     fail_sends: int = 0,
+    news_brief_handler=None,
 ) -> tuple[TelegramRemoteControl, _TelegramHttp, dict[str, list[str]], object]:
     db = await connect(tmp_path / "remote.db")
     calls: dict[str, list[str]] = {
@@ -142,6 +143,7 @@ async def _controller(
         calendar_handler=calendar,
         briefing_handler=briefing,
         chat_handler=chat,
+        news_brief_handler=news_brief_handler,
         http=http,
         clock=clock,
     )
@@ -800,6 +802,34 @@ async def test_workspace_commands_have_a_separate_hourly_limit(tmp_path: Path) -
             "Remote workspace checks have reached their hourly limit. "
             "/status and /tasks still work.",
         ]
+    finally:
+        await db.close()
+
+
+async def test_news_brief_refusals_are_returned_for_command_and_natural_request(
+    tmp_path: Path,
+) -> None:
+    refusal = "News briefs require a short public topic; no request was created."
+
+    async def refuse(_text: str) -> str | None:
+        raise ValueError(refusal)
+
+    controller, http, calls, db = await _controller(
+        tmp_path,
+        batches=[
+            [],
+            [
+                _update(1, text="/news-pdf http://private.example"),
+                _update(2, text="make a private URL news PDF"),
+            ],
+        ],
+        news_brief_handler=refuse,
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 2
+        assert [message["text"] for message in http.sent] == [refusal, refusal]
+        assert calls["chat"] == []
     finally:
         await db.close()
 
