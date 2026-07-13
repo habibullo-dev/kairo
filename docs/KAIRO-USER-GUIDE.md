@@ -106,6 +106,11 @@ fallback for questions such as “What is today’s weather?”; a location writ
 priority. Each Telegram message can trigger at most one search and the existing remote model-message
 hourly limit also caps live-search requests.
 
+Remote model replies use plain conversational text—normally one short paragraph of one to three
+sentences, without Markdown headings or bold markers. Weather answers lead with the useful summary
+instead of listing every available metric. Ask “give me the detailed forecast” when you want the
+long version; deterministic commands and approval previews retain their structured layouts.
+
 With `operator.enabled: true`, use `/projects` to see the aliases already registered in Kairo.
 Then speak naturally, for example:
 
