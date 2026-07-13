@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import SkillActivationConfig, SkillsConfig
+from jarvis.config import SkillActivationConfig, SkillsConfig, load_config
 from jarvis.core.prompts import SUBAGENT_GUIDANCE, build_system
 from jarvis.skills import MemberIdentity, SkillCatalog, SkillPackError
 
@@ -138,6 +138,37 @@ def test_active_pack_compiles_to_safe_stable_prompt_text(tmp_path: Path) -> None
 def test_shadow_records_the_same_manifest_without_injecting_text(tmp_path: Path) -> None:
     compiled = _catalog(tmp_path, mode="shadow", status="shadow").compile(_IDENTITY)
     assert compiled.text is None and compiled.manifest and compiled.token_estimate > 0
+
+
+def test_shipped_shadow_pilot_packs_are_pinned_and_metadata_only() -> None:
+    """The committed Stage-1 rollout may validate packs, but must not inject them yet."""
+    root = Path(__file__).parents[2]
+    config = load_config(root=root, env_file=None)
+    catalog = SkillCatalog(root, config.skills)
+    assert config.skills.mode == "shadow"
+
+    writer = catalog.compile(_IDENTITY)
+    architect = catalog.compile(
+        MemberIdentity(
+            team="backend",
+            member_id="architect",
+            title="Architect",
+            route_role="reviewer",
+            stage="council",
+        )
+    )
+
+    assert writer.text is None and architect.text is None
+    assert [entry["pack"] for entry in writer.manifest] == [
+        "core-engineering",
+        "backend-implementer",
+    ]
+    assert [entry["pack"] for entry in architect.manifest] == [
+        "core-engineering",
+        "architect-reviewer",
+    ]
+    assert writer.token_estimate <= 3000 and architect.token_estimate <= 3000
+    assert all("text" not in entry for entry in writer.manifest + architect.manifest)
 
 
 def test_active_mode_rejects_drafts_and_bad_hashes(tmp_path: Path) -> None:

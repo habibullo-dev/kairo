@@ -84,9 +84,19 @@ sub_agents:
   max_spawn_calls_per_turn: 8   # runaway/UX guard: cap spawn calls in one parent turn (not a safety bound)
 
 skills:
-  # Reviewed local role playbooks. OFF is byte-identical to the pre-Skill-Forge runtime.
-  mode: "off"
-  enabled: []
+  # Fable-authored pilot packs are in shadow: they are hash-validated and recorded in manifests,
+  # but inject no prompt text or authority. Active rollout needs the documented eval checkpoint.
+  mode: "shadow"
+  enabled:
+    - pack: core-engineering
+      version: 1.0.2
+      sha256: 71ce9f257b47d921061554686c5ded94bf8fc291f4d8ad3bb62529a87ea3ac5d
+    - pack: backend-implementer
+      version: 1.0.1
+      sha256: 186546ed2daeb36de0df86f54bd5cf72184345d99a34939f0964e00b35d48356
+    - pack: architect-reviewer
+      version: 1.0.1
+      sha256: 880049980b37c2edf5af21e61306b1d64898f0a565c56bb030fcdb4027094284
 
 modes:
   # Run modes (Phase 10): plan | approval | auto. Backend-enforced in the agent loop; never
