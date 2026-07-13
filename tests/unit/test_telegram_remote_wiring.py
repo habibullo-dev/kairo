@@ -109,6 +109,7 @@ async def test_remote_wiring_uses_utility_model_and_exposes_no_tools_or_history(
         assert call["max_tokens"] == 500
         assert "no direct execution authority" in call["system"]
         assert "ideally under 280 characters" in call["system"]
+        assert "work in this same Telegram chat" in call["system"]
         assert http.sent[0]["text"] == "Safe remote reply"
     finally:
         await db.close()
