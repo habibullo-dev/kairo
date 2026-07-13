@@ -1,85 +1,39 @@
-# Permission policy. Every tool call is gated by this before it runs.
-#
-# Per-tool decisions: allow (run silently) | ask (prompt the human) | deny (never).
-# Defaults are safe: reads are allowed; anything that writes, runs a shell, or
-# reaches the network asks first. "Always allow" at the prompt persists here.
-#
-# NOTE: this file may be rewritten when you choose "always allow" (comments are
-# not preserved on auto-persist).
-
 default: ask
-
 tools:
   read_file: allow
   list_dir: allow
   glob_search: allow
   write_file: ask
   run_shell: ask
-  # Network egress asks by default (the query/URL leaves the machine). Choose
-  # "always" at the prompt to persist an allow for the session and beyond.
-  web_search: ask
+  web_search: allow
   web_fetch: ask
-  # Long-term memory (Phase 2). recall is read-only (allow); remember ASKS on
-  # purpose — a model-visible memory write is a prompt-injection sink, so a human
-  # sees the full content before it's persisted. forget asks too.
   recall: allow
   remember: ask
   forget: ask
-  # Tasks & scheduling (Phase 3). list_tasks is read-only (allow). schedule_task
-  # ASKS on purpose — it is a *deferred-execution* injection sink (worse than
-  # remember: the payload eventually runs with tools), so a human sees the full
-  # payload + computed fire time before it's stored, and it is never "always"-able.
-  # cancel_task asks so the model can't silently drop your reminders.
   list_tasks: allow
   schedule_task: ask
   cancel_task: ask
-  # Knowledge base (Phase 4). query/lint are read-only (allow). ingest_source ASKS —
-  # it opens attacker-controlled bytes with our privileges AND persists content that
-  # is later retrieved into context, so a human approves the target (its `path` is
-  # gated by the sensitive-path floor like any read). write_wiki_page asks too.
   query_knowledge_base: allow
   lint_knowledge_base: allow
   ingest_source: ask
   write_wiki_page: ask
-  # Multi-agent delegation (Phase 6). spawn_agent ASKS and is never "always"-able:
-  # approving it opens a scoped execution channel (a child runs with tools), so the
-  # human sees the full prompt + tool scope each time. The child is doubly gated
-  # (SubAgentGate) and can't recurse or run unattended.
   spawn_agent: ask
-
 filesystem:
-  # Writes inside these dirs (relative to the project root, or absolute) may be
-  # auto-allowed if write_file is set to `allow`; writes outside always escalate
-  # to `ask`, never silently proceed.
   write_allowlist:
-    - .
-  # Dirs where the generic write_file is DENIED even though they're inside the
-  # allowlist: the knowledge base is provenance-managed, so pages/artifacts must be
-  # written via write_wiki_page / ingest_source (which track them), never a raw
-  # write_file that would bypass provenance. Denylist wins over the allowlist.
+  - .
   write_denylist:
-    - data/knowledge
-  # EXTRA fnmatch patterns that deny reads, on top of a built-in secret/key floor
-  # (in jarvis/paths.py: *.env, .ssh/*, *.pem/*.key, .aws/credentials, .npmrc,
-  # .git-credentials, etc.) that is ALWAYS on and cannot be disabled from here.
-  # Reads AND writes of those built-in patterns are denied outright. Add your own
-  # below, e.g. "*/private/*".
+  - data/knowledge
+  - config/skills
   read_denylist: []
-
 shell:
-  # Longest matching prefix wins, and must match at a token boundary. An `allow`
-  # rule is downgraded to `ask` if the command contains shell metacharacters
-  # (; | & ` $( ${ > < newline) — so an allowlisted prefix like `git status`
-  # can't smuggle a chained `; rm -rf` past the gate. A tool-level `deny` on
-  # run_shell overrides everything.
   rules:
-    - prefix: "git status"
-      decision: allow
-    - prefix: "git diff"
-      decision: allow
-    - prefix: "git log"
-      decision: allow
-    - prefix: "rm "
-      decision: ask
-    - prefix: "del "
-      decision: ask
+  - prefix: git status
+    decision: allow
+  - prefix: git diff
+    decision: allow
+  - prefix: git log
+    decision: allow
+  - prefix: 'rm '
+    decision: ask
+  - prefix: 'del '
+    decision: ask
