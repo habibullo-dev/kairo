@@ -22,6 +22,8 @@ def test_budget_banner_present_and_not_amber() -> None:
 def test_roi_aggregate_and_per_run() -> None:
     assert "/api/roi" in COSTS and "net_usd" in COSTS and "review_accepted" in COSTS
     assert "outcome_accounting" in COSTS and "Model-cost accounting" in COSTS
+    assert "estimate_accuracy" in COSTS and "Estimate calibration" in COSTS
+    assert "never changes pricing, routing, or budget limits automatically" in COSTS
 
 
 def test_all_dimensions_present() -> None:
@@ -49,3 +51,4 @@ def test_roi_route_is_get_only() -> None:
     assert '@app.get("/api/roi")' in SERVER
     assert '@app.post("/api/roi")' not in SERVER
     assert "orchestration_outcome_accounting" in SERVER
+    assert "orchestration_estimate_accuracy" in SERVER

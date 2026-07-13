@@ -61,6 +61,7 @@ from jarvis.ui.readmodels import (
     list_tasks,
     model_routes_status,
     office_overview,
+    orchestration_estimate_accuracy,
     orchestration_outcome_accounting,
     orchestration_roi,
     orchestration_run_detail,
@@ -1250,7 +1251,13 @@ def create_app(
             return _unavailable("roi")
         runs = await orchestration_roi(store, budgets, project_id=project_id)
         return JSONResponse(
-            {"roi": runs, "outcome_accounting": orchestration_outcome_accounting(runs)}
+            {
+                "roi": runs,
+                "outcome_accounting": orchestration_outcome_accounting(runs),
+                "estimate_accuracy": await orchestration_estimate_accuracy(
+                    store, project_id=project_id
+                ),
+            }
         )
 
     # --- Studio (orchestration): catalog + runs + estimate (all read-only) -------------

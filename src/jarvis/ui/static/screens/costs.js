@@ -82,6 +82,33 @@ function roiBlock(roi, hourly) {
       <tbody>${rows}</tbody></table></details>` : ""}</div>`;
 }
 
+function estimateAccuracyCard(calibration) {
+  if (!calibration) return "";
+  const ratio = (value) => value == null ? "—" : `${Math.round(value * 100)}%`;
+  const comparable = calibration.comparable_runs || 0;
+  const unavailable = (calibration.unknown_actual_cost_runs || 0)
+    + (calibration.missing_estimate_runs || 0)
+    + (calibration.zero_or_invalid_estimate_runs || 0);
+  const body = comparable
+    ? `<div class="cost-row" style="margin-bottom:10px">
+        <div class="metric"><div class="n">${comparable}</div><div class="l">comparable runs</div></div>
+        <div class="metric"><div class="n">${ratio(calibration.actual_to_estimate_ratio)}</div><div class="l">actual / estimate</div></div>
+        <div class="metric"><div class="n">${ratio(calibration.p50_actual_to_estimate_ratio)}</div><div class="l">p50 actual / estimate</div></div>
+        <div class="metric"><div class="n">${ratio(calibration.p95_actual_to_estimate_ratio)}</div><div class="l">p95 actual / estimate</div></div></div>
+      <div class="cost-row">
+        <div class="metric"><div class="n">${money(calibration.estimated_cost_usd)}</div><div class="l">estimated model cost</div></div>
+        <div class="metric"><div class="n">${money(calibration.actual_cost_usd)}</div><div class="l">actual model cost</div></div>
+        <div class="metric"><div class="n">${money(calibration.delta_usd)}</div><div class="l">actual − estimate</div></div>
+        <div class="metric"><div class="n">${calibration.underestimated_runs || 0} / ${calibration.overestimated_runs || 0}</div><div class="l">under / over-estimated</div></div></div>`
+    : `<div class="dim">No terminal runs with both a positive estimate and known actual model cost yet.</div>`;
+  const scope = calibration.terminal_runs || 0;
+  return `<details class="surface rise dim-section"><summary>Estimate calibration</summary>
+    <div class="dim" style="margin:10px 0">Read-only comparison of the most recent ${calibration.sample_limit || 0} runs. It never changes pricing, routing, or budget limits automatically.</div>
+    ${body}
+    <div class="dim" style="margin-top:10px">${scope} terminal run${scope === 1 ? "" : "s"} sampled; ${unavailable} excluded because the actual cost or a usable estimate was unavailable.</div>
+  </details>`;
+}
+
 // Context reuse (S7): prompt/context caching savings. Aggregate token counts + estimated savings
 // only — never prompt content. Empty until caching is enabled (all providers default off).
 function contextReuseCard(cr) {
@@ -186,6 +213,7 @@ export async function render(container, api) {
     ${budgetBanner(c.budget_warning, lim.confirm_above_usd)}
     <div class="cost-row rise">${metric(c.today, "Today")}${metric(c.week, "This week")}${metric(c.month, "This month")}</div>
     ${roiBlock(roi, c.hourly_rate_usd)}
+    ${estimateAccuracyCard(roi.estimate_accuracy)}
     ${primaryDims}
     ${c.by_project ? dimSection(c.by_model, "model", "By model") : ""}
     ${dimSection(c.by_provider, "provider", "By provider")}

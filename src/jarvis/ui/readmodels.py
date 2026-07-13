@@ -742,6 +742,68 @@ def orchestration_outcome_accounting(rows: list[dict]) -> dict:
     }
 
 
+def _calibration_percentile(values: list[float], fraction: float) -> float | None:
+    """Nearest-rank percentile for a small, append-only run sample."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    return round(ordered[math.ceil(fraction * len(ordered)) - 1], 4)
+
+
+async def orchestration_estimate_accuracy(
+    store: Any, *, project_id: int | None = None, limit: int = 200
+) -> dict:
+    """Read-only estimate calibration from terminal orchestration runs.
+
+    This deliberately measures historical model-cost accuracy only: it does not tune prices,
+    routing, or budgets. A row is comparable only with a known non-negative actual cost and a
+    positive estimate; unknown and zero estimates stay visible instead of becoming fake zeroes.
+    """
+    from jarvis.orchestration.store import TERMINAL
+
+    runs = await store.list(project_id=project_id, limit=limit)
+    terminal = [run for run in runs if run.status in TERMINAL]
+    comparable: list[tuple[float, float]] = []
+    unknown_actual = 0
+    missing_estimate = 0
+    zero_or_invalid_estimate = 0
+    for run in terminal:
+        estimated = run.estimated_cost_usd
+        actual = run.actual_cost_usd
+        if not isinstance(actual, (int, float)) or isinstance(actual, bool) or actual < 0:
+            unknown_actual += 1
+            continue
+        if not isinstance(estimated, (int, float)) or isinstance(estimated, bool):
+            missing_estimate += 1
+            continue
+        if estimated <= 0:
+            zero_or_invalid_estimate += 1
+            continue
+        comparable.append((float(estimated), float(actual)))
+
+    estimated_total = sum(estimate for estimate, _actual in comparable)
+    actual_total = sum(actual for _estimate, actual in comparable)
+    ratios = [actual / estimate for estimate, actual in comparable]
+    return {
+        "sample_limit": limit,
+        "terminal_runs": len(terminal),
+        "comparable_runs": len(comparable),
+        "unknown_actual_cost_runs": unknown_actual,
+        "missing_estimate_runs": missing_estimate,
+        "zero_or_invalid_estimate_runs": zero_or_invalid_estimate,
+        "estimated_cost_usd": round(estimated_total, 4),
+        "actual_cost_usd": round(actual_total, 4),
+        "delta_usd": round(actual_total - estimated_total, 4),
+        "actual_to_estimate_ratio": (
+            round(actual_total / estimated_total, 4) if estimated_total else None
+        ),
+        "p50_actual_to_estimate_ratio": _calibration_percentile(ratios, 0.50),
+        "p95_actual_to_estimate_ratio": _calibration_percentile(ratios, 0.95),
+        "underestimated_runs": sum(ratio > 1 for ratio in ratios),
+        "overestimated_runs": sum(ratio < 1 for ratio in ratios),
+    }
+
+
 async def orchestration_roi(
     store: Any, budgets: Any, *, project_id: int | None = None, limit: int = 20
 ) -> list[dict]:

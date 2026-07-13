@@ -154,6 +154,7 @@ def test_roi_arithmetic() -> None:
 
 async def test_orchestration_roi_read_model(tmp_path: Path) -> None:
     from jarvis.ui.readmodels import (
+        orchestration_estimate_accuracy,
         orchestration_outcome_accounting,
         orchestration_roi,
         orchestration_run_detail,
@@ -179,6 +180,56 @@ async def test_orchestration_roi_read_model(tmp_path: Path) -> None:
     detail = await orchestration_run_detail(store, None, rid, budgets=budgets)
     assert detail["roi"]["outcome"] == "review_accepted"
     assert detail["roi"]["net_usd"] == pytest.approx(73.5)
+    calibration = await orchestration_estimate_accuracy(store)
+    assert calibration["terminal_runs"] == 1
+    assert calibration["comparable_runs"] == 1
+    assert calibration["actual_to_estimate_ratio"] == pytest.approx(3.0)
+    assert calibration["delta_usd"] == pytest.approx(1.0)
+
+
+async def test_estimate_accuracy_exposes_unknown_and_unusable_samples(tmp_path: Path) -> None:
+    from jarvis.ui.readmodels import orchestration_estimate_accuracy
+
+    _db, _lock, store, first = await _seed(tmp_path)
+    await store.complete_run(first, status="ok", actual_cost_usd=1.5)
+    unknown = await store.begin_run(
+        project_id=1,
+        workflow="security_review",
+        title="unknown",
+        config={},
+        context_manifest=[],
+        estimated_cost_usd=1.0,
+        budget_usd=None,
+    )
+    zero = await store.begin_run(
+        project_id=1,
+        workflow="security_review",
+        title="zero",
+        config={},
+        context_manifest=[],
+        estimated_cost_usd=0.0,
+        budget_usd=None,
+    )
+    missing = await store.begin_run(
+        project_id=1,
+        workflow="security_review",
+        title="missing",
+        config={},
+        context_manifest=[],
+        estimated_cost_usd=None,
+        budget_usd=None,
+    )
+    await store.complete_run(unknown, status="error", actual_cost_usd=None)
+    await store.complete_run(zero, status="error", actual_cost_usd=0.25)
+    await store.complete_run(missing, status="error", actual_cost_usd=0.25)
+
+    calibration = await orchestration_estimate_accuracy(store)
+    assert calibration["terminal_runs"] == 4
+    assert calibration["comparable_runs"] == 1
+    assert calibration["unknown_actual_cost_runs"] == 1
+    assert calibration["zero_or_invalid_estimate_runs"] == 1
+    assert calibration["missing_estimate_runs"] == 1
+    assert calibration["p50_actual_to_estimate_ratio"] == pytest.approx(3.0)
 
 
 async def test_orchestration_roi_never_credits_nonaccepted_outcomes() -> None:
