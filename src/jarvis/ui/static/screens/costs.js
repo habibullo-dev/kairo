@@ -120,6 +120,22 @@ function modelRequestHealthCard(health) {
     <td style="text-align:right">${row.error_rate == null ? "—" : `${Math.round(row.error_rate * 10000) / 100}%`}</td>
     <td style="text-align:right">${latency(row.p50_completed_latency_ms)}</td>
     <td style="text-align:right">${latency(row.p95_completed_latency_ms)}</td></tr>`).join("");
+  const days = (health.by_day || []).map((row) => {
+    const day = row.totals || {};
+    return `<tr><td>${esc(String(row.day || "?"))}</td>
+      <td style="text-align:right">${day.attempts || 0}</td>
+      <td style="text-align:right">${day.failed_requests || 0}</td>
+      <td style="text-align:right">${day.error_rate == null ? "—" : `${Math.round(day.error_rate * 10000) / 100}%`}</td>
+      <td style="text-align:right">${latency(day.p50_completed_latency_ms)}</td>
+      <td style="text-align:right">${latency(day.p95_completed_latency_ms)}</td></tr>`;
+  }).join("");
+  const dayRoutes = (health.by_day || []).flatMap((day) => (day.by_provider_model || []).map((row) => `<tr>
+    <td>${esc(String(day.day || "?"))}</td><td>${esc(String(row.provider || "?"))}</td>
+    <td>${esc(String(row.model || "?"))}</td><td style="text-align:right">${row.attempts || 0}</td>
+    <td style="text-align:right">${row.failed_requests || 0}</td>
+    <td style="text-align:right">${row.error_rate == null ? "—" : `${Math.round(row.error_rate * 10000) / 100}%`}</td>
+    <td style="text-align:right">${latency(row.p50_completed_latency_ms)}</td>
+    <td style="text-align:right">${latency(row.p95_completed_latency_ms)}</td></tr>`)).join("");
   const errors = (health.error_classes || []).map((row) =>
     `${esc(String(row.error_class || "ModelRequestError"))} (${row.failed_requests || 0})`
   ).join(", ");
@@ -142,6 +158,10 @@ function modelRequestHealthCard(health) {
     <div class="dim">${totals.measured_completed_latency_requests || 0} measured completed request${totals.measured_completed_latency_requests === 1 ? "" : "s"}; ${totals.unmeasured_completed_latency_requests || 0} unmeasured. ${esc(recordingNote)}</div>
     ${errors ? `<div class="dim" style="margin-top:8px">Failure classes: ${errors}</div>` : ""}
     ${routes ? `<table class="dim-table" style="margin-top:10px"><thead><tr><th>provider</th><th>model</th><th style="text-align:right">attempts</th><th style="text-align:right">failed</th><th style="text-align:right">error rate</th><th style="text-align:right">p50</th><th style="text-align:right">p95</th></tr></thead><tbody>${routes}</tbody></table>` : ""}
+    ${days ? `<details class="dim-section" style="margin-top:10px"><summary>Daily health (UTC)</summary>
+      <table class="dim-table"><thead><tr><th>day</th><th style="text-align:right">attempts</th><th style="text-align:right">failed</th><th style="text-align:right">error rate</th><th style="text-align:right">p50</th><th style="text-align:right">p95</th></tr></thead><tbody>${days}</tbody></table>
+      ${dayRoutes ? `<table class="dim-table" style="margin-top:10px"><thead><tr><th>day</th><th>provider</th><th>model</th><th style="text-align:right">attempts</th><th style="text-align:right">failed</th><th style="text-align:right">error rate</th><th style="text-align:right">p50</th><th style="text-align:right">p95</th></tr></thead><tbody>${dayRoutes}</tbody></table>` : ""}
+    </details>` : ""}
   </details>`;
 }
 

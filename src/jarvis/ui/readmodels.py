@@ -285,6 +285,7 @@ async def model_request_health_overview(
     *,
     project_id: int | None = None,
     since: str | None = None,
+    until: str | None = None,
     ledger: Any = None,
 ) -> dict:
     """Read-only model-request completion/failure health from metadata-only ledgers.
@@ -301,27 +302,51 @@ async def model_request_health_overview(
     if since is not None:
         clauses.append("ts >= ?")
         params.append(since)
+    if until is not None:
+        clauses.append("ts < ?")
+        params.append(until)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     success_rows = await (
         await db.execute(
-            f"SELECT provider, model, latency_ms FROM model_calls {where}", tuple(params)
+            f"SELECT substr(ts, 1, 10), provider, model, latency_ms FROM model_calls {where}",
+            tuple(params),
         )
     ).fetchall()
     failure_rows = await (
         await db.execute(
-            f"SELECT provider, model, error_class FROM model_failures {where}", tuple(params)
+            f"SELECT substr(ts, 1, 10), provider, model, error_class FROM model_failures {where}",
+            tuple(params),
         )
     ).fetchall()
 
     by_route: dict[tuple[str, str], dict[str, Any]] = {}
-    for provider, model, latency_ms in success_rows:
+    by_day: dict[str, dict[str, Any]] = {}
+    for day, provider, model, latency_ms in success_rows:
         route = by_route.setdefault((provider, model), {"latencies": [], "failures": 0})
         route["latencies"].append(latency_ms)
+        day_row = by_day.setdefault(
+            day, {"latencies": [], "failures": 0, "routes": {}, "error_classes": {}}
+        )
+        day_row["latencies"].append(latency_ms)
+        day_route = day_row["routes"].setdefault(
+            (provider, model), {"latencies": [], "failures": 0}
+        )
+        day_route["latencies"].append(latency_ms)
     error_classes: dict[str, int] = {}
-    for provider, model, error_class in failure_rows:
+    for day, provider, model, error_class in failure_rows:
         route = by_route.setdefault((provider, model), {"latencies": [], "failures": 0})
         route["failures"] += 1
         error_classes[error_class] = error_classes.get(error_class, 0) + 1
+        day_row = by_day.setdefault(
+            day, {"latencies": [], "failures": 0, "routes": {}, "error_classes": {}}
+        )
+        day_row["failures"] += 1
+        day_route = day_row["routes"].setdefault(
+            (provider, model), {"latencies": [], "failures": 0}
+        )
+        day_route["failures"] += 1
+        day_errors = day_row["error_classes"]
+        day_errors[error_class] = day_errors.get(error_class, 0) + 1
 
     failure_generation = 0
     ledger_status = None
@@ -353,13 +378,42 @@ async def model_request_health_overview(
         }
         for (provider, model), row in sorted(by_route.items())
     ]
+    daily = [
+        {
+            "day": day,
+            "totals": _request_health_summary(
+                row["latencies"], row["failures"], telemetry_complete=telemetry_complete
+            ),
+            "by_provider_model": [
+                {
+                    "provider": provider,
+                    "model": model,
+                    **_request_health_summary(
+                        route["latencies"],
+                        route["failures"],
+                        telemetry_complete=telemetry_complete,
+                    ),
+                }
+                for (provider, model), route in sorted(row["routes"].items())
+            ],
+            "error_classes": [
+                {"error_class": error_class, "failed_requests": count}
+                for error_class, count in sorted(
+                    row["error_classes"].items(), key=lambda item: (-item[1], item[0])
+                )
+            ],
+        }
+        for day, row in sorted(by_day.items())
+    ]
     return {
+        "period": {"since": since, "until": until, "timezone": "UTC"},
         "totals": _request_health_summary(
-            [row[2] for row in success_rows],
+            [row[3] for row in success_rows],
             len(failure_rows),
             telemetry_complete=telemetry_complete,
         ),
         "by_provider_model": routes,
+        "by_day": daily,
         "error_classes": [
             {"error_class": error_class, "failed_requests": count}
             for error_class, count in sorted(

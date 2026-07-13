@@ -32,6 +32,7 @@ def test_all_dimensions_present() -> None:
 
 def test_model_request_health_is_read_only_and_truthful() -> None:
     assert "model_request_health" in COSTS and "Model request health" in COSTS
+    assert "Daily health (UTC)" in COSTS and "day.by_provider_model" in COSTS
     assert "Completed model-request latency only" in COSTS
     assert "end-to-end turn time" in COSTS and "Failure classes" in COSTS
     assert "telemetry_complete" in COSTS

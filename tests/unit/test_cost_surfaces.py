@@ -372,3 +372,95 @@ async def test_model_request_health_is_fail_closed_after_telemetry_loss(
     assert health["totals"]["attempts"] == 1 and health["totals"]["failed_requests"] == 0
     assert health["totals"]["error_rate"] is None
     assert health["totals"]["p50_completed_latency_ms"] is None
+
+
+async def test_model_request_health_groups_provider_model_percentiles_by_utc_day(
+    tmp_path: Path,
+) -> None:
+    from jarvis.ui.readmodels import model_request_health_overview
+
+    db = await connect(tmp_path / "daily-health.db")
+    _OPEN.append(db)
+    lock = asyncio.Lock()
+    await ProjectStore(db, lock).create(name="P")
+    ledger = CostLedger(db, lock, load_pricing(None))
+    ctx = CostContext(project_id=1, purpose="turn")
+    for provider, model, latency in (
+        ("anthropic", "claude-fable-5", 10.0),
+        ("anthropic", "claude-fable-5", 30.0),
+        ("openai", "gpt-5", 40.0),
+    ):
+        await ledger.record(
+            provider=provider,
+            model=model,
+            effort=None,
+            usage=Usage(1, 1),
+            latency_ms=latency,
+            tool_call_count=0,
+            ctx=ctx,
+        )
+    await ledger.record_failure(
+        provider="anthropic",
+        model="claude-fable-5",
+        latency_ms=1.0,
+        error=TimeoutError(),
+        ctx=ctx,
+    )
+    await ledger.record_failure(
+        provider="openai",
+        model="gpt-5",
+        latency_ms=1.0,
+        error=ConnectionError(),
+        ctx=ctx,
+    )
+    await db.execute("UPDATE model_calls SET ts = ? WHERE id IN (1, 2)", ("2026-07-10T10:00:00Z",))
+    await db.execute("UPDATE model_calls SET ts = ? WHERE id = 3", ("2026-07-11T10:00:00Z",))
+    await db.execute("UPDATE model_failures SET ts = ? WHERE id = 1", ("2026-07-10T10:00:00Z",))
+    await db.execute("UPDATE model_failures SET ts = ? WHERE id = 2", ("2026-07-11T10:00:00Z",))
+    await db.commit()
+
+    health = await model_request_health_overview(
+        db,
+        project_id=1,
+        since="2026-07-10T00:00:00Z",
+        until="2026-07-12T00:00:00Z",
+        ledger=ledger,
+    )
+
+    assert health["period"] == {
+        "since": "2026-07-10T00:00:00Z",
+        "until": "2026-07-12T00:00:00Z",
+        "timezone": "UTC",
+    }
+    assert [row["day"] for row in health["by_day"]] == ["2026-07-10", "2026-07-11"]
+    day_one, day_two = health["by_day"]
+    assert day_one["totals"] == {
+        "attempts": 3,
+        "completed_requests": 2,
+        "failed_requests": 1,
+        "error_rate": 0.3333,
+        "measured_completed_latency_requests": 2,
+        "unmeasured_completed_latency_requests": 0,
+        "p50_completed_latency_ms": 10.0,
+        "p95_completed_latency_ms": 30.0,
+    }
+    assert day_one["by_provider_model"] == [
+        {
+            "provider": "anthropic",
+            "model": "claude-fable-5",
+            **day_one["totals"],
+        }
+    ]
+    assert day_one["error_classes"] == [{"error_class": "TimeoutError", "failed_requests": 1}]
+    assert day_two["totals"]["attempts"] == 2
+    assert day_two["totals"]["p50_completed_latency_ms"] == 40.0
+    assert day_two["error_classes"] == [{"error_class": "ConnectionError", "failed_requests": 1}]
+
+    filtered = await model_request_health_overview(
+        db,
+        project_id=1,
+        since="2026-07-11T00:00:00Z",
+        until="2026-07-12T00:00:00Z",
+        ledger=ledger,
+    )
+    assert [row["day"] for row in filtered["by_day"]] == ["2026-07-11"]
