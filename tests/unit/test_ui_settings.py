@@ -40,9 +40,9 @@ def test_skill_forge_is_configuration_only_and_read_only() -> None:
     assert "SkillCatalog" not in SET and "api.post" not in SET
 
 
-def test_attention_routing_is_honestly_marked_not_active() -> None:
+def test_attention_routing_uses_the_server_truth_with_a_neutral_fallback() -> None:
     assert "attention_routing" in SET
-    assert "quiet hours and project mutes do not affect attention delivery yet" in SET
+    assert "No attention-routing status available." in SET
 
 
 def test_configured_policy_is_read_only_and_does_not_claim_effective_permission() -> None:

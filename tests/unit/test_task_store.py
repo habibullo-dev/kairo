@@ -30,6 +30,7 @@ async def _add(store: TaskStore, **kw) -> int:
         next_run_at=kw.get("next_run_at", T1),
         created_by=kw.get("created_by", "user"),
         source_session_id=kw.get("source_session_id"),
+        project_id=kw.get("project_id"),
     )
 
 
@@ -175,6 +176,41 @@ async def test_parked_run_is_coalesced_restart_safe_and_claimed_once(tmp_path: P
         (claimed_run,) = await store.runs_for(tid)
         assert claimed_run.approval_state == "approved"
         assert await store.stale_runs() == []  # a claimed action is still never auto-replayed
+    finally:
+        await store.db.close()
+
+
+async def test_pending_approval_count_uses_only_durable_pending_rows(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    try:
+        from jarvis.projects import ProjectStore
+
+        projects = ProjectStore(store.db, store.lock)
+        alpha = await projects.create(name="Alpha")
+        beta = await projects.create(name="Beta")
+        task_ids = [
+            await _add(store, next_run_at=T0, project_id=alpha),
+            await _add(store, next_run_at=T0, project_id=alpha),
+            await _add(store, next_run_at=T0, project_id=beta),
+        ]
+        await store.db.execute(
+            "INSERT INTO sessions (id, created_at, updated_at) VALUES (81, ?, ?)", (T0, T0)
+        )
+        await store.db.commit()
+        continuation = ParkedContinuation.from_call(
+            tool_id="toolu-count",
+            tool_name="write_file",
+            tool_input={"path": "safe.txt", "content": "safe"},
+            decision_reason="needs explicit approval",
+        )
+        runs = [await store.start_run(task_id, scheduled_for=T0) for task_id in task_ids]
+        for run_id in runs:
+            assert await store.park_run(run_id, session_id=81, continuation=continuation)
+        assert await store.pending_approval_count(project_id=alpha) == 2
+        assert await store.pending_approval_count(project_id=beta) == 1
+        assert await store.pending_approval_count(project_id=None) == 0
+        assert await store.claim_parked_approval(runs[0], resolution="reject") is not None
+        assert await store.pending_approval_count(project_id=alpha) == 1
     finally:
         await store.db.close()
 

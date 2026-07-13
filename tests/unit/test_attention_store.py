@@ -70,6 +70,24 @@ async def test_dedupe_key_is_idempotent(tmp_path: Path) -> None:
     assert c != a and len(await s.list()) == 2
 
 
+async def test_create_if_new_reports_the_durable_insert_once(tmp_path: Path) -> None:
+    s = await _store(tmp_path)
+    first, first_created = await s.create_if_new(
+        kind=AttentionKind.REVIEW,
+        source="dreaming",
+        title="Nightly review",
+        dedupe_key="review:2026-07-13",
+    )
+    second, second_created = await s.create_if_new(
+        kind=AttentionKind.REVIEW,
+        source="dreaming",
+        title="Nightly review",
+        dedupe_key="review:2026-07-13",
+    )
+    assert (first_created, second_created) == (True, False)
+    assert first == second and len(await s.list()) == 1
+
+
 async def test_unknown_trust_class_rejected(tmp_path: Path) -> None:
     s = await _store(tmp_path)
     with pytest.raises(ValueError):

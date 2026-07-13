@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from jarvis.attention.dreaming import DreamingBudget, dreaming_model, emit_budget_halt_alert
+from jarvis.attention.routing import notify_open_attention_item
 from jarvis.attention.store import AttentionKind, AttentionPriority, AttentionStore
 from jarvis.observability import get_logger
 
@@ -97,13 +98,18 @@ async def run_dreaming_job(
     project_id: int | None = None,
     window: str = "",
     evidence: list | None = None,
+    notification_router: Any = None,
 ) -> DreamingResult:
     """Run one dreaming job over already-collected deterministic material. Budget pre-check ⇒ halt
     + one alert; otherwise one tool-less summarize (Haiku|Sonnet per policy) → an artifact (best
     effort) + ONE attention proposal. Never performs an action."""
     if budget.over_cap:
         await emit_budget_halt_alert(
-            attention, job=job.name, spent_usd=budget.spent_usd, cap_usd=budget.cap_usd
+            attention,
+            job=job.name,
+            spent_usd=budget.spent_usd,
+            cap_usd=budget.cap_usd,
+            notification_router=notification_router,
         )
         return DreamingResult(halted=True, reason="budget cap reached before run")
 
@@ -141,7 +147,7 @@ async def run_dreaming_job(
 
     # ONE attention proposal — untrusted, payload never auto-injected; dedupe per job+window so a
     # re-run the same period doesn't re-nag. This is the ONLY durable output besides the artifact.
-    proposal_id = await attention.create(
+    proposal_id, created = await attention.create_if_new(
         kind=job.kind,
         source="dreaming",
         title=job.title,
@@ -153,11 +159,17 @@ async def run_dreaming_job(
         evidence=evidence or [],
         dedupe_key=f"dreaming:{job.name}:{window}",
     )
+    if created:
+        await notify_open_attention_item(notification_router, attention, proposal_id)
 
     halted = budget.over_cap
     if halted:  # this call tipped spend over the cap → alert so the next job doesn't silently skip
         await emit_budget_halt_alert(
-            attention, job=job.name, spent_usd=budget.spent_usd, cap_usd=budget.cap_usd
+            attention,
+            job=job.name,
+            spent_usd=budget.spent_usd,
+            cap_usd=budget.cap_usd,
+            notification_router=notification_router,
         )
     return DreamingResult(
         summary=summary,

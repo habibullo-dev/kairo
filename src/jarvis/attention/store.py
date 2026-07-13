@@ -179,10 +179,51 @@ class AttentionStore:
         with the same key returns the existing item's id (no duplicate row) — so a producer re-run
         (e.g. tonight's nightly-review) does not re-nag. ``trust_class`` defaults to untrusted
         ``model_generated``; an unknown trust class raises ``ValueError``."""
+        item_id, _ = await self.create_if_new(
+            kind=kind,
+            source=source,
+            title=title,
+            source_ref=source_ref,
+            project_id=project_id,
+            priority=priority,
+            trust_class=trust_class,
+            category=category,
+            payload=payload,
+            evidence=evidence,
+            dedupe_key=dedupe_key,
+        )
+        return item_id
+
+    async def create_if_new(
+        self,
+        *,
+        kind: AttentionKind | str,
+        source: str,
+        title: str,
+        source_ref: str | None = None,
+        project_id: int | None = None,
+        priority: AttentionPriority | str = AttentionPriority.NORMAL,
+        trust_class: str = "model_generated",
+        category: str | None = None,
+        payload: dict | None = None,
+        evidence: list | None = None,
+        dedupe_key: str | None = None,
+    ) -> tuple[int, bool]:
+        """Create an open row and report whether this call inserted it.
+
+        This is the post-commit notification seam for idempotent producers.  A caller can nudge
+        only when the durable row was actually inserted, avoiding a second external notification
+        when a retry resolves to an existing ``dedupe_key``.  ``create`` retains its simpler
+        id-only API for ordinary producers.
+        """
         if trust_class not in TRUST_CLASSES:
             raise ValueError(f"trust_class must be one of {sorted(TRUST_CLASSES)}")
         now = _now()
         async with self.lock:
+            if dedupe_key is not None:
+                existing = await self._get_by_key_locked(dedupe_key)
+                if existing is not None:
+                    return existing.id, False
             item_id = await self.create_in_transaction(
                 kind=kind,
                 source=source,
@@ -198,7 +239,7 @@ class AttentionStore:
                 now=now,
             )
             await self.db.commit()
-        return item_id
+        return item_id, True
 
     async def create_in_transaction(
         self,

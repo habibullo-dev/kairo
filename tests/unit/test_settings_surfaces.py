@@ -88,14 +88,35 @@ def test_configured_policy_never_claims_to_be_effective_per_call(tmp_path: Path)
     assert configured["global_default"] == "ask" and configured["overrides"] == []
 
 
-def test_attention_push_routing_is_honestly_marked_not_active(tmp_path: Path) -> None:
+def test_attention_push_routing_reports_disabled_without_a_selected_channel(tmp_path: Path) -> None:
     routing = settings_overview(_cfg(tmp_path))["attention_routing"]
     assert routing == {
-        "state": "not_active",
-        "reason": (
-            "Not active — quiet hours and project mutes do not affect attention delivery yet."
-        ),
+        "state": "disabled",
+        "reason": "No count-only attention push channels are configured.",
+        "channels": {"urgent": [], "normal": [], "low": []},
     }
+
+
+def test_attention_push_routing_requires_a_live_selected_notifier(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.attention = cfg.attention.model_copy(update={"urgent_channels": ["telegram"]})
+    pending = settings_overview(cfg)["attention_routing"]
+    assert pending["state"] == "configured_not_connected"
+    live = settings_overview(cfg, connectors={"notifiers": {"telegram": {"configured": True}}})
+    assert live["attention_routing"]["state"] == "active"
+    assert live["attention_routing"]["live_channels"] == ["telegram"]
+    assert "local Gate" in live["attention_routing"]["reason"]
+
+
+def test_attention_push_routing_does_not_call_demo_delivery_live(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.attention = cfg.attention.model_copy(update={"urgent_channels": ["telegram"]})
+    status = settings_overview(
+        cfg,
+        connectors={"demo": True, "notifiers": {"telegram": {"configured": True, "demo": True}}},
+    )["attention_routing"]
+    assert status["state"] == "demo"
+    assert "no Telegram/Kakao message leaves" in status["reason"]
 
 
 def test_skills_surface_is_configuration_only_and_never_loads_packs(tmp_path: Path) -> None:

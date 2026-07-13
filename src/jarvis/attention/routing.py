@@ -18,10 +18,13 @@ import datetime as _dt
 from dataclasses import dataclass
 from typing import Any
 
-from jarvis.connectors.base import ConnectorError
-from jarvis.observability import get_logger, log_egress
+from jarvis.observability import get_logger
 
 _log = get_logger("jarvis.attention")
+
+# This is the complete closed set of non-sensitive count labels.  The public helper must reject
+# arbitrary keys because :func:`minimized_push` interpolates a label into an external message.
+_COUNT_KINDS: frozenset[str] = frozenset({"approval", "review", "proposal", "alert"})
 
 
 @dataclass(frozen=True)
@@ -79,12 +82,29 @@ def minimized_push(counts: dict[str, int], *, cap: int = 280) -> str:
     """The ONLY text that goes off-box for an urgent push: counts by kind, no titles/bodies. E.g.
     ``"Kairo · 3 need you: 2 approvals, 1 proposal"``. An email subject / task body can never
     appear here — the push is derived purely from how MANY items of each kind are open."""
-    total = sum(counts.values())
+    safe_counts = _validated_counts(counts)
+    total = sum(safe_counts.values())
     if total <= 0:
         return "Kairo · nothing waiting"
-    parts = [f"{n} {kind}{'s' if n != 1 else ''}" for kind, n in sorted(counts.items()) if n > 0]
+    parts = [
+        f"{n} {kind}{'s' if n != 1 else ''}"
+        for kind, n in sorted(safe_counts.items())
+        if n > 0
+    ]
     need = "needs" if total == 1 else "need"
     return f"Kairo · {total} {need} you: {', '.join(parts)}"[:cap]
+
+
+def _validated_counts(counts: dict[str, int]) -> dict[str, int]:
+    """Reject any value that could put a title or secret into a notification label."""
+    safe: dict[str, int] = {}
+    for kind, count in counts.items():
+        if kind not in _COUNT_KINDS:
+            raise ValueError(f"unknown attention count kind: {kind!r}")
+        if type(count) is not int or count < 0:
+            raise ValueError(f"attention count for {kind!r} must be a non-negative integer")
+        safe[kind] = count
+    return safe
 
 
 class NotificationRouter:
@@ -116,15 +136,16 @@ class NotificationRouter:
         )
         if decision.channels:
             text = minimized_push(open_counts)  # counts only — body-free by construction
-            for channel in decision.channels:
+            for channel in dict.fromkeys(decision.channels):
                 notifier = self._connectors.notifier(channel) if self._connectors else None
                 if notifier is None:
                     continue
                 try:
                     await notifier.send(text)
-                    log_egress(category="attention_push", destination_type=channel)
-                except ConnectorError:
-                    _log.warning("attention_push_failed", channel=channel)
+                except Exception as exc:  # noqa: BLE001 - a best-effort nudge must not break work
+                    _log.warning(
+                        "attention_push_failed", channel=channel, error_type=type(exc).__name__
+                    )
                     if self._notices is not None:
                         self._notices.post(
                             f"Attention push to {channel} failed.",
@@ -132,6 +153,36 @@ class NotificationRouter:
                             project_id=project_id,
                         )
         return decision
+
+    def set_notices(self, notices: Any) -> None:
+        """Attach the host's local NoticeBoard after it is composed."""
+        self._notices = notices
+
+
+async def notify_attention_counts(
+    router: NotificationRouter | None,
+    *,
+    priority: str,
+    project_id: int | None,
+    counts: dict[str, int],
+    now: _dt.datetime | None = None,
+) -> NotifyDecision | None:
+    """Best-effort count-only push for a durable attention state that has no row of its own.
+
+    Parked scheduler approvals, for example, remain task-run state so the local authenticated Gate
+    can verify and resolve them; they must not be copied into an attention payload merely to send a
+    nudge.  This helper accepts only aggregate kind counts, never a title, tool input, or task
+    payload, and shares the exact routing/quiet-hours policy with stored attention items.
+    """
+    if router is None:
+        return None
+    moment = now or _dt.datetime.now().astimezone()
+    return await router.notify(
+        priority=priority,
+        project_id=project_id,
+        open_counts=counts,
+        hour=moment.hour,
+    )
 
 
 async def notify_open_attention_item(
@@ -148,11 +199,11 @@ async def notify_open_attention_item(
     item = await store.get(item_id)
     if item is None or str(item.state) != "open":
         return None
-    moment = now or _dt.datetime.now().astimezone()
     counts = await store.open_counts(project_id=item.project_id)
-    return await router.notify(
+    return await notify_attention_counts(
+        router,
         priority=str(item.priority),
         project_id=item.project_id,
-        open_counts=counts,
-        hour=moment.hour,
+        counts=counts,
+        now=now,
     )

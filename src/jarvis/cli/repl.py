@@ -1700,6 +1700,11 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
 
         board = NoticeBoard(publish=app.state.connections.publish_project)
         app.state.notices = board
+        # The scheduler exists before the UI's local NoticeBoard. Complete the visible failure
+        # seam now; notifications themselves remain count-only and one-way.
+        router = tasks.notification_router if tasks is not None else None
+        if router is not None and hasattr(router, "set_notices"):
+            router.set_notices(board)
 
         if tasks is not None:  # background runner shares the turn lock (no interleaving)
             digest_store = DigestStore(db, store.lock)

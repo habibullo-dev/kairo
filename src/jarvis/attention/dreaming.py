@@ -22,7 +22,9 @@ auto-injected into a future model context (the attention_items quarantine).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
+from jarvis.attention.routing import notify_open_attention_item
 from jarvis.attention.store import AttentionKind, AttentionPriority, AttentionStore
 from jarvis.tools import ToolContext, ToolRegistry
 
@@ -136,11 +138,16 @@ class DreamingBudget:
 
 
 async def emit_budget_halt_alert(
-    store: AttentionStore, *, job: str, spent_usd: float, cap_usd: float
+    store: AttentionStore,
+    *,
+    job: str,
+    spent_usd: float,
+    cap_usd: float,
+    notification_router: Any = None,
 ) -> int:
     """Create the ONE alert attention item a budget halt produces (idempotent per job — a re-run
     the same period returns the same row). Title is a plain count/amount — no job payload."""
-    return await store.create(
+    item_id, created = await store.create_if_new(
         kind=AttentionKind.ALERT,
         source="dreaming",
         title=f"Dreaming halted: budget cap reached (${spent_usd:.2f} / ${cap_usd:.2f})",
@@ -149,3 +156,6 @@ async def emit_budget_halt_alert(
         trust_class="model_generated",
         dedupe_key=f"dreaming-budget-halt:{job}",
     )
+    if created:
+        await notify_open_attention_item(notification_router, store, item_id)
+    return item_id

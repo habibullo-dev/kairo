@@ -577,6 +577,8 @@ class AttentionConfig(BaseModel):
         bad = [c for c in v if c not in allowed]
         if bad:
             raise ValueError(f"attention channels must be subset of {sorted(allowed)}; got {bad}")
+        if len(v) != len(set(v)):
+            raise ValueError("attention channels must not contain duplicates")
         return v
 
 
@@ -696,6 +698,7 @@ def load_config(
             providers=ProvidersConfig(**data.get("providers", {})),
             context_reuse=ContextReuseConfig(**data.get("context_reuse", {})),
             skills=SkillsConfig(**data.get("skills", {})),
+            attention=AttentionConfig(**data.get("attention", {})),
             secrets=secrets,
         )
     except ValidationError as e:

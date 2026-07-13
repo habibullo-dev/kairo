@@ -89,6 +89,7 @@ async def dream_run(
     artifacts: Any = None,
     now: _dt.datetime,
     project_id: int | None = None,
+    notification_router: Any = None,
 ) -> DreamingResult:
     """Collect + run ONE dreaming job (one chunk). Budget comes from
     ``config.attention.dreaming_budget_usd`` (0 ⇒ disabled ⇒ the job halts before spending). Dedup
@@ -109,4 +110,5 @@ async def dream_run(
         artifacts=artifacts,
         project_id=project_id,
         window=now.date().isoformat(),
+        notification_router=notification_router,
     )

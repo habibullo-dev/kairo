@@ -252,6 +252,31 @@ def test_connectors_config_yaml_override(tmp_path: Path) -> None:
     assert c.kakao.enabled is False  # unspecified keeps default
 
 
+def test_attention_config_yaml_override(tmp_path: Path) -> None:
+    _write_settings(
+        tmp_path,
+        "attention:\n"
+        "  urgent_channels: [telegram]\n"
+        "  normal_channels: [kakao]\n"
+        "  low_channels: []\n"
+        "  quiet_hours_start: 22\n"
+        "  quiet_hours_end: 7\n"
+        "  muted_projects: [3, 9]\n",
+    )
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.attention.urgent_channels == ["telegram"]
+    assert cfg.attention.normal_channels == ["kakao"]
+    assert cfg.attention.low_channels == []
+    assert (cfg.attention.quiet_hours_start, cfg.attention.quiet_hours_end) == (22, 7)
+    assert cfg.attention.muted_projects == [3, 9]
+
+
+def test_attention_config_rejects_duplicate_delivery_channel(tmp_path: Path) -> None:
+    _write_settings(tmp_path, "attention:\n  urgent_channels: [telegram, telegram]\n")
+    with pytest.raises(ConfigError, match="duplicates"):
+        load_config(root=tmp_path, env_file=None)
+
+
 def test_digest_delivery_requires_enabled_notifier(tmp_path: Path) -> None:
     # Fail-closed: a digest can't target a channel whose notifier is off (ADR-0010).
     _write_settings(

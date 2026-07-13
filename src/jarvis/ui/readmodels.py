@@ -1613,6 +1613,58 @@ def settings_overview(
     line to add. ``connectors`` (scopes + expiry, never a token), ``ledger_status``, and ``policy``
     are the stateful bits the route passes in, mirroring :func:`hub_status`."""
     b = config.budgets
+    attention_channels = {
+        "urgent": list(config.attention.urgent_channels),
+        "normal": list(config.attention.normal_channels),
+        "low": list(config.attention.low_channels),
+    }
+    selected_attention_channels = {
+        channel for channels in attention_channels.values() for channel in channels
+    }
+    connector_status = connectors or {}
+    notifier_status = connector_status.get("notifiers", {})
+    connected_notifiers = set(notifier_status)
+    live_attention_channels = sorted(selected_attention_channels & connected_notifiers)
+    demo_attention = bool(connector_status.get("demo")) or any(
+        bool(status.get("demo"))
+        for status in notifier_status.values()
+        if isinstance(status, dict)
+    )
+    if not selected_attention_channels:
+        attention_routing = {
+            "state": "disabled",
+            "reason": "No count-only attention push channels are configured.",
+            "channels": attention_channels,
+        }
+    elif not live_attention_channels:
+        attention_routing = {
+            "state": "configured_not_connected",
+            "reason": (
+                "Count-only attention routes are configured but no selected notifier is connected."
+            ),
+            "channels": attention_channels,
+        }
+    elif demo_attention:
+        attention_routing = {
+            "state": "demo",
+            "reason": (
+                "Demo attention routing records count-only nudges locally; no Telegram/Kakao "
+                "message leaves this machine."
+            ),
+            "channels": attention_channels,
+            "live_channels": live_attention_channels,
+        }
+    else:
+        attention_routing = {
+            "state": "active",
+            "reason": (
+                "Count-only pushes are active for scheduler dead-letter alerts, parked "
+                "unattended approvals, and attended Dreaming. Telegram/Kakao cannot approve "
+                "actions; the local Gate remains the resolver."
+            ),
+            "channels": attention_channels,
+            "live_channels": live_attention_channels,
+        }
     return {
         "providers": providers_status(config),  # 10C: state / authority / private_ok + env names
         "model_routes": model_routes_status(config),
@@ -1624,15 +1676,7 @@ def settings_overview(
         ),
         "context_reuse": {"enabled": config.context_reuse.enabled},
         "configured_policy": configured_policy_overrides(policy),
-        # NotificationRouter is deliberately not host-composed yet.  Do not present its config
-        # fields (quiet hours / project mutes / urgent channels) as live delivery controls: only
-        # explicit approved sends and separately configured digest delivery can use notifiers.
-        "attention_routing": {
-            "state": "not_active",
-            "reason": (
-                "Not active — quiet hours and project mutes do not affect attention delivery yet."
-            ),
-        },
+        "attention_routing": attention_routing,
         # Skill Forge status is CONFIGURATION ONLY.  Do not construct SkillCatalog here: that
         # would read local packs from a read-only status endpoint and make "off" observably
         # different from the pre-Skill-Forge runtime.  These are human-pinned identifiers, not

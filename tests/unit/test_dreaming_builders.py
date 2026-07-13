@@ -38,6 +38,14 @@ async def _store(tmp_path: Path) -> AttentionStore:
     return AttentionStore(db, asyncio.Lock())
 
 
+class _RecordingRouter:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def notify(self, **kwargs) -> None:
+        self.calls.append(kwargs)
+
+
 async def test_job_produces_one_untrusted_proposal_via_toolless_summary(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     client = FakeClient([text_message("You closed 3 tasks; consider planning tomorrow.")])
@@ -96,15 +104,20 @@ async def test_over_budget_halts_before_summarizing(tmp_path: Path) -> None:
 
 async def test_rerun_same_window_is_idempotent(tmp_path: Path) -> None:
     store = await _store(tmp_path)
+    router = _RecordingRouter()
 
     async def _run():
         return await run_dreaming_job(
             JOBS["nightly_review"], collected=["x"],
             summarizer=FakeClient([text_message("s")]), budget=DreamingBudget(cap_usd=1.5),
-            attention=store, window="2026-07-10",
+            attention=store, window="2026-07-10", notification_router=router,
         )
 
     a = await _run()
     b = await _run()
     assert a.proposal_id == b.proposal_id  # same night ⇒ one proposal, not two
     assert len(await store.list(state=AttentionState.OPEN)) == 1
+    # The idempotent retry must not re-send an external nudge for the existing durable row.
+    assert len(router.calls) == 1
+    assert router.calls[0]["open_counts"] == {"review": 1}
+    assert "title" not in router.calls[0] and "payload" not in router.calls[0]

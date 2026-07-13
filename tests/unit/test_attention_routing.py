@@ -6,6 +6,7 @@ SUPPRESS a push (fold to digest), never escalate. Keyless with a fake notifier."
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from jarvis.attention.routing import (
     NotificationRouter,
     in_quiet_hours,
     minimized_push,
+    notify_attention_counts,
     notify_open_attention_item,
     route_notification,
 )
@@ -88,6 +90,20 @@ def test_minimized_push_never_contains_item_content() -> None:
     assert "@" not in text and "http" not in text  # no address/URL could ever be here
 
 
+@pytest.mark.parametrize(
+    "counts",
+    [
+        {"task title / CANARY": 1},
+        {"approval": -1},
+        {"approval": True},
+    ],
+)
+def test_minimized_push_rejects_any_untrusted_label_or_count(counts: dict[str, int]) -> None:
+    # Labels are rendered into off-box text, so the count API has a closed, non-sensitive schema.
+    with pytest.raises(ValueError):
+        minimized_push(counts)
+
+
 # --- router side effect (sends the minimized text via the notifier) --------
 class _FakeNotifier:
     def __init__(self): self.sent: list[str] = []
@@ -129,6 +145,17 @@ async def test_router_sends_minimized_only_for_urgent_enabled(tmp_path: Path) ->
     assert len(n.sent) == 1
 
 
+async def test_router_deduplicates_bypassed_config_channel_entries(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    # model_copy deliberately bypasses Pydantic validation; routing remains defensive anyway.
+    cfg.attention = cfg.attention.model_copy(update={"urgent_channels": ["telegram", "telegram"]})
+    n = _FakeNotifier()
+    await NotificationRouter(cfg, _FakeConnectors(n)).notify(
+        priority="urgent", project_id=None, open_counts={"approval": 1}, hour=12
+    )
+    assert n.sent == ["Kairo · 1 needs you: 1 approval"]
+
+
 async def test_default_config_never_pushes_fatigue_safe(tmp_path: Path) -> None:
     # Priority discipline / notification fatigue: with the DEFAULT config (urgent_channels empty),
     # NOTHING is pushed — even an urgent item stays center-only. Egress is a deliberate opt-in.
@@ -152,6 +179,54 @@ async def test_post_commit_helper_reads_counts_not_attention_content(tmp_path: P
     assert n.sent == ["Kairo · 2 need you: 2 approvals"]
 
 
+async def test_count_helper_cannot_receive_a_title_or_payload(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    cfg.attention = cfg.attention.model_copy(update={"urgent_channels": ["telegram"]})
+    n = _FakeNotifier()
+    router = NotificationRouter(cfg, _FakeConnectors(n))
+    await notify_attention_counts(
+        router,
+        priority="urgent",
+        project_id=7,
+        counts={"approval": 1},
+        now=dt.datetime(2026, 7, 13, 12),
+    )
+    assert n.sent == ["Kairo · 1 needs you: 1 approval"]
+
+
+class _BrokenNotifier:
+    async def send(self, _text: str) -> None:
+        raise RuntimeError("provider bug")
+
+
+async def test_failed_best_effort_push_cannot_break_the_durable_flow(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    cfg.attention = cfg.attention.model_copy(update={"urgent_channels": ["telegram"]})
+    router = NotificationRouter(cfg, _FakeConnectors(_BrokenNotifier()))
+    decision = await notify_attention_counts(
+        router, priority="urgent", project_id=None, counts={"approval": 1}
+    )
+    assert decision is not None and decision.channels == ("telegram",)
+
+
+class _FakeNotices:
+    def __init__(self) -> None:
+        self.items: list[tuple[str, str, int | None]] = []
+
+    def post(self, text: str, *, kind: str, project_id: int | None) -> None:
+        self.items.append((text, kind, project_id))
+
+
+async def test_failed_push_posts_a_local_warning_after_host_wiring(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    cfg.attention = cfg.attention.model_copy(update={"urgent_channels": ["telegram"]})
+    notices = _FakeNotices()
+    router = NotificationRouter(cfg, _FakeConnectors(_BrokenNotifier()))
+    router.set_notices(notices)
+    await router.notify(priority="urgent", project_id=4, open_counts={"approval": 1}, hour=12)
+    assert notices.items == [("Attention push to telegram failed.", "warn", 4)]
+
+
 def test_config_rejects_unknown_urgent_channel() -> None:
     # Construct directly so the field_validator runs (model_copy skips validation). An unknown
     # channel is refused ⇒ no accidental egress to an unsupported sink.
@@ -162,3 +237,5 @@ def test_config_rejects_unknown_urgent_channel() -> None:
     AttentionConfig(normal_channels=["telegram", "kakao"])  # the allowed set is fine
     with pytest.raises(ValidationError):
         AttentionConfig(low_channels=["email"])
+    with pytest.raises(ValidationError):
+        AttentionConfig(urgent_channels=["telegram", "telegram"])

@@ -22,8 +22,10 @@ from jarvis.scheduler.store import TaskStore
 async def _run(job_name: str) -> int:
     from rich.console import Console
 
+    from jarvis.attention import NotificationRouter
     from jarvis.cli.repl import _build_cost_ledger, _utility_client
     from jarvis.config import load_config
+    from jarvis.connectors.factory import build_connectors
     from jarvis.persistence.sessions import SessionStore
 
     console = Console()
@@ -48,6 +50,7 @@ async def _run(job_name: str) -> int:
             tasks=TaskStore(db, store.lock),
             ledger=ledger,
             now=now,
+            notification_router=NotificationRouter(config, build_connectors(config)),
         )
         if res.halted:
             console.print(f"[yellow]halted[/] — {res.reason or 'budget cap'} (an alert was filed).")

@@ -294,7 +294,7 @@ function renderStatus(region) {
       metaRow("Run mode", runner.mode || "approval"),
       metaRow("Unattended", "read-only by default — risky actions require the on-screen Gate"),
       metaRow("Attention routing", attentionRouting.reason ||
-        "Not active — quiet hours and project mutes do not affect attention delivery yet."),
+        "No attention-routing status available."),
       metaRow("Egress this session", `${eg.text_chars || 0} chars · ${eg.audio_bytes || 0} audio bytes`),
       metaRow("MCP", (hub.mcp && hub.mcp.note) || "not connected"),
     ]),

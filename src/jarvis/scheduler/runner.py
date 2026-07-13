@@ -26,6 +26,7 @@ import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from jarvis.attention.routing import notify_attention_counts
 from jarvis.observability import get_logger
 from jarvis.scheduler.service import Due, TaskService
 from jarvis.scheduler.store import ParkedContinuation, Task
@@ -53,6 +54,15 @@ class JobOutcome:
     cost_usd: float | None = None
     retry_safe: bool = False
     parked: bool = False
+
+
+@dataclass(frozen=True)
+class AttentionPush:
+    """A durable-state-derived nudge to deliver only after the turn lock is released."""
+
+    project_id: int | None
+    counts: dict[str, int]
+    priority: str = "urgent"
 
 
 # Runs one job task to completion and returns its outcome (built in the CLI layer).
@@ -108,13 +118,16 @@ class BackgroundRunner:
                 await self._fire_digest(due)
                 handled += 1
                 continue
+            attention_push: AttentionPush | None = None
             async with self.turn_lock:
                 if due.action == "missed":
                     await self._fire_missed(due)
                 elif due.task.kind == "reminder":
                     await self._fire_reminder(due)
                 else:
-                    await self._fire_job(due)
+                    attention_push = await self._fire_job(due)
+            if attention_push is not None:
+                await self._deliver_attention_push(attention_push)
             handled += 1
         return handled
 
@@ -128,7 +141,7 @@ class BackgroundRunner:
         run_id = await self.service.begin_run(due)
         await self.service.complete_run(due, run_id, ok=True, result_text=f"delivered{suffix}")
 
-    async def _fire_job(self, due: Due) -> None:
+    async def _fire_job(self, due: Due) -> AttentionPush | None:
         task = due.task
         # Open the running row *before* the work: a crash leaves an orphan the
         # startup sweep aborts, never re-running possibly-completed side effects.
@@ -141,7 +154,7 @@ class BackgroundRunner:
             detail = f"{type(exc).__name__}: {exc}"
             await self.service.complete_run(due, run_id, ok=False, error=detail)
             self._notify(f'✗ job #{task.id} "{task.title}" failed: {detail}', task)
-            return
+            return None
         finally:
             self.in_flight = None
 
@@ -152,7 +165,7 @@ class BackgroundRunner:
             self._notify(
                 f'⏸ job #{task.id} "{task.title}" is waiting for your approval', task
             )
-            return
+            return await self._parked_approval_push(task)
 
         ok = outcome.error is None
         await self.service.complete_run(
@@ -167,6 +180,7 @@ class BackgroundRunner:
             retry_safe=outcome.retry_safe,
         )
         self._notify_job_done(task, outcome, ok)
+        return None
 
     async def resume_parked(self, run_id: int, resolution: str) -> bool:
         """Apply one explicit owner resolution to a durable unattended pause.
@@ -179,6 +193,7 @@ class BackgroundRunner:
         """
         if resolution not in {"approve", "reject"} or self.resume_job is None:
             return False
+        attention_push: AttentionPush | None = None
         async with self.turn_lock:
             try:
                 run = await self.service.store.get_run(run_id)
@@ -251,21 +266,45 @@ class BackgroundRunner:
                 self._notify(
                     f'⏸ job #{task.id} "{task.title}" is waiting for your approval', task
                 )
+                attention_push = await self._parked_approval_push(task)
+            else:
+                ok = outcome.error is None
+                await self.service.complete_run(
+                    due,
+                    run_id,
+                    ok=ok,
+                    session_id=outcome.session_id,
+                    result_text=outcome.text or outcome.error,
+                    denied_count=outcome.denied_count,
+                    error=outcome.error,
+                    cost_usd=outcome.cost_usd,
+                    retry_safe=outcome.retry_safe,
+                )
+                self._notify_job_done(task, outcome, ok)
                 return True
-            ok = outcome.error is None
-            await self.service.complete_run(
-                due,
-                run_id,
-                ok=ok,
-                session_id=outcome.session_id,
-                result_text=outcome.text or outcome.error,
-                denied_count=outcome.denied_count,
-                error=outcome.error,
-                cost_usd=outcome.cost_usd,
-                retry_safe=outcome.retry_safe,
+        if attention_push is not None:
+            await self._deliver_attention_push(attention_push)
+        return True
+
+    async def _parked_approval_push(self, task: Task) -> AttentionPush | None:
+        """Build the project-scoped aggregate after the parking transaction committed."""
+        count = await self.service.store.pending_approval_count(project_id=task.project_id)
+        if count <= 0:  # defensive: an external nudge must never invent an approval
+            self.log.warning("parked_approval_count_missing", task_id=task.id)
+            return None
+        return AttentionPush(project_id=task.project_id, counts={"approval": count})
+
+    async def _deliver_attention_push(self, push: AttentionPush) -> None:
+        """Perform best-effort external delivery after releasing the interactive turn lock."""
+        try:
+            await notify_attention_counts(
+                self.service.notification_router,
+                priority=push.priority,
+                project_id=push.project_id,
+                counts=push.counts,
             )
-            self._notify_job_done(task, outcome, ok)
-            return True
+        except Exception as exc:  # noqa: BLE001 - durable parked work must remain reviewable
+            self.log.warning("parked_attention_push_failed", error_type=type(exc).__name__)
 
     async def _fire_digest(self, due: Due) -> None:
         task = due.task

@@ -88,6 +88,28 @@ class Recorder:
         self.lines.append(line)
 
 
+class CountOnlyRouter:
+    """Captures the count-only seam without constructing a real external notifier."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def notify(self, **kwargs) -> None:
+        self.calls.append(kwargs)
+
+
+class BlockingCountOnlyRouter(CountOnlyRouter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def notify(self, **kwargs) -> None:
+        self.calls.append(kwargs)
+        self.started.set()
+        await self.release.wait()
+
+
 # --- BackgroundRunner: reminders ---------------------------------------------
 
 
@@ -390,6 +412,8 @@ async def test_unattended_denial_flows_back_and_is_counted(tmp_path: Path) -> No
 async def test_job_ask_parks_exact_call_and_runner_does_not_complete_it(tmp_path: Path) -> None:
     service, clock, store = await _service(tmp_path)
     task = await _schedule(service, kind="job", title="write report")
+    push = CountOnlyRouter()
+    service.notification_router = push
     client = FakeClient(
         [
             tool_use_message(
@@ -441,6 +465,39 @@ async def test_job_ask_parks_exact_call_and_runner_does_not_complete_it(tmp_path
     assert await store.stale_runs() == []  # restart cannot auto-abort/replay an intentional park
     assert not (tmp_path / "report.txt").exists()
     assert any("waiting for your approval" in line for line in rec.lines)
+    assert len(push.calls) == 1
+    assert push.calls[0]["priority"] == "urgent"
+    assert push.calls[0]["open_counts"] == {"approval": 1}
+    assert "title" not in push.calls[0] and "tool_input" not in push.calls[0]
+
+
+async def test_parked_push_releases_turn_lock_and_uses_pending_aggregate(tmp_path: Path) -> None:
+    service, clock, _store = await _service(tmp_path)
+    await _schedule(service, kind="job", title="await approval")
+    router = BlockingCountOnlyRouter()
+    service.notification_router = router
+
+    async def _count_pending(*, project_id):
+        assert project_id is None
+        return 2
+
+    service.store.pending_approval_count = _count_pending  # type: ignore[method-assign]
+
+    async def _park(_task):
+        return JobOutcome(session_id=None, text="", parked=True)
+
+    runner = BackgroundRunner(
+        service, notify=Recorder().notify, run_job=_park, turn_lock=asyncio.Lock()
+    )
+    clock.advance(hours=1, minutes=1)
+    tick = asyncio.create_task(runner.check_due())
+    await asyncio.wait_for(router.started.wait(), timeout=0.5)
+    # The external notifier is blocked, but an interactive turn can acquire the shared lock.
+    await asyncio.wait_for(runner.turn_lock.acquire(), timeout=0.1)
+    runner.turn_lock.release()
+    assert router.calls[0]["open_counts"] == {"approval": 2}
+    router.release.set()
+    assert await tick == 1
 
 
 async def test_rejected_parked_job_skips_the_original_occurrence_without_running_tools(

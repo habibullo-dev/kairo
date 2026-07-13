@@ -779,6 +779,22 @@ class TaskStore:
         row = await cursor.fetchone()
         return _row_to_run(row) if row else None
 
+    async def pending_approval_count(self, *, project_id: int | None) -> int:
+        """Count durable parked approvals in exactly one project scope.
+
+        ``None`` means only global/unscoped tasks, not every project.  This is the count used by
+        a minimized approval nudge, so a project cannot learn that another project has pending
+        work.  Only an active task with a running, ``pending`` approval row is actionable.
+        """
+        cursor = await self.db.execute(
+            "SELECT COUNT(*) FROM task_runs r JOIN tasks t ON t.id = r.task_id "
+            "WHERE r.status = 'running' AND r.approval_state = 'pending' "
+            "AND t.status = 'active' AND t.project_id IS ?",
+            (project_id,),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row is not None else 0
+
     async def stale_runs(self) -> list[TaskRun]:
         """Crash-orphaned running rows, excluding intentional parked continuations.
 
