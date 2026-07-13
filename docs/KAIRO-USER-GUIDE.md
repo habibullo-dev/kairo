@@ -61,10 +61,10 @@ Writes follow preview → approve → execute. Re-run the relevant connect comma
 **Needs reconnect**.
 
 Never paste API keys, OAuth refresh tokens, client secrets, or connector token files into chat or
-screenshots. The Hub shows presence and scope names, never token values. Telegram receives only
-count-only attention nudges (for example, how many approvals are waiting), never an action payload.
-It can remind you to open Kairo, but the authenticated local Gate remains the only place that can
-approve or reject an action.
+screenshots. The Hub shows presence and scope names, never token values. Ordinary Telegram
+notifications remain count-only. If you separately enable Remote Operator, Telegram also carries
+the exact work proposals and minimized tool previews that you explicitly approve with expiring,
+single-use codes.
 
 ### Telegram remote control
 
@@ -78,16 +78,47 @@ connectors:
     remote_control:
       enabled: true
       allowed_chat_id: '123456789'
+      operator:
+        enabled: true
+        default_status_interval_minutes: 15
+        allowed_status_intervals: [0, 1, 5, 15, 30, 60]
+        max_active_jobs: 3
 ```
 
 Start Kairo normally (`uv run jarvis --ui` or `uv run jarvis`), then send a fresh `/start` from
 that exact chat. `/status` reports whether Kairo and its scheduler are running; `/tasks` lists
 active task metadata; `/inbox` reports only the unread Inbox count; `/calendar` reports the number
 of events in the next 24 hours and the next start time; and `/briefing` combines those read-only
-summaries. A short ordinary message gets a bounded, tool-less Kairo response. Retained Telegram
-messages from before the first enable are intentionally discarded, so they cannot become work after
-a restart. Ordinary remote questions use Kairo's economical utility model, preserving the expensive
-Fable model for its deliberate skills-authoring workflow.
+summaries. Retained Telegram messages from before the first enable are intentionally discarded, so
+they cannot become work after a restart. Ordinary remote questions and proposal preparation use
+Kairo's economical utility model, preserving the expensive Fable model for its deliberate
+skills-authoring workflow.
+
+With `operator.enabled: true`, use `/projects` to see the aliases already registered in Kairo.
+Then speak naturally, for example:
+
+```text
+Kairo, inspect the frontend API wiring in project jarvis, fix what is broken,
+and update me every 15 minutes.
+```
+
+The model can only prepare one inert proposal. Kairo replies with the exact project, instruction,
+schedule, update cadence, and a random code. Nothing is scheduled until you send the displayed
+`/approve CODE`; `/deny CODE` leaves it inert. Use `/jobs` for job state, `/approvals` to mint fresh
+codes for pending proposals or tool calls, and `/cancel ID` to cancel an active Remote Operator
+job. Refreshing `/approvals` invalidates an older unconsumed code for the same item.
+
+An approved job receives only `read_file`, `list_dir`, `glob_search`, `write_file`, and
+`run_shell`. It has the selected registered project's linked-repository context, but it receives no
+memory, connectors, email, browser, sub-agent, or notification tools. Reads can proceed; a write or
+shell command parks the exact saved model continuation and sends a second preview with the tool,
+path or command, and input hash. Only the new `/approve CODE` resumes that exact call. A casual
+"yes", a repeated code, an expired code, or a code for a changed call grants nothing.
+
+Status intervals are host-generated heartbeats, not extra model calls. `0` means milestone-only;
+the configured positive values are minutes. Kairo also reports start, completion, failure, and
+approval-needed milestones. The workstation and Kairo process must remain running; this feature is
+remote control of your local process, not a cloud wake-up service.
 
 `/inbox`, `/calendar`, and `/briefing` require the existing Google connector to be enabled and
 connected locally (`connectors.google.enabled: true`, Google client credentials in `.env`, then
@@ -100,11 +131,10 @@ If you already use Kairo's Telegram notifications for your personal conversation
 positive chat ID as `allowed_chat_id`. Do not use a group or channel ID (those are normally
 negative): remote control deliberately accepts one private chat only.
 
-Remote chat has no Kairo tools, memory, project context, approval route, shell, scheduler, or
-connector access. The three deterministic workspace commands are the sole exception: they perform
-their fixed read-only Google calls outside the model and disclose only the minimized summaries above.
-It cannot execute work, alter schedules, or approve an action. Keep the local workstation running
-for the channel to be available; this is not a cloud relay or remote wake-up.
+When Remote Operator is disabled, remote chat has no Kairo tools, memory, project context, approval
+route, shell, scheduler, or connector access. The deterministic workspace commands perform fixed
+read-only calls outside the model and disclose only the minimized summaries above. When Remote
+Operator is enabled, the proposal and exact-code protocol is the only additional authority path.
 
 ## Voice
 
@@ -120,7 +150,8 @@ actions—there is no voice-only approval.
 
 ## Safety in plain English
 
-Kairo asks before risky actions. The Gate is the only approval path and approvals are screen-based.
+Kairo asks before risky actions. Approvals are screen-based by default; the optional Telegram Remote
+Operator accepts only expiring single-use codes bound to an exact proposal or parked tool input.
 Connector writes are two-phase: preview, approve, then execute. Connector and web content are
 untrusted data, not instructions. Private context stays behind provider-routing boundaries; an
 unapproved provider is never silently used for it. Dreaming produces proposals/artifacts only and
