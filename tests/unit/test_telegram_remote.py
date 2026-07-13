@@ -299,6 +299,7 @@ def test_natural_read_intents_route_to_verified_host_commands() -> None:
     assert natural_remote_read_command("Read today's emails") == "/inbox"
     assert natural_remote_read_command("Show me my emails from today") == "/inbox"
     assert natural_remote_read_command("Do I have email today?") == "/inbox"
+    assert natural_remote_read_command("Gimme summary of my todays inbox emails") == "/inbox"
     assert natural_remote_read_command("What meetings are on my calendar today?") == "/calendar"
     assert natural_remote_read_command("What time does my next meeting start?") == "/calendar"
     assert natural_remote_read_command("Show my registered projects") == "/projects"

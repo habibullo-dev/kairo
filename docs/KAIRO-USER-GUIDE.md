@@ -97,7 +97,8 @@ connectors:
 
 Start Kairo normally (`uv run jarvis --ui` or `uv run jarvis`), then send a fresh `/start` from
 that exact chat. `/status` reports whether Kairo and its scheduler are running; `/tasks` lists
-active task metadata; `/inbox` reports only the unread Inbox count; `/calendar` reports the number
+active task metadata; `/inbox` reports up to eight recent messages received today with their time,
+sender, subject, and short Gmail snippet; `/calendar` reports the number
 of events in the next 24 hours and the next start time; and `/briefing` combines those read-only
 summaries. Retained Telegram messages from before the first enable are intentionally discarded, so
 they cannot become work after a restart. Ordinary remote questions and proposal preparation use
@@ -156,8 +157,10 @@ remote control of your local process, not a cloud wake-up service.
 
 `/inbox`, `/calendar`, and `/briefing` require the existing Google connector to be enabled and
 connected locally (`connectors.google.enabled: true`, Google client credentials in `.env`, then
-`uv run jarvis connect google`). They return no message sender, subject, snippet, body, event title,
-location, attendee, or identifier. Google checks have a separate 60-per-hour default limit; change
+`uv run jarvis connect google`). The explicit `/inbox` command sends bounded sender, subject, and
+snippet metadata to the configured private Telegram chat, but never full email bodies or message
+identifiers. `/briefing` remains count-only, and calendar responses still omit event titles,
+locations, attendees, and identifiers. Google checks have a separate 60-per-hour default limit; change
 `connectors.telegram.remote_control.max_read_requests_per_hour` only if you need a different safe
 ceiling.
 

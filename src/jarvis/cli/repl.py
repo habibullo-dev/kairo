@@ -66,7 +66,7 @@ from jarvis.remote.operator import (
     RemoteProposalGate,
     RemoteProposalTool,
 )
-from jarvis.remote.workspace import calendar_status, inbox_status
+from jarvis.remote.workspace import calendar_status, inbox_status, inbox_today_summary
 from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
 from jarvis.scheduler.service import TaskService
 from jarvis.scheduler.store import Task, TaskStore
@@ -1101,7 +1101,7 @@ def _build_telegram_remote_control(
         return f"Tasks: {len(active)} active scheduled task(s)."
 
     async def inbox() -> str:
-        return await inbox_status(repl.connectors)
+        return await inbox_today_summary(repl.connectors)
 
     async def calendar() -> str:
         return await calendar_status(
@@ -1109,10 +1109,10 @@ def _build_telegram_remote_control(
         )
 
     async def briefing() -> str:
-        # Keep the briefing deterministic and content-minimized: no mail sender/subject/body or
-        # calendar title/location/attendee reaches Telegram or the remote model.
+        # Keep the briefing deterministic and content-minimized: unlike an explicit /inbox,
+        # it returns no mail sender/subject/snippet/body or calendar content.
         current_status, current_inbox, current_calendar, current_tasks = await asyncio.gather(
-            status(), inbox(), calendar(), task_count()
+            status(), inbox_status(repl.connectors), calendar(), task_count()
         )
         return "Kairo briefing\n\n" + "\n\n".join(
             (current_status, current_inbox, current_calendar, current_tasks)

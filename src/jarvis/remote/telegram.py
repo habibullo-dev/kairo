@@ -69,7 +69,7 @@ def natural_remote_read_command(text: str) -> str | None:
         return "/briefing"
     if re.search(r"\b(?:inbox|e ?mails?|mail)\b", value) and re.search(
         r"\b(?:anything|check|do i have|have i|how many|latest|list|new|read|received|"
-        r"recent|show|status|today|unread|what|what's|which)\b",
+        r"recent|show|status|summarize|summary|today'?s?|unread|what|what's|which)\b",
         value,
     ):
         return "/inbox"
@@ -684,7 +684,7 @@ class TelegramRemoteControl:
                 "Kairo remote control is online.\n\n"
                 "/status — Kairo and scheduler state\n"
                 "/tasks — active task summary\n"
-                "/inbox — unread inbox count only\n"
+                "/inbox — today's recent sender, subject, and snippet summary\n"
                 "/calendar — next-24-hours count and next start time\n"
                 "/briefing — combined status, inbox, calendar, and task count\n"
                 "Photos/files/voice — attach one item with an optional question\n"
