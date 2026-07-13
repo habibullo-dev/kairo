@@ -54,6 +54,25 @@ be too small for provider caching, and Fable orchestration head calls do not yet
 A passing probe is evidence only—not authorization to switch the runtime flag. Any production
 activation remains a separate owner decision and requires the normal safety evaluation review.
 
+## Fable skill-pack A/B — sub-agent quality evidence only
+
+Use this only to decide whether the hash-pinned, Fable-authored pilot packs deserve human review
+for activation. It runs both an architecture-review probe and an isolated writer-repair probe
+through the real `SubAgentService` path, alternating no-skill and active-pack arms under one hard
+cap. Each arm runs at least three times; the writer can edit only a disposable fixture.
+
+```powershell
+uv run jarvis eval skills-ab --live --max-cost-usd 10 --runs 3
+```
+
+The active arm uses a temporary, re-hashed copy of the configured packs, so shadow packs can be
+tested without touching their on-disk status or `settings.yaml`. The report under ignored
+`data/evals/skills-ab/` contains only deterministic rubric scores, costs, arm order, and pinned
+pack manifests—never prompts, compiled skill text, or child reports. `PASS` means the active arm
+scored higher on these probes with every configured pack covered; it still **does not** enable
+skills. `NO_MEASURED_IMPROVEMENT`, incomplete coverage, cap failures, or any failed arm mean keep
+the production mode in `shadow` and revise the packs or benchmark before requesting activation.
+
 ## Cassettes
 
 A cassette is a committed JSON file under `tests/evals/cassettes/` (smoke: `.../smoke/`) holding

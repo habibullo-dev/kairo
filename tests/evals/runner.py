@@ -27,6 +27,7 @@ import argparse
 import asyncio
 import contextlib
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -81,6 +82,7 @@ from jarvis.persistence.db import connect
 from jarvis.scheduler.runner import BackgroundRunner
 from jarvis.scheduler.service import TaskService, utc_now
 from jarvis.scheduler.store import TaskStore
+from jarvis.skills import MemberIdentity, SkillCatalog
 from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
 from jarvis.voice import ScriptedScreenApprover, VoiceApprover, frame_transcript
 
@@ -92,6 +94,7 @@ BASELINES_PATH = Path(__file__).parent / "baselines.yaml"
 FIXTURES_PATH = Path(__file__).parent / "judge_fixtures.yaml"
 CASSETTES_PATH = Path(__file__).parent / "cassettes"  # committed model-call cassettes (replay)
 CACHE_AB_RESULTS_PATH = DATA_EVALS / "cache-ab"  # ignored, measurement-only live probe artifacts
+SKILLS_AB_RESULTS_PATH = DATA_EVALS / "skills-ab"  # ignored, metadata-only live pilot evidence
 #: E6b: the fixed clock every eval agent loop reports as "now" (via _default_now), so the
 #: time-context line in the system prompt is identical across record and replay → same key.
 EVAL_CLOCK = "2026-01-01T12:00:00+00:00"
@@ -110,6 +113,7 @@ CROSS_JUDGE_MODEL = "claude-sonnet-5"  # uncounted cross-family check (see judge
 EVAL_MAIN_MODEL = "claude-opus-4-8"
 EVAL_UTILITY_MODEL = "claude-sonnet-5"
 CACHE_AB_MODEL = "claude-fable-5"
+SKILLS_AB_MODEL = CACHE_AB_MODEL
 
 
 # --- scenario loading ------------------------------------------------------
@@ -1337,6 +1341,372 @@ async def run_cache_ab(
     return exit_code, report, report_path
 
 
+# --- isolated Fable skill-pack experiment ----------------------------------
+
+
+@dataclass(frozen=True)
+class SkillProbe:
+    """One bounded sub-agent behavior probe, not a user task or production workflow."""
+
+    name: str
+    member_id: str
+    title: str
+    route_role: str
+    stage: str
+    tools: tuple[str, ...]
+    prompt: str
+
+
+_SKILL_PROBES: tuple[SkillProbe, ...] = (
+    SkillProbe(
+        name="backend_architecture_review",
+        member_id="architect",
+        title="Architect",
+        route_role="reviewer",
+        stage="council",
+        tools=("read_file",),
+        prompt=(
+            "Inspect src/widget.py and give a concise engineering review. Ground every claim in "
+            "what you read. Identify any correctness risk and what a safe implementation should do."
+        ),
+    ),
+    SkillProbe(
+        name="backend_writer_repair",
+        member_id="be_implementer",
+        title="Implementer",
+        route_role="coder",
+        stage="execution",
+        tools=("read_file", "write_file"),
+        prompt=(
+            "Inspect src/widget.py, repair its empty-input bug, and report exactly what you "
+            "changed and verified. Work only in this isolated fixture."
+        ),
+    ),
+)
+
+
+@dataclass(frozen=True)
+class SkillProbeRecord:
+    """Metadata-only result. The raw model report is analyzed in temp storage then discarded."""
+
+    probe: str
+    state: str
+    score: int
+    score_max: int
+    checks: dict[str, bool]
+    injected: bool
+    manifest: list[dict[str, str]]
+
+
+def _skill_probe_checks(probe: SkillProbe, text: str, source: str) -> dict[str, bool]:
+    """A deterministic rubric for the report plus its isolated work product.
+
+    This is intentionally not an LLM judge: it lets the expensive Fable comparison produce a
+    reproducible engineering signal, while the saved artifact contains no response text.
+    """
+    if probe.name == "backend_architecture_review":
+        return {
+            "report_structure": bool(
+                re.search(r"(?im)^(?:STATUS|STAGE):", text)
+                and re.search(r"(?im)^(?:FINDINGS|CONSTRAINTS / FINDINGS):", text)
+                and re.search(r"(?im)^(?:EVIDENCE|EVIDENCE / UNCERTAINTIES):", text)
+            ),
+            "anchored_evidence": bool(re.search(r"src/widget\.py:\d+", text)),
+            "identified_empty_input_risk": bool(
+                re.search(r"(?i)zero|division|denominator|empty", text)
+            ),
+        }
+    # The writer pack's deliverable is intentionally different from the reviewer pack: it
+    # reports changed files and tests, not a council findings list.  Score the contract it was
+    # actually given plus the deterministic fixture repair.
+    return {
+        "report_structure": bool(
+            re.search(r"(?im)^STATUS:", text)
+            and re.search(r"(?im)^FILES-CHANGED:", text)
+            and re.search(r"(?im)^TESTS:", text)
+        ),
+        "named_changed_file": "src/widget.py" in text,
+        "repaired_empty_input": "if not values:" in source and "return 0.0" in source,
+    }
+
+
+def _evaluation_catalog(config: Config, root: Path) -> SkillCatalog:
+    """Activate copies of the configured packs only inside a temporary evaluator root.
+
+    Current pilot files may be ``status: shadow``.  Their runtime section text is unchanged here;
+    only the copied metadata is promoted and re-hashed so the normal active-mode validator and
+    injection path are exercised without altering the real packs or settings file.
+    """
+    if not config.skills.enabled:
+        raise ValueError("skills-ab requires at least one configured, hash-pinned skill pack")
+    pack_dir = root / "config" / "skills" / "packs"
+    pack_dir.mkdir(parents=True, exist_ok=True)
+    activations = []
+    for activation in config.skills.enabled:
+        source = config.root / "config" / "skills" / "packs" / f"{activation.pack}.md"
+        target = pack_dir / source.name
+        raw = source.read_text(encoding="utf-8")
+        promoted = raw.replace("\nstatus: shadow\n", "\nstatus: active\n", 1)
+        if "\nstatus: shadow\n" in raw and promoted == raw:
+            raise ValueError(f"skills-ab could not prepare shadow pack {activation.pack!r}")
+        target.write_text(promoted, encoding="utf-8")
+        activations.append(
+            activation.model_copy(
+                update={"sha256": hashlib.sha256(promoted.encode("utf-8")).hexdigest()}
+            )
+        )
+    skill_config = config.skills.model_copy(update={"mode": "active", "enabled": activations})
+    return SkillCatalog(root, skill_config)
+
+
+def _off_catalog(config: Config) -> SkillCatalog:
+    return SkillCatalog(config.root, config.skills.model_copy(update={"mode": "off"}))
+
+
+async def _run_skill_probe(
+    config: Config,
+    *,
+    client: LLMClient,
+    catalog: SkillCatalog,
+    probe: SkillProbe,
+) -> SkillProbeRecord:
+    """Run one scoped production ``SubAgentService`` child against a disposable fixture."""
+    workdir = Path(tempfile.mkdtemp(prefix="jarvis-skills-ab-"))
+    sessions: SessionStore | None = None
+    try:
+        source_path = workdir / "src" / "widget.py"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text(
+            "def average(values: list[float]) -> float:\n"
+            "    return sum(values) / len(values)\n",
+            encoding="utf-8",
+        )
+        models = config.models.model_copy(update={"main": SKILLS_AB_MODEL})
+        run_config = config.model_copy(update={"root": workdir, "models": models})
+        sessions = SessionStore(await connect(workdir / "skills-ab.db"))
+        executor = ToolExecutor(
+            timeout=run_config.limits.tool_timeout_seconds,
+            max_result_chars=run_config.limits.max_tool_result_chars,
+        )
+        gate = PermissionGate(load_policy(config.root / "config" / "permissions.yaml"), workdir)
+
+        async def approve_fixture_write(_request, _context) -> Permission:
+            # The only ASK-capable capability in this benchmark is an isolated temp-file repair.
+            # This approver is never composed in the application and has no external authority.
+            return Permission.ALLOW
+
+        agents = SubAgentService(
+            session_store=sessions,
+            run_store=AgentRunStore(sessions.db, sessions.lock),
+            client=client,
+            executor=executor,
+            gate=gate,
+            config=run_config,
+            make_context_manager=lambda: ContextManager(
+                summarizer=client, utility_model=SKILLS_AB_MODEL
+            ),
+            make_approver=lambda _gate, _agent_id, _title: approve_fixture_write,
+        )
+        registry = ToolRegistry()
+        registry.discover("jarvis.tools.builtin", ToolContext(config=run_config))
+        agents.bind(registry=registry)
+        compiled = catalog.compile(
+            MemberIdentity(
+                team="backend",
+                member_id=probe.member_id,
+                title=probe.title,
+                route_role=probe.route_role,
+                stage=probe.stage,
+            )
+        )
+        result = await agents.spawn(
+            title=f"skills-ab:{probe.name}",
+            prompt=probe.prompt,
+            tools=list(probe.tools),
+            role=probe.route_role,
+            team="backend",
+            stage=probe.stage,
+            fresh_trace=True,
+            skill_text=compiled.text,
+            skill_manifest=list(compiled.manifest),
+        )
+        text = getattr(result, "content", str(result))
+        source = source_path.read_text(encoding="utf-8")
+        checks = _skill_probe_checks(probe, text, source)
+        return SkillProbeRecord(
+            probe=probe.name,
+            state="ok" if not getattr(result, "is_error", False) else "error",
+            score=sum(checks.values()),
+            score_max=len(checks),
+            checks=checks,
+            injected=compiled.text is not None,
+            manifest=list(compiled.manifest),
+        )
+    except Exception:  # noqa: BLE001 - preserve only an inert ERROR state in the measurement
+        return SkillProbeRecord(
+            probe=probe.name,
+            state="error",
+            score=0,
+            score_max=3,
+            checks={},
+            injected=False,
+            manifest=[],
+        )
+    finally:
+        if sessions is not None:
+            with contextlib.suppress(Exception):
+                await sessions.close()
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _skills_ab_arm(arm: str, records: list[SkillProbeRecord], cost_usd: float) -> dict:
+    scores = [record.score for record in records]
+    maxima = [record.score_max for record in records]
+    manifests: list[dict[str, str]] = []
+    seen_manifests: set[tuple[tuple[str, str], ...]] = set()
+    for record in records:
+        for entry in record.manifest:
+            key = tuple(sorted(entry.items()))
+            if key not in seen_manifests:
+                manifests.append(entry)
+                seen_manifests.add(key)
+    return {
+        "arm": arm,
+        "states": [record.state for record in records],
+        "all_completed": all(record.state == "ok" for record in records),
+        "injected": all(record.injected for record in records) if arm == "active" else False,
+        "quality": {
+            "scores": scores,
+            "score_max": maxima,
+            "mean_score": round(sum(scores) / len(scores), 3) if scores else 0.0,
+            "perfect_runs": sum(
+                score == maximum for score, maximum in zip(scores, maxima, strict=True)
+            ),
+        },
+        # Hash-pinned pack metadata only.  No compiled text or child result enters the report.
+        "manifest": manifests,
+        "cost_usd": round(cost_usd, 6),
+    }
+
+
+async def run_skills_ab(
+    config: Config,
+    *,
+    runs: int,
+    max_cost_usd: float,
+    results_root: Path = SKILLS_AB_RESULTS_PATH,
+    inner_factory: Callable[[Config], LLMClient] | None = None,
+    probe_runner: Callable[..., object] | None = None,
+) -> tuple[int, dict, Path]:
+    """Measure Fable sub-agent behavior with no skills vs ephemeral active pack copies.
+
+    It uses the real ``SkillCatalog`` and ``SubAgentService.spawn`` injection seam.  The output
+    is a bodies-free evidence artifact; passing it does not activate packs, change settings, or
+    make a rollout decision.  A human must inspect the result before any production activation.
+    """
+    from jarvis.observability.cost import load_pricing
+
+    if runs < 3:
+        raise ValueError("skills-ab requires at least three runs per arm")
+    if max_cost_usd <= 0:
+        raise ValueError("skills-ab requires a positive shared --max-cost-usd cap")
+    pricing = load_pricing(config.root / "config" / "pricing.yaml")
+    if pricing.cost("anthropic", SKILLS_AB_MODEL, Usage(input_tokens=1)) is None:
+        raise ValueError(f"skills-ab model {SKILLS_AB_MODEL} is unpriced in config/pricing.yaml")
+    cap = CostCap(max_cost_usd, pricing)
+    create_inner = inner_factory or _default_client_factory
+    run_probe = probe_runner or _run_skill_probe
+    arm_records: dict[str, list[SkillProbeRecord]] = {"off": [], "active": []}
+    arm_costs: dict[str, float] = {"off": 0.0, "active": 0.0}
+    arm_schedule: list[list[str]] = []
+
+    with tempfile.TemporaryDirectory(prefix="jarvis-skills-ab-catalog-") as catalog_root:
+        catalogs = {
+            "off": _off_catalog(config),
+            "active": _evaluation_catalog(config, Path(catalog_root)),
+        }
+        arm_config = config.model_copy(
+            update={"models": config.models.model_copy(update={"main": SKILLS_AB_MODEL})}
+        )
+        cassettes = {
+            arm: CassetteConfig(
+                mode="live",
+                store_dir=Path(catalog_root) / "cassettes" / arm,
+                max_cost_usd=max_cost_usd,
+            )
+            for arm in catalogs
+        }
+        # Alternate first position by run.  This keeps the two expensive live arms balanced
+        # against short-lived provider/rate-limit drift without introducing any random state.
+        for run_idx in range(runs):
+            arm_order = ("off", "active") if run_idx % 2 == 0 else ("active", "off")
+            arm_schedule.append(list(arm_order))
+            for arm in arm_order:
+                for probe in _SKILL_PROBES:
+                    spent_before = cap.spent
+                    client = cassette_wrap(
+                        create_inner(arm_config),
+                        provider="anthropic",
+                        cfg=cassettes[arm],
+                        pricing=pricing,
+                        signature={
+                            "effort": arm_config.limits.effort,
+                            "thinking": True,
+                            "compat": False,
+                        },
+                        cost_cap=cap,
+                        scenario=f"skills-ab:{arm}:{probe.name}:{run_idx}",
+                    )
+                    record = await run_probe(
+                        arm_config, client=client, catalog=catalogs[arm], probe=probe
+                    )
+                    arm_records[arm].append(record)
+                    arm_costs[arm] += cap.spent - spent_before
+
+    arm_results = [
+        _skills_ab_arm(arm, arm_records[arm], arm_costs[arm]) for arm in ("off", "active")
+    ]
+
+    off, active = arm_results
+    active_manifest = active["manifest"]
+    covered = {entry.get("pack") for entry in active_manifest}
+    configured = {activation.pack for activation in config.skills.enabled}
+    if not active["injected"] or not active_manifest:
+        outcome, exit_code = "NOT_ELIGIBLE", 2
+    elif configured - covered:
+        outcome, exit_code = "INCOMPLETE_PACK_COVERAGE", 2
+    elif not off["all_completed"] or not active["all_completed"]:
+        outcome, exit_code = "QUALITY_FAILURE", 1
+    elif active["quality"]["mean_score"] > off["quality"]["mean_score"]:
+        outcome, exit_code = "PASS", 0
+    else:
+        outcome, exit_code = "NO_MEASURED_IMPROVEMENT", 2
+
+    report = {
+        "schema": "skills-ab-v1",
+        "measurement_only": True,
+        "does_not_activate_skill_packs": True,
+        "human_activation_review_required": True,
+        "model": SKILLS_AB_MODEL,
+        "provider": "anthropic",
+        "runs_per_arm": runs,
+        "arm_schedule": arm_schedule,
+        "probes_per_run": [probe.name for probe in _SKILL_PROBES],
+        "shared_max_cost_usd": max_cost_usd,
+        "shared_spend_usd": round(cap.spent, 6),
+        "pricing": {"version": pricing.version, "effective": pricing.effective},
+        "configured_packs": sorted(configured),
+        "covered_packs": sorted(pack for pack in covered if isinstance(pack, str)),
+        "outcome": outcome,
+        "arms": arm_results,
+    }
+    artifact = results_root / f"{time.strftime('%Y%m%d-%H%M%S')}-{recorder.git_rev()}"
+    artifact.mkdir(parents=True, exist_ok=True)
+    report_path = artifact / "report.json"
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    return exit_code, report, report_path
+
+
 # --- orchestration (records -> gate engine -> report; see report.py) -------
 
 
@@ -1949,6 +2319,7 @@ def cli(argv: list[str] | None = None) -> int:
         "smoke",
         "plan",
         "cache-ab",
+        "skills-ab",
         "-h",
         "--help",
     }:
@@ -2033,6 +2404,20 @@ def cli(argv: list[str] | None = None) -> int:
         help="Required shared hard cap across cache-off and cache-on arms.",
     )
 
+    sab = sub.add_parser(
+        "skills-ab",
+        help="Live, isolated Fable skill-pack A/B; never activates production skill packs.",
+    )
+    sab.add_argument("--runs", type=int, default=3, help="Runs per arm and probe (minimum: 3).")
+    sab.add_argument("--live", action="store_true", help="Required: authorizes this live probe.")
+    sab.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="Required shared hard cap across both arms and all isolated sub-agent probes.",
+    )
+
     args = parser.parse_args(argv)
 
     # E6b: pin a deterministic eval clock for every agent loop (main / sub-agent / unattended
@@ -2089,6 +2474,27 @@ def cli(argv: list[str] | None = None) -> int:
             return 2
         print(
             f"[cache-ab] outcome={result['outcome']} spend=${result['shared_spend_usd']:.4f} "
+            f"report={report_path}"
+        )
+        return exit_code
+
+    if args.cmd == "skills-ab":
+        if not args.live or args.max_cost_usd is None or args.max_cost_usd <= 0:
+            print("[skills-ab] requires --live and a positive --max-cost-usd USD; no call was made")
+            return 2
+        if args.runs < 3:
+            print("[skills-ab] requires --runs >= 3; no call was made")
+            return 2
+        try:
+            config = load_config(require=("anthropic",))
+            exit_code, result, report_path = asyncio.run(
+                run_skills_ab(config, runs=args.runs, max_cost_usd=args.max_cost_usd)
+            )
+        except (ConfigError, ValueError) as exc:
+            print(f"[skills-ab] {exc}; no call was made")
+            return 2
+        print(
+            f"[skills-ab] outcome={result['outcome']} spend=${result['shared_spend_usd']:.4f} "
             f"report={report_path}"
         )
         return exit_code

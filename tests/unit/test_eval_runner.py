@@ -450,3 +450,137 @@ async def test_cache_ab_reports_not_eligible_when_the_provider_never_reads_cache
         results_root=tmp_path / "cache-ab",
     )
     assert exit_code == 2 and result["outcome"] == "NOT_ELIGIBLE"
+
+
+# --- isolated Fable skill-pack A/B probe -----------------------------------
+
+
+def test_skills_ab_cli_requires_explicit_live_cap(capsys) -> None:
+    assert runner.cli(["skills-ab"]) == 2
+    assert "requires --live and a positive --max-cost-usd" in capsys.readouterr().out
+
+
+async def test_skills_ab_uses_ephemeral_active_copies_and_writes_metadata_only(
+    tmp_path: Path,
+) -> None:
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    settings_before = (runner.REPO_ROOT / "config" / "settings.yaml").read_text(encoding="utf-8")
+    seen: list[tuple[str, bool]] = []
+
+    async def fake_probe(_config, *, client, catalog, probe):
+        compiled = catalog.compile(
+            runner.MemberIdentity(
+                team="backend",
+                member_id=probe.member_id,
+                title=probe.title,
+                route_role=probe.route_role,
+                stage=probe.stage,
+            )
+        )
+        active = catalog.mode == "active"
+        seen.append((probe.name, active))
+        return runner.SkillProbeRecord(
+            probe=probe.name,
+            state="ok",
+            score=3 if active else 1,
+            score_max=3,
+            checks={"RAW-REPORT-CANARY": active},
+            injected=compiled.text is not None,
+            manifest=list(compiled.manifest),
+        )
+
+    exit_code, result, report_path = await runner.run_skills_ab(
+        config,
+        runs=3,
+        max_cost_usd=5.0,
+        results_root=tmp_path / "skills-ab",
+        inner_factory=lambda _cfg: FakeClient([]),
+        probe_runner=fake_probe,
+    )
+
+    assert exit_code == 0 and result["outcome"] == "PASS"
+    assert seen == [
+        (probe.name, arm == "active")
+        for run_idx in range(3)
+        for arm in (("off", "active") if run_idx % 2 == 0 else ("active", "off"))
+        for probe in runner._SKILL_PROBES
+    ]
+    assert (
+        (runner.REPO_ROOT / "config" / "settings.yaml").read_text(encoding="utf-8")
+        == settings_before
+    )
+    report_text = report_path.read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert report["measurement_only"] is True
+    assert report["does_not_activate_skill_packs"] is True
+    assert report["human_activation_review_required"] is True
+    assert report["arm_schedule"] == [["off", "active"], ["active", "off"], ["off", "active"]]
+    assert set(report["covered_packs"]) == {entry.pack for entry in config.skills.enabled}
+    assert "RAW-REPORT-CANARY" not in report_text
+    assert "answer" not in report_text and "prompt" not in report_text
+
+
+async def test_skill_probe_exercises_real_subagent_skill_injection(tmp_path: Path) -> None:
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    catalog = runner._evaluation_catalog(config, tmp_path / "ephemeral-catalog")
+    response = text_message(
+        "STAGE: council\n"
+        "CONSTRAINTS / FINDINGS:\n- division risk [src/widget.py:2]\n"
+        "EVIDENCE / UNCERTAINTIES:\n- read src/widget.py"
+    )
+    client = FakeClient([response])
+    record = await runner._run_skill_probe(
+        config,
+        client=client,
+        catalog=catalog,
+        probe=runner._SKILL_PROBES[0],
+    )
+    assert record.state == "ok" and record.injected is True
+    assert record.score == record.score_max
+    assert {entry["pack"] for entry in record.manifest} == {
+        "core-engineering",
+        "architect-reviewer",
+    }
+    assert "Core Engineering Discipline" in client.calls[0]["system"]
+
+
+async def test_skill_writer_probe_allows_only_the_disposable_fixture_repair(tmp_path: Path) -> None:
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    catalog = runner._evaluation_catalog(config, tmp_path / "ephemeral-catalog")
+    client = FakeClient(
+        [
+            tool_use_message(
+                [
+                    ToolCall(
+                        "write-1",
+                        "write_file",
+                        {
+                            "path": "src/widget.py",
+                            "content": (
+                                "def average(values: list[float]) -> float:\n"
+                                "    if not values:\n"
+                                "        return 0.0\n"
+                                "    return sum(values) / len(values)\n"
+                            ),
+                        },
+                    )
+                ]
+            ),
+            text_message(
+                "STATUS: COMPLETE\n"
+                "FILES-CHANGED:\n- src/widget.py — handle empty input\n"
+                "TESTS:\n- not run (isolated fixture)"
+            ),
+        ]
+    )
+    record = await runner._run_skill_probe(
+        config,
+        client=client,
+        catalog=catalog,
+        probe=runner._SKILL_PROBES[1],
+    )
+    assert record.state == "ok" and record.score == record.score_max
+    assert {entry["pack"] for entry in record.manifest} == {
+        "core-engineering",
+        "backend-implementer",
+    }
