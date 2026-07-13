@@ -87,6 +87,8 @@ def _loop(client: FakeClient, *, chat: ChatConfig, pricing: PricingTable) -> Age
         chat_limits=chat,
         pricing=pricing,
         provider_override=lambda: "anthropic",
+        # Budget tests need a stable request size; product prompt growth is tested separately.
+        system="Budget-test assistant.",
     )
 
 
