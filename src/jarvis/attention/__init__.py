@@ -31,6 +31,7 @@ from jarvis.attention.routing import (
     NotifyDecision,
     in_quiet_hours,
     minimized_push,
+    notify_open_attention_item,
     route_notification,
 )
 from jarvis.attention.runner import collect, dream_run
@@ -58,6 +59,7 @@ __all__ = [
     "NotifyDecision",
     "in_quiet_hours",
     "minimized_push",
+    "notify_open_attention_item",
     "route_notification",
     "DREAMING_TOOLS",
     "FORBIDDEN_TOOLS",

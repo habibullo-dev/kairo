@@ -28,7 +28,7 @@ second execution or permission path.
 | Orchestration | Teams, bounded multi-stage runs, budget estimates, read-only review stages, and a human-reviewed Studio surface. | [ADR-0014](decisions/0014-orchestration-on-spawn.md), [ADR-0015](decisions/0015-team-tool-intelligence.md) |
 | Workstation evidence | Search, artifacts, connector-write audit, research-service state, AI Team Office, and the graph all project existing records into authenticated UI reads. | [ADR-0017](decisions/0017-workstation-ui.md), [ADR-0019](decisions/0019-research-services-live.md), [ADR-0020](decisions/0020-ai-team-office.md), [ADR-0021](decisions/0021-memory-graph.md) |
 | Efficiency and journey | Context reuse and cost-aware routing are instrumented, configuration-driven extensions; the workstation journey remains an interface over the same Gate. | [ADR-0018](decisions/0018-context-reuse.md), [ADR-0022](decisions/0022-workstation-journey.md), [ADR-0023](decisions/0023-cost-aware-routing.md) |
-| Attention substrate | Attention records and UI surfaces exist; automatic notification routing and unattended expansion remain explicitly checkpointed, not assumed active. | [`ROADMAP-12-16-execution.md`](ROADMAP-12-16-execution.md) |
+| Attention substrate | Attention records and UI surfaces exist. Configured scheduler terminal errors emit a post-commit, body-free count nudge; no notifier resolves an approval. Durable unattended approval/resume remains a separate local-Gate protocol. | [`ROADMAP-12-16-execution.md`](ROADMAP-12-16-execution.md) |
 
 For the current product status and the phase-by-phase user contract, start with
 [`README.md`](../README.md). This map intentionally describes the committed baseline only;

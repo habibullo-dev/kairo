@@ -27,11 +27,13 @@ import { init as initPalette, openPalette } from "./ui/palette.js";
 import { refreshHeader } from "./ui/header.js";
 import { canCapture, cancelCapture, playCaption, playbackOn, recording, setPlayback, stopCaption, toggleTalk } from "./ui/voice.js";
 import { money } from "./ui/format.js";
+import { openParkedTaskApproval } from "./ui/task-draft.js";
 
 const state = {
   chat: [],            // Daily conversation items {role, text} | {tool, resolution}
   chatAttachments: [], // local user-selected sources persisted into this chat/project knowledge scope
   pending: new Map(),  // decision_id -> approval payload (+ nonce once minted)
+  parkedTaskApprovals: new Map(), // run_id -> exact durable unattended ASK (+ live nonce)
   runner: null,        // last /api/runner status; null until the first shared read succeeds
   runnerStatusError: false, // latest shared runner read failed; cached state is not current
   voice: { enabled: false },
@@ -130,6 +132,34 @@ export const api = {
     const next = [...state.pending.values()][0];
     if (next) { next._shown = false; showTopApproval(); }
   },
+  // A parked job is visible only after Task History returned its exact durable continuation.
+  // This screen helper has no scheduler authority: the server revalidates the run, nonce, and
+  // workspace before it delegates the decision to its host-composed resume callback.
+  reviewParkedTask(approval) {
+    const runId = Number(approval && approval.run_id);
+    if (!Number.isInteger(runId) || runId < 1 || !state.context) return false;
+    const projectId = approval.project_id == null ? null : Number(approval.project_id);
+    if (projectId !== null && projectId !== state.context.project_id) return false;
+    const pending = { ...approval, run_id: runId, nonce: null };
+    state.parkedTaskApprovals.set(runId, pending);
+    const controller = openParkedTaskApproval(pending, api, {
+      onShown() { wsSend({ type: "parked_task_approval_shown", run_id: runId }); },
+      onResolved() {
+        state.parkedTaskApprovals.delete(runId);
+        if (_parkedTaskDialog === controller) _parkedTaskDialog = null;
+        refreshIfActive("tasks");
+      },
+      onRetry() {
+        pending.nonce = null;
+        wsSend({ type: "parked_task_approval_shown", run_id: runId });
+      },
+      onDismissed() {
+        if (_parkedTaskDialog === controller) _parkedTaskDialog = null;
+      },
+    });
+    _parkedTaskDialog = controller;
+    return true;
+  },
   async toggleVoiceCapture(mode, onTranscript) {
     if (!state.voice.enabled) {
       onVoiceState("error", state.voice.reason || "Voice is unavailable.");
@@ -219,6 +249,7 @@ function handleMessage(msg) {
   if (msg.session_id != null && !acceptsContext(msg) && !(lifecycle && msg.workspace_id === workspaceId)) return;
   if (msg.type === "approval") { onApproval(msg); return; }
   if (msg.type === "approval_nonce") { onNonce(msg); return; }
+  if (msg.type === "parked_task_approval_nonce") { onParkedTaskNonce(msg); return; }
   if (msg.kind && msg.kind.startsWith("orchestration_")) {
     busEmit("orchestration", msg);
     studioOnEvent(state, msg);        // update the in-flight run panel
@@ -363,6 +394,7 @@ function onEvent(evt) {
 
 // --- approvals: the priority attention surface ---
 let _approvalEsc = null; // unregister fn for the Escape-closes-modal binding (keys.js)
+let _parkedTaskDialog = null;
 function onApproval(msg) {
   state.pending.set(msg.decision_id, { ...msg, nonce: null });
   updateGateBadge();
@@ -433,6 +465,16 @@ function onNonce(msg) {
     document.getElementById("ap-waiting").textContent = "Confirm below to commit this action.";
     document.getElementById("ap-approve").disabled = false;
     document.getElementById("ap-always").disabled = false;
+  }
+}
+
+function onParkedTaskNonce(msg) {
+  const runId = Number(msg.run_id);
+  const pending = state.parkedTaskApprovals.get(runId);
+  if (!pending || typeof msg.nonce !== "string") return;
+  pending.nonce = msg.nonce;
+  if (_parkedTaskDialog && _parkedTaskDialog.runId === runId) {
+    _parkedTaskDialog.setNonce(msg.nonce);
   }
 }
 

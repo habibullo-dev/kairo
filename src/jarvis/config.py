@@ -170,12 +170,22 @@ class SchedulerConfig(BaseModel):
     enabled: bool = True
     misfire_grace_seconds: int = 3600  # due-jobs older than this on catch-up are 'missed'
     max_consecutive_failures: int = 3  # recurring job flips to 'failed' after this many errors
+    # A retry is permitted only when a job reports that no tool began.  The cap bounds both
+    # cost and duplicate-effect risk; the terminal attempt becomes a dead-letter alert.
+    retry_base_seconds: int = Field(default=60, ge=1, le=86_400)
+    retry_max_seconds: int = Field(default=900, ge=1, le=86_400)
     wake_cap_seconds: int = 30  # loop re-checks at least this often (survives laptop sleep)
     max_job_iterations: int = 15  # unattended runaway bound (< limits.max_iterations)
     reflect_job_sessions: bool = False  # unattended transcripts don't feed memory by default
     # Tools whose policy-level ALLOW survives the unattended demotion (see D2 in
     # docs/PLAN-3-tasks.md). Empty by default: interactive grants are not unattended grants.
     unattended_allow_tools: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _retry_cap_cannot_precede_base(self) -> SchedulerConfig:
+        if self.retry_max_seconds < self.retry_base_seconds:
+            raise ValueError("scheduler.retry_max_seconds must be >= retry_base_seconds")
+        return self
 
 
 class KnowledgeConfig(BaseModel):
@@ -545,12 +555,14 @@ class BudgetsConfig(BaseModel):
 
 
 class AttentionConfig(BaseModel):
-    """Attention routing (Phase 16). Urgent items MAY push to notifiers; everything else folds
-    into the digest or stays in the center. Pushes are minimized (count + kind only, never a
-    body). ``urgent_channels`` defaults to EMPTY — no surprise egress until you opt a channel in;
-    each named channel still needs its notifier configured (connectors)."""
+    """Attention routing (Phase 16). Each priority may opt in to a minimized notifier push;
+    unset priorities retain their digest/center behavior. Pushes contain only open-item counts,
+    never an attention title or payload. Every named channel still needs its notifier configured.
+    """
 
-    urgent_channels: list[str] = Field(default_factory=list)  # subset of {telegram, kakao}
+    urgent_channels: list[str] = Field(default_factory=list)
+    normal_channels: list[str] = Field(default_factory=list)
+    low_channels: list[str] = Field(default_factory=list)
     quiet_hours_start: int | None = None  # local hour [0-23] inclusive; None = no quiet window
     quiet_hours_end: int | None = None  # local hour [0-23] exclusive
     muted_projects: list[int] = Field(default_factory=list)  # project ids that never push
@@ -558,13 +570,13 @@ class AttentionConfig(BaseModel):
     # 0 disables dreaming (fail-closed until a positive cap is set). Never scheduled before K.
     dreaming_budget_usd: float = 1.5
 
-    @field_validator("urgent_channels")
+    @field_validator("urgent_channels", "normal_channels", "low_channels")
     @classmethod
     def _known_channels(cls, v: list[str]) -> list[str]:
         allowed = {"telegram", "kakao"}
         bad = [c for c in v if c not in allowed]
         if bad:
-            raise ValueError(f"urgent_channels must be subset of {sorted(allowed)}; got {bad}")
+            raise ValueError(f"attention channels must be subset of {sorted(allowed)}; got {bad}")
         return v
 
 

@@ -932,10 +932,14 @@ def _build_scheduler(
     interactive session as provenance."""
     if not config.scheduler.enabled:
         return None
+    attention = AttentionStore(db, store.lock)
+    from jarvis.attention import NotificationRouter
+
     service = TaskService(
         TaskStore(db, store.lock),
         config.scheduler,
-        attention=AttentionStore(db, store.lock),
+        attention=attention,
+        notification_router=NotificationRouter(config, build_connectors(config)),
     )
     service.bound_session_id = session_id
     return service
@@ -1084,6 +1088,7 @@ def _build_runner(
     board: object | None = None,
     digest_store: object | None = None,
     artifacts: object | None = None,
+    enable_parked_approvals: bool = False,
 ) -> BackgroundRunner:
     """Wire the BackgroundRunner: it fires due tasks, and delegates job execution to
     a JobRunner built from the REPL's already-composed collaborators (same registry,
@@ -1101,6 +1106,10 @@ def _build_runner(
         memory=memory,
         knowledge=knowledge,
         make_context_manager=lambda: _build_context_manager(config, utility),
+        # Only the authenticated workstation composes durable parked approvals. The REPL/voice
+        # paths keep HeadlessApprover's deny posture, so they cannot create a task no local Gate
+        # can later resolve.
+        task_store=tasks.store if enable_parked_approvals else None,
     )
 
     def notify(line: str) -> None:
@@ -1141,6 +1150,7 @@ def _build_runner(
         notify=notify,
         task_notify=task_notify,
         run_job=job_runner.run,
+        resume_job=job_runner.resume_parked if enable_parked_approvals else None,
         run_digest=run_digest,
         turn_lock=repl.turn_lock,
     )
@@ -1729,8 +1739,10 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
                 board=board,
                 digest_store=digest_store,
                 artifacts=artifacts,
+                enable_parked_approvals=True,
             )
             app.state.runner = runner
+            app.state.resume_parked = runner.resume_parked
             await ensure_digest_task(tasks, config)
             await _scheduler_startup(tasks, runner, console)
             runner.start()

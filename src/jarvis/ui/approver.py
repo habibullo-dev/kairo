@@ -44,6 +44,11 @@ VOICE = "voice"
 #: Resolution actions a client may send.
 _ACTIONS = frozenset({"approve", "always", "deny"})
 
+#: A parked unattended run is intentionally narrower than an interactive Gate ASK: the person
+#: may approve this *one exact* saved call or reject it.  A parked run can never create an
+#: ``always`` rule, and its browser action is never a permission grant by itself.
+_PARKED_TASK_ACTIONS = frozenset({"approve", "reject"})
+
 #: How often the fail-closed watcher re-checks the screen while a voice approval is pending.
 _ABORT_POLL_SECONDS = 0.05
 
@@ -76,6 +81,169 @@ class PendingApproval:
             "title": self.title,
             "persistable": self.decision.persistable,
         }
+
+
+@dataclass(frozen=True)
+class ParkedTaskApproval:
+    """One durable unattended ASK exposed for local UI review.
+
+    The manager deliberately stores the parsed continuation only after its integrity check has
+    passed.  ``run_id`` is a database identifier, not an approval credential: resolving still
+    requires the single-use nonce minted over a live WebSocket, and the server re-reads the task
+    run immediately before it delegates to the host resume callback.
+    """
+
+    run_id: int
+    task_id: int
+    task_title: str
+    project_id: int | None
+    tool_id: str
+    tool_name: str
+    tool_input: dict
+    tool_input_hash: str
+    decision_reason: str
+
+    def to_public(self) -> dict:
+        """The exact saved request shown before a one-time decision.
+
+        This is a private, authenticated local UI payload.  Do not reuse it for notification
+        delivery: a Telegram/Kakao message must not carry tool input or become an approval path.
+        """
+        return {
+            "run_id": self.run_id,
+            "task_id": self.task_id,
+            "task_title": self.task_title,
+            "project_id": self.project_id,
+            "tool_id": self.tool_id,
+            "tool_name": self.tool_name,
+            "tool_input": self.tool_input,
+            "tool_input_hash": self.tool_input_hash,
+            "reason": self.decision_reason,
+        }
+
+
+class ParkedTaskApprovalManager:
+    """Live-screen nonce guard for durable parked task continuations.
+
+    Durable state lives in ``TaskStore``; this small sibling to :class:`ApprovalManager` holds
+    only the UI projection and its live WebSocket nonce.  A task-history request registers a
+    verified continuation, then the user deliberately opens the exact-call review.  No browser
+    state can manufacture a continuation or invoke ``TaskStore.claim_parked_approval`` directly.
+    """
+
+    def __init__(self, connections: ConnectionManager, *, log=None) -> None:
+        self.connections = connections
+        self._pending: dict[int, ParkedTaskApproval] = {}
+        self._nonces: dict[str, tuple[int, str]] = {}  # nonce -> (run_id, conn_id)
+        self._resolving: set[int] = set()
+        self.log = log or get_logger("jarvis.ui.parked_task_approvals")
+
+    def register(self, *, run_id: int, task, continuation) -> ParkedTaskApproval:
+        """Record a verified pending continuation from a scoped task-history read.
+
+        ``task`` and ``continuation`` are intentionally duck-typed here so the UI seam does not
+        become a second persistence layer.  The server obtains both directly from ``TaskStore``.
+        A later register replaces only the same durable run id, invalidating old nonces so a stale
+        browser view can never authorize the newly-read projection.
+        """
+        continuation.verify()
+        pending = ParkedTaskApproval(
+            run_id=run_id,
+            task_id=task.id,
+            task_title=task.title,
+            project_id=task.project_id,
+            tool_id=continuation.tool_id,
+            tool_name=continuation.tool_name,
+            tool_input=continuation.tool_input,
+            tool_input_hash=continuation.tool_input_hash,
+            decision_reason=continuation.decision_reason,
+        )
+        previous = self._pending.get(run_id)
+        if previous != pending:
+            self._pending[run_id] = pending
+            self._drop_nonces_for(run_id)
+            self._resolving.discard(run_id)
+        return pending
+
+    def get(self, run_id: int) -> ParkedTaskApproval | None:
+        return self._pending.get(run_id)
+
+    def visible_to(
+        self, run_id: int, context: ExecutionContext | None
+    ) -> ParkedTaskApproval | None:
+        """Return one pending run only when the live workspace may see its task.
+
+        The global workspace is the explicit administrative view.  A project workspace may
+        review its project or a deliberate global task, never another project's parked call.
+        ``None`` never acts as a wildcard context.
+        """
+        pending = self._pending.get(run_id)
+        if pending is None or context is None:
+            return None
+        if context.project_id is None or pending.project_id in {None, context.project_id}:
+            return pending
+        return None
+
+    async def mint_nonce(self, run_id: int, conn: Connection) -> str | None:
+        """Mint a single-use nonce only after the exact-call dialog is visibly mounted."""
+        pending = self.visible_to(run_id, conn.context)
+        if (
+            pending is None
+            or run_id in self._resolving
+            or not self.connections.is_live(conn)
+        ):
+            return None
+        nonce = secrets.token_urlsafe(24)
+        self._nonces[nonce] = (run_id, conn.id)
+        return nonce
+
+    def reserve(
+        self,
+        run_id: int,
+        nonce: str,
+        action: str,
+        *,
+        context: ExecutionContext | None,
+    ) -> tuple[ParkedTaskApproval | None, str]:
+        """Consume a nonce and reserve one callback attempt.
+
+        A callback failure releases the run through :meth:`complete`; its consumed nonce is not
+        resurrected, so a retry must visibly reopen the exact review and mint a fresh nonce.
+        """
+        if action not in _PARKED_TASK_ACTIONS:
+            return None, "unknown action"
+        bound = self._nonces.get(nonce)
+        if bound is None or bound[0] != run_id:
+            self.log.warning("parked_task_bad_nonce", channel="ui", run_id=run_id)
+            return None, "invalid or replayed nonce"
+        conn = self.connections.get(bound[1])
+        pending = self.visible_to(run_id, context)
+        if (
+            conn is None
+            or not self.connections.is_live(conn)
+            or context is None
+            or conn.context != context
+            or pending is None
+            or run_id in self._resolving
+        ):
+            return None, "approval belongs to a different workspace"
+        del self._nonces[nonce]  # one click gets one callback attempt
+        self._resolving.add(run_id)
+        return pending, "reserved"
+
+    def complete(self, run_id: int, *, committed: bool) -> None:
+        """Finish a reserved callback attempt without ever executing a tool here."""
+        self._resolving.discard(run_id)
+        if committed:
+            self._pending.pop(run_id, None)
+            self._drop_nonces_for(run_id)
+
+    def invalidate_connection(self, conn: Connection) -> None:
+        """A reconnect must show the review again before it can authorize a parked run."""
+        self._nonces = {n: b for n, b in self._nonces.items() if b[1] != conn.id}
+
+    def _drop_nonces_for(self, run_id: int) -> None:
+        self._nonces = {n: b for n, b in self._nonces.items() if b[0] != run_id}
 
 
 class ApprovalManager:

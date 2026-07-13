@@ -35,7 +35,12 @@ from jarvis.persistence.artifacts import ArtifactPathError
 from jarvis.routing import RoutingMode
 from jarvis.search import search as _federated_search
 from jarvis.tools import Permission
-from jarvis.ui.approver import ApprovalManager, UIApprover, UIScreenApprover
+from jarvis.ui.approver import (
+    ApprovalManager,
+    ParkedTaskApprovalManager,
+    UIApprover,
+    UIScreenApprover,
+)
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager, host_allowed, origin_allowed
 from jarvis.ui.connections import Connection, ConnectionManager
 from jarvis.ui.gate_api import policy_snapshot, read_today_audit
@@ -198,6 +203,11 @@ def create_app(
     app.state.auth = auth
     app.state.connections = connections
     app.state.approvals = approvals
+    # Durable parked runs are still resumed only by a host-composed callback.  This manager
+    # contains the private local-UI projection plus live-WebSocket nonces; it never claims a
+    # task-run row or executes a tool itself.
+    app.state.parked_task_approvals = ParkedTaskApprovalManager(connections)
+    app.state.resume_parked = None  # async (run_id: int, resolution: str) -> bool; host-wired
     app.state.gate = gate
     app.state.ui_approver = UIApprover(approvals, gate, config)
     app.state.session = session
@@ -250,6 +260,7 @@ def create_app(
         return (
             workspace is None
             or workspace.context.project_id is None
+            or project_id is None
             or project_id == workspace.context.project_id
         )
 
@@ -393,6 +404,81 @@ def create_app(
             context=workspace.context if workspace is not None else None,
         )
         return JSONResponse({"ok": ok, "message": message}, status_code=200 if ok else 409)
+
+    @app.post("/api/parked-task-approvals/{run_id}/resolve")
+    async def resolve_parked_task_approval(run_id: int, request: Request) -> JSONResponse:
+        """Send one visible local review to the host-owned parked-run resume seam.
+
+        The browser cannot call ``TaskStore.claim_parked_approval``.  Before a nonce is consumed,
+        re-read the exact task/run and compare its verified continuation to the manager's private
+        projection.  This makes an observed numeric run id neither a cross-project read nor a
+        replay capability.
+        """
+        workspace = _workspace_for(request)
+        if app.state.workspaces is None or workspace is None:
+            # Parked work has no attended session provenance.  It is reviewable only through a
+            # live server-owned browser workspace, never the legacy unscoped test/session path.
+            return _workspace_required()
+        resume_parked = app.state.resume_parked
+        if not callable(resume_parked):
+            return _unavailable("parked task approval")
+        svc = app.state.services.tasks
+        if svc is None:
+            return _unavailable("tasks")
+        body = await request.json()
+        pending = app.state.parked_task_approvals.visible_to(run_id, workspace.context)
+        if pending is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        task = await svc.store.get(pending.task_id)
+        if task is None or not _workspace_can_access_project(task.project_id, workspace):
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        # ``runs_for`` is ordered newest first.  A parked run remains running/inert, so it is
+        # normally the newest row; the larger bound avoids treating a valid long-lived task as a
+        # wildcard while still keeping a browser-triggered verification bounded.
+        rows = await svc.store.runs_for(task.id, limit=200)
+        run = next((row for row in rows if row.id == run_id), None)
+        if (
+            run is None
+            or run.status != "running"
+            or run.approval_state != "pending"
+            or run.continuation is None
+            or run.continuation.tool_id != pending.tool_id
+            or run.continuation.tool_name != pending.tool_name
+            or run.continuation.tool_input != pending.tool_input
+            or run.continuation.tool_input_hash != pending.tool_input_hash
+            or run.continuation.decision_reason != pending.decision_reason
+        ):
+            return JSONResponse(
+                {"ok": False, "message": "parked task is no longer awaiting this review"},
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        reserved, message = app.state.parked_task_approvals.reserve(
+            run_id,
+            str(body.get("nonce", "")),
+            str(body.get("action", "")),
+            context=workspace.context,
+        )
+        if reserved is None:
+            return JSONResponse({"ok": False, "message": message}, status_code=409)
+        try:
+            # This callback owns the durable one-time claim and the explicit resume/reject
+            # handling.  ``True`` is its only success signal; no truthy object can accidentally
+            # turn an approval into a committed transition.
+            committed = (await resume_parked(run_id, str(body.get("action", "")))) is True
+        except Exception:  # noqa: BLE001 - never leak task payload/provider details to the browser
+            log.warning("parked_task_resume_failed", run_id=run_id)
+            committed = False
+        app.state.parked_task_approvals.complete(run_id, committed=committed)
+        if not committed:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "message": "parked task could not be resolved; review it again before retrying",
+                    "retry": True,
+                },
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        return JSONResponse({"ok": True, "message": "parked task resolution accepted"})
 
     @app.get("/api/gate/policy")
     async def gate_policy() -> dict:
@@ -844,18 +930,31 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        if workspace is not None:
+        task = await svc.store.get(task_id)
+        if task is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        if workspace is not None and not _workspace_can_access_project(task.project_id, workspace):
             # A workspace may read its own task history plus explicitly global tasks, matching
             # the project task-list contract. The global workspace retains its documented
             # aggregate view; a project workspace never gains another project's history from an
             # observed numeric id.
-            task = await svc.store.get(task_id)
-            if task is None or (
-                workspace.context.project_id is not None
-                and task.project_id not in (None, workspace.context.project_id)
-            ):
-                return _deny(status.HTTP_404_NOT_FOUND, "not found")
-        return JSONResponse(await task_runs(svc, task_id))
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        rows = await task_runs(svc, task_id)
+        stored_by_id = {item.id: item for item in await svc.store.runs_for(task_id, limit=200)}
+        # A full continuation is deliberately returned only from this already scope-checked
+        # history read.  Register the verified projection so the browser can then prove its
+        # exact local review over the live socket and receive a nonce.
+        for run in rows:
+            continuation = run.get("continuation")
+            if run.get("approval_state") == "pending" and continuation is not None:
+                # ``task_runs`` serializes the same ``TaskRun`` object the store parsed and
+                # verified.  Re-read the concrete run below rather than trusting the JSON view.
+                stored = stored_by_id.get(run["id"])
+                if stored is not None and stored.continuation is not None:
+                    app.state.parked_task_approvals.register(
+                        run_id=stored.id, task=task, continuation=stored.continuation
+                    )
+        return JSONResponse(rows)
 
     @app.get("/api/vault")
     async def vault(request: Request, project_id: int | None = None) -> JSONResponse:
@@ -2710,6 +2809,24 @@ def create_app(
                             }
                         )
                     continue
+                # A parked scheduler run has no attended source session.  Its nonce is still
+                # minted only after the exact continuation dialog is visible on this *live*
+                # authenticated socket, and is scoped to the server-owned workspace project.
+                if msg.get("type") == "parked_task_approval_shown":
+                    try:
+                        run_id = int(msg.get("run_id"))
+                    except (TypeError, ValueError):
+                        continue
+                    nonce = await app.state.parked_task_approvals.mint_nonce(run_id, conn)
+                    if nonce is not None:
+                        await websocket.send_json(
+                            {
+                                "type": "parked_task_approval_nonce",
+                                "run_id": run_id,
+                                "nonce": nonce,
+                            }
+                        )
+                    continue
                 _handle_ws_message(connections, conn, msg)
         except WebSocketDisconnect:
             pass
@@ -2718,6 +2835,7 @@ def create_app(
             # reconnected client can never resolve an approval (replay-proof).
             connections.drop(conn)
             approvals.invalidate_connection(conn)
+            app.state.parked_task_approvals.invalidate_connection(conn)
 
     return app
 

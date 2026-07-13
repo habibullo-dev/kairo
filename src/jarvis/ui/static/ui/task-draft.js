@@ -68,6 +68,119 @@ function scheduleControl(kind, schedule) {
   }), "Minimum 60 seconds. A job can start an unattended model turn each time it fires."));
 }
 
+// Review one durable unattended ASK.  This is intentionally a sibling to task creation rather
+// than a generic Gate approval: a parked run can approve ONLY this stored call once or reject it;
+// it cannot create an "always" policy.  The server mints the nonce only after this exact payload
+// is on a live local screen, then re-reads the task/run before its host callback may resume it.
+export function openParkedTaskApproval(approval, api, handlers = {}) {
+  const runId = Number(approval && approval.run_id);
+  if (!Number.isInteger(runId) || runId < 1) throw new Error("invalid parked task run");
+  if (activeDialog) close(false);
+
+  const overlay = el("div", { class: "dialog-overlay", role: "presentation" });
+  const card = el("section", {
+    class: "dialog-card task-history-dialog", role: "dialog", "aria-modal": "true",
+    "aria-label": "Review parked task approval",
+  });
+  const title = String(approval.task_title || "Task").trim() || "Task";
+  const reason = String(approval.reason || "This action needs your approval.");
+  const exact = {
+    tool_id: String(approval.tool_id || ""),
+    tool_name: String(approval.tool_name || ""),
+    tool_input: approval.tool_input && typeof approval.tool_input === "object" ? approval.tool_input : {},
+    tool_input_hash: String(approval.tool_input_hash || ""),
+  };
+  const status = el("div", { class: "task-draft-error", role: "status", text: "Preparing secure confirmation…" });
+  const reject = button("Reject task run", "dialog-button secondary");
+  const approve = button("Approve once & resume", "dialog-button primary");
+  reject.disabled = true;
+  approve.disabled = true;
+  let nonce = null;
+  let owner = null;
+
+  const setWaiting = (message) => {
+    status.className = "task-draft-error";
+    status.textContent = message;
+    reject.disabled = true;
+    approve.disabled = true;
+  };
+  const setReady = () => {
+    status.className = "task-draft-error";
+    status.textContent = "Review the exact saved call, then choose once or reject it.";
+    reject.disabled = false;
+    approve.disabled = false;
+  };
+  const dismiss = () => {
+    if (close(false, owner)) handlers.onDismissed?.();
+  };
+  const resolve = async (action) => {
+    if (!nonce || owner?.saving) return;
+    owner.saving = true;
+    reject.disabled = true;
+    approve.disabled = true;
+    setWaiting(action === "approve" ? "Submitting one-time approval…" : "Rejecting this parked run…");
+    let result;
+    try {
+      result = await api.post(`/api/parked-task-approvals/${encodeURIComponent(runId)}/resolve`, {
+        nonce, action,
+      });
+    } catch {
+      result = { ok: false, data: {} };
+    }
+    if (result.ok) {
+      handlers.onResolved?.();
+      close(true, owner);
+      return;
+    }
+    owner.saving = false;
+    nonce = null; // a reserved/failed callback never revives the old one-time credential
+    if (result.data && result.data.retry) {
+      setWaiting("The task changed before it could be resolved. Reopening secure confirmation…");
+      handlers.onRetry?.();
+      return;
+    }
+    status.className = "task-draft-error show";
+    status.textContent = String(result.data?.message || "This task approval could not be resolved.");
+    // A transport/nonce/scope failure must not silently mint a new credential. The saved call
+    // remains pending; close and reopen its history to prove a fresh visible review.
+  };
+
+  card.append(
+    el("h2", { class: "dialog-title", text: "Review parked task approval" }),
+    el("p", { class: "dialog-message", text: "This unattended task stopped before executing the action below. Approving resumes only this saved call once; it does not create an ongoing permission." }),
+    el("div", { class: "task-history-provenance" }, [
+      el("strong", { text: `Task #${Number(approval.task_id) || "?"} · ${title} · run #${runId}` }),
+      el("div", { class: "dim", text: reason }),
+      el("strong", { text: "Exact saved tool call" }),
+      el("pre", { class: "task-history-result task-history-payload", text: JSON.stringify(exact, null, 2) }),
+    ]),
+    status,
+    el("div", { class: "dialog-actions" }, [reject, approve]),
+  );
+  overlay.append(card);
+  reject.addEventListener("click", () => { void resolve("reject"); });
+  approve.addEventListener("click", () => { void resolve("approve"); });
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) dismiss(); });
+  const restoreFocus = document.activeElement;
+  const onKeydown = (event) => { if (event.key === "Escape") dismiss(); };
+  document.addEventListener("keydown", onKeydown);
+  owner = { overlay, onKeydown, restoreFocus, saving: false, resolve: () => {} };
+  activeDialog = owner;
+  document.body.append(overlay);
+  approve.focus();
+  handlers.onShown?.();
+
+  return {
+    runId,
+    setNonce(value) {
+      if (typeof value !== "string" || !value || activeDialog !== owner || owner.saving) return;
+      nonce = value;
+      setReady();
+      approve.focus();
+    },
+  };
+}
+
 // Opens an editable draft and returns true only after the person submits a valid task to the
 // existing human-authority route.  source must be provenance only; it never selects a schedule.
 export function openTaskDraft(source, api) {
@@ -221,6 +334,9 @@ export function openTaskDraft(source, api) {
 }
 
 function runText(run) {
+  if (run.approval_state === "pending") {
+    return "This run is parked before a tool call. Review its exact saved approval before it can continue.";
+  }
   if (run.error) return `Error: ${run.error}`;
   if (run.result_text) return run.result_text;
   if (run.status === "running") return "This run is still in progress.";
@@ -253,14 +369,34 @@ export async function openTaskHistory(task, api) {
           run.started_at ? `started ${run.started_at}` : null,
           run.finished_at ? `finished ${run.finished_at}` : null,
         ].filter(Boolean).join(" · ");
-        body.append(el("article", { class: "task-history-run" }, [
+        const entry = el("article", { class: "task-history-run" }, [
           el("div", { class: "task-history-run-head" }, [
             el("strong", { text: `Run #${run.id} · ${run.status || "unknown"}` }),
             run.cost_usd == null ? null : el("span", { class: "dim", text: `$${Number(run.cost_usd).toFixed(4)}` }),
           ]),
           el("div", { class: "dim mono", text: dates }),
           el("pre", { class: "task-history-result", text: runText(run) }),
-        ]));
+        ]);
+        if (run.approval_state === "pending" && run.continuation) {
+          const review = button("Review exact approval", "dialog-button primary");
+          review.addEventListener("click", () => {
+            const continuation = run.continuation || {};
+            const shown = api.reviewParkedTask({
+              run_id: run.id,
+              task_id: task.id,
+              task_title: task.title,
+              project_id: task.project_id,
+              tool_id: continuation.tool_id,
+              tool_name: continuation.tool_name,
+              tool_input: continuation.tool_input,
+              tool_input_hash: continuation.tool_input_hash,
+              reason: continuation.decision_reason,
+            });
+            if (!shown) showToast("This parked task is outside the current workspace.", "error");
+          });
+          entry.append(el("div", { class: "dialog-actions" }, [review]));
+        }
+        body.append(entry);
       }
     }
     card.append(

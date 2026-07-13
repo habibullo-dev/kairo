@@ -45,6 +45,7 @@ from jarvis.observability.cost import PricingTable, Usage, cost_of
 from jarvis.observability.ledger import cost_context
 from jarvis.permissions.gate import Decision, PermissionGate
 from jarvis.permissions.modes import Mode, auto_approves, plan_blocks
+from jarvis.permissions.unattended import ApprovalParked
 from jarvis.tools.base import Permission
 from jarvis.tools.executor import ToolExecutor
 from jarvis.tools.registry import ToolRegistry
@@ -277,6 +278,7 @@ class AgentLoop:
         messages: list[dict],
         *,
         on_event: EventSink | None = None,
+        initial_taint: bool = False,
     ) -> TurnResult:
         """Run one turn to completion. ``messages`` must already include the new user
         turn; the returned ``messages`` has the assistant + tool-result turns appended.
@@ -297,7 +299,10 @@ class AgentLoop:
         )
         turn_cost_usd = 0.0
         pricing_known = True
-        self._turn_tainted = False  # egress taint is per-turn (Phase 9)
+        # ``initial_taint`` is used only by the durable unattended-resume path.  Its first tool
+        # batch was executed before this model continuation was entered, so a private read there
+        # must still constrain later egress in this same logical turn.
+        self._turn_tainted = initial_taint
         # Freeze the permissive side of mode for the whole turn (Phase 10, pre-mortem #12):
         # a mid-turn flip into Auto never applies to an in-flight turn. Plan (restrictive) is
         # read live per iteration, so tightening takes effect immediately.
@@ -648,6 +653,12 @@ class AgentLoop:
 
             try:
                 results = await self._handle_tools(tool_calls, emit)
+            except ApprovalParked as parked:
+                # The assistant response was already appended above, so the saved prefix has
+                # the exact tool_use block the provider issued.  Do not synthesize an error
+                # tool_result and, crucially, do not enter the parallel execution phase.
+                parked.bind_messages(messages)
+                raise
             except asyncio.CancelledError:
                 self._record_cancellation(messages)
                 raise
@@ -667,6 +678,86 @@ class AgentLoop:
             provider=turn_provider,
             budget_usd=turn_budget_usd,
         )
+
+    async def execute_parked_batch(
+        self,
+        messages: list[dict],
+        tool_calls: list[ToolCall],
+        *,
+        approved_calls: list[ToolCall],
+        on_event: EventSink | None = None,
+    ) -> tuple[list[dict], bool]:
+        """Re-gate and execute one persisted provider tool batch after owner approval.
+
+        ``approved_calls`` are one-time, exact id/name/input grants recovered from a durable
+        continuation.  They do not bypass the current gate: a hard deny or current policy DENY
+        still wins.  Every other ASK reaches this loop's normal approver (the unattended caller
+        supplies ``ParkingApprover``), so the whole batch stops before *any* tool starts and can
+        be parked again.  The returned taint must seed the following model continuation.
+        """
+        emit: EventSink = on_event or (lambda _e: None)
+        if not tool_calls:
+            raise ValueError("parked tool batch must not be empty")
+        final = messages[-1] if messages else None
+        if not isinstance(final, dict) or final.get("role") != "assistant":
+            raise ValueError("parked transcript must end in its assistant tool batch")
+        content = final.get("content")
+        if not isinstance(content, list):
+            raise ValueError("parked transcript must retain provider tool blocks")
+        transcript_calls = [
+            ToolCall(id=block["id"], name=block["name"], input=block.get("input") or {})
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "tool_use"
+            and isinstance(block.get("id"), str)
+            and isinstance(block.get("name"), str)
+            and isinstance(block.get("input") or {}, dict)
+        ]
+        if transcript_calls != tool_calls:
+            raise ValueError("parked continuation does not match its provider tool batch")
+        if len({call.id for call in approved_calls}) != len(approved_calls):
+            raise ValueError("parked approved calls must have unique ids")
+        if any(call not in tool_calls for call in approved_calls):
+            raise ValueError("parked approved call is not in its provider tool batch")
+
+        original_approver = self.approver
+
+        async def approve_exact(call: ToolCall, decision: Decision) -> Permission:
+            if call in approved_calls:
+                return Permission.ALLOW
+            return (
+                await original_approver(call, decision)
+                if original_approver is not None
+                else Permission.DENY
+            )
+
+        # A previous completed private read in this logical task turn must continue to taint
+        # egress.  We intentionally over-approximate a historical private-read attempt: a
+        # stricter ASK is safe, whereas trying to infer a result body here risks an exfiltration
+        # bypass after restart.
+        self._turn_tainted = self._history_may_be_tainted(messages[:-1])
+        self._turn_started_auto = self.mode is not None and self.mode() is Mode.AUTO
+        self.approver = approve_exact
+        try:
+            results = await self._handle_tools(tool_calls, emit)
+            return results, self._turn_tainted
+        finally:
+            self.approver = original_approver
+
+    def _history_may_be_tainted(self, messages: list[dict]) -> bool:
+        """Conservatively preserve private-read taint across a parked logical turn."""
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = block.get("name")
+                tool = self.registry.get(name) if isinstance(name, str) else None
+                if tool is not None and getattr(tool, "reads_private", False):
+                    return True
+        return False
 
     async def _handle_tools(self, tool_calls: list[ToolCall], emit: EventSink) -> list[dict]:
         # Egress taint (Phase 9): a batch is tainted if the turn already is, OR if this same

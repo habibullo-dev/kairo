@@ -9,7 +9,7 @@ export async function render(container, api) {
   container.innerHTML = `
     <div class="rise">
       <h1>Notifications</h1>
-      <div class="sub">Everything waiting on you, in one place. Amber means Kairo is blocked on you. “Approve & send” authorizes a write; clearing a proposal only removes it from this list. This in-app attention queue does not currently send automatic urgent pushes or enforce quiet hours.</div>
+      <div class="sub">Everything waiting on you, in one place. Amber means Kairo is blocked on you. “Approve & send” authorizes a write; clearing a proposal only removes it from this list. Configured external nudges are count-only, respect quiet hours and project mutes, and never authorize an action.</div>
     </div>
     <div class="card rise" id="gate-pending-card">
       <div class="card-label amber">Needs you</div>

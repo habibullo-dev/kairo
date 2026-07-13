@@ -296,6 +296,28 @@ async def _job_runner(tmp_path: Path, client, policy: Policy | None = None) -> J
     )
 
 
+async def _parkable_job_runner(
+    tmp_path: Path, client, task_store: TaskStore, policy: Policy | None = None
+) -> JobRunner:
+    """A JobRunner with the explicitly shared store required for durable parking."""
+    cfg = load_config(root=tmp_path, env_file=None)
+    session_store = SessionStore(task_store.db, task_store.lock)
+    registry = ToolRegistry()
+    registry.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    executor = ToolExecutor(
+        timeout=cfg.limits.tool_timeout_seconds, max_result_chars=cfg.limits.max_tool_result_chars
+    )
+    return JobRunner(
+        session_store=session_store,
+        client=client,
+        registry=registry,
+        executor=executor,
+        gate=PermissionGate(policy or Policy(), cfg.root),
+        config=cfg,
+        task_store=task_store,
+    )
+
+
 async def _a_job_task(tmp_path: Path):
     # A standalone task row to hand to JobRunner (its own tiny store).
     store = TaskStore(await connect(tmp_path / "tasks2.db"))
@@ -362,6 +384,167 @@ async def test_unattended_denial_flows_back_and_is_counted(tmp_path: Path) -> No
     ]
     assert tool_results and tool_results[0]["is_error"] is True  # model saw the denial
     assert not (tmp_path / "out.txt").exists()  # nothing was written
+    assert not outcome.parked and not outcome.retry_safe
+
+
+async def test_job_ask_parks_exact_call_and_runner_does_not_complete_it(tmp_path: Path) -> None:
+    service, clock, store = await _service(tmp_path)
+    task = await _schedule(service, kind="job", title="write report")
+    client = FakeClient(
+        [
+            tool_use_message(
+                [
+                    ToolCall(
+                        id="toolu-safe-before-ask",
+                        name="read_file",
+                        input={"path": "notes.txt"},
+                    ),
+                    ToolCall(
+                        id="toolu-park-1",
+                        name="write_file",
+                        input={"path": "report.txt", "content": "approved bytes"},
+                    )
+                ]
+            )
+        ]
+    )
+    job_runner = await _parkable_job_runner(tmp_path, client, store)
+    rec = Recorder()
+    runner = BackgroundRunner(
+        service, notify=rec.notify, run_job=job_runner.run, turn_lock=asyncio.Lock()
+    )
+
+    clock.advance(hours=1, minutes=1)
+    assert await runner.check_due() == 1
+
+    (run,) = await store.runs_for(task.id)
+    assert run.status == "running"  # BackgroundRunner did not overwrite the parked run
+    assert run.approval_state == "pending"
+    assert run.continuation is not None
+    assert (
+        run.continuation.tool_id,
+        run.continuation.tool_name,
+        run.continuation.tool_input,
+    ) == ("toolu-park-1", "write_file", {"path": "report.txt", "content": "approved bytes"})
+    assert [call.tool_id for call in run.continuation.pending_calls] == [
+        "toolu-safe-before-ask",
+        "toolu-park-1",
+    ]
+    assert run.session_id is not None
+    saved = await job_runner.session_store.load_messages(run.session_id)
+    assert saved[-1]["role"] == "assistant"
+    assert [block["id"] for block in saved[-1]["content"]] == [
+        "toolu-safe-before-ask",
+        "toolu-park-1",
+    ]  # exact provider tool-use block order
+    assert await store.earliest_next_run() is None
+    assert await store.stale_runs() == []  # restart cannot auto-abort/replay an intentional park
+    assert not (tmp_path / "report.txt").exists()
+    assert any("waiting for your approval" in line for line in rec.lines)
+
+
+async def test_rejected_parked_job_skips_the_original_occurrence_without_running_tools(
+    tmp_path: Path,
+) -> None:
+    service, clock, store = await _service(tmp_path)
+    task = await _schedule(service, kind="job", title="do not write")
+    client = FakeClient(
+        [
+            tool_use_message(
+                [
+                    ToolCall(
+                        id="toolu-reject",
+                        name="write_file",
+                        input={"path": "never.txt", "content": "must not exist"},
+                    )
+                ]
+            )
+        ]
+    )
+    job_runner = await _parkable_job_runner(tmp_path, client, store)
+    rec = Recorder()
+    runner = BackgroundRunner(
+        service,
+        notify=rec.notify,
+        run_job=job_runner.run,
+        resume_job=job_runner.resume_parked,
+        turn_lock=asyncio.Lock(),
+    )
+
+    clock.advance(hours=1, minutes=1)
+    await runner.check_due()
+    (parked,) = await store.runs_for(task.id)
+    assert await runner.resume_parked(parked.id, "reject")
+
+    run = await store.get_run(parked.id)
+    assert run is not None
+    assert (run.status, run.approval_state, run.denied_count) == ("ok", "rejected", 1)
+    assert run.result_text is not None and "no tool executed" in run.result_text
+    assert not (tmp_path / "never.txt").exists()
+    assert len(client.calls) == 1  # rejection does not make another model request
+    assert (await store.get(task.id)).next_run_at is not None  # original occurrence advanced once
+
+
+async def test_two_ask_batch_keeps_first_exact_grant_until_second_approval(tmp_path: Path) -> None:
+    service, clock, store = await _service(tmp_path)
+    task = await _schedule(service, kind="job", title="two approved writes")
+    client = FakeClient(
+        [
+            tool_use_message(
+                [
+                    ToolCall(
+                        id="toolu-first",
+                        name="write_file",
+                        input={"path": "first.txt", "content": "first exact bytes"},
+                    ),
+                    ToolCall(
+                        id="toolu-second",
+                        name="write_file",
+                        input={"path": "second.txt", "content": "second exact bytes"},
+                    ),
+                ]
+            ),
+            text_message("both approved writes completed"),
+        ]
+    )
+    job_runner = await _parkable_job_runner(tmp_path, client, store)
+    rec = Recorder()
+    runner = BackgroundRunner(
+        service,
+        notify=rec.notify,
+        run_job=job_runner.run,
+        resume_job=job_runner.resume_parked,
+        turn_lock=asyncio.Lock(),
+    )
+
+    clock.advance(hours=1, minutes=1)
+    await runner.check_due()
+    (first_park,) = await store.runs_for(task.id)
+    assert first_park.continuation is not None
+    assert first_park.continuation.tool_id == "toolu-first"
+
+    assert await runner.resume_parked(first_park.id, "approve")
+    second_park = await store.get_run(first_park.id)
+    assert second_park is not None and second_park.continuation is not None
+    assert second_park.approval_state == "pending"
+    assert second_park.continuation.tool_id == "toolu-second"
+    assert [call.tool_id for call in second_park.continuation.approved_calls] == ["toolu-first"]
+    assert not (tmp_path / "first.txt").exists()
+    assert not (tmp_path / "second.txt").exists()
+    assert len(client.calls) == 1  # no model continuation while a sibling still asks
+
+    assert await runner.resume_parked(first_park.id, "approve")
+    completed = await store.get_run(first_park.id)
+    assert completed is not None and completed.status == "ok"
+    assert (tmp_path / "first.txt").read_text() == "first exact bytes"
+    assert (tmp_path / "second.txt").read_text() == "second exact bytes"
+    # The resumed model sees a valid, complete tool-result batch in provider order.
+    result_ids = [
+        block["tool_use_id"]
+        for block in client.calls[-1]["messages"][-1]["content"]
+        if block.get("type") == "tool_result"
+    ]
+    assert result_ids == ["toolu-first", "toolu-second"]
 
 
 async def test_non_end_turn_stop_is_reported_as_failure(tmp_path: Path) -> None:

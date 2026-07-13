@@ -24,9 +24,12 @@ There is deliberately **no per-task permission grant**: the only way to widen wh
 background jobs may do is ``permissions.yaml`` via the opt-in set, a place the user
 edits consciously. This is ADR-0003.
 
-ASK decisions still reach the :class:`HeadlessApprover`, which denies every one
-(the model reads the resulting ``is_error`` result and adapts). Both the gate's
-demotions and the approver's denials are counted, so the runner can report how
+ASK decisions normally reach the :class:`HeadlessApprover`, which denies every one
+(the model reads the resulting ``is_error`` result and adapts).  A separately wired
+:class:`ParkingApprover` is the narrow opt-in for durable approval parking: it stops
+the loop before any batch tool executes and lets a host persist the exact requested
+call.  It does not grant permission itself.  Both the gate's demotions and the
+ordinary headless approver's denials are counted, so the runner can report how
 constrained a run was.
 """
 
@@ -80,6 +83,33 @@ HARD_DENY: frozenset[str] = frozenset(
 DEMOTE_ALLOW: frozenset[str] = frozenset(
     {"run_shell", "write_file", "ingest_source", "write_wiki_page"}
 )
+
+
+class ApprovalParked(RuntimeError):
+    """A deliberate, fail-closed stop at one exact ``ASK`` tool call.
+
+    This neutral permission-layer control object carries the immutable model call and, once
+    :class:`~jarvis.core.agent.AgentLoop` propagates it, the transcript prefix containing that
+    exact ``tool_use`` block.  It is not an approval: a host must durably park it, obtain a
+    separate one-time resolution, and explicitly resume only the verified call.
+
+    It lives here rather than in ``core.agent`` to avoid a permissions-package import cycle:
+    permission policy may be imported before the agent loop itself.
+    """
+
+    def __init__(self, call: ToolCall, decision: Decision) -> None:
+        super().__init__(f"approval parked for {call.name}")
+        self.call = call
+        self.decision = decision
+        self.messages: list[dict] | None = None
+
+    def bind_messages(self, messages: list[dict]) -> None:
+        """Attach the completed prefix exactly once before propagating to a host."""
+        if self.messages is None:
+            # ``run_turn`` owns this list and immediately exits after binding it.  The shallow
+            # copy prevents a host from replacing history entries while preserving provider
+            # blocks (including the original tool-use id/input) byte-for-byte.
+            self.messages = list(messages)
 
 
 class UnattendedGate:
@@ -156,3 +186,17 @@ class HeadlessApprover:
     async def __call__(self, call: ToolCall, decision: Decision) -> Permission:
         self.denied += 1
         return Permission.DENY
+
+
+class ParkingApprover:
+    """Stop an unattended turn at an ``ASK`` without converting it into ALLOW.
+
+    The scheduler host must catch :class:`~jarvis.core.agent.ApprovalParked`, store
+    its exact call/transcript using the durable task-run continuation seam, and later
+    perform a one-time explicit resolution.  This class intentionally has no callback,
+    persistence, transport, or policy-bypass behavior: a forgotten host integration
+    fails closed by ending the run rather than executing anything.
+    """
+
+    async def __call__(self, call: ToolCall, decision: Decision) -> Permission:
+        raise ApprovalParked(call, decision)

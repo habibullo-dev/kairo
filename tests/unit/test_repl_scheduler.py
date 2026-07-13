@@ -152,7 +152,9 @@ async def test_tasks_command_last_error_surfaced(tmp_path: Path) -> None:
     svc.now = lambda: START + dt.timedelta(hours=1, minutes=1)
     (due,) = await svc.due()
     run_id = await svc.begin_run(due)
-    await svc.complete_run(due, run_id, ok=False, error="backend down")
+    # A proven tool-free failure remains active for its bounded retry, so the task list can
+    # surface its last error. Unknown/started-tool failures dead-letter immediately instead.
+    await svc.complete_run(due, run_id, ok=False, error="backend down", retry_safe=True)
     repl, buf = _repl(tmp_path, tasks=svc)
     await repl._show_tasks("")
     assert "backend down" in buf.getvalue()  # surfaced on the active-list line

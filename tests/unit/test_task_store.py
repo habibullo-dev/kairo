@@ -8,7 +8,7 @@ import aiosqlite
 import pytest
 
 from jarvis.persistence.db import connect
-from jarvis.scheduler.store import TaskAdvance, TaskStore
+from jarvis.scheduler.store import ParkedContinuation, TaskAdvance, TaskStore
 
 T0 = "2026-07-06T09:00:00+00:00"
 T1 = "2026-07-06T10:00:00+00:00"
@@ -136,6 +136,103 @@ async def test_run_roundtrip_and_atomic_advance(tmp_path: Path) -> None:
         task = await store.get(tid)
         assert task.next_run_at == T2  # advanced in the same transaction
         assert task.status == "active"
+    finally:
+        await store.db.close()
+
+
+async def test_parked_run_is_coalesced_restart_safe_and_claimed_once(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    try:
+        tid = await _add(store, next_run_at=T0)
+        run_id = await store.start_run(tid, scheduled_for=T0)
+        await store.db.execute(
+            "INSERT INTO sessions (id, created_at, updated_at) VALUES (77, ?, ?)", (T0, T0)
+        )
+        await store.db.commit()
+        continuation = ParkedContinuation.from_call(
+            tool_id="toolu-123",
+            tool_name="write_file",
+            tool_input={"content": "exact bytes", "path": "report.txt"},
+            decision_reason="needs explicit approval",
+        )
+
+        assert await store.park_run(run_id, session_id=77, continuation=continuation)
+        assert not await store.park_run(run_id, session_id=77, continuation=continuation)
+
+        (run,) = await store.runs_for(tid)
+        assert run.status == "running"  # preserves the existing one-run coalescing invariant
+        assert run.approval_state == "pending"
+        assert run.session_id == 77
+        assert run.continuation == continuation
+        assert await store.due(T2) == []  # task cannot fire again while it is parked
+        assert await store.earliest_next_run() is None  # parking cannot spin the wake loop
+        assert await store.stale_runs() == []  # restart must not abort/replay an intentional park
+
+        claimed = await store.claim_parked_approval(run_id, resolution="approve")
+        assert claimed is not None
+        assert (claimed.resolution, claimed.continuation) == ("approve", continuation)
+        assert await store.claim_parked_approval(run_id, resolution="approve") is None
+        (claimed_run,) = await store.runs_for(tid)
+        assert claimed_run.approval_state == "approved"
+        assert await store.stale_runs() == []  # a claimed action is still never auto-replayed
+    finally:
+        await store.db.close()
+
+
+async def test_rejected_parked_approval_never_returns_an_executable_continuation(
+    tmp_path: Path,
+) -> None:
+    store = await _store(tmp_path)
+    try:
+        tid = await _add(store, next_run_at=T0)
+        run_id = await store.start_run(tid, scheduled_for=T0)
+        await store.db.execute(
+            "INSERT INTO sessions (id, created_at, updated_at) VALUES (79, ?, ?)", (T0, T0)
+        )
+        await store.db.commit()
+        continuation = ParkedContinuation.from_call(
+            tool_id="toolu-789",
+            tool_name="write_file",
+            tool_input={"path": "nope.txt", "content": "must not execute"},
+            decision_reason="needs explicit approval",
+        )
+        assert await store.park_run(run_id, session_id=79, continuation=continuation)
+
+        claim = await store.claim_parked_approval(run_id, resolution="reject")
+        assert claim is not None
+        assert (claim.resolution, claim.continuation) == ("reject", None)
+    finally:
+        await store.db.close()
+
+
+async def test_parked_continuation_refuses_tampered_input(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    try:
+        tid = await _add(store, next_run_at=T0)
+        run_id = await store.start_run(tid, scheduled_for=T0)
+        await store.db.execute(
+            "INSERT INTO sessions (id, created_at, updated_at) VALUES (78, ?, ?)", (T0, T0)
+        )
+        await store.db.commit()
+        continuation = ParkedContinuation.from_call(
+            tool_id="toolu-456",
+            tool_name="write_file",
+            tool_input={"path": "safe.txt", "content": "safe"},
+            decision_reason="needs explicit approval",
+        )
+        assert await store.park_run(run_id, session_id=78, continuation=continuation)
+
+        # Simulate on-disk corruption or tampering.  The read/claim boundary must fail closed,
+        # never reinterpret the altered input as the approved request.
+        await store.db.execute(
+            "UPDATE task_runs SET continuation_json = "
+            "replace(continuation_json, 'safe.txt', 'evil.txt') "
+            "WHERE id = ?",
+            (run_id,),
+        )
+        await store.db.commit()
+        with pytest.raises(ValueError, match="hash"):
+            await store.claim_parked_approval(run_id, resolution="approve")
     finally:
         await store.db.close()
 

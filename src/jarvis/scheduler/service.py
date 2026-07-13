@@ -29,7 +29,12 @@ from zoneinfo import ZoneInfo
 
 from tzlocal import get_localzone_name
 
-from jarvis.attention import AttentionKind, AttentionPriority, AttentionStore
+from jarvis.attention import (
+    AttentionKind,
+    AttentionPriority,
+    AttentionStore,
+    notify_open_attention_item,
+)
 from jarvis.config import SchedulerConfig
 from jarvis.persistence.db import transaction
 from jarvis.scheduler.store import Task, TaskAdvance, TaskStore
@@ -83,6 +88,7 @@ class TaskService:
         *,
         now: Callable[[], _dt.datetime] = utc_now,
         attention: AttentionStore | None = None,
+        notification_router: object | None = None,
     ) -> None:
         self.store = store
         self.config = config
@@ -92,6 +98,7 @@ class TaskService:
         ):
             raise ValueError("scheduler attention must share the task store's connection and lock")
         self.attention = attention
+        self.notification_router = notification_router
         # Set by the REPL (and by the runner during a job) so tool-created tasks
         # carry provenance — "why is Jarvis doing THAT at 3am?" must have an answer.
         self.bound_session_id: int | None = None
@@ -195,6 +202,7 @@ class TaskService:
         denied_count: int = 0,
         error: str | None = None,
         cost_usd: float | None = None,
+        retry_safe: bool = False,
     ) -> Task:
         """Close a run and advance its task atomically. Returns the updated task."""
         task = due.task
@@ -208,7 +216,14 @@ class TaskService:
         if ok:
             advance = _advance_ok(task, next_fire)
         else:
-            advance = _advance_error(task, next_fire, error, self.config)
+            advance = _advance_error(
+                task,
+                next_fire,
+                error,
+                self.config,
+                now=self.now(),
+                retry_safe=retry_safe,
+            )
         if result_text is not None and len(result_text) > MAX_RESULT_CHARS:
             result_text = result_text[:MAX_RESULT_CHARS] + " …[truncated]"
         await self._finish_run(
@@ -322,7 +337,7 @@ class TaskService:
                 advance=advance,
                 now=now,
             )
-            await self.attention.create_in_transaction(
+            item_id = await self.attention.create_in_transaction(
                 kind=AttentionKind.ALERT,
                 source="scheduler",
                 source_ref=str(task.id),
@@ -339,6 +354,11 @@ class TaskService:
                 dedupe_key=f"scheduler-dead-letter:{task.id}",
                 now=now,
             )
+        # Delivery is intentionally after the durable transaction.  The router derives a
+        # count-only nudge from the stored row; an unavailable notifier cannot undo the alert.
+        await notify_open_attention_item(
+            self.notification_router, self.attention, item_id, now=self.now()
+        )
 
     # --- rendering -----------------------------------------------------------
 
@@ -364,13 +384,20 @@ def _advance_ok(task: Task, next_fire: _dt.datetime | None) -> TaskAdvance:
 
 
 def _advance_error(
-    task: Task, next_fire: _dt.datetime | None, error: str | None, config: SchedulerConfig
+    task: Task,
+    next_fire: _dt.datetime | None,
+    error: str | None,
+    config: SchedulerConfig,
+    *,
+    now: _dt.datetime,
+    retry_safe: bool,
 ) -> TaskAdvance:
     failures = task.consecutive_failures + 1
     message = error or "unknown error"
-    if next_fire is None or failures >= config.max_consecutive_failures:
-        # once-tasks don't retry; recurring tasks stop at the cap — a broken job
-        # must not silently burn a model call per interval forever.
+    if not retry_safe or failures >= config.max_consecutive_failures:
+        # A failed job may have reached an arbitrary point in its tool batch.  Only the
+        # runner's positive proof that no tool began permits a retry; crashes and all unknown
+        # partial effects dead-letter immediately.  The configured cap includes the initial run.
         return TaskAdvance(
             task_id=task.id,
             next_run_at=None,
@@ -378,9 +405,15 @@ def _advance_error(
             consecutive_failures=failures,
             last_error=message,
         )
+    delay = min(
+        config.retry_base_seconds * (2 ** (failures - 1)), config.retry_max_seconds
+    )
     return TaskAdvance(
         task_id=task.id,
-        next_run_at=_iso(next_fire),
+        # Both once and recurring jobs may retry a proven tool-free failure.  On success this
+        # retry timestamp becomes the schedule anchor, so a recurring job resumes cleanly
+        # instead of immediately replaying a missed normal occurrence.
+        next_run_at=_iso(now + _dt.timedelta(seconds=delay)),
         status="active",
         consecutive_failures=failures,
         last_error=message,

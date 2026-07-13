@@ -61,7 +61,10 @@ Writes follow preview → approve → execute. Re-run the relevant connect comma
 **Needs reconnect**.
 
 Never paste API keys, OAuth refresh tokens, client secrets, or connector token files into chat or
-screenshots. The Hub shows presence and scope names, never token values.
+screenshots. The Hub shows presence and scope names, never token values. Telegram receives only
+count-only attention nudges (for example, how many approvals are waiting), never an action payload.
+It can remind you to open Kairo, but the authenticated local Gate remains the only place that can
+approve or reject an action.
 
 ## Voice
 

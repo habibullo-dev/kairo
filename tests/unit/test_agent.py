@@ -23,6 +23,7 @@ from jarvis.core import (
 from jarvis.core.events import Event, ToolDecision
 from jarvis.observability.cost import Usage
 from jarvis.permissions import PermissionGate, Policy
+from jarvis.permissions.unattended import ApprovalParked, ParkingApprover
 from jarvis.tools import Permission, Tool, ToolExecutor, ToolRegistry
 
 # --- fixtures / tools ------------------------------------------------------
@@ -215,6 +216,33 @@ async def test_ask_approved_runs_tool() -> None:
     )
     result = await loop.run_turn(user("do danger"))
     assert result.messages[2]["content"][0]["content"] == "did the dangerous thing"
+
+
+async def test_parking_ask_stops_entire_batch_before_any_tool_executes() -> None:
+    """Parking is not a disguised approval: even an earlier ALLOW remains unexecuted."""
+    response = tool_use_message(
+        [
+            ToolCall("safe-first", "echo", {"text": "must not run"}),
+            ToolCall("needs-owner", "danger", {}),
+        ]
+    )
+    loop = build_loop([response], approver=ParkingApprover())
+    events: list[Event] = []
+
+    with pytest.raises(ApprovalParked) as captured:
+        await loop.run_turn(user("run both"), on_event=events.append)
+
+    parked = captured.value
+    assert (parked.call.id, parked.call.name, parked.call.input) == (
+        "needs-owner",
+        "danger",
+        {},
+    )
+    assert parked.decision.permission is Permission.ASK
+    assert parked.messages is not None
+    assert parked.messages[-1]["content"] == response.content_blocks  # exact model tool-use block
+    assert not any(isinstance(event, ToolStarted) for event in events)
+    assert len(loop.client.calls) == 1  # no tool result / follow-up model call was fabricated
 
 
 async def test_ask_without_approver_defaults_deny() -> None:

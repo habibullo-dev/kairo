@@ -1100,6 +1100,37 @@ CREATE INDEX IF NOT EXISTS idx_model_failures_run
 """
 
 
+async def _migrate_v22(db: aiosqlite.Connection) -> None:
+    """Add fail-closed parked-approval continuation metadata to task runs.
+
+    A parked run remains ``status='running'`` so existing task coalescing keeps it from firing
+    twice.  ``approval_state`` is the explicit distinction from a crash orphan: startup sweeps
+    only ``none`` rows, and no migration or restart can replay a human-gated tool call.
+    The continuation retains the complete unfinished tool batch, with canonical hashes; it is
+    operational data for a later explicit resume worker, not model context.
+    """
+
+    exists = await (
+        await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'")
+    ).fetchone()
+    if exists is None:
+        return
+    columns = {
+        row[1] for row in await (await db.execute("PRAGMA table_info(task_runs)")).fetchall()
+    }
+    if "continuation_json" not in columns:
+        await db.execute("ALTER TABLE task_runs ADD COLUMN continuation_json TEXT")
+    if "approval_state" not in columns:
+        await db.execute(
+            "ALTER TABLE task_runs ADD COLUMN approval_state TEXT NOT NULL DEFAULT 'none' "
+            "CHECK (approval_state IN ('none','pending','approved','rejected'))"
+        )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_runs_parked "
+        "ON task_runs(approval_state, id) WHERE approval_state = 'pending'"
+    )
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1127,6 +1158,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (19, _migrate_v19),
     (20, _migrate_v20),
     (21, _SCHEMA_V21),
+    (22, _migrate_v22),
 ]
 
 

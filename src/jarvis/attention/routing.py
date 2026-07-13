@@ -3,17 +3,18 @@ center-only. The rules are DATA (``AttentionConfig`` + a pure decision function)
 per rule, so the matrix is one table under test.
 
 Safety pins:
-* **Minimized, body-free pushes.** An urgent push is composed from open-item COUNTS BY KIND only
+* **Minimized, body-free pushes.** A push is composed from open-item COUNTS BY KIND only
   ("Kairo · 3 need you: 2 approvals, 1 proposal") — never an item title, email subject, task body,
   or any payload. An email subject can therefore never leak to Telegram/Kakao.
-* **Opt-in egress.** ``urgent_channels`` defaults to empty, so nothing is ever pushed until a
-  channel is deliberately enabled (and its notifier configured).
+* **Opt-in egress.** Every priority's channel list defaults to empty, so nothing is ever pushed
+  until that priority is deliberately enabled (and its notifier configured).
 * **Quiet hours + per-project mute NARROW only** — they can suppress a push (fold to digest), never
   widen one.
 """
 
 from __future__ import annotations
 
+import datetime as _dt
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,22 +52,27 @@ def route_notification(
     project_id: int | None,
     hour: int,
     urgent_channels: list[str],
+    normal_channels: list[str],
+    low_channels: list[str],
     quiet_start: int | None,
     quiet_end: int | None,
     muted_projects: list[int],
 ) -> NotifyDecision:
-    """The routing matrix (pure). Urgent ⇒ a minimized push to ``urgent_channels`` — UNLESS the
-    project is muted or it's quiet hours, in which case it folds to the digest (suppress, never
-    escalate). Normal ⇒ digest. Low ⇒ center-only."""
-    if priority == "urgent":
-        if project_id is not None and project_id in muted_projects:
-            return NotifyDecision((), True, "urgent but project muted → digest")
-        if in_quiet_hours(hour, quiet_start, quiet_end):
-            return NotifyDecision((), True, "urgent but quiet hours → digest")
-        return NotifyDecision(tuple(urgent_channels), False, "urgent → minimized push")
-    if priority == "normal":
-        return NotifyDecision((), True, "normal → digest")
-    return NotifyDecision((), False, "low → center-only")
+    """The pure routing matrix. A configured priority sends a minimized push unless quiet hours
+    or a project mute suppress it. Unconfigured priorities retain the legacy digest/center
+    destination, so enabling Telegram for one level cannot widen another by accident."""
+    channels, fallback = {
+        "urgent": (urgent_channels, False),
+        "normal": (normal_channels, True),
+        "low": (low_channels, False),
+    }.get(priority, ([], False))
+    if project_id is not None and project_id in muted_projects:
+        return NotifyDecision((), True, f"{priority} but project muted → digest")
+    if in_quiet_hours(hour, quiet_start, quiet_end):
+        return NotifyDecision((), True, f"{priority} but quiet hours → digest")
+    if channels:
+        return NotifyDecision(tuple(channels), fallback, f"{priority} → minimized push")
+    return NotifyDecision((), fallback, f"{priority} → {'digest' if fallback else 'center-only'}")
 
 
 def minimized_push(counts: dict[str, int], *, cap: int = 280) -> str:
@@ -102,6 +108,8 @@ class NotificationRouter:
             project_id=project_id,
             hour=hour,
             urgent_channels=self._cfg.urgent_channels,
+            normal_channels=self._cfg.normal_channels,
+            low_channels=self._cfg.low_channels,
             quiet_start=self._cfg.quiet_hours_start,
             quiet_end=self._cfg.quiet_hours_end,
             muted_projects=self._cfg.muted_projects,
@@ -124,3 +132,27 @@ class NotificationRouter:
                             project_id=project_id,
                         )
         return decision
+
+
+async def notify_open_attention_item(
+    router: NotificationRouter | None, store: Any, item_id: int, *, now: _dt.datetime | None = None
+) -> NotifyDecision | None:
+    """Best-effort, post-commit notification for one durable attention row.
+
+    The helper deliberately re-reads the row and aggregates counts from the store rather than
+    accepting a title or payload.  A producer can call it only after its durable transaction
+    commits; failed delivery therefore never rolls back the source state or loses the item.
+    """
+    if router is None:
+        return None
+    item = await store.get(item_id)
+    if item is None or str(item.state) != "open":
+        return None
+    moment = now or _dt.datetime.now().astimezone()
+    counts = await store.open_counts(project_id=item.project_id)
+    return await router.notify(
+        priority=str(item.priority),
+        project_id=item.project_id,
+        open_counts=counts,
+        hour=moment.hour,
+    )

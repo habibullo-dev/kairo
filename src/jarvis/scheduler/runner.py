@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 from jarvis.observability import get_logger
 from jarvis.scheduler.service import Due, TaskService
-from jarvis.scheduler.store import Task
+from jarvis.scheduler.store import ParkedContinuation, Task
 
 #: Never sleep longer than this between due-checks even if the next task is far off:
 #: asyncio timers don't advance through system suspend, so a laptop that slept past
@@ -38,17 +38,28 @@ _MIN_SLEEP = 0.05
 
 @dataclass
 class JobOutcome:
-    """What running one job produced — returned by the injected ``run_job``."""
+    """What running one job produced — returned by the injected ``run_job``.
+
+    ``parked`` is a non-terminal, no-execution outcome.  The runner must leave its pre-opened
+    task-run row alone because the job runner has atomically converted it into a durable approval
+    continuation.  ``retry_safe`` is positive evidence that a normal failed run never started a
+    tool and never encountered a denial/park, so only then may scheduler policy schedule a retry.
+    """
 
     session_id: int | None
     text: str
     denied_count: int = 0
     error: str | None = None
     cost_usd: float | None = None
+    retry_safe: bool = False
+    parked: bool = False
 
 
 # Runs one job task to completion and returns its outcome (built in the CLI layer).
 RunJob = Callable[[Task], Awaitable[JobOutcome]]
+# Resume work is intentionally separate from a fresh task run: it receives the one claimed
+# continuation and must never recreate an envelope/model request for the original occurrence.
+ResumeJob = Callable[[Task, int, int, ParkedContinuation], Awaitable[JobOutcome]]
 # Emits one user-facing notification line.
 Notify = Callable[[str], None]
 TaskNotify = Callable[[str, Task], None]
@@ -63,6 +74,7 @@ class BackgroundRunner:
         task_notify: TaskNotify | None = None,
         run_job: RunJob,
         turn_lock: asyncio.Lock,
+        resume_job: ResumeJob | None = None,
         run_digest: RunJob | None = None,
         log=None,
     ) -> None:
@@ -70,6 +82,7 @@ class BackgroundRunner:
         self.notify = notify
         self.task_notify = task_notify
         self.run_job = run_job
+        self.resume_job = resume_job
         self.run_digest = run_digest
         self.turn_lock = turn_lock
         self.log = log or get_logger("jarvis.scheduler")
@@ -132,6 +145,15 @@ class BackgroundRunner:
         finally:
             self.in_flight = None
 
+        if outcome.parked:
+            # JobRunner already atomically persisted the task transcript + exact pending call
+            # against ``run_id``.  Completing it here would erase the parked state and could
+            # accidentally advance the task.  No action is resumed automatically after restart.
+            self._notify(
+                f'⏸ job #{task.id} "{task.title}" is waiting for your approval', task
+            )
+            return
+
         ok = outcome.error is None
         await self.service.complete_run(
             due,
@@ -142,8 +164,108 @@ class BackgroundRunner:
             denied_count=outcome.denied_count,
             error=outcome.error,
             cost_usd=outcome.cost_usd,
+            retry_safe=outcome.retry_safe,
         )
         self._notify_job_done(task, outcome, ok)
+
+    async def resume_parked(self, run_id: int, resolution: str) -> bool:
+        """Apply one explicit owner resolution to a durable unattended pause.
+
+        Returns ``True`` only after the resolution was consumed and either terminally recorded or
+        atomically re-parked.  A missing resume worker, stale nonce/row, or malformed request
+        leaves the durable pending row untouched so a host must not claim success.  Once claimed,
+        any ordinary preflight/runtime failure is terminally recorded with retries disabled;
+        process death remains inert in ``approved`` state and is never auto-replayed.
+        """
+        if resolution not in {"approve", "reject"} or self.resume_job is None:
+            return False
+        async with self.turn_lock:
+            try:
+                run = await self.service.store.get_run(run_id)
+            except ValueError:
+                # A corrupt continuation cannot be treated as the owner's original request.
+                # Do not consume its nonce or run a tool; the caller keeps the pending approval.
+                return False
+            if (
+                run is None
+                or run.status != "running"
+                or run.approval_state != "pending"
+                or run.continuation is None
+                or run.session_id is None
+            ):
+                return False
+            task = await self.service.store.get(run.task_id)
+            if task is None or task.status != "active":
+                return False
+            claim = await self.service.store.claim_parked_approval(
+                run_id, resolution=resolution  # type: ignore[arg-type]
+            )
+            if claim is None:
+                return False
+            due = Due(task=task, action="fire", scheduled_for=run.scheduled_for)
+            if claim.resolution == "reject":
+                # A reject is a completed owner decision, not a retryable model failure.  The
+                # original tool batch never starts and the normal schedule advances once.
+                await self.service.complete_run(
+                    due,
+                    run_id,
+                    ok=True,
+                    session_id=run.session_id,
+                    result_text="Owner rejected the parked unattended action; no tool executed.",
+                    denied_count=1,
+                )
+                self._notify(
+                    f'⊘ job #{task.id} "{task.title}" approval rejected; no tool executed', task
+                )
+                return True
+
+            continuation = claim.continuation
+            if continuation is None:  # defensive: approved claims are the only executable form
+                await self.service.complete_run(
+                    due,
+                    run_id,
+                    ok=False,
+                    error="parked approval claim had no executable continuation",
+                    retry_safe=False,
+                )
+                return True
+            self.in_flight = task.title
+            try:
+                outcome = await self.resume_job(task, run_id, run.session_id, continuation)
+            except Exception as exc:
+                # The claim is already one-time.  Closing this occurrence prevents an approved
+                # but unresumable record from trapping the task forever or being retried later.
+                self.log.exception("parked_job_resume_failed", task_id=task.id, run_id=run_id)
+                detail = f"parked resume failed: {type(exc).__name__}: {exc}"
+                await self.service.complete_run(
+                    due, run_id, ok=False, error=detail, retry_safe=False
+                )
+                self._notify(f'✗ job #{task.id} "{task.title}" could not resume: {detail}', task)
+                return True
+            finally:
+                self.in_flight = None
+
+            if outcome.parked:
+                # The resume worker persisted a fresh exact ASK in the same transaction as its
+                # transcript.  Do not complete or advance the original scheduled occurrence.
+                self._notify(
+                    f'⏸ job #{task.id} "{task.title}" is waiting for your approval', task
+                )
+                return True
+            ok = outcome.error is None
+            await self.service.complete_run(
+                due,
+                run_id,
+                ok=ok,
+                session_id=outcome.session_id,
+                result_text=outcome.text or outcome.error,
+                denied_count=outcome.denied_count,
+                error=outcome.error,
+                cost_usd=outcome.cost_usd,
+                retry_safe=outcome.retry_safe,
+            )
+            self._notify_job_done(task, outcome, ok)
+            return True
 
     async def _fire_digest(self, due: Due) -> None:
         task = due.task

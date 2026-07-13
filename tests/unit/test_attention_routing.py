@@ -14,6 +14,7 @@ from jarvis.attention.routing import (
     NotificationRouter,
     in_quiet_hours,
     minimized_push,
+    notify_open_attention_item,
     route_notification,
 )
 from jarvis.config import load_config
@@ -22,6 +23,7 @@ from jarvis.config import load_config
 def _route(priority, **kw):
     base = dict(
         priority=priority, project_id=1, hour=12, urgent_channels=["telegram"],
+        normal_channels=[], low_channels=[],
         quiet_start=None, quiet_end=None, muted_projects=[],
     )
     base.update(kw)
@@ -57,6 +59,13 @@ def test_normal_goes_to_digest_and_low_is_center_only() -> None:
     assert low.channels == () and low.to_digest is False
 
 
+def test_each_priority_can_explicitly_push_to_telegram() -> None:
+    normal = _route("normal", normal_channels=["telegram"])
+    low = _route("low", low_channels=["telegram"])
+    assert normal.channels == ("telegram",) and normal.to_digest is True
+    assert low.channels == ("telegram",) and low.to_digest is False
+
+
 # --- quiet hours (incl. midnight wrap) -------------------------------------
 def test_quiet_hours_wrap_midnight() -> None:
     assert in_quiet_hours(23, 22, 7) is True
@@ -90,6 +99,22 @@ class _FakeConnectors:
     def notifier(self, _channel): return self._n
 
 
+class _FakeItem:
+    priority = "normal"
+    project_id = 7
+    state = "open"
+
+
+class _FakeAttention:
+    async def get(self, item_id):
+        assert item_id == 11
+        return _FakeItem()
+
+    async def open_counts(self, *, project_id):
+        assert project_id == 7
+        return {"approval": 2}
+
+
 async def test_router_sends_minimized_only_for_urgent_enabled(tmp_path: Path) -> None:
     cfg = load_config(root=tmp_path, env_file=None)
     cfg.attention = cfg.attention.model_copy(update={"urgent_channels": ["telegram"]})
@@ -99,7 +124,7 @@ async def test_router_sends_minimized_only_for_urgent_enabled(tmp_path: Path) ->
                             open_counts={"approval": 2, "alert": 1}, hour=12)
     assert d.channels == ("telegram",)
     assert n.sent == ["Kairo · 3 need you: 1 alert, 2 approvals"]  # counts only (sorted), no bodies
-    # a normal item never pushes
+    # A normal item keeps its legacy digest-only behavior until explicitly enabled.
     await router.notify(priority="normal", project_id=None, open_counts={"approval": 1}, hour=12)
     assert len(n.sent) == 1
 
@@ -118,6 +143,15 @@ async def test_default_config_never_pushes_fatigue_safe(tmp_path: Path) -> None:
     assert n.sent == []  # zero pushes by default — the human is never spammed out of the box
 
 
+async def test_post_commit_helper_reads_counts_not_attention_content(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    cfg.attention = cfg.attention.model_copy(update={"normal_channels": ["telegram"]})
+    n = _FakeNotifier()
+    router = NotificationRouter(cfg, _FakeConnectors(n))
+    await notify_open_attention_item(router, _FakeAttention(), 11)
+    assert n.sent == ["Kairo · 2 need you: 2 approvals"]
+
+
 def test_config_rejects_unknown_urgent_channel() -> None:
     # Construct directly so the field_validator runs (model_copy skips validation). An unknown
     # channel is refused ⇒ no accidental egress to an unsupported sink.
@@ -125,6 +159,6 @@ def test_config_rejects_unknown_urgent_channel() -> None:
 
     from jarvis.config import AttentionConfig
 
-    AttentionConfig(urgent_channels=["telegram", "kakao"])  # the allowed set is fine
+    AttentionConfig(normal_channels=["telegram", "kakao"])  # the allowed set is fine
     with pytest.raises(ValidationError):
-        AttentionConfig(urgent_channels=["email"])
+        AttentionConfig(low_channels=["email"])

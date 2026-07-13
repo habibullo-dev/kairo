@@ -82,6 +82,11 @@ async def test_schedule_computes_first_fire(tmp_path: Path) -> None:
     assert task.status == "active"
 
 
+def test_retry_cap_cannot_be_lower_than_retry_base() -> None:
+    with pytest.raises(ValueError, match="retry_max_seconds"):
+        SchedulerConfig(retry_base_seconds=61, retry_max_seconds=60)
+
+
 async def test_schedule_rejects_past_once_with_current_time_in_error(tmp_path: Path) -> None:
     # Models routinely compute wrong-timezone datetimes; the error must carry the
     # actual current time so the model can self-correct instead of guessing.
@@ -166,15 +171,40 @@ async def test_once_task_completes_to_done(tmp_path: Path) -> None:
     assert (task.status, task.next_run_at) == ("done", None)
 
 
-async def test_failure_cap_flips_task_to_failed(tmp_path: Path) -> None:
+async def test_unsafe_failure_dead_letters_without_retry(tmp_path: Path) -> None:
     service, clock = await _service(tmp_path, max_consecutive_failures=3)
     await _schedule(service, schedule_spec="3600")
-    for expected_failures in (1, 2, 3):
-        clock.advance(hours=1, minutes=1)
-        (due,) = await service.due()
-        run_id = await service.begin_run(due)
-        task = await service.complete_run(due, run_id, ok=False, error="boom")
-        assert task.consecutive_failures == expected_failures
+    clock.advance(hours=1, minutes=1)
+    (due,) = await service.due()
+    run_id = await service.begin_run(due)
+    task = await service.complete_run(due, run_id, ok=False, error="tool may have run")
+    assert (task.status, task.next_run_at, task.consecutive_failures) == ("failed", None, 1)
+
+
+async def test_safe_failures_back_off_then_flip_task_to_failed(tmp_path: Path) -> None:
+    service, clock = await _service(tmp_path, max_consecutive_failures=3)
+    await _schedule(service, schedule_spec="3600")
+    clock.advance(hours=1, minutes=1)
+    (due,) = await service.due()
+    run_id = await service.begin_run(due)
+    task = await service.complete_run(due, run_id, ok=False, error="boom", retry_safe=True)
+    assert task.consecutive_failures == 1
+    assert task.next_run_at == (clock() + dt.timedelta(seconds=60)).isoformat()
+
+    clock.advance(seconds=59)  # retry is not due early
+    assert await service.due() == []
+    clock.advance(seconds=1)
+    (due,) = await service.due()
+    run_id = await service.begin_run(due)
+    task = await service.complete_run(due, run_id, ok=False, error="boom", retry_safe=True)
+    assert task.consecutive_failures == 2
+    assert task.next_run_at == (clock() + dt.timedelta(seconds=120)).isoformat()
+
+    clock.advance(seconds=120)
+    (due,) = await service.due()
+    run_id = await service.begin_run(due)
+    task = await service.complete_run(due, run_id, ok=False, error="boom", retry_safe=True)
+    assert task.consecutive_failures == 3
     assert (task.status, task.next_run_at) == ("failed", None)
     assert task.last_error == "boom"
     assert await service.due() == []  # failed tasks never look due again
@@ -183,28 +213,34 @@ async def test_failure_cap_flips_task_to_failed(tmp_path: Path) -> None:
 async def test_success_resets_the_failure_counter(tmp_path: Path) -> None:
     service, clock = await _service(tmp_path, max_consecutive_failures=3)
     await _schedule(service, schedule_spec="3600")
-    for _ in range(2):
-        clock.advance(hours=1, minutes=1)
+    clock.advance(hours=1, minutes=1)
+    for retry_safe in (True, True):
         (due,) = await service.due()
         run_id = await service.begin_run(due)
-        task = await service.complete_run(due, run_id, ok=False, error="flaky")
+        task = await service.complete_run(
+            due, run_id, ok=False, error="flaky", retry_safe=retry_safe
+        )
+        clock.advance(seconds=60 if task.consecutive_failures == 1 else 120)
     assert task.consecutive_failures == 2
-    clock.advance(hours=1, minutes=1)
     (due,) = await service.due()
     run_id = await service.begin_run(due)
     task = await service.complete_run(due, run_id, ok=True)
     assert (task.consecutive_failures, task.status) == (0, "active")
 
 
-async def test_once_job_error_fails_immediately(tmp_path: Path) -> None:
-    # once-tasks don't retry: there is no future occurrence to retry at.
+async def test_once_job_retries_only_when_failure_is_proven_tool_free(tmp_path: Path) -> None:
     service, clock = await _service(tmp_path)
     await _schedule(service, schedule_kind="once", schedule_spec="2026-07-06T09:00:00")
     clock.advance(hours=1, minutes=1)
     (due,) = await service.due()
     run_id = await service.begin_run(due)
-    task = await service.complete_run(due, run_id, ok=False, error="boom")
-    assert (task.status, task.next_run_at) == ("failed", None)
+    task = await service.complete_run(due, run_id, ok=False, error="boom", retry_safe=True)
+    assert task.status == "active"
+    clock.advance(seconds=61)
+    (retry,) = await service.due()
+    retry_id = await service.begin_run(retry)
+    task = await service.complete_run(retry, retry_id, ok=True)
+    assert (task.status, task.next_run_at) == ("done", None)
 
 
 async def test_terminal_failure_creates_one_scoped_dead_letter_without_payload(
