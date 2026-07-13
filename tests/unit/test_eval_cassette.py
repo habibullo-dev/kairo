@@ -168,6 +168,37 @@ async def test_replay_streams_cached_text(tmp_path: Path) -> None:
     assert chunks == ["hello world"]
 
 
+async def test_live_wrapper_forwards_cache_and_effort_only_to_live_inner(tmp_path: Path) -> None:
+    class CapturingInner(_Inner):
+        def __init__(self) -> None:
+            super().__init__([text_message("ok", model="deepseek-v4-flash", usage=Usage(1, 1))])
+            self.kwargs: dict = {}
+
+        async def create(self, **kw) -> ModelResponse:
+            self.kwargs = kw
+            return await super().create(**kw)
+
+    inner = CapturingInner()
+    live = wrap(
+        inner,
+        provider="deepseek",
+        cfg=_cfg(tmp_path, "live", max_cost=1.0),
+        pricing=_pricing(),
+        signature=_SIG,
+    )
+    await live.create(**_REQ, stable_prefix="stable", effort="max")
+    assert inner.kwargs["stable_prefix"] == "stable"
+    assert inner.kwargs["effort"] == "max"
+
+    replay = wrap(
+        None, provider="deepseek", cfg=_cfg(tmp_path, "replay"), pricing=_pricing(), signature=_SIG
+    )
+    replayed = await replay.create(**_REQ, stable_prefix="stable", effort="max")
+    assert replayed.text == "ok" and replay.hits == 1
+    with pytest.raises(CassetteMissError):
+        await replay.create(**_REQ, stable_prefix="stable", effort="high")
+
+
 async def test_record_preserves_tool_calls(tmp_path: Path) -> None:
     resp = tool_use_message(
         [ToolCall(id="t1", name="read_file", input={"path": "a"})],

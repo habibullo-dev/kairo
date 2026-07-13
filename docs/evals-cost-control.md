@@ -33,6 +33,27 @@ Every `gate` / `run` / `smoke` invocation runs in one of three modes:
 the cap is reached, and an unpriced model under a cap fails closed (an unmeasurable spend is not
 allowed). Smoke defaults to a $3 cap.
 
+## Fable cache A/B probe — measurement only
+
+Use the explicit live probe only when you want evidence for Fable prompt caching. It runs one
+ordinary core scenario three or more times with caching off, then with caching on, under one shared
+hard cap:
+
+```powershell
+uv run jarvis eval cache-ab --live --max-cost-usd 5 --runs 3
+```
+
+The probe writes a metadata-only report under ignored `data/evals/cache-ab/`; it does **not** edit
+`config/settings.yaml`, change routing, append eval history, alter committed cassettes, or enable
+caching in production. Both arms must pass the scenario's existing deterministic checks. The off
+arm must report zero cache tokens; the on arm must show a write and a later read. Otherwise it
+returns `NOT_ELIGIBLE` (non-zero) rather than implying a saving that did not happen.
+
+At the current architecture this result is expected to be useful: the ordinary stable prefix may
+be too small for provider caching, and Fable orchestration head calls do not yet use the cache seam.
+A passing probe is evidence only—not authorization to switch the runtime flag. Any production
+activation remains a separate owner decision and requires the normal safety evaluation review.
+
 ## Cassettes
 
 A cassette is a committed JSON file under `tests/evals/cassettes/` (smoke: `.../smoke/`) holding

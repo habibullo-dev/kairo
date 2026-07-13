@@ -8,6 +8,7 @@ compromised model that the gate denies is invisible to name-level checks."""
 from __future__ import annotations
 
 import contextlib
+import json
 import shutil
 import sqlite3
 from pathlib import Path
@@ -344,3 +345,108 @@ async def test_unknown_child_model_is_error(tmp_path: Path) -> None:
 
     assert record.state == recorder.ERROR
     assert record.cost_usd is None
+
+
+# --- isolated Fable cache A/B probe ----------------------------------------
+
+
+def test_cache_ab_cli_requires_explicit_live_cap(capsys) -> None:
+    assert runner.cli(["cache-ab"]) == 2
+    assert "requires --live and a positive --max-cost-usd" in capsys.readouterr().out
+
+
+async def test_cache_ab_isolates_arms_and_leaves_runtime_eval_state_unchanged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    loaded = next(item for item in runner.load_scenarios("core") if item.name == "file_summary")
+    settings_before = (runner.REPO_ROOT / "config" / "settings.yaml").read_text(encoding="utf-8")
+    history = tmp_path / "history.jsonl"
+    history.write_text('{"historical": true}\n', encoding="utf-8")
+    monkeypatch.setattr(runner, "HISTORY_PATH", history)
+    flags: list[bool] = []
+    models: list[str] = []
+
+    async def fake_run_once(arm_config, _scenario, **kwargs):
+        enabled = arm_config.context_reuse.enabled
+        flags.append(enabled)
+        models.append(kwargs["main_model"])
+        arm_run = sum(1 for flag in flags if flag == enabled)
+        usage = {
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "cache_creation_input_tokens": 50 if enabled and arm_run == 1 else 0,
+            "cache_read_input_tokens": 50 if enabled and arm_run > 1 else 0,
+        }
+        workdir = tmp_path / f"work-{len(flags)}"
+        workdir.mkdir()
+        return (
+            recorder.ScenarioRunRecord(
+                scenario=loaded.name,
+                suite=loaded.suite,
+                run_idx=kwargs["run_idx"],
+                state=recorder.PASS,
+                usage=usage,
+            ),
+            workdir,
+        )
+
+    monkeypatch.setattr(runner, "run_once", fake_run_once)
+    exit_code, result, report_path = await runner.run_cache_ab(
+        config,
+        loaded=loaded,
+        runs=3,
+        max_cost_usd=5.0,
+        results_root=tmp_path / "cache-ab",
+    )
+
+    assert exit_code == 0 and result["outcome"] == "PASS"
+    assert flags == [False, False, False, True, True, True]
+    assert models == [runner.CACHE_AB_MODEL] * 6
+    assert config.context_reuse.enabled is False
+    assert (
+        (runner.REPO_ROOT / "config" / "settings.yaml").read_text(encoding="utf-8")
+        == settings_before
+    )
+    assert history.read_text(encoding="utf-8") == '{"historical": true}\n'
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["measurement_only"] is True and report["does_not_activate_caching"] is True
+    assert report["arms"][0]["usage"]["cache_read_input_tokens"] == 0
+    assert report["arms"][1]["usage"]["cache_creation_input_tokens"] == 50
+    assert report["arms"][1]["usage"]["cache_read_input_tokens"] == 100
+    assert "answer" not in report_path.read_text(encoding="utf-8")
+
+
+async def test_cache_ab_reports_not_eligible_when_the_provider_never_reads_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    loaded = next(item for item in runner.load_scenarios("core") if item.name == "file_summary")
+
+    async def fake_run_once(arm_config, _scenario, **kwargs):
+        usage = {
+            "cache_creation_input_tokens": 50 if arm_config.context_reuse.enabled else 0,
+            "cache_read_input_tokens": 0,
+        }
+        workdir = tmp_path / f"not-eligible-{kwargs['run_idx']}-{arm_config.context_reuse.enabled}"
+        workdir.mkdir(exist_ok=True)
+        return (
+            recorder.ScenarioRunRecord(
+                scenario=loaded.name,
+                suite=loaded.suite,
+                run_idx=kwargs["run_idx"],
+                state=recorder.PASS,
+                usage=usage,
+            ),
+            workdir,
+        )
+
+    monkeypatch.setattr(runner, "run_once", fake_run_once)
+    exit_code, result, _report_path = await runner.run_cache_ab(
+        config,
+        loaded=loaded,
+        runs=3,
+        max_cost_usd=5.0,
+        results_root=tmp_path / "cache-ab",
+    )
+    assert exit_code == 2 and result["outcome"] == "NOT_ELIGIBLE"

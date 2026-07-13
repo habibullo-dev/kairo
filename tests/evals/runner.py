@@ -48,6 +48,7 @@ from tests.evals.cassette import (
     CassetteConfig,
     CassetteEmbedder,
     CassetteStore,
+    CostCap,
     CostCapExceeded,
     wrap_web_tool,
 )
@@ -90,6 +91,7 @@ HISTORY_PATH = DATA_EVALS / "history.jsonl"
 BASELINES_PATH = Path(__file__).parent / "baselines.yaml"
 FIXTURES_PATH = Path(__file__).parent / "judge_fixtures.yaml"
 CASSETTES_PATH = Path(__file__).parent / "cassettes"  # committed model-call cassettes (replay)
+CACHE_AB_RESULTS_PATH = DATA_EVALS / "cache-ab"  # ignored, measurement-only live probe artifacts
 #: E6b: the fixed clock every eval agent loop reports as "now" (via _default_now), so the
 #: time-context line in the system prompt is identical across record and replay → same key.
 EVAL_CLOCK = "2026-01-01T12:00:00+00:00"
@@ -107,6 +109,7 @@ CROSS_JUDGE_MODEL = "claude-sonnet-5"  # uncounted cross-family check (see judge
 #: too, so a re-record captures the same identities). Judge/embedding models keep their own pins.
 EVAL_MAIN_MODEL = "claude-opus-4-8"
 EVAL_UTILITY_MODEL = "claude-sonnet-5"
+CACHE_AB_MODEL = "claude-fable-5"
 
 
 # --- scenario loading ------------------------------------------------------
@@ -815,6 +818,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
     judge_client: LLMClient | None = None,
     no_judge: bool = False,
     cassette: CassetteConfig | None = None,
+    main_model: str | None = None,
 ) -> tuple[ScenarioRunRecord, Path]:
     """Execute one scenario once and return its record plus the temp workdir (the
     caller owns the workdir's lifecycle: delete on PASS, save on anything else).
@@ -908,7 +912,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
         # Pin the scenario models to the eval-recorded identities (deep-copy `models` so this never
         # mutates the caller's config) — the gate is independent of settings.yaml daily models.
         eval_models = config.models.model_copy(
-            update={"main": EVAL_MAIN_MODEL, "utility": EVAL_UTILITY_MODEL}
+            update={"main": main_model or EVAL_MAIN_MODEL, "utility": EVAL_UTILITY_MODEL}
         )
         run_config = config.model_copy(update={"root": workdir, "models": eval_models})
 
@@ -1165,6 +1169,172 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
         scenario_hash=scenario_hash,
     )
     return record, workdir
+
+
+# --- isolated Fable cache experiment ---------------------------------------
+
+
+_CACHE_AB_UNSUPPORTED_SCENARIO_FLAGS = (
+    "needs_agents",
+    "needs_memory",
+    "needs_knowledge",
+    "needs_scheduler",
+    "voice",
+    "judge",
+)
+
+
+def _cache_ab_usage(records: list[ScenarioRunRecord]) -> dict[str, int]:
+    """Aggregate only safe model-usage counters for one cache-experiment arm."""
+    fields = (
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    )
+    totals = {metric: 0 for metric in fields}
+    for record in records:
+        for metric in fields:
+            value = record.usage.get(metric, 0)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                totals[metric] += int(value)
+    return totals
+
+
+def _validate_cache_ab_scenario(loaded: LoadedScenario) -> None:
+    """Keep the experiment narrow: one ordinary core AgentLoop and deterministic checks only."""
+    if loaded.suite != "core":
+        raise ValueError("cache-ab accepts one core scenario, never an adversarial or judged suite")
+    unsupported = [key for key in _CACHE_AB_UNSUPPORTED_SCENARIO_FLAGS if loaded.data.get(key)]
+    if unsupported:
+        raise ValueError(
+            "cache-ab scenario has unsupported extra paths: " + ", ".join(unsupported)
+        )
+
+
+async def run_cache_ab(
+    config: Config,
+    *,
+    loaded: LoadedScenario,
+    runs: int,
+    max_cost_usd: float,
+    results_root: Path = CACHE_AB_RESULTS_PATH,
+    inner_factory: Callable[[Config], LLMClient] | None = None,
+) -> tuple[int, dict, Path]:
+    """Measure Fable cache-off vs cache-on without mutating normal eval state or runtime config.
+
+    Each arm runs the exact same existing scenario checks. The probe uses isolated, temporary
+    live cassettes solely to share one fail-closed cost cap across every client created by an
+    arm; those cassettes are deleted before returning. The persisted report is metadata-only and
+    deliberately never activates caching, changes routing, writes committed cassettes, or appends
+    evaluation history. A missing provider cache write/read is an honest ``NOT_ELIGIBLE`` result.
+    """
+    from jarvis.observability.cost import load_pricing
+
+    if runs < 3:
+        raise ValueError("cache-ab requires at least three runs per arm")
+    if max_cost_usd <= 0:
+        raise ValueError("cache-ab requires a positive shared --max-cost-usd cap")
+    _validate_cache_ab_scenario(loaded)
+
+    pricing = load_pricing(config.root / "config" / "pricing.yaml")
+    if pricing.cost("anthropic", CACHE_AB_MODEL, Usage(input_tokens=1)) is None:
+        raise ValueError(f"cache-ab model {CACHE_AB_MODEL} is unpriced in config/pricing.yaml")
+    cap = CostCap(max_cost_usd, pricing)
+    create_inner = inner_factory or _default_client_factory
+    arms: list[dict] = []
+
+    with tempfile.TemporaryDirectory(prefix="jarvis-cache-ab-") as temp_root:
+        for arm, enabled in (("off", False), ("on", True)):
+            arm_config = config.model_copy(
+                update={
+                    "context_reuse": config.context_reuse.model_copy(update={"enabled": enabled})
+                }
+            )
+            cassette_cfg = CassetteConfig(
+                mode="live", store_dir=Path(temp_root) / arm, max_cost_usd=max_cost_usd
+            )
+            spent_before = cap.spent
+
+            def factory(
+                run_config: Config,
+                *,
+                _arm: str = arm,
+                _cassette_cfg: CassetteConfig = cassette_cfg,
+            ) -> LLMClient:
+                return cassette_wrap(
+                    create_inner(run_config),
+                    provider="anthropic",
+                    cfg=_cassette_cfg,
+                    pricing=pricing,
+                    signature={
+                        "effort": run_config.limits.effort,
+                        "thinking": True,
+                        "compat": False,
+                    },
+                    cost_cap=cap,
+                    scenario=f"cache-ab:{_arm}",
+                )
+
+            records: list[ScenarioRunRecord] = []
+            for run_idx in range(runs):
+                record, workdir = await run_once(
+                    arm_config,
+                    loaded.data,
+                    run_idx=run_idx,
+                    suite=loaded.suite,
+                    scenario_hash=loaded.hash,
+                    client_factory=factory,
+                    no_judge=True,
+                    main_model=CACHE_AB_MODEL,
+                )
+                records.append(record)
+                shutil.rmtree(workdir, ignore_errors=True)
+
+            arms.append(
+                {
+                    "arm": arm,
+                    "context_reuse_enabled": enabled,
+                    "quality_pass": all(record.state == PASS for record in records),
+                    "states": [record.state for record in records],
+                    "usage": _cache_ab_usage(records),
+                    "cost_usd": round(cap.spent - spent_before, 6),
+                }
+            )
+
+    off, on = arms
+    off_usage, on_usage = off["usage"], on["usage"]
+    if not off["quality_pass"] or not on["quality_pass"]:
+        outcome, exit_code = "QUALITY_FAILURE", 1
+    elif off_usage["cache_creation_input_tokens"] or off_usage["cache_read_input_tokens"]:
+        outcome, exit_code = "INVALID_OFF_ARM_CACHE_ACTIVITY", 1
+    elif (
+        on_usage["cache_creation_input_tokens"] <= 0
+        or on_usage["cache_read_input_tokens"] <= 0
+    ):
+        outcome, exit_code = "NOT_ELIGIBLE", 2
+    else:
+        outcome, exit_code = "PASS", 0
+
+    report = {
+        "schema": "cache-ab-v1",
+        "measurement_only": True,
+        "does_not_activate_caching": True,
+        "scenario": loaded.name,
+        "provider": "anthropic",
+        "model": CACHE_AB_MODEL,
+        "runs_per_arm": runs,
+        "shared_max_cost_usd": max_cost_usd,
+        "shared_spend_usd": round(cap.spent, 6),
+        "pricing": {"version": pricing.version, "effective": pricing.effective},
+        "outcome": outcome,
+        "arms": arms,
+    }
+    artifact = results_root / f"{time.strftime('%Y%m%d-%H%M%S')}-{recorder.git_rev()}"
+    artifact.mkdir(parents=True, exist_ok=True)
+    report_path = artifact / "report.json"
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    return exit_code, report, report_path
 
 
 # --- orchestration (records -> gate engine -> report; see report.py) -------
@@ -1772,7 +1942,16 @@ def cli(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         argv = ["gate"]  # bare invocation = full gate (documented default)
-    elif argv[0] not in {"gate", "run", "aggregate", "smoke", "plan", "-h", "--help"}:
+    elif argv[0] not in {
+        "gate",
+        "run",
+        "aggregate",
+        "smoke",
+        "plan",
+        "cache-ab",
+        "-h",
+        "--help",
+    }:
         argv = ["gate", *argv]  # `runner.py --suite core` still means `gate --suite core`
 
     parser = argparse.ArgumentParser(
@@ -1835,6 +2014,25 @@ def cli(argv: list[str] | None = None) -> int:
     pl.add_argument("--runs", type=int, default=3)
     _add_cassette_args(pl)
 
+    cab = sub.add_parser(
+        "cache-ab",
+        help="Live, isolated Fable cache experiment; never enables production caching.",
+    )
+    cab.add_argument(
+        "--scenario",
+        default="file_summary",
+        help="One ordinary core scenario with deterministic checks (default: file_summary).",
+    )
+    cab.add_argument("--runs", type=int, default=3, help="Runs per arm (minimum: 3).")
+    cab.add_argument("--live", action="store_true", help="Required: authorizes this live probe.")
+    cab.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="Required shared hard cap across cache-off and cache-on arms.",
+    )
+
     args = parser.parse_args(argv)
 
     # E6b: pin a deterministic eval clock for every agent loop (main / sub-agent / unattended
@@ -1862,6 +2060,38 @@ def cli(argv: list[str] | None = None) -> int:
         mode = "live" if args.live else ("record" if args.record else "replay")
         _print_plan(project_cost(args.suite, args.runs, mode))
         return 0
+
+    if args.cmd == "cache-ab":
+        if not args.live or args.max_cost_usd is None or args.max_cost_usd <= 0:
+            print("[cache-ab] requires --live and a positive --max-cost-usd USD; no call was made")
+            return 2
+        if args.runs < 3:
+            print("[cache-ab] requires --runs >= 3; no call was made")
+            return 2
+        matches = [
+            scenario for scenario in load_scenarios("core") if scenario.name == args.scenario
+        ]
+        if len(matches) != 1:
+            print(f"[cache-ab] unknown core scenario {args.scenario!r}; no call was made")
+            return 2
+        try:
+            config = load_config(require=("anthropic",))
+            exit_code, result, report_path = asyncio.run(
+                run_cache_ab(
+                    config,
+                    loaded=matches[0],
+                    runs=args.runs,
+                    max_cost_usd=args.max_cost_usd,
+                )
+            )
+        except (ConfigError, ValueError) as exc:
+            print(f"[cache-ab] {exc}; no call was made")
+            return 2
+        print(
+            f"[cache-ab] outcome={result['outcome']} spend=${result['shared_spend_usd']:.4f} "
+            f"report={report_path}"
+        )
+        return exit_code
 
     if args.cmd == "smoke":
         config = load_config()  # models/providers come from the catalog; replay needs no key

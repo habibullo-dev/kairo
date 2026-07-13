@@ -313,11 +313,17 @@ class CassetteClient:
         on_text_delta: Callable[[str], None] | None = None,
         tool_choice: dict | None = None,
         temperature: float | None = None,
+        stable_prefix: str | None = None,
+        effort: str | None = None,
     ) -> ModelResponse:
         self._seq += 1
+        # A caller-supplied effort override changes Anthropic reasoning behavior, so it must
+        # change the replay key just like the configured client signature. ``stable_prefix`` is
+        # already represented by the full system string and therefore needs no second key field.
+        signature = {**self.signature, **({"effort": effort} if effort is not None else {})}
         key = cassette_key(
             provider=self.provider,
-            signature=self.signature,
+            signature=signature,
             model=model,
             system=system,
             messages=messages,
@@ -350,6 +356,8 @@ class CassetteClient:
             on_text_delta=on_text_delta,
             tool_choice=tool_choice,
             temperature=temperature,
+            stable_prefix=stable_prefix,
+            effort=effort,
         )
         if self.cost_cap is not None:
             self.cost_cap.charge(self.provider, resp.model or model, resp.usage)
