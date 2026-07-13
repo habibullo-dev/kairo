@@ -231,6 +231,12 @@ def test_connectors_config_defaults(tmp_path: Path) -> None:
     assert c.telegram.remote_control.enabled is False
     assert c.telegram.remote_control.allowed_chat_id == ""
     assert c.telegram.remote_control.max_read_requests_per_hour == 60
+    assert c.telegram.remote_control.attachments.enabled is False
+    assert c.telegram.remote_control.attachments.max_download_bytes == 20_000_000
+    assert c.telegram.remote_control.attachments.max_image_bytes == 5_000_000
+    assert c.telegram.remote_control.attachments.max_document_chars == 50_000
+    assert c.telegram.remote_control.attachments.max_audio_seconds == 600
+    assert c.telegram.remote_control.attachments.local_audio_model == "small"
     assert c.telegram.remote_control.operator.enabled is False
     assert c.telegram.remote_control.operator.live_web_search_enabled is False
     assert c.telegram.remote_control.operator.live_web_search_max_results == 5
@@ -307,6 +313,36 @@ def test_telegram_remote_live_search_configuration_is_bounded(tmp_path: Path) ->
         "        live_web_search_max_results: 6\n",
     )
     with pytest.raises(ConfigError):
+        load_config(root=tmp_path, env_file=None)
+
+
+def test_telegram_remote_attachments_are_opt_in_and_bounded(tmp_path: Path) -> None:
+    _write_settings(
+        tmp_path,
+        "connectors:\n  telegram:\n    remote_control:\n      attachments:\n"
+        "        enabled: true\n"
+        "        max_download_bytes: 6000000\n"
+        "        max_image_bytes: 4000000\n"
+        "        max_document_chars: 12000\n"
+        "        max_audio_seconds: 120\n"
+        "        local_audio_model: base\n",
+    )
+    attachments = load_config(
+        root=tmp_path, env_file=None
+    ).connectors.telegram.remote_control.attachments
+    assert attachments.enabled is True
+    assert attachments.max_download_bytes == 6_000_000
+    assert attachments.max_image_bytes == 4_000_000
+    assert attachments.max_document_chars == 12_000
+    assert attachments.max_audio_seconds == 120
+    assert attachments.local_audio_model == "base"
+
+    _write_settings(
+        tmp_path,
+        "connectors:\n  telegram:\n    remote_control:\n      attachments:\n"
+        "        max_download_bytes: 1000\n        max_image_bytes: 1001\n",
+    )
+    with pytest.raises(ConfigError, match="max_image_bytes"):
         load_config(root=tmp_path, env_file=None)
 
 

@@ -376,6 +376,28 @@ class TelegramRemoteOperatorConfig(BaseModel):
         return self
 
 
+class TelegramRemoteAttachmentsConfig(BaseModel):
+    """Allowlisted Telegram media accepted as ephemeral question context.
+
+    Files are downloaded only after private-chat authorization, byte-capped before parsing,
+    and discarded after one stateless answer. Audio transcription is local-only so enabling
+    this feature does not silently forward raw recordings to another cloud provider.
+    """
+
+    enabled: bool = False
+    max_download_bytes: int = Field(default=20_000_000, ge=1, le=20_000_000)
+    max_image_bytes: int = Field(default=5_000_000, ge=1, le=5_000_000)
+    max_document_chars: int = Field(default=50_000, ge=1_000, le=100_000)
+    max_audio_seconds: int = Field(default=600, ge=1, le=1_200)
+    local_audio_model: Literal["tiny", "base", "small", "medium", "large-v3"] = "small"
+
+    @model_validator(mode="after")
+    def _attachment_bounds(self) -> TelegramRemoteAttachmentsConfig:
+        if self.max_image_bytes > self.max_download_bytes:
+            raise ValueError("Telegram max_image_bytes cannot exceed max_download_bytes")
+        return self
+
+
 class TelegramRemoteControlConfig(BaseModel):
     """Opt-in, single-owner Telegram remote control.
 
@@ -391,6 +413,9 @@ class TelegramRemoteControlConfig(BaseModel):
     max_model_messages_per_hour: int = Field(default=20, ge=1, le=100)
     max_read_requests_per_hour: int = Field(default=60, ge=1, le=500)
     max_input_chars: int = Field(default=2_000, ge=1, le=4_000)
+    attachments: TelegramRemoteAttachmentsConfig = Field(
+        default_factory=TelegramRemoteAttachmentsConfig
+    )
     operator: TelegramRemoteOperatorConfig = Field(default_factory=TelegramRemoteOperatorConfig)
 
     @model_validator(mode="after")

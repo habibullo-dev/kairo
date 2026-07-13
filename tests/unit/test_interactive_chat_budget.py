@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from jarvis.config import ChatConfig, Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets
 from jarvis.core import AgentLoop, FakeClient, ToolCall, text_message, tool_use_message
+from jarvis.core.agent import _request_token_ceiling
 from jarvis.core.execution import ExecutionContext, bind_execution_context
 from jarvis.observability.cost import Price, PricingTable, Usage
 from jarvis.observability.ledger import cost_context
@@ -280,3 +281,29 @@ def test_chat_defaults_are_lower_than_general_loop_defaults() -> None:
     assert chat.max_iterations < limits.max_iterations
     assert chat.max_output_tokens < limits.max_output_tokens
     assert chat.hard_stop_usd_per_turn > 0
+
+
+def test_image_preflight_counts_vision_allowance_not_base64_as_text() -> None:
+    encoded = "A" * 1_000_000
+    ceiling = _request_token_ceiling(
+        system="attachment test",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": encoded,
+                        },
+                    },
+                    {"type": "text", "text": "What is shown?"},
+                ],
+            }
+        ],
+        tools=[],
+        margin=512,
+    )
+    assert 4_096 < ceiling < 10_000

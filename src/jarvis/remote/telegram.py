@@ -20,6 +20,7 @@ import datetime as dt
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any
 
 import aiosqlite
@@ -29,6 +30,7 @@ from jarvis.config import TelegramRemoteControlConfig
 from jarvis.connectors.base import ConnectorError
 from jarvis.connectors.telegram import send_telegram_message
 from jarvis.observability import get_logger
+from jarvis.remote.attachments import RemoteAttachment, RemoteAttachmentError
 
 _TELEGRAM_API = "https://api.telegram.org"
 _MAX_REPLY_CHARS = 3_800  # leave room below Telegram's 4096-character transport ceiling
@@ -137,16 +139,81 @@ def _now() -> str:
 
 @dataclass(frozen=True)
 class TelegramRemoteMessage:
-    """The minimal, non-secret portion of one text update needed by the controller."""
+    """The minimal portion of one text/media update needed by the controller."""
 
     update_id: int
     chat_id: str
     chat_type: str
     text: str
+    attachment: RemoteAttachment | None = None
+
+
+def _media_int(value: object) -> int | None:
+    return value if isinstance(value, int) and value >= 0 else None
+
+
+def _parse_attachment(message: dict) -> RemoteAttachment | None:
+    photos = message.get("photo")
+    if isinstance(photos, list):
+        candidates = [item for item in photos if isinstance(item, dict)]
+        valid = [item for item in candidates if isinstance(item.get("file_id"), str)]
+        if valid:
+            photo = max(
+                valid,
+                key=lambda item: (
+                    _media_int(item.get("file_size")) or 0,
+                    (_media_int(item.get("width")) or 0)
+                    * (_media_int(item.get("height")) or 0),
+                ),
+            )
+            return RemoteAttachment(
+                kind="image",
+                file_id=photo["file_id"],
+                file_name="photo.jpg",
+                media_type="image/jpeg",
+                file_size=_media_int(photo.get("file_size")),
+            )
+
+    document = message.get("document")
+    if isinstance(document, dict) and isinstance(document.get("file_id"), str):
+        media_type = document.get("mime_type")
+        media_type = media_type if isinstance(media_type, str) else "application/octet-stream"
+        file_name = document.get("file_name")
+        file_name = file_name if isinstance(file_name, str) else "attachment"
+        kind = (
+            "image"
+            if media_type in {"image/gif", "image/jpeg", "image/png", "image/webp"}
+            else "document"
+        )
+        return RemoteAttachment(
+            kind=kind,
+            file_id=document["file_id"],
+            file_name=file_name,
+            media_type=media_type,
+            file_size=_media_int(document.get("file_size")),
+        )
+
+    for field, kind, fallback in (("voice", "voice", "voice.ogg"), ("audio", "audio", "audio")):
+        media = message.get(field)
+        if not isinstance(media, dict) or not isinstance(media.get("file_id"), str):
+            continue
+        media_type = media.get("mime_type")
+        media_type = media_type if isinstance(media_type, str) else "audio/ogg"
+        file_name = media.get("file_name")
+        file_name = file_name if isinstance(file_name, str) else fallback
+        return RemoteAttachment(
+            kind=kind,  # type: ignore[arg-type]
+            file_id=media["file_id"],
+            file_name=file_name,
+            media_type=media_type,
+            file_size=_media_int(media.get("file_size")),
+            duration_seconds=_media_int(media.get("duration")),
+        )
+    return None
 
 
 def parse_telegram_update(value: object) -> TelegramRemoteMessage | None:
-    """Parse one text update; group authorization remains controller-owned.
+    """Parse one text or supported media update; authorization remains controller-owned.
 
     This deliberately does not log or throw provider bodies.  Authorization happens separately
     so parsing remains a pure, easily testable boundary.
@@ -159,7 +226,12 @@ def parse_telegram_update(value: object) -> TelegramRemoteMessage | None:
         return None
     chat = message.get("chat")
     text = message.get("text")
-    if not isinstance(chat, dict) or not isinstance(text, str):
+    caption = message.get("caption")
+    attachment = _parse_attachment(message)
+    if not isinstance(chat, dict):
+        return None
+    text = text if isinstance(text, str) else (caption if isinstance(caption, str) else "")
+    if not text and attachment is None:
         return None
     chat_id = chat.get("id")
     chat_type = chat.get("type")
@@ -170,6 +242,7 @@ def parse_telegram_update(value: object) -> TelegramRemoteMessage | None:
         chat_id=str(chat_id),
         chat_type=chat_type,
         text=text,
+        attachment=attachment,
     )
 
 
@@ -305,6 +378,7 @@ class TelegramRemoteControlStore:
 
 ReplyHandler = Callable[[], Awaitable[str]]
 ChatHandler = Callable[[str], Awaitable[str]]
+AttachmentHandler = Callable[[RemoteAttachment, bytes, str], Awaitable[str]]
 OperatorResolutionHandler = Callable[[str, str], Awaitable[str]]
 OperatorCancelHandler = Callable[[str], Awaitable[str]]
 LifecycleHandler = Callable[[], Awaitable[None]]
@@ -325,6 +399,7 @@ class TelegramRemoteControl:
         calendar_handler: ReplyHandler,
         briefing_handler: ReplyHandler,
         chat_handler: ChatHandler,
+        attachment_handler: AttachmentHandler | None = None,
         projects_handler: ReplyHandler | None = None,
         jobs_handler: ReplyHandler | None = None,
         approvals_handler: ReplyHandler | None = None,
@@ -348,6 +423,7 @@ class TelegramRemoteControl:
         self._calendar_handler = calendar_handler
         self._briefing_handler = briefing_handler
         self._chat_handler = chat_handler
+        self._attachment_handler = attachment_handler
         self._projects_handler = projects_handler
         self._jobs_handler = jobs_handler
         self._approvals_handler = approvals_handler
@@ -426,6 +502,67 @@ class TelegramRemoteControl:
         result = body.get("result")
         return result if isinstance(result, list) else []
 
+    async def _download_attachment(self, attachment: RemoteAttachment, *, http: Any) -> bytes:
+        cap = (
+            self._config.attachments.max_image_bytes
+            if attachment.kind == "image"
+            else self._config.attachments.max_download_bytes
+        )
+        if attachment.file_size is not None and attachment.file_size > cap:
+            raise RemoteAttachmentError(
+                f"That {attachment.kind} is over Kairo's {cap // 1_000_000} MB limit."
+            )
+        try:
+            metadata_response = await http.post(
+                f"{_TELEGRAM_API}/bot{self._bot_token}/getFile",
+                data={"file_id": attachment.file_id},
+            )
+        except httpx.HTTPError as exc:
+            raise ConnectorError(
+                "telegram", user_message="Kairo could not download that Telegram attachment."
+            ) from exc
+        if metadata_response.status_code != 200:
+            raise ConnectorError(
+                "telegram", user_message="Kairo could not download that Telegram attachment."
+            )
+        try:
+            metadata = metadata_response.json()
+        except ValueError as exc:
+            raise ConnectorError(
+                "telegram", user_message="Telegram returned invalid attachment metadata."
+            ) from exc
+        result = metadata.get("result") if isinstance(metadata, dict) else None
+        file_path = result.get("file_path") if isinstance(result, dict) else None
+        logical = PurePosixPath(file_path) if isinstance(file_path, str) else None
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("ok") is not True
+            or logical is None
+            or logical.is_absolute()
+            or any(part in {"", ".", ".."} for part in logical.parts)
+        ):
+            raise ConnectorError(
+                "telegram", user_message="Telegram returned invalid attachment metadata."
+            )
+        try:
+            response = await http.get(
+                f"{_TELEGRAM_API}/file/bot{self._bot_token}/{logical.as_posix()}"
+            )
+        except httpx.HTTPError as exc:
+            raise ConnectorError(
+                "telegram", user_message="Kairo could not download that Telegram attachment."
+            ) from exc
+        if response.status_code != 200:
+            raise ConnectorError(
+                "telegram", user_message="Kairo could not download that Telegram attachment."
+            )
+        raw = bytes(response.content)
+        if len(raw) > cap:
+            raise RemoteAttachmentError(
+                f"That {attachment.kind} is over Kairo's {cap // 1_000_000} MB limit."
+            )
+        return raw
+
     async def initialize(self, *, http: Any = None) -> None:
         """Discard retained pre-enable updates before announcing the remote channel ready.
 
@@ -486,7 +623,10 @@ class TelegramRemoteControl:
             ):
                 continue  # Never acknowledge unknown chats; it would reveal a live control bot.
             try:
-                reply = await self._reply_for(message.text)
+                if message.attachment is None:
+                    reply = await self._reply_for(message.text)
+                else:
+                    reply = await self._reply_for_attachment(message, http=client)
                 await self._send(reply, http=client)
                 handled += 1
             except asyncio.CancelledError:
@@ -498,6 +638,26 @@ class TelegramRemoteControl:
                         "Kairo could not answer that message. Please try again.", http=client
                     )
         return handled
+
+    async def _reply_for_attachment(self, message: TelegramRemoteMessage, *, http: Any) -> str:
+        attachment = message.attachment
+        assert attachment is not None
+        if not self._config.attachments.enabled or self._attachment_handler is None:
+            return "Telegram attachments are not enabled on this Kairo instance."
+        if len(message.text) > self._config.max_input_chars:
+            return (
+                "That attachment caption is too long for remote chat "
+                f"({self._config.max_input_chars} characters max)."
+            )
+        if not await self._store.reserve_model_message(
+            max_per_hour=self._config.max_model_messages_per_hour
+        ):
+            return "Remote model chat has reached its hourly limit."
+        try:
+            raw = await self._download_attachment(attachment, http=http)
+            return await self._attachment_handler(attachment, raw, message.text)
+        except (RemoteAttachmentError, ConnectorError) as exc:
+            return str(exc)
 
     async def _reply_for(self, text: str) -> str:
         stripped = text.strip()
@@ -524,6 +684,7 @@ class TelegramRemoteControl:
                 "/inbox — unread inbox count only\n"
                 "/calendar — next-24-hours count and next start time\n"
                 "/briefing — combined status, inbox, calendar, and task count\n"
+                "Photos/files/voice — attach one item with an optional question\n"
                 f"{operator_help}"
                 "Any other message — a bounded reply or Remote Operator proposal\n\n"
                 "This channel cannot approve actions, write files, run commands, change schedules, "

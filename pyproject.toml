@@ -33,6 +33,7 @@ docling = [
 ]
 voice = [
     "elevenlabs>=1.0",
+    "faster-whisper>=1.2,<2",
     "openai>=1.0",
     "sounddevice>=0.4",
 ]

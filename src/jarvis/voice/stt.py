@@ -10,6 +10,7 @@ faster-whisper (audio stays on-device, no egress). Cloud selection is gated at c
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from jarvis.observability import get_logger
 from jarvis.voice.protocols import Transcript
@@ -54,8 +55,8 @@ class OpenAITranscriber:
 
 class LocalTranscriber:
     """Local STT via faster-whisper — audio stays on-device (no egress). faster-whisper is
-    a heavy, platform-specific dependency, so it is lazy-imported with an install hint and
-    is *not* in the base ``voice`` extra."""
+    a heavy, platform-specific dependency, so it is lazy-imported and installed only with
+    the ``voice`` extra."""
 
     def __init__(
         self, *, model_size: str = "large-v3", model: object | None = None, log=None
@@ -70,9 +71,9 @@ class LocalTranscriber:
                 from faster_whisper import WhisperModel
             except ImportError as exc:  # pragma: no cover - exercised only without the engine
                 raise RuntimeError(
-                    "local STT needs faster-whisper: uv pip install faster-whisper"
+                    "local STT needs faster-whisper: uv sync --extra voice"
                 ) from exc
-            self._model = WhisperModel(self._model_size)
+            self._model = WhisperModel(self._model_size, device="cpu", compute_type="int8")
         return self._model
 
     async def transcribe(self, audio: bytes) -> Transcript:
@@ -81,7 +82,21 @@ class LocalTranscriber:
         text = await asyncio.to_thread(self._run, model, audio)
         return Transcript(text=text.strip(), is_final=True)
 
+    async def transcribe_file(self, path: Path) -> Transcript:
+        """Transcribe a locally staged encoded media file (OGG/MP3/M4A/WAV/…)."""
+        model = self._get_model()
+        text = await asyncio.to_thread(self._run, model, str(path))
+        return Transcript(text=text.strip(), is_final=True)
+
     @staticmethod
-    def _run(model: object, audio: bytes) -> str:
-        segments, _info = model.transcribe(audio)  # type: ignore[attr-defined]
-        return " ".join(seg.text for seg in segments)
+    def _run(model: object, audio: object) -> str:
+        segments, _info = model.transcribe(  # type: ignore[attr-defined]
+            audio,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+        )
+        return " ".join(
+            seg.text
+            for seg in segments
+            if float(getattr(seg, "no_speech_prob", 0.0) or 0.0) < 0.6
+        )

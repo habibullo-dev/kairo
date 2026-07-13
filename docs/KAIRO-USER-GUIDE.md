@@ -78,6 +78,13 @@ connectors:
     remote_control:
       enabled: true
       allowed_chat_id: '123456789'
+      attachments:
+        enabled: true
+        max_download_bytes: 20000000
+        max_image_bytes: 5000000
+        max_document_chars: 50000
+        max_audio_seconds: 600
+        local_audio_model: small
       operator:
         enabled: true
         live_web_search_enabled: true
@@ -96,6 +103,16 @@ summaries. Retained Telegram messages from before the first enable are intention
 they cannot become work after a restart. Ordinary remote questions and proposal preparation use
 Kairo's economical utility model, preserving the expensive Fable model for its deliberate
 skills-authoring workflow.
+
+With `attachments.enabled: true`, that same private chat can send one photo, supported document,
+voice note, or audio file per message. Add a caption such as “What is wrong in this screenshot?” or
+“Summarize this PDF”; without a caption, Kairo describes images, summarizes documents, and answers
+the request spoken in a voice note. Downloads are rejected above the configured limits. Images are
+validated and resized, documents are converted in the existing sandbox, and audio is transcribed
+locally with faster-whisper. The raw file and derived text are discarded after the one-turn answer;
+raw audio is never sent to a speech cloud. Attachment content is untrusted and this path has no
+proposal, approval, write, shell, scheduling, or connector authority, so a file or recording cannot
+authorize an action. Install the local speech runtime with `uv sync --extra ui --extra voice`.
 
 When `live_web_search_enabled` is true and `TAVILY_API_KEY` is configured, an ordinary message may
 perform one bounded public search before answering. This covers current weather, news, public

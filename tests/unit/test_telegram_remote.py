@@ -32,17 +32,33 @@ def _update(
 @dataclass
 class _TelegramHttp:
     batches: list[list[object]]
+    files: dict[str, bytes] = field(default_factory=dict)
     requests: list[tuple[str, dict[str, str]]] = field(default_factory=list)
     sent: list[dict[str, str]] = field(default_factory=list)
+    downloaded: list[str] = field(default_factory=list)
 
     async def post(self, url: str, data: dict[str, str]) -> httpx.Response:
         self.requests.append((url, data))
         if url.endswith("/getUpdates"):
             batch = self.batches.pop(0) if self.batches else []
             return httpx.Response(200, json={"ok": True, "result": batch})
+        if url.endswith("/getFile"):
+            file_id = data["file_id"]
+            if file_id not in self.files:
+                return httpx.Response(404, json={"ok": False})
+            return httpx.Response(
+                200, json={"ok": True, "result": {"file_path": f"attachments/{file_id}"}}
+            )
         assert url.endswith("/sendMessage")
         self.sent.append(data)
         return httpx.Response(200, json={"ok": True, "result": {}})
+
+    async def get(self, url: str) -> httpx.Response:
+        file_id = url.rsplit("/", 1)[-1]
+        self.downloaded.append(file_id)
+        if file_id not in self.files:
+            return httpx.Response(404)
+        return httpx.Response(200, content=self.files[file_id])
 
 
 async def _controller(
@@ -117,6 +133,153 @@ def test_parse_update_requires_text_message_shape() -> None:
     ) is None
     parsed = parse_telegram_update(_update(1, chat_type="group", text="hello"))
     assert parsed is not None and parsed.chat_type == "group"  # authorization is controller-owned
+
+
+def test_parse_update_accepts_photo_document_and_voice_without_text() -> None:
+    photo = parse_telegram_update(
+        {
+            "update_id": 2,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "caption": "What is wrong here?",
+                "photo": [
+                    {"file_id": "small", "file_size": 10, "width": 10, "height": 10},
+                    {"file_id": "large", "file_size": 20, "width": 20, "height": 20},
+                ],
+            },
+        }
+    )
+    assert photo is not None and photo.text == "What is wrong here?"
+    assert photo.attachment is not None and photo.attachment.kind == "image"
+    assert photo.attachment.file_id == "large"
+
+    document = parse_telegram_update(
+        {
+            "update_id": 3,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "document": {
+                    "file_id": "doc",
+                    "file_name": "report.pdf",
+                    "mime_type": "application/pdf",
+                    "file_size": 123,
+                },
+            },
+        }
+    )
+    assert document is not None and document.attachment is not None
+    assert document.attachment.kind == "document"
+
+    voice = parse_telegram_update(
+        {
+            "update_id": 4,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "voice": {
+                    "file_id": "voice",
+                    "mime_type": "audio/ogg",
+                    "file_size": 456,
+                    "duration": 12,
+                },
+            },
+        }
+    )
+    assert voice is not None and voice.attachment is not None
+    assert voice.attachment.kind == "voice" and voice.attachment.duration_seconds == 12
+
+
+async def test_allowlisted_attachment_downloads_once_and_reaches_handler(tmp_path: Path) -> None:
+    db = await connect(tmp_path / "attachment.db")
+    seen: list[tuple[str, bytes, str]] = []
+
+    async def fixed() -> str:
+        return "fixed"
+
+    async def chat(_text: str) -> str:
+        raise AssertionError("attachment reached text chat")
+
+    async def attachment(kind, raw: bytes, caption: str) -> str:
+        seen.append((kind.kind, raw, caption))
+        return "IMAGE ANSWER"
+
+    update = {
+        "update_id": 1,
+        "message": {
+            "chat": {"id": 123, "type": "private"},
+            "caption": "Explain this",
+            "photo": [{"file_id": "photo-1", "file_size": 4, "width": 10, "height": 10}],
+        },
+    }
+    http = _TelegramHttp([[update]], files={"photo-1": b"JPEG"})
+    store = TelegramRemoteControlStore(db, asyncio.Lock())
+    await store.bootstrap(0)
+    controller = TelegramRemoteControl(
+        bot_token="BOT-CANARY",
+        config=TelegramRemoteControlConfig(
+            enabled=True,
+            allowed_chat_id="123",
+            attachments={"enabled": True},
+        ),
+        store=store,
+        status_handler=fixed,
+        tasks_handler=fixed,
+        inbox_handler=fixed,
+        calendar_handler=fixed,
+        briefing_handler=fixed,
+        chat_handler=chat,
+        attachment_handler=attachment,
+        http=http,
+    )
+    try:
+        assert await controller.poll_once() == 1
+        assert seen == [("image", b"JPEG", "Explain this")]
+        assert http.downloaded == ["photo-1"]
+        assert http.sent[-1]["text"] == "IMAGE ANSWER"
+    finally:
+        await db.close()
+
+
+async def test_unknown_chat_attachment_is_never_downloaded(tmp_path: Path) -> None:
+    db = await connect(tmp_path / "unknown-attachment.db")
+
+    async def fixed() -> str:
+        return "fixed"
+
+    async def chat(_text: str) -> str:
+        return "chat"
+
+    update = {
+        "update_id": 1,
+        "message": {
+            "chat": {"id": 999, "type": "private"},
+            "document": {"file_id": "private", "file_name": "notes.txt", "file_size": 4},
+        },
+    }
+    http = _TelegramHttp([[update]], files={"private": b"text"})
+    store = TelegramRemoteControlStore(db, asyncio.Lock())
+    await store.bootstrap(0)
+    controller = TelegramRemoteControl(
+        bot_token="BOT-CANARY",
+        config=TelegramRemoteControlConfig(
+            enabled=True, allowed_chat_id="123", attachments={"enabled": True}
+        ),
+        store=store,
+        status_handler=fixed,
+        tasks_handler=fixed,
+        inbox_handler=fixed,
+        calendar_handler=fixed,
+        briefing_handler=fixed,
+        chat_handler=chat,
+        attachment_handler=lambda *_args: chat("bad"),
+        http=http,
+    )
+    try:
+        assert await controller.poll_once() == 0
+        assert http.downloaded == []
+        assert not any(url.endswith("/getFile") for url, _data in http.requests)
+        assert http.sent == []
+    finally:
+        await db.close()
 
 
 def test_model_reply_is_plain_compact_and_clips_at_a_sentence_boundary() -> None:

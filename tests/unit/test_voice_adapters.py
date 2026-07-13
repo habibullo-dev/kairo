@@ -51,15 +51,32 @@ async def test_openai_transcriber_needs_a_key_without_client() -> None:
 
 
 async def test_local_transcriber_joins_segments() -> None:
-    model = SimpleNamespace(
-        transcribe=lambda audio: (
-            [SimpleNamespace(text="local"), SimpleNamespace(text="hello")],
+    calls: list[dict] = []
+
+    def transcribe(audio, **kwargs):
+        calls.append({"audio": audio, **kwargs})
+        return (
+            [
+                SimpleNamespace(text="local", no_speech_prob=0.1),
+                SimpleNamespace(text="ignored", no_speech_prob=0.9),
+                SimpleNamespace(text="hello", no_speech_prob=0.2),
+            ],
             None,
         )
+
+    model = SimpleNamespace(
+        transcribe=transcribe
     )
     stt = LocalTranscriber(model=model)
     t = await stt.transcribe(b"pcm")
     assert t.text == "local hello"
+    assert calls == [
+        {
+            "audio": b"pcm",
+            "vad_filter": True,
+            "vad_parameters": {"min_silence_duration_ms": 500},
+        }
+    ]
     assert not hasattr(stt, "egress_bytes")  # local => nothing leaves the machine
 
 

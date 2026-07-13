@@ -94,7 +94,7 @@ _INGESTIBLE: frozenset[str] = frozenset(
 # Browser uploads admit the reviewed document set plus a conservative allowlist of text source and
 # configuration formats.  They are converted through the same byte-capped sandbox; unsupported
 # binaries still fail closed before a converter sees them.
-_CHAT_UPLOADABLE = _INGESTIBLE | frozenset(
+CHAT_UPLOADABLE_SUFFIXES = _INGESTIBLE | frozenset(
     {
         ".csv", ".json", ".jsonl", ".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx",
         ".ts", ".tsx", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".css",
@@ -406,7 +406,7 @@ class KnowledgeService:
             raise KnowledgeError("sensitive or generated upload path")
         name = logical.as_posix()
         suffix = Path(name).suffix.lower()
-        if not name or name in {".", ".."} or suffix not in _CHAT_UPLOADABLE:
+        if not name or name in {".", ".."} or suffix not in CHAT_UPLOADABLE_SUFFIXES:
             raise KnowledgeError("unsupported upload type")
         if len(raw_bytes) > self.config.max_ingest_bytes:
             raise KnowledgeError("uploaded file exceeds the ingest size cap")

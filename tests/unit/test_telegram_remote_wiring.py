@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+from PIL import Image
 from pydantic import BaseModel
 from rich.console import Console
 from tests.unit.test_telegram_remote import _TelegramHttp, _update
@@ -58,6 +59,12 @@ class _WebSearch(Tool):
         return "Public result: Seoul is 28 C with light rain today."
 
 
+def _test_png() -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (64, 32), "green").save(output, format="PNG")
+    return output.getvalue()
+
+
 async def test_remote_wiring_uses_utility_model_and_exposes_no_tools_or_history(
     tmp_path: Path,
 ) -> None:
@@ -104,6 +111,71 @@ async def test_remote_wiring_uses_utility_model_and_exposes_no_tools_or_history(
         assert "ideally under 280 characters" in call["system"]
         assert http.sent[0]["text"] == "Safe remote reply"
     finally:
+        await db.close()
+
+
+async def test_remote_photo_question_reaches_vision_model_without_attachment_tools(
+    tmp_path: Path,
+) -> None:
+    config = load_config(root=tmp_path, env_file=None)
+    config.connectors.telegram.remote_control.enabled = True
+    config.connectors.telegram.remote_control.allowed_chat_id = "123"
+    config.connectors.telegram.remote_control.attachments.enabled = True
+    config.secrets = config.secrets.model_copy(update={"telegram_bot_token": "BOT-CANARY"})
+    db = await connect(tmp_path / "photo.db")
+    controller = None
+    try:
+        fake = FakeClient([text_message("The image shows a green rectangle.")])
+        repl = SimpleNamespace(
+            tasks=None,
+            projects=None,
+            turn_lock=asyncio.Lock(),
+            registry=ToolRegistry(),
+            client=fake,
+            executor=ToolExecutor(
+                timeout=config.limits.tool_timeout_seconds,
+                max_result_chars=config.limits.max_tool_result_chars,
+            ),
+            gate=object(),
+            cost_ledger=SimpleNamespace(pricing=load_pricing(Path("config/pricing.yaml"))),
+            connectors=None,
+        )
+        controller = _build_telegram_remote_control(
+            config,
+            repl=repl,
+            store=SessionStore(db),
+            runner=None,
+            console=Console(file=io.StringIO()),
+        )
+        assert controller is not None
+        raw = _test_png()
+        update = {
+            "update_id": 1,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "caption": "What is in this image?",
+                "photo": [
+                    {
+                        "file_id": "photo-1",
+                        "file_size": len(raw),
+                        "width": 64,
+                        "height": 32,
+                    }
+                ],
+            },
+        }
+        http = _TelegramHttp([[], [update]], files={"photo-1": raw})
+        await controller.poll_once(http=http)
+        assert await controller.poll_once(http=http) == 1
+
+        assert len(fake.calls) == 1 and fake.calls[0]["tools"] == []
+        content = fake.calls[0]["messages"][0]["content"]
+        assert isinstance(content, list) and content[0]["type"] == "image"
+        assert "What is in this image?" in content[1]["text"]
+        assert http.sent[-1]["text"] == "The image shows a green rectangle."
+    finally:
+        if controller is not None:
+            await controller.stop()
         await db.close()
 
 

@@ -137,8 +137,31 @@ def _request_token_ceiling(
     provider message framing. This lets the cap refuse before an external model call without
     logging or retaining the request contents.
     """
+    def budget_shape(value: object) -> object:
+        """Replace base64 image bytes with a conservative vision-token allowance.
+
+        Image data is not billed as one text token per wire byte. Counting its base64 payload as
+        text would incorrectly reject every useful image before the provider call. Kairo's image
+        path caps images at 1568px per edge; 4096 placeholder bytes conservatively cover the
+        resulting vision tokens while keeping the ordinary UTF-8 ceiling unchanged.
+        """
+        if isinstance(value, list):
+            return [budget_shape(item) for item in value]
+        if isinstance(value, dict):
+            shaped = {key: budget_shape(item) for key, item in value.items()}
+            source = shaped.get("source")
+            if (
+                shaped.get("type") == "image"
+                and isinstance(source, dict)
+                and source.get("type") == "base64"
+                and isinstance(source.get("data"), str)
+            ):
+                source["data"] = "x" * 4_096
+            return shaped
+        return value
+
     wire = json.dumps(
-        {"system": system, "messages": messages, "tools": tools},
+        budget_shape({"system": system, "messages": messages, "tools": tools}),
         ensure_ascii=False,
         separators=(",", ":"),
         default=str,
