@@ -12,6 +12,7 @@ import httpx
 from jarvis.config import TelegramRemoteControlConfig
 from jarvis.persistence.db import connect
 from jarvis.remote.telegram import (
+    ChatHandlerResult,
     InboxHandlerResult,
     InboxRequest,
     TelegramRemoteControl,
@@ -80,6 +81,8 @@ async def _controller(
     max_per_hour: int = 20,
     max_read_per_hour: int = 60,
     max_input_chars: int = 2_000,
+    conversation_turns: int = 4,
+    conversation_max_chars: int = 6_000,
     clock=None,
     fail_sends: int = 0,
 ) -> tuple[TelegramRemoteControl, _TelegramHttp, dict[str, list[str]], object]:
@@ -115,7 +118,8 @@ async def _controller(
         calls["briefing"].append("called")
         return "BRIEFING"
 
-    async def chat(text: str) -> str:
+    async def chat(text: str, history) -> str:
+        calls.setdefault("chat_history", []).append(history)
         calls["chat"].append(text)
         return f"reply: {text}"
 
@@ -128,6 +132,8 @@ async def _controller(
             max_model_messages_per_hour=max_per_hour,
             max_read_requests_per_hour=max_read_per_hour,
             max_input_chars=max_input_chars,
+            conversation_context_turns=conversation_turns,
+            conversation_context_max_chars=conversation_max_chars,
         ),
         store=TelegramRemoteControlStore(db, asyncio.Lock()),
         status_handler=status,
@@ -212,7 +218,7 @@ async def test_allowlisted_attachment_downloads_once_and_reaches_handler(tmp_pat
     async def fixed() -> str:
         return "fixed"
 
-    async def chat(_text: str) -> str:
+    async def chat(_text: str, _history) -> str:
         raise AssertionError("attachment reached text chat")
 
     async def attachment(kind, raw: bytes, caption: str) -> str:
@@ -262,7 +268,7 @@ async def test_unknown_chat_attachment_is_never_downloaded(tmp_path: Path) -> No
     async def fixed() -> str:
         return "fixed"
 
-    async def chat(_text: str) -> str:
+    async def chat(_text: str, _history) -> str:
         return "chat"
 
     update = {
@@ -334,7 +340,7 @@ def test_natural_read_intents_route_to_verified_host_commands() -> None:
     assert natural_remote_read_command("Reply to today's email") is None
 
 
-async def test_natural_work_status_bypasses_stateless_model_chat(tmp_path: Path) -> None:
+async def test_natural_work_status_bypasses_remote_model_chat(tmp_path: Path) -> None:
     controller, http, calls, db = await _controller(
         tmp_path,
         batches=[[], [_update(1, text="Is Kairo working on any projects now?")]],
@@ -349,7 +355,7 @@ async def test_natural_work_status_bypasses_stateless_model_chat(tmp_path: Path)
         await db.close()
 
 
-async def test_natural_inbox_question_bypasses_stateless_model_chat(tmp_path: Path) -> None:
+async def test_natural_inbox_question_bypasses_remote_model_chat(tmp_path: Path) -> None:
     controller, http, calls, db = await _controller(
         tmp_path,
         batches=[[], [_update(1, text="Show me my emails from today")]],
@@ -464,6 +470,143 @@ async def test_failed_inbox_delivery_does_not_commit_unseen_reference(tmp_path: 
         assert await controller.poll_once() == 1
         assert calls["inbox"] == ["list:YGP"]
         assert "selection is no longer active" in http.sent[-1]["text"]
+    finally:
+        await db.close()
+
+
+async def test_generic_followup_receives_last_successfully_delivered_turn(tmp_path: Path) -> None:
+    controller, http, calls, db = await _controller(
+        tmp_path,
+        batches=[
+            [],
+            [_update(1, text="Tell me about Marty Supreme")],
+            [_update(2, text="Is it a good movie?")],
+        ],
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 1
+        assert await controller.poll_once() == 1
+        assert calls["chat"] == ["Tell me about Marty Supreme", "Is it a good movie?"]
+        assert calls["chat_history"][0] == ()
+        history = calls["chat_history"][1]
+        assert len(history) == 1
+        assert history[0].user == "Tell me about Marty Supreme"
+        assert history[0].assistant == "reply: Tell me about Marty Supreme"
+    finally:
+        await db.close()
+
+
+async def test_inert_action_preview_is_not_reused_as_conversation_history(tmp_path: Path) -> None:
+    db = await connect(tmp_path / "proposal-context.db")
+    histories: list[tuple] = []
+
+    async def reply() -> str:
+        return "OK"
+
+    async def inbox(_request: InboxRequest) -> InboxHandlerResult:
+        return InboxHandlerResult(text="INBOX")
+
+    async def chat(text: str, history):
+        histories.append(history)
+        if text == "prepare work":
+            return ChatHandlerResult(text="Exact approval preview", retain_context=False)
+        return "fresh answer"
+
+    http = _TelegramHttp(
+        [[], [_update(1, text="prepare work")], [_update(2, text="what now?")]]
+    )
+    controller = TelegramRemoteControl(
+        bot_token="BOT-CANARY",
+        config=TelegramRemoteControlConfig(enabled=True, allowed_chat_id="123"),
+        store=TelegramRemoteControlStore(db, asyncio.Lock()),
+        status_handler=reply,
+        tasks_handler=reply,
+        inbox_handler=inbox,
+        calendar_handler=reply,
+        briefing_handler=reply,
+        chat_handler=chat,
+        http=http,
+    )
+    try:
+        await controller.poll_once()
+        await controller.poll_once()
+        await controller.poll_once()
+        assert histories == [(), ()]
+    finally:
+        await db.close()
+
+
+async def test_failed_delivery_never_enters_conversation_context(tmp_path: Path) -> None:
+    controller, _http, calls, db = await _controller(
+        tmp_path,
+        fail_sends=1,
+        batches=[
+            [],
+            [_update(1, text="Tell me about Marty Supreme")],
+            [_update(2, text="Is it good?")],
+        ],
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 0
+        assert await controller.poll_once() == 1
+        assert calls["chat_history"] == [(), ()]
+    finally:
+        await db.close()
+
+
+async def test_conversation_context_expires_and_commands_clear_it(tmp_path: Path) -> None:
+    now = [dt.datetime(2026, 7, 13, 9, 0, tzinfo=dt.UTC)]
+    controller, _http, calls, db = await _controller(
+        tmp_path,
+        clock=lambda: now[0],
+        batches=[
+            [],
+            [_update(1, text="Tell me about Marty Supreme")],
+            [_update(2, text="/status")],
+            [_update(3, text="Is it good?")],
+            [_update(4, text="/clear")],
+            [_update(5, text="Tell me about Dune")],
+            [_update(6, text="Is it good?")],
+        ],
+    )
+    try:
+        await controller.poll_once()
+        await controller.poll_once()
+        await controller.poll_once()
+        await controller.poll_once()
+        assert calls["chat_history"] == [(), ()]
+
+        await controller.poll_once()
+        await controller.poll_once()
+        now[0] += dt.timedelta(minutes=31)
+        await controller.poll_once()
+        assert calls["chat_history"] == [(), (), (), ()]
+    finally:
+        await db.close()
+
+
+async def test_conversation_context_rolls_by_turn_and_character_bounds(tmp_path: Path) -> None:
+    controller, _http, calls, db = await _controller(
+        tmp_path,
+        conversation_turns=2,
+        conversation_max_chars=500,
+        batches=[
+            [],
+            [_update(1, text="first " + "a" * 300)],
+            [_update(2, text="second")],
+            [_update(3, text="third")],
+            [_update(4, text="fourth")],
+        ],
+    )
+    try:
+        await controller.poll_once()
+        for _ in range(4):
+            assert await controller.poll_once() == 1
+        final_history = calls["chat_history"][-1]
+        assert [turn.user for turn in final_history] == ["second", "third"]
+        assert sum(len(turn.user) + len(turn.assistant) for turn in final_history) <= 500
     finally:
         await db.close()
 
@@ -698,7 +841,7 @@ async def test_operator_commands_are_host_routed_and_never_reach_model_chat(
         calls.append(("cancel", value))
         return f"cancel:{value}"
 
-    async def chat(text: str) -> str:
+    async def chat(text: str, _history) -> str:
         raise AssertionError(f"operator command reached model chat: {text}")
 
     http = _TelegramHttp(
@@ -766,7 +909,7 @@ async def test_operator_lifecycle_stops_even_when_poller_was_never_started(
     async def reply() -> str:
         return "ok"
 
-    async def chat(_text: str) -> str:
+    async def chat(_text: str, _history) -> str:
         return "ok"
 
     controller = TelegramRemoteControl(

@@ -1,8 +1,10 @@
 """Narrow remote interfaces that deliberately do not grant workstation authority."""
 
 from jarvis.remote.telegram import (
+    ChatHandlerResult,
     InboxHandlerResult,
     InboxRequest,
+    RemoteConversationTurn,
     TelegramRemoteControl,
     TelegramRemoteControlStore,
     TelegramRemoteMessage,
@@ -11,8 +13,10 @@ from jarvis.remote.telegram import (
 )
 
 __all__ = [
+    "ChatHandlerResult",
     "InboxHandlerResult",
     "InboxRequest",
+    "RemoteConversationTurn",
     "TelegramRemoteControl",
     "TelegramRemoteControlStore",
     "TelegramRemoteMessage",

@@ -2,7 +2,7 @@
 
 This is intentionally *not* a general Telegram bot integration.  It long-polls only while
 Kairo is running locally, ignores every chat except one configured private owner chat, and
-offers deterministic status/task commands plus a bounded stateless model conversation.  When
+offers deterministic status/task commands plus a bounded, ephemeral model conversation.  When
 Remote Operator is explicitly enabled, that model may prepare one inert proposal and the host
 may resolve expiring approval codes; the model itself never receives execution authority.
 
@@ -144,6 +144,26 @@ class InboxReferenceContext:
     filter_terms: str
     message_ids: tuple[str, ...]
     created_at: dt.datetime
+
+
+@dataclass(frozen=True)
+class RemoteConversationTurn:
+    """One successfully delivered owner/model exchange retained only in process memory."""
+
+    user: str
+    assistant: str
+
+
+@dataclass(frozen=True)
+class RemoteConversationContext:
+    turns: tuple[RemoteConversationTurn, ...]
+    updated_at: dt.datetime
+
+
+@dataclass(frozen=True)
+class ChatHandlerResult:
+    text: str
+    retain_context: bool = True
 
 
 @dataclass(frozen=True)
@@ -473,7 +493,9 @@ class TelegramRemoteControlStore:
 
 
 ReplyHandler = Callable[[], Awaitable[str]]
-ChatHandler = Callable[[str], Awaitable[str]]
+ChatHandler = Callable[
+    [str, tuple[RemoteConversationTurn, ...]], Awaitable[str | ChatHandlerResult]
+]
 InboxHandler = Callable[[InboxRequest], Awaitable[InboxHandlerResult]]
 AttachmentHandler = Callable[[RemoteAttachment, bytes, str], Awaitable[str]]
 OperatorResolutionHandler = Callable[[str, str], Awaitable[str]]
@@ -536,8 +558,11 @@ class TelegramRemoteControl:
         self._log = log or get_logger("jarvis.remote.telegram")
         self._clock = clock or (lambda: dt.datetime.now(dt.UTC))
         self._inbox_context: InboxReferenceContext | None = None
+        self._conversation_context: RemoteConversationContext | None = None
         self._pending_context_update = False
         self._pending_inbox_context: InboxReferenceContext | None = None
+        self._pending_conversation_update = False
+        self._pending_conversation_context: RemoteConversationContext | None = None
         self._task: asyncio.Task[None] | None = None
 
     def _active_inbox_context(self) -> InboxReferenceContext | None:
@@ -555,24 +580,76 @@ class TelegramRemoteControl:
             return None
         return context
 
+    def _active_conversation_context(self) -> RemoteConversationContext | None:
+        context = self._conversation_context
+        if context is None:
+            return None
+        now = self._clock()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=dt.UTC)
+        updated = context.updated_at
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=dt.UTC)
+        if now - updated > dt.timedelta(minutes=self._config.reference_context_ttl_minutes):
+            self._conversation_context = None
+            return None
+        return context
+
     def _begin_reference_update(self) -> None:
         # An unrelated successfully-delivered owner turn clears adjacency by default.
         self._pending_context_update = True
         self._pending_inbox_context = None
+        self._pending_conversation_update = True
+        self._pending_conversation_context = None
 
     def _queue_inbox_context(self, context: InboxReferenceContext | None) -> None:
         self._pending_context_update = True
         self._pending_inbox_context = context
 
+    def _queue_conversation_turn(self, user: str, assistant: str) -> None:
+        current = self._active_conversation_context()
+        turns = list(current.turns if current is not None else ())
+        delivered = (assistant or "Kairo did not return a response.").strip()[:_MAX_REPLY_CHARS]
+        turns.append(
+            RemoteConversationTurn(
+                user=user.strip()[: self._config.max_input_chars],
+                assistant=delivered,
+            )
+        )
+        turns = turns[-self._config.conversation_context_turns :]
+        max_chars = self._config.conversation_context_max_chars
+        while len(turns) > 1 and sum(
+            len(turn.user) + len(turn.assistant) for turn in turns
+        ) > max_chars:
+            turns.pop(0)
+        if turns and len(turns[0].user) + len(turns[0].assistant) > max_chars:
+            user_budget = min(len(turns[0].user), max_chars // 2)
+            user_text = turns[0].user[:user_budget]
+            assistant_text = turns[0].assistant[: max_chars - len(user_text)]
+            turns[0] = RemoteConversationTurn(user=user_text, assistant=assistant_text)
+        now = self._clock()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=dt.UTC)
+        self._pending_conversation_update = True
+        self._pending_conversation_context = RemoteConversationContext(
+            turns=tuple(turns), updated_at=now
+        )
+
     def _commit_reference_update(self) -> None:
         if self._pending_context_update:
             self._inbox_context = self._pending_inbox_context
+        if self._pending_conversation_update:
+            self._conversation_context = self._pending_conversation_context
         self._pending_context_update = False
         self._pending_inbox_context = None
+        self._pending_conversation_update = False
+        self._pending_conversation_context = None
 
     def _discard_reference_update(self) -> None:
         self._pending_context_update = False
         self._pending_inbox_context = None
+        self._pending_conversation_update = False
+        self._pending_conversation_context = None
 
     @property
     def running(self) -> bool:
@@ -592,6 +669,7 @@ class TelegramRemoteControl:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         self._inbox_context = None
+        self._conversation_context = None
         self._discard_reference_update()
         if self._operator_shutdown_handler is not None:
             await self._operator_shutdown_handler()
@@ -863,7 +941,7 @@ class TelegramRemoteControl:
                 "/status — Kairo and scheduler state\n"
                 "/tasks — active task summary\n"
                 "/inbox [filter] — today's recent sender, subject, and snippet summary\n"
-                "/clear — forget the current Telegram reference selection\n"
+                "/clear — forget recent conversation and reference context\n"
                 "/calendar — next-24-hours count and next start time\n"
                 "/briefing — combined status, inbox, calendar, and task count\n"
                 "Photos/files/voice — attach one item with an optional question\n"
@@ -879,7 +957,8 @@ class TelegramRemoteControl:
             return await self._tasks_handler()
         if command == "/clear":
             self._inbox_context = None
-            return "Telegram reference context cleared."
+            self._conversation_context = None
+            return "Telegram conversation and reference context cleared."
         if command in {"/inbox", "/calendar", "/briefing"}:
             if not await self._store.reserve_read_request(
                 max_per_hour=self._config.max_read_requests_per_hour
@@ -948,7 +1027,18 @@ class TelegramRemoteControl:
             max_per_hour=self._config.max_model_messages_per_hour
         ):
             return "Remote model chat has reached its hourly limit. /status and /tasks still work."
-        return await self._chat_handler(text)
+        context = self._active_conversation_context()
+        history = context.turns if context is not None else ()
+        result = await self._chat_handler(text, history)
+        if isinstance(result, ChatHandlerResult):
+            reply = result.text
+            retain_context = result.retain_context
+        else:
+            reply = result
+            retain_context = True
+        if retain_context:
+            self._queue_conversation_turn(text, reply)
+        return reply
 
     async def _send(self, text: str, *, http: Any) -> None:
         # Keep response formatting plain and bounded even if a model emits a very long answer.

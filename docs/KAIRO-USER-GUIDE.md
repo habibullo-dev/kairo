@@ -79,6 +79,8 @@ connectors:
       enabled: true
       allowed_chat_id: '123456789'
       reference_context_ttl_minutes: 30
+      conversation_context_turns: 4
+      conversation_context_max_chars: 6000
       attachments:
         enabled: true
         max_download_bytes: 20000000
@@ -105,6 +107,13 @@ summaries. Retained Telegram messages from before the first enable are intention
 they cannot become work after a restart. Ordinary remote questions and proposal preparation use
 Kairo's economical utility model, preserving the expensive Fable model for its deliberate
 skills-authoring workflow.
+
+Ordinary text conversation keeps up to four successfully delivered user/assistant exchanges in
+RAM for 30 minutes, capped at 6,000 characters. This lets a follow-up such as “Is it a good movie?”
+resolve the title from the preceding answer with correct user/assistant roles. The window is sent
+only to the same configured utility-model provider, is never written to SQLite, and cannot grant
+authority. A deterministic command, `/clear`, expiry, shutdown, or restart removes it. A failed
+Telegram delivery is never added, so Kairo cannot remember an answer the owner did not receive.
 
 Add plain search terms after `/inbox` to filter today's view, for example `/inbox YGP`, or ask
 naturally: “Get only YGP related emails.” Kairo extracts the meaningful terms and applies them

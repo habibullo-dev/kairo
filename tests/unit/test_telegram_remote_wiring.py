@@ -1,4 +1,4 @@
-"""Composition test: Telegram remote chat has a separate, stateless zero-tool loop."""
+"""Composition tests for Telegram's isolated, ephemeral remote model loop."""
 
 from __future__ import annotations
 
@@ -135,7 +135,7 @@ async def test_news_pdf_request_routes_to_host_approval_before_search_or_model(
         await db.close()
 
 
-async def test_remote_wiring_uses_utility_model_and_exposes_no_tools_or_history(
+async def test_remote_wiring_uses_utility_model_and_exposes_no_tools_on_first_turn(
     tmp_path: Path,
 ) -> None:
     config = load_config(root=tmp_path, env_file=None)
@@ -182,6 +182,69 @@ async def test_remote_wiring_uses_utility_model_and_exposes_no_tools_or_history(
         assert "work in this same Telegram chat" in call["system"]
         assert http.sent[0]["text"] == "Safe remote reply"
     finally:
+        await db.close()
+
+
+async def test_remote_wiring_passes_recent_delivered_turns_with_correct_roles(
+    tmp_path: Path,
+) -> None:
+    config = load_config(root=tmp_path, env_file=None)
+    config.connectors.telegram.remote_control.enabled = True
+    config.connectors.telegram.remote_control.allowed_chat_id = "123"
+    config.secrets = config.secrets.model_copy(update={"telegram_bot_token": "BOT-CANARY"})
+    db = await connect(tmp_path / "remote-followup.db")
+    controller = None
+    try:
+        fake = FakeClient(
+            [
+                text_message("Marty Supreme is a sports drama starring Timothée Chalamet."),
+                text_message("Yes—if you enjoy ambitious, high-energy character dramas."),
+            ]
+        )
+        repl = SimpleNamespace(
+            tasks=None,
+            turn_lock=asyncio.Lock(),
+            registry=ToolRegistry(),
+            client=fake,
+            executor=ToolExecutor(
+                timeout=config.limits.tool_timeout_seconds,
+                max_result_chars=config.limits.max_tool_result_chars,
+            ),
+            gate=object(),
+            cost_ledger=SimpleNamespace(pricing=load_pricing(Path("config/pricing.yaml"))),
+            connectors=None,
+        )
+        controller = _build_telegram_remote_control(
+            config,
+            repl=repl,
+            store=SessionStore(db),
+            runner=None,
+            console=Console(file=io.StringIO()),
+        )
+        assert controller is not None
+        first = "Can u tell me about Marty Supreme movie recently came out"
+        followup = "Is it a good movie?"
+        http = _TelegramHttp(
+            [[], [_update(1, text=first)], [_update(2, text=followup)]]
+        )
+        await controller.poll_once(http=http)
+        assert await controller.poll_once(http=http) == 1
+        assert await controller.poll_once(http=http) == 1
+
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["messages"] == [{"role": "user", "content": first}]
+        assert fake.calls[1]["messages"] == [
+            {"role": "user", "content": first},
+            {
+                "role": "assistant",
+                "content": "Marty Supreme is a sports drama starring Timothée Chalamet.",
+            },
+            {"role": "user", "content": followup},
+        ]
+        assert http.sent[-1]["text"].startswith("Yes—if you enjoy")
+    finally:
+        if controller is not None:
+            await controller.stop()
         await db.close()
 
 
