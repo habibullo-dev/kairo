@@ -1241,6 +1241,53 @@ async def _migrate_v26(db: aiosqlite.Connection) -> None:
         )
 
 
+# Remote Operator requests intentionally persist only a local work instruction and its project /
+# schedule metadata.  Telegram identity, chat id, bot token, approval code, model transcript, and
+# tool payloads do not live here.  Approval codes are random capabilities stored only as hashes.
+_SCHEMA_V27 = """
+CREATE TABLE IF NOT EXISTS remote_operator_proposals (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind                    TEXT NOT NULL CHECK (kind IN ('job', 'reminder')),
+    title                   TEXT NOT NULL,
+    instruction             TEXT NOT NULL,
+    project_id              INTEGER REFERENCES projects(id),
+    schedule_kind           TEXT NOT NULL
+                            CHECK (schedule_kind IN ('immediate', 'once', 'interval', 'cron')),
+    schedule_spec           TEXT NOT NULL DEFAULT '',
+    status_interval_minutes INTEGER NOT NULL DEFAULT 15,
+    state                   TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (state IN ('pending', 'approved', 'queued', 'denied',
+                                             'expired', 'cancelled', 'failed')),
+    task_id                 INTEGER REFERENCES tasks(id),
+    created_at              TEXT NOT NULL,
+    expires_at              TEXT NOT NULL,
+    resolved_at             TEXT,
+    updated_at              TEXT NOT NULL,
+    last_status_at          TEXT,
+    status_updates_sent     INTEGER NOT NULL DEFAULT 0,
+    error                   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_remote_operator_proposals_state
+    ON remote_operator_proposals(state, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_operator_proposals_task
+    ON remote_operator_proposals(task_id) WHERE task_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS remote_operator_tokens (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash    TEXT NOT NULL UNIQUE,
+    subject_type  TEXT NOT NULL CHECK (subject_type IN ('proposal', 'parked_run')),
+    subject_id    INTEGER NOT NULL,
+    binding_hash  TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    expires_at    TEXT NOT NULL,
+    consumed_at   TEXT,
+    resolution    TEXT CHECK (resolution IN ('approve', 'deny'))
+);
+CREATE INDEX IF NOT EXISTS idx_remote_operator_tokens_subject
+    ON remote_operator_tokens(subject_type, subject_id, consumed_at);
+"""
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1273,6 +1320,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (24, _migrate_v24),
     (25, _SCHEMA_V25),
     (26, _migrate_v26),
+    (27, _SCHEMA_V27),
 ]
 
 

@@ -328,6 +328,50 @@ class GoogleConnectorConfig(BaseModel):
     max_results: int = 25  # default page size cap for list calls (tools clamp their own ≤50)
 
 
+class TelegramRemoteOperatorConfig(BaseModel):
+    """Opt-in project work proposed and approved through the private Telegram channel.
+
+    The operator never receives the ordinary Kairo registry.  Approved jobs get only this
+    fixed local-engineering subset, and every side effect still passes through the unattended
+    gate's exact-call parking flow.
+    """
+
+    enabled: bool = False
+    approval_ttl_minutes: int = Field(default=15, ge=2, le=60)
+    proposal_ttl_minutes: int = Field(default=30, ge=5, le=240)
+    default_status_interval_minutes: int = Field(default=15, ge=0, le=60)
+    allowed_status_intervals: list[int] = Field(default_factory=lambda: [0, 1, 5, 15, 30, 60])
+    max_active_jobs: int = Field(default=3, ge=1, le=10)
+    allowed_tools: list[str] = Field(
+        default_factory=lambda: [
+            "read_file",
+            "list_dir",
+            "glob_search",
+            "write_file",
+            "run_shell",
+        ]
+    )
+
+    @model_validator(mode="after")
+    def _operator_bounds(self) -> TelegramRemoteOperatorConfig:
+        allowed_intervals = {0, 1, 5, 15, 30, 60}
+        intervals = self.allowed_status_intervals
+        if not intervals or len(intervals) != len(set(intervals)):
+            raise ValueError("remote operator status intervals must be unique and non-empty")
+        if not set(intervals) <= allowed_intervals:
+            raise ValueError("remote operator status intervals must be from 0, 1, 5, 15, 30, 60")
+        if self.default_status_interval_minutes not in intervals:
+            raise ValueError("remote operator default status interval must be allowed")
+        safe_tools = {"read_file", "list_dir", "glob_search", "write_file", "run_shell"}
+        if not self.allowed_tools or not set(self.allowed_tools) <= safe_tools:
+            raise ValueError(
+                "remote operator tools must be a non-empty subset of the local engineering tools"
+            )
+        if len(self.allowed_tools) != len(set(self.allowed_tools)):
+            raise ValueError("remote operator tools must be unique")
+        return self
+
+
 class TelegramRemoteControlConfig(BaseModel):
     """Opt-in, single-owner Telegram remote control.
 
@@ -343,6 +387,7 @@ class TelegramRemoteControlConfig(BaseModel):
     max_model_messages_per_hour: int = Field(default=20, ge=1, le=100)
     max_read_requests_per_hour: int = Field(default=60, ge=1, le=500)
     max_input_chars: int = Field(default=2_000, ge=1, le=4_000)
+    operator: TelegramRemoteOperatorConfig = Field(default_factory=TelegramRemoteOperatorConfig)
 
     @model_validator(mode="after")
     def _enabled_control_requires_private_chat(self) -> TelegramRemoteControlConfig:

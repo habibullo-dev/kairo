@@ -141,6 +141,8 @@ async def test_v25_remote_control_state_is_bodies_free_and_idempotent() -> None:
         await db.executescript(M._SCHEMA_V25)
         await M._migrate_v26(db)
         await M._migrate_v26(db)
+        await db.executescript(M._SCHEMA_V27)
+        await db.executescript(M._SCHEMA_V27)
         rows = await (
             await db.execute("PRAGMA table_info(telegram_remote_control_state)")
         ).fetchall()
@@ -154,5 +156,19 @@ async def test_v25_remote_control_state_is_bodies_free_and_idempotent() -> None:
             "read_rate_window_count",
         } <= columns
         assert not (columns & {"token", "chat_id", "message", "body", "content", "prompt", "reply"})
+        operator_columns = {
+            row[1]
+            for row in await (
+                await db.execute("PRAGMA table_info(remote_operator_proposals)")
+            ).fetchall()
+        }
+        assert {"instruction", "project_id", "task_id", "state", "expires_at"} <= operator_columns
+        token_columns = {
+            row[1]
+            for row in await (
+                await db.execute("PRAGMA table_info(remote_operator_tokens)")
+            ).fetchall()
+        }
+        assert "token_hash" in token_columns and "token" not in token_columns
     finally:
         await db.close()

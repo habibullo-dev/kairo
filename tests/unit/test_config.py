@@ -231,6 +231,14 @@ def test_connectors_config_defaults(tmp_path: Path) -> None:
     assert c.telegram.remote_control.enabled is False
     assert c.telegram.remote_control.allowed_chat_id == ""
     assert c.telegram.remote_control.max_read_requests_per_hour == 60
+    assert c.telegram.remote_control.operator.enabled is False
+    assert c.telegram.remote_control.operator.allowed_tools == [
+        "read_file",
+        "list_dir",
+        "glob_search",
+        "write_file",
+        "run_shell",
+    ]
     assert c.kakao.enabled is False and c.kakao.redirect_port == 8788
     assert c.digest.enabled is False and c.digest.deliver == ["ui"]
     assert c.digest.rich_notify is False
