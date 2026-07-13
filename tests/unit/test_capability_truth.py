@@ -34,6 +34,10 @@ def test_no_connectors_reads_as_not_configured(tmp_path: Path) -> None:
     )
     assert cap["mcp"]["exposed_to_chat"] is False  # no MCP client yet
     assert cap["voice"]["state"] == "off" and cap["voice"]["reason"]
+    telegram = _row(cap["connectors"], "Telegram")
+    assert telegram["reason"] == (
+        "Not configured. Approved sends and digest delivery are separately configured."
+    )
 
 
 def test_connected_google_is_exposed_when_tools_registered(tmp_path: Path) -> None:

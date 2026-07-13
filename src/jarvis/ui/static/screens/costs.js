@@ -1,7 +1,7 @@
 // Cost Center (Phase 11 T13) — spend over the model-call + service ledgers. Periods (today/week/
 // month) × dimensions (project/model/provider/team/role/stage/purpose/service), a budget-cap
-// warning banner, and the ROI (time-saved value − actual cost) aggregate + per-run list. Unpriced
-// calls are ALWAYS distinct, never summed as $0. Read-only; metadata only (no key/prompt content).
+// warning banner, and outcome-gated ROI + terminal model-cost accounting. Unpriced calls are
+// ALWAYS distinct, never summed as $0. Read-only; metadata only (no key/prompt content).
 // Cost = teal monitoring; a hard cap breach is danger (red). (The approval-reserved hue is used
 // nowhere here.)
 import { esc } from "../ui/dom.js";
@@ -49,24 +49,35 @@ function budgetBanner(w, confirmAbove) {
 
 function roiBlock(roi, hourly) {
   const runs = (roi && roi.roi) || [];
-  const priced = runs.filter((r) => r.net_usd != null);
-  const sum = (f) => priced.reduce((a, r) => a + (r[f] || 0), 0);
-  const agg = priced.length
+  const accounting = (roi && roi.outcome_accounting) || {};
+  const pricedAccepted = runs.filter((r) => r.outcome === "review_accepted" && r.net_usd != null);
+  const sum = (f) => pricedAccepted.reduce((a, r) => a + (r[f] || 0), 0);
+  const agg = pricedAccepted.length
     ? `<div class="cost-row" style="margin-bottom:10px">
         <div class="metric"><div class="n">${money(sum("value_usd"))}</div><div class="l">time-saved value</div></div>
         <div class="metric"><div class="n">${money(sum("actual_cost_usd"))}</div><div class="l">actual cost</div></div>
-        <div class="metric"><div class="n">${money(sum("net_usd"))}</div><div class="l">net (${priced.length} runs)</div></div></div>`
-    : `<div class="dim">No priced orchestration runs yet.</div>`;
+        <div class="metric"><div class="n">${money(sum("net_usd"))}</div><div class="l">net (${pricedAccepted.length} accepted runs)</div></div></div>`
+    : `<div class="dim">No priced review-accepted runs yet.</div>`;
+  const unknown = accounting.unknown_actual_model_cost_runs || 0;
+  const accountingBlock = `<div class="cost-row" style="margin-bottom:10px">
+      <div class="metric"><div class="n">${accounting.completed_runs || 0}</div><div class="l">terminal runs</div></div>
+      <div class="metric"><div class="n">${accounting.review_accepted_runs || 0}</div><div class="l">review accepted</div></div>
+      <div class="metric"><div class="n">${money(accounting.known_actual_model_cost_usd)}</div><div class="l">known model cost</div></div>
+      <div class="metric"><div class="n">${accounting.known_model_cost_per_review_accepted_run == null ? "—" : money(accounting.known_model_cost_per_review_accepted_run)}</div><div class="l">cost / accepted run</div></div></div>
+    <div class="dim">Model-call cost only; service estimates excluded.${unknown ? ` ${unknown} terminal run${unknown === 1 ? "" : "s"} has unknown actual cost.` : ""}</div>`;
   const rows = runs.map((r) => `<tr><td class="dim">${esc(String(r.workflow || "?"))}</td>
     <td class="dim">${esc(String(r.team || "—"))}</td>
-    <td style="text-align:right">${money(r.value_usd)}</td>
+    <td class="dim">${esc(String(r.outcome || r.status || "—").replace(/_/g, " "))}</td>
+    <td style="text-align:right">${r.value_usd == null ? "—" : money(r.value_usd)}</td>
     <td style="text-align:right" class="dim">${money(r.actual_cost_usd)}</td>
     <td style="text-align:right">${r.net_usd == null ? "—" : money(r.net_usd)}</td></tr>`).join("");
-  return `<div class="surface rise"><div class="panel-title"><h3>ROI · time saved</h3>
+  return `<div class="surface rise"><div class="panel-title"><h3>ROI · review accepted</h3>
       <span class="dim">rate ${money(hourly)}/hr</span></div>
+    <div class="dim" style="margin-bottom:10px">Only review-accepted runs receive time-saved value; other outcomes retain cost without claimed value.</div>
     ${agg}
+    <details class="dim-section"><summary>Model-cost accounting</summary>${accountingBlock}</details>
     ${rows ? `<details class="dim-section"><summary>Per-run</summary>
-      <table class="dim-table"><thead><tr><th>workflow</th><th>team</th><th style="text-align:right">value</th>
+      <table class="dim-table"><thead><tr><th>workflow</th><th>team</th><th>outcome</th><th style="text-align:right">value</th>
       <th style="text-align:right">cost</th><th style="text-align:right">net</th></tr></thead>
       <tbody>${rows}</tbody></table></details>` : ""}</div>`;
 }
@@ -94,6 +105,44 @@ function contextReuseCard(cr) {
         <th style="text-align:right">Est. savings</th><th style="text-align:right">Hit rate</th></tr>${rows}</table>`
     : `<div class="dim">No prompt/context cache reuse recorded yet (caching is off until enabled).</div>`;
   return `<details class="surface rise dim-section"><summary>Context reuse · prompt caching</summary>${body}</details>`;
+}
+
+function modelRequestHealthCard(health) {
+  if (!health) return "";
+  const totals = health.totals || {};
+  const recording = health.recording_degraded;
+  const incomplete = recording && recording.telemetry_complete === false;
+  const rate = totals.error_rate == null ? "—" : `${Math.round(totals.error_rate * 10000) / 100}%`;
+  const latency = (value) => value == null ? "—" : `${Math.round(value)} ms`;
+  const routes = (health.by_provider_model || []).map((row) => `<tr>
+    <td>${esc(String(row.provider || "?"))}</td><td>${esc(String(row.model || "?"))}</td>
+    <td style="text-align:right">${row.attempts || 0}</td><td style="text-align:right">${row.failed_requests || 0}</td>
+    <td style="text-align:right">${row.error_rate == null ? "—" : `${Math.round(row.error_rate * 10000) / 100}%`}</td>
+    <td style="text-align:right">${latency(row.p50_completed_latency_ms)}</td>
+    <td style="text-align:right">${latency(row.p95_completed_latency_ms)}</td></tr>`).join("");
+  const errors = (health.error_classes || []).map((row) =>
+    `${esc(String(row.error_class || "ModelRequestError"))} (${row.failed_requests || 0})`
+  ).join(", ");
+  const recordingNote = recording == null
+    ? "Failure telemetry recording status is unavailable."
+    : incomplete
+      ? `Model-request telemetry is incomplete: ${recording.lost_records || 0} record${recording.lost_records === 1 ? " was" : "s were"} lost since this process started, so exact counts, error rate, and latency percentiles are unavailable.`
+      : recording.degraded
+      ? `Failure telemetry recording is degraded; ${recording.unrecorded || 0} request record${recording.unrecorded === 1 ? "" : "s"} may be missing.`
+      : "Failure telemetry is recording normally.";
+  return `<details class="surface rise dim-section"><summary>Model request health</summary>
+    <div class="dim" style="margin:10px 0">Completed model-request latency only; this is not end-to-end turn time. Failed requests have no cost or token estimate.</div>
+    <div class="cost-row" style="margin-bottom:10px">
+      <div class="metric"><div class="n">${totals.attempts || 0}</div><div class="l">${incomplete ? "recorded attempts" : "attempts"}</div></div>
+      <div class="metric"><div class="n">${totals.completed_requests || 0}</div><div class="l">${incomplete ? "recorded completed" : "completed"}</div></div>
+      <div class="metric"><div class="n">${totals.failed_requests || 0}</div><div class="l">${incomplete ? "recorded failed" : "failed"}</div></div>
+      <div class="metric"><div class="n">${rate}</div><div class="l">error rate</div></div>
+      <div class="metric"><div class="n">${latency(totals.p50_completed_latency_ms)}</div><div class="l">p50 latency</div></div>
+      <div class="metric"><div class="n">${latency(totals.p95_completed_latency_ms)}</div><div class="l">p95 latency</div></div></div>
+    <div class="dim">${totals.measured_completed_latency_requests || 0} measured completed request${totals.measured_completed_latency_requests === 1 ? "" : "s"}; ${totals.unmeasured_completed_latency_requests || 0} unmeasured. ${esc(recordingNote)}</div>
+    ${errors ? `<div class="dim" style="margin-top:8px">Failure classes: ${errors}</div>` : ""}
+    ${routes ? `<table class="dim-table" style="margin-top:10px"><thead><tr><th>provider</th><th>model</th><th style="text-align:right">attempts</th><th style="text-align:right">failed</th><th style="text-align:right">error rate</th><th style="text-align:right">p50</th><th style="text-align:right">p95</th></tr></thead><tbody>${routes}</tbody></table>` : ""}
+  </details>`;
 }
 
 export async function render(container, api) {
@@ -126,6 +175,7 @@ export async function render(container, api) {
     ${dimSection(c.by_purpose, "purpose", "Chat, orchestration, and other work")}
     ${dimSection(c.by_service, "service", "By service (local tools)")}
     ${contextReuseCard(c.context_reuse)}
+    ${modelRequestHealthCard(c.model_request_health)}
     <div class="surface rise"><div class="panel-title"><h3>Limits</h3></div>
       <div class="mono dim">soft/run ${money(lim.soft_warn_usd_per_run)} · hard/run ${money(lim.hard_stop_usd_per_run)}
         · confirm above ${money(lim.confirm_above_usd)}

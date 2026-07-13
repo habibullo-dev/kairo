@@ -15,6 +15,8 @@ import contextlib
 import dataclasses
 import datetime as _dt
 import json
+import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -250,8 +252,128 @@ async def cache_reuse_overview(
     }
 
 
+def _request_health_summary(
+    successes: list[float | None], failures: int, *, telemetry_complete: bool = True
+) -> dict:
+    """Aggregate safe per-attempt health without treating unknown latency as zero."""
+    measured = sorted(
+        float(latency)
+        for latency in successes
+        if isinstance(latency, (int, float)) and not isinstance(latency, bool) and latency >= 0
+    )
+
+    def percentile(fraction: float) -> float | None:
+        if not measured:
+            return None
+        return round(measured[math.ceil(fraction * len(measured)) - 1], 2)
+
+    completed = len(successes)
+    attempts = completed + failures
+    summary = {
+        "attempts": attempts,
+        "completed_requests": completed,
+        "failed_requests": failures,
+        "error_rate": round(failures / attempts, 4) if attempts and telemetry_complete else None,
+        "measured_completed_latency_requests": len(measured),
+        "unmeasured_completed_latency_requests": completed - len(measured),
+        "p50_completed_latency_ms": percentile(0.50) if telemetry_complete else None,
+        "p95_completed_latency_ms": percentile(0.95) if telemetry_complete else None,
+    }
+    return summary
+
+
+async def model_request_health_overview(
+    db: Any,
+    *,
+    project_id: int | None = None,
+    since: str | None = None,
+    ledger: Any = None,
+) -> dict:
+    """Read-only model-request completion/failure health from metadata-only ledgers.
+
+    ``model_calls`` remains the successful-completion ledger; ``model_failures`` is a separate
+    stream because failures do not have tokens or a cost.  Completed latency is therefore only
+    the provider-measured completion latency, never a fabricated end-to-end turn duration.
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+    if project_id is not None:
+        clauses.append("project_id = ?")
+        params.append(project_id)
+    if since is not None:
+        clauses.append("ts >= ?")
+        params.append(since)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    success_rows = await (
+        await db.execute(
+            f"SELECT provider, model, latency_ms FROM model_calls {where}", tuple(params)
+        )
+    ).fetchall()
+    failure_rows = await (
+        await db.execute(
+            f"SELECT provider, model, error_class FROM model_failures {where}", tuple(params)
+        )
+    ).fetchall()
+
+    by_route: dict[tuple[str, str], dict[str, Any]] = {}
+    for provider, model, latency_ms in success_rows:
+        route = by_route.setdefault((provider, model), {"latencies": [], "failures": 0})
+        route["latencies"].append(latency_ms)
+    error_classes: dict[str, int] = {}
+    for provider, model, error_class in failure_rows:
+        route = by_route.setdefault((provider, model), {"latencies": [], "failures": 0})
+        route["failures"] += 1
+        error_classes[error_class] = error_classes.get(error_class, 0) + 1
+
+    failure_generation = 0
+    ledger_status = None
+    if ledger is not None:
+        ledger_status = ledger.status()
+        marker = getattr(ledger, "failure_generation", None)
+        if callable(marker):
+            failure_generation = max(0, int(marker()))
+    telemetry_complete = failure_generation == 0
+    recording = (
+        {
+            **(ledger_status or {}),
+            # A later successful write clears the live A5 warning, but cannot reconstruct a
+            # model request that was lost while SQLite was unavailable.  Keep health fail-closed
+            # for this process rather than presenting a falsely exact error/latency metric.
+            "telemetry_complete": telemetry_complete,
+            "lost_records": failure_generation,
+        }
+        if ledger is not None
+        else None
+    )
+    routes = [
+        {
+            "provider": provider,
+            "model": model,
+            **_request_health_summary(
+                row["latencies"], row["failures"], telemetry_complete=telemetry_complete
+            ),
+        }
+        for (provider, model), row in sorted(by_route.items())
+    ]
+    return {
+        "totals": _request_health_summary(
+            [row[2] for row in success_rows],
+            len(failure_rows),
+            telemetry_complete=telemetry_complete,
+        ),
+        "by_provider_model": routes,
+        "error_classes": [
+            {"error_class": error_class, "failed_requests": count}
+            for error_class, count in sorted(
+                error_classes.items(), key=lambda item: (-item[1], item[0])
+            )
+        ],
+        "recording_degraded": recording,
+    }
+
+
 async def costs_overview(
-    budgets: Any, *, project_id: int | None = None, projects: Any = None
+    budgets: Any, *, project_id: int | None = None, projects: Any = None, ledger: Any = None
 ) -> dict:
     """The Costs screen: today/week/month spend + limits + the 'why this cost' breakdown (by
     purpose, role, model, provider, stage, team, service). Unpriced calls/services are surfaced
@@ -273,6 +395,9 @@ async def costs_overview(
         # S7: prompt/context-cache reuse this month (aggregate; empty until caching is enabled).
         "context_reuse": await cache_reuse_overview(
             budgets.db, project_id=project_id, since=month_start
+        ),
+        "model_request_health": await model_request_health_overview(
+            budgets.db, project_id=project_id, since=month_start, ledger=ledger
         ),
     }
     if project_id is None:  # the global cost center also attributes spend by project
@@ -521,12 +646,76 @@ async def office_overview(
     }
 
 
+def _orchestration_outcome(status: str, verdict: str | None) -> str:
+    """Stable display/accounting outcome derived from the persisted terminal state."""
+    if status == "ok":
+        if verdict == "accept":
+            return "review_accepted"
+        if verdict == "reject":
+            return "review_rejected"
+        if verdict == "revise":
+            return "needs_revision"
+        return "completed_unreviewed"
+    if status == "rejected":
+        return "review_rejected"
+    if status == "revise":
+        return "needs_revision"
+    if status == "error":
+        return "failed"
+    if status in {"cancelled", "aborted", "budget_stopped"}:
+        return status
+    if status == "running":
+        return "in_progress"
+    return "unknown"
+
+
+def _outcome_roi(
+    budgets: Any, *, baseline_minutes: int, actual_cost_usd: float | None, outcome: str
+) -> dict:
+    """Credit time-saved value only after the reviewer has accepted the run."""
+    if outcome == "review_accepted":
+        return budgets.roi(baseline_minutes, actual_cost_usd)
+    return {
+        "baseline_minutes": baseline_minutes,
+        "value_usd": None,
+        "actual_cost_usd": actual_cost_usd,
+        "net_usd": None,
+    }
+
+
+def orchestration_outcome_accounting(rows: list[dict]) -> dict:
+    """Terminal-run model-cost accounting for the Cost Center.
+
+    ``actual_cost_usd`` is populated from the orchestration model-call ledger only; it excludes
+    service estimates.  Any terminal run with unknown actual cost makes the cost-per-accepted-run
+    metric unknown rather than presenting an incomplete cohort as a precise result.
+    """
+    from jarvis.orchestration.store import TERMINAL
+
+    terminal = [row for row in rows if row.get("status") in TERMINAL]
+    known_costs = [
+        float(row["actual_cost_usd"])
+        for row in terminal
+        if row.get("actual_cost_usd") is not None
+    ]
+    accepted = sum(row.get("outcome") == "review_accepted" for row in terminal)
+    unknown = len(terminal) - len(known_costs)
+    known_total = round(sum(known_costs), 4)
+    return {
+        "completed_runs": len(terminal),
+        "review_accepted_runs": accepted,
+        "known_actual_model_cost_usd": known_total,
+        "unknown_actual_model_cost_runs": unknown,
+        "known_model_cost_per_review_accepted_run": (
+            round(known_total / accepted, 4) if accepted and not unknown else None
+        ),
+    }
+
+
 async def orchestration_roi(
     store: Any, budgets: Any, *, project_id: int | None = None, limit: int = 20
 ) -> list[dict]:
-    """Per-run ROI for the Studio/Costs surfaces: for each recent completed run, the human-time
-    value its workflow stood in for (baseline_minutes × hourly rate) minus its actual cost. Net
-    is None when the cost is unpriced (fail-closed)."""
+    """Per-run ROI with outcome-gated value for the Studio and Cost Center surfaces."""
     from jarvis.orchestration import WORKFLOWS
 
     runs = await store.list(project_id=project_id, limit=limit)
@@ -535,13 +724,21 @@ async def orchestration_roi(
         wf = WORKFLOWS.get(r.workflow)
         if wf is None:
             continue
-        roi = budgets.roi(wf.baseline_minutes, r.actual_cost_usd)
+        outcome = _orchestration_outcome(r.status, r.verdict)
+        roi = _outcome_roi(
+            budgets,
+            baseline_minutes=wf.baseline_minutes,
+            actual_cost_usd=r.actual_cost_usd,
+            outcome=outcome,
+        )
         out.append(
             {
                 "run_id": r.id,
                 "team": r.config.get("team"),
                 "workflow": r.workflow,
                 "status": r.status,
+                "verdict": r.verdict,
+                "outcome": outcome,
                 **roi,
             }
         )
@@ -612,9 +809,39 @@ def _message_text(content: object) -> str:
     return "\n".join(p for p in parts if p)
 
 
-async def session_transcript(sessions: SessionStore, session_id: int) -> dict:
+_DELEGATION_STATUSES = frozenset({"running", "ok", "error", "timeout", "cancelled", "aborted"})
+
+
+def _delegation_label(value: object) -> str:
+    """A bounded, display-only delegation title — never a prompt or child report."""
+    if not isinstance(value, str):
+        return "sub-agent"
+    label = " ".join(value.split())
+    if not label:
+        return "sub-agent"
+    return label if len(label) <= 120 else f"{label[:119].rstrip()}…"
+
+
+def serialize_session_delegation(run: AgentRun) -> dict[str, str]:
+    """The terminal lifecycle summary a parent transcript may safely rehydrate.
+
+    This deliberately does not expose the child prompt, result, error, trace/session identifiers,
+    tool payloads, or child transcript.  A row proves a delegation was recorded for this parent
+    chat; it does not recreate the child's live tool/text timeline.
+    """
+    return {
+        "agent_id": str(run.id),
+        "title": _delegation_label(run.title),
+        "status": run.status if run.status in _DELEGATION_STATUSES else "aborted",
+    }
+
+
+async def session_transcript(
+    sessions: SessionStore, session_id: int, *, run_store: AgentRunStore | None = None
+) -> dict:
     """One chat's transcript for the history view — the user's own conversation, rendered
-    to {role, text} (no tool-result plumbing). ``ok: False`` if the session is unknown."""
+    to {role, text} (no tool-result plumbing), plus terminal-only summaries of delegations
+    recorded for that exact parent session. ``ok: False`` if the session is unknown."""
     meta = await sessions.get_meta(session_id)
     if meta is None:
         return {"ok": False, "message": "no such session"}
@@ -624,7 +851,20 @@ async def session_transcript(sessions: SessionStore, session_id: int) -> dict:
         for m in messages
         if (text := _message_text(m.get("content")))
     ]
-    return {"ok": True, "session": serialize_session_meta(meta), "messages": rendered}
+    delegations = (
+        [
+            serialize_session_delegation(run)
+            for run in await run_store.list(parent_session_id=session_id)
+        ]
+        if run_store is not None
+        else []
+    )
+    return {
+        "ok": True,
+        "session": serialize_session_meta(meta),
+        "messages": rendered,
+        "delegations": delegations,
+    }
 
 
 # --- tasks -----------------------------------------------------------------
@@ -821,10 +1061,51 @@ async def list_agent_runs(run_store: AgentRunStore, *, limit: int = 50) -> list[
 # --- orchestration (Studio): runs + team/workflow catalog (metadata only) ---
 
 
-def serialize_orchestration_run(run: Any) -> dict:
+_SKILL_HASH_RE = re.compile(r"[0-9a-f]{12}\Z")
+_SKILL_TEXT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
+_SKILL_MANIFEST_KEYS = (
+    "pack",
+    "version",
+    "sha256",
+    "compiled_sha256",
+    "member",
+    "stage",
+)
+
+
+def recorded_skills_manifest(raw: Any) -> list[dict[str, str]]:
+    """Fail-closed projection of persisted Skill Forge audit metadata.
+
+    Run and member rows are historical JSON, so they are not trusted merely because they live in
+    our database.  Studio receives only the six bounded identifiers emitted by
+    :class:`~jarvis.skills.catalog.SkillCatalog`; pack text, unknown keys, and malformed entries
+    are discarded.  A manifest records resolution at run start, not prompt injection.
+    """
+    if not isinstance(raw, list):
+        return []
+    projected: list[dict[str, str]] = []
+    for entry in raw[:64]:
+        if not isinstance(entry, dict):
+            continue
+        values = {key: entry.get(key) for key in _SKILL_MANIFEST_KEYS}
+        valid_text = all(
+            isinstance(value, str) and _SKILL_TEXT_RE.fullmatch(value)
+            for value in values.values()
+        )
+        if (
+            not valid_text
+            or not _SKILL_HASH_RE.fullmatch(values["sha256"])
+            or not _SKILL_HASH_RE.fullmatch(values["compiled_sha256"])
+        ):
+            continue
+        projected.append(values)
+    return projected
+
+
+def serialize_orchestration_run(run: Any, *, include_skills_manifest: bool = False) -> dict:
     """One orchestration run for the Studio history/detail. Summary + manifest + costs only —
     the store never holds a verbatim prompt or child report, so nothing sensitive is here."""
-    return {
+    serialized = {
         "id": run.id,
         "project_id": run.project_id,
         "workflow": run.workflow,
@@ -846,6 +1127,11 @@ def serialize_orchestration_run(run: Any) -> dict:
         "started_at": run.started_at,
         "finished_at": run.finished_at,
     }
+    # This evidence belongs only in the expanded Studio detail.  Run lists, Workspace, Office,
+    # and `/api/agents` remain compact metadata surfaces.
+    if include_skills_manifest:
+        serialized["skills_manifest"] = recorded_skills_manifest(run.skills_manifest)
+    return serialized
 
 
 async def orchestration_runs_view(
@@ -883,14 +1169,28 @@ async def orchestration_run_detail(
                 models[key].append(label)
         for member in members:
             member["models"] = models.get((member.get("role"), member.get("stage")), [])
-    detail = {"run": serialize_orchestration_run(run), "members": members}
+    for member in members:
+        member["skills_manifest"] = recorded_skills_manifest(member.get("skills_manifest"))
+    detail = {
+        "run": serialize_orchestration_run(run, include_skills_manifest=True),
+        "members": members,
+    }
     if budgets is not None:
         from jarvis.orchestration import WORKFLOWS
 
         detail["cost_breakdown"] = await budgets.run_breakdown(run_id)
         wf = WORKFLOWS.get(run.workflow)
         if wf is not None:
-            detail["roi"] = budgets.roi(wf.baseline_minutes, run.actual_cost_usd)
+            outcome = _orchestration_outcome(run.status, run.verdict)
+            detail["roi"] = {
+                "outcome": outcome,
+                **_outcome_roi(
+                    budgets,
+                    baseline_minutes=wf.baseline_minutes,
+                    actual_cost_usd=run.actual_cost_usd,
+                    outcome=outcome,
+                ),
+            }
     return detail
 
 
@@ -1225,16 +1525,54 @@ def providers_status(config: Config) -> list[dict]:
     return ProviderRegistry.from_config(config).availability()
 
 
+def configured_policy_overrides(policy: Any = None) -> dict:
+    """A small, read-only view of the active gate's *configured* policy for Settings.
+
+    The global default and explicit decisions that differ from it are enough to make an egress
+    posture such as ``web_search: allow`` visible without implying a comparison to an unstored
+    historical/shipped file. It is not an effective per-call decision: intrinsic tool defaults and
+    path/shell/sensitive/taint safety floors still apply. This view never changes a gate decision
+    or exposes tool arguments.
+    """
+    if policy is None:
+        return {
+            "state": "unavailable",
+            "scope": "configured_policy_only",
+            "global_default": None,
+            "overrides": [],
+        }
+
+    def value(decision: Any) -> str:
+        return getattr(decision, "value", str(decision))
+
+    default = value(policy.default)
+    overrides = [
+        {"tool": name, "decision": value(decision)}
+        for name, decision in sorted(policy.tools.items())
+        if value(decision) != default
+    ]
+    return {
+        "state": "available",
+        "scope": "configured_policy_only",
+        "global_default": default,
+        "overrides": overrides,
+    }
+
+
 def settings_overview(
-    config: Config, *, connectors: dict | None = None, ledger_status: dict | None = None
+    config: Config,
+    *,
+    connectors: dict | None = None,
+    ledger_status: dict | None = None,
+    policy: Any = None,
 ) -> dict:
     """The Settings screen's read-only policy surface (Phase 13). Aggregates the provider /
     service / route / budget / connector / context-reuse state so a human can review what is
     enabled and WHY — presence booleans, states, and env-var NAMES ONLY, never a key value or a
     token (the secret-absence sweep covers this route). It grants NO authority and mutates
     nothing: global service flags stay YAML-only, so ``enable_hint`` shows the exact settings.yaml
-    line to add. ``connectors`` (scopes + expiry, never a token) and ``ledger_status`` are the
-    stateful bits the route passes in, mirroring :func:`hub_status`."""
+    line to add. ``connectors`` (scopes + expiry, never a token), ``ledger_status``, and ``policy``
+    are the stateful bits the route passes in, mirroring :func:`hub_status`."""
     b = config.budgets
     return {
         "providers": providers_status(config),  # 10C: state / authority / private_ok + env names
@@ -1246,6 +1584,31 @@ def settings_overview(
             "services:\n  enabled: [firecrawl, exa, searxng, openai_image]"
         ),
         "context_reuse": {"enabled": config.context_reuse.enabled},
+        "configured_policy": configured_policy_overrides(policy),
+        # NotificationRouter is deliberately not host-composed yet.  Do not present its config
+        # fields (quiet hours / project mutes / urgent channels) as live delivery controls: only
+        # explicit approved sends and separately configured digest delivery can use notifiers.
+        "attention_routing": {
+            "state": "not_active",
+            "reason": (
+                "Not active — quiet hours and project mutes do not affect attention delivery yet."
+            ),
+        },
+        # Skill Forge status is CONFIGURATION ONLY.  Do not construct SkillCatalog here: that
+        # would read local packs from a read-only status endpoint and make "off" observably
+        # different from the pre-Skill-Forge runtime.  These are human-pinned identifiers, not
+        # evidence that a pack exists, passed validation, or was injected into a prompt.
+        "skills": {
+            "mode": config.skills.mode,
+            "configured_packs": [
+                {
+                    "pack": activation.pack,
+                    "version": activation.version,
+                    "sha256_prefix": activation.sha256[:12],
+                }
+                for activation in config.skills.enabled
+            ],
+        },
         "budgets": {
             "soft_warn_usd_per_run": b.soft_warn_usd_per_run,
             "hard_stop_usd_per_run": b.hard_stop_usd_per_run,
@@ -1435,7 +1798,8 @@ def capability_truth(
                 "reason": (
                     "Delivers notifications; not a chat tool."
                     if configured
-                    else f"Add {label} in settings to receive notifications."
+                    else "Not configured. Approved sends and digest delivery are separately "
+                    "configured."
                 ),
             }
         )

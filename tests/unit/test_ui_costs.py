@@ -20,13 +20,22 @@ def test_budget_banner_present_and_not_amber() -> None:
 
 
 def test_roi_aggregate_and_per_run() -> None:
-    assert "/api/roi" in COSTS and "net_usd" in COSTS and "time-saved" in COSTS
+    assert "/api/roi" in COSTS and "net_usd" in COSTS and "review_accepted" in COSTS
+    assert "outcome_accounting" in COSTS and "Model-cost accounting" in COSTS
 
 
 def test_all_dimensions_present() -> None:
     for d in ("by_project", "by_model", "by_provider", "by_team", "by_role",
               "by_stage", "by_purpose", "by_service"):
         assert d in COSTS, d
+
+
+def test_model_request_health_is_read_only_and_truthful() -> None:
+    assert "model_request_health" in COSTS and "Model request health" in COSTS
+    assert "Completed model-request latency only" in COSTS
+    assert "end-to-end turn time" in COSTS and "Failure classes" in COSTS
+    assert "telemetry_complete" in COSTS
+    assert "exact counts, error rate, and latency percentiles" in COSTS
 
 
 def test_escaped_no_innerhtml_injection() -> None:
@@ -38,3 +47,4 @@ def test_escaped_no_innerhtml_injection() -> None:
 def test_roi_route_is_get_only() -> None:
     assert '@app.get("/api/roi")' in SERVER
     assert '@app.post("/api/roi")' not in SERVER
+    assert "orchestration_outcome_accounting" in SERVER

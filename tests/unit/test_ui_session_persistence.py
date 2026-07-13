@@ -15,7 +15,14 @@ from pathlib import Path
 import pytest
 
 from jarvis.config import load_config
-from jarvis.core import AgentLoop, FakeClient, build_system, text_message
+from jarvis.core import (
+    AgentLoop,
+    FakeClient,
+    ToolCall,
+    build_system,
+    text_message,
+    tool_use_message,
+)
 from jarvis.core.context import ContextManager
 from jarvis.permissions import PermissionGate, Policy
 from jarvis.persistence import SessionStore
@@ -228,3 +235,172 @@ async def test_no_store_is_ephemeral_and_safe(tmp_path: Path) -> None:
     assert result.text == "ok"
     assert session.session_id is None
     assert await session.resume(1) is False
+
+
+async def test_cancel_before_response_persists_stopped_turn_and_can_resume(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    entered = asyncio.Event()
+    never = asyncio.Event()
+
+    class BlockingClient(FakeClient):
+        async def create(self, **kwargs):  # type: ignore[override]
+            entered.set()
+            await never.wait()
+            return await super().create(**kwargs)
+
+    class RecordingConnections(ConnectionManager):
+        def __init__(self) -> None:
+            super().__init__(clock=lambda: 0.0)
+            self.published: list[dict] = []
+
+        async def publish(self, _context, message: dict) -> None:
+            self.published.append(message)
+
+    connections = RecordingConnections()
+    session = UiSession(
+        loop=_loop(tmp_path, BlockingClient([text_message("unreached")])),
+        connections=connections,
+        sessions=store,
+    )
+    assert session.submit("draft a plan")
+    await entered.wait()
+    assert session.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await session._current
+
+    assert session.session_id is not None
+    saved = await store.load_messages(session.session_id)
+    assert saved == [
+        {"role": "user", "content": "draft a plan"},
+        {"role": "assistant", "content": "(stopped)"},
+    ]
+    # The durable save lifecycle finishes before the websocket cancellation is delivered.
+    assert [message["kind"] for message in connections.published] == [
+        "session_persistence",
+        "session_persistence",
+        "turn_cancelled",
+    ]
+    assert connections.published[1]["state"] == "saved"
+
+    resumed = UiSession(
+        loop=_loop(tmp_path, FakeClient([text_message("continuing safely")])),
+        connections=ConnectionManager(clock=lambda: 0.0),
+        sessions=store,
+    )
+    assert await resumed.resume(session.session_id)
+    result = await resumed.handle_text("continue")
+    assert result.text == "continuing safely"
+
+
+async def test_failed_turn_persists_redacted_marker_before_browser_notification(
+    tmp_path: Path,
+) -> None:
+    store = await _store(tmp_path)
+
+    class FailingClient(FakeClient):
+        async def create(self, **_kwargs):  # type: ignore[override]
+            raise RuntimeError("SECRET-PROVIDER-PATH-CANARY")
+
+    class RecordingConnections(ConnectionManager):
+        def __init__(self) -> None:
+            super().__init__(clock=lambda: 0.0)
+            self.published: list[dict] = []
+
+        async def publish(self, _context, message: dict) -> None:
+            self.published.append(message)
+
+    connections = RecordingConnections()
+    session = UiSession(
+        loop=_loop(tmp_path, FailingClient([])),
+        connections=connections,
+        sessions=store,
+    )
+    await session.ensure_session()
+    assert session.submit("retry this safely")
+    await session._current
+
+    assert session.session_id is not None
+    assert await store.load_messages(session.session_id) == [
+        {"role": "user", "content": "retry this safely"},
+        {"role": "assistant", "content": "(unable to complete this turn)"},
+    ]
+    assert [message["kind"] for message in connections.published] == [
+        "session_persistence",
+        "session_persistence",
+        "turn_error",
+    ]
+    assert connections.published[-1] == {"kind": "turn_error"}
+    assert "SECRET-PROVIDER-PATH-CANARY" not in str(connections.published)
+    assert session.last_turn_cost_usd is None
+
+    session.loop.client = FakeClient([text_message("recovered")])
+    assert (await session.handle_text("continue")).text == "recovered"
+
+
+async def test_failed_turn_never_persists_a_partial_assistant_protocol_block(
+    tmp_path: Path,
+) -> None:
+    store = await _store(tmp_path)
+
+    class MutatingFailure:
+        chat_limits = None
+
+        async def run_turn(self, messages, *, on_event):
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "partial", "name": "echo"}],
+                }
+            )
+            raise RuntimeError("unavailable")
+
+    session = UiSession(
+        loop=MutatingFailure(),  # type: ignore[arg-type] - narrow failure seam, not an AgentLoop
+        connections=ConnectionManager(clock=lambda: 0.0),
+        sessions=store,
+    )
+    with pytest.raises(RuntimeError, match="unavailable"):
+        await session.handle_text("make a plan")
+
+    assert session.session_id is not None
+    saved = await store.load_messages(session.session_id)
+    assert saved == [
+        {"role": "user", "content": "make a plan"},
+        {"role": "assistant", "content": "(unable to complete this turn)"},
+    ]
+
+
+async def test_cancel_during_tool_batch_never_persists_unmatched_tool_use(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    entered = asyncio.Event()
+    never = asyncio.Event()
+    session = UiSession(
+        loop=_loop(
+            tmp_path,
+            FakeClient([tool_use_message([ToolCall("t1", "read_file", {"path": "notes.txt"})])]),
+        ),
+        connections=ConnectionManager(clock=lambda: 0.0),
+        sessions=store,
+    )
+
+    async def block_tools(*_args: object) -> list[dict]:
+        entered.set()
+        await never.wait()
+        return []
+
+    session.loop._handle_tools = block_tools  # type: ignore[method-assign]
+    assert session.submit("read the notes")
+    await entered.wait()
+    assert session.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await session._current
+
+    assert session.session_id is not None
+    saved = await store.load_messages(session.session_id)
+    assert [message["role"] for message in saved] == ["user", "assistant"]
+    assert saved[-1]["content"] == "(stopped)"
+    assert not any(
+        isinstance(message["content"], list)
+        and any(block.get("type") == "tool_use" for block in message["content"])
+        for message in saved
+    )

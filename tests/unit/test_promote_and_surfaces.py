@@ -152,6 +152,17 @@ async def test_a2_no_verbatim_prompt_on_cost_project_session_surfaces(tmp_path: 
         assert canary not in body, f"verbatim prompt leaked on {path}"
 
 
+async def test_costs_exposes_safe_model_request_health(tmp_path: Path) -> None:
+    client, auth, _m, _db, _lock, _pid = await _app(tmp_path)
+    response = client.get("/api/costs", headers=_hdr(auth))
+    assert response.status_code == 200
+    health = response.json()["model_request_health"]
+    assert health["totals"]["attempts"] == 0
+    assert health["totals"]["error_rate"] is None
+    assert health["by_provider_model"] == [] and health["error_classes"] == []
+    assert health["recording_degraded"]["degraded"] is False
+
+
 async def test_status_feed_reports_project_mode_spend(tmp_path: Path) -> None:
     client, auth, _m, _db, _lock, pid = await _app(tmp_path)
     status = client.get("/api/runner", headers=_hdr(auth)).json()

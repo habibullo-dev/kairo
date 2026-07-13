@@ -40,6 +40,13 @@ def main() -> None:
             sys.exit(2)
         sys.exit(eval_cli(argv[1:]))
 
+    # ``jarvis doctor`` is a local, read-only first-run diagnostic.  It never starts the REPL,
+    # creates runtime directories, migrates SQLite, contacts a provider, or prints secret values.
+    if argv and argv[0] == "doctor":
+        from jarvis.cli.doctor import doctor_cli
+
+        sys.exit(doctor_cli(argv[1:]))
+
     # `jarvis connect <provider>` is the terminal ritual for granting account access (OAuth /
     # notifier config). A thin delegate imported on demand so --version/--help stay instant.
     if argv and argv[0] == "connect":

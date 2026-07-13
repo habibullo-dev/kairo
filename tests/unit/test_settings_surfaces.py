@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import load_config
+from jarvis.config import SkillActivationConfig, SkillsConfig, load_config
+from jarvis.permissions.policy import Policy
+from jarvis.tools import Permission
 from jarvis.ui.readmodels import settings_overview
 
 
@@ -64,6 +66,61 @@ def test_enable_hint_and_context_reuse_flag(tmp_path: Path) -> None:
     assert ov["context_reuse"]["enabled"] is False
 
 
+def test_configured_policy_shows_only_explicit_nondefault_tool_decisions(tmp_path: Path) -> None:
+    policy = Policy(
+        default=Permission.ASK,
+        tools={"web_search": Permission.ALLOW, "web_fetch": Permission.ASK},
+    )
+    assert settings_overview(_cfg(tmp_path), policy=policy)["configured_policy"] == {
+        "state": "available",
+        "scope": "configured_policy_only",
+        "global_default": "ask",
+        "overrides": [{"tool": "web_search", "decision": "allow"}],
+    }
+
+
+def test_configured_policy_never_claims_to_be_effective_per_call(tmp_path: Path) -> None:
+    # read_file's intrinsic default is ALLOW, but an empty config policy correctly reports no
+    # explicit override. The separate scope marker prevents callers from misreading this as the
+    # effective result of PermissionGate.check("read_file", ...).
+    configured = settings_overview(_cfg(tmp_path), policy=Policy())['configured_policy']
+    assert configured["scope"] == "configured_policy_only"
+    assert configured["global_default"] == "ask" and configured["overrides"] == []
+
+
+def test_attention_push_routing_is_honestly_marked_not_active(tmp_path: Path) -> None:
+    routing = settings_overview(_cfg(tmp_path))["attention_routing"]
+    assert routing == {
+        "state": "not_active",
+        "reason": (
+            "Not active — quiet hours and project mutes do not affect attention delivery yet."
+        ),
+    }
+
+
+def test_skills_surface_is_configuration_only_and_never_loads_packs(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    # This deliberately malformed pack must not be read: the Settings read model returns only the
+    # human-pinned config projection without constructing a SkillCatalog or touching disk.
+    pack = tmp_path / "config" / "skills" / "packs" / "backend-engineering.md"
+    pack.parent.mkdir(parents=True)
+    pack.write_text("not a valid skill pack", encoding="utf-8")
+    cfg.skills = SkillsConfig(
+        mode="active",
+        enabled=[
+            SkillActivationConfig(
+                pack="backend-engineering", version="2.1.0", sha256="a" * 64
+            )
+        ],
+    )
+    assert settings_overview(cfg)["skills"] == {
+        "mode": "active",
+        "configured_packs": [
+            {"pack": "backend-engineering", "version": "2.1.0", "sha256_prefix": "a" * 12}
+        ],
+    }
+
+
 def test_budgets_include_service_caps(tmp_path: Path) -> None:
     # The surface exposes the per-service cost caps (Task 8 defaults on ServicesConfig) alongside
     # the existing per-run budget limits.
@@ -78,5 +135,6 @@ def test_budgets_include_service_caps(tmp_path: Path) -> None:
 def test_stable_shape_across_enable_sets(tmp_path: Path, enabled) -> None:
     ov = settings_overview(_cfg(tmp_path, enabled=enabled))
     assert {"providers", "services", "model_routes", "budgets", "connectors",
-            "context_reuse", "enable_hint", "services_enabled"} <= set(ov)
+            "context_reuse", "skills", "configured_policy", "enable_hint",
+            "services_enabled"} <= set(ov)
     assert ov["services_enabled"] == list(enabled)

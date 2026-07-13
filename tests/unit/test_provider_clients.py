@@ -182,6 +182,24 @@ def test_x_api_key_auth_default(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured.get("api_key") == "k" and "auth_token" not in captured
 
 
+def test_openai_compat_uses_configured_sdk_retry_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    import openai
+
+    captured: dict = {}
+
+    class _Rec:
+        def __init__(self, **kw: object) -> None:
+            captured.update(kw)
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", _Rec)
+    OpenAIChatClient(api_key="k", base_url="https://compatible.example", max_retries=7)
+    assert captured == {
+        "api_key": "k",
+        "base_url": "https://compatible.example",
+        "max_retries": 7,
+    }
+
+
 # --- factory: catalog-driven, fail-closed -----------------------------------
 
 
@@ -235,6 +253,22 @@ def test_factory_openai_client_for_core_openai(tmp_path: Path) -> None:
     factory = ClientFactory(_cfg(tmp_path, openai_api_key="k"))
     client = factory.for_route(ModelRoute("openai", "gpt-5.2", text_only=True))
     assert isinstance(client, OpenAIChatClient)
+
+
+def test_factory_threads_retry_limit_to_openai_compat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict = {}
+
+    class _RecordingClient:
+        def __init__(self, **kw: object) -> None:
+            captured.update(kw)
+
+    monkeypatch.setattr("jarvis.models.factory.OpenAIChatClient", _RecordingClient)
+    cfg = _cfg(tmp_path, openai_api_key="k")
+    cfg.limits = cfg.limits.model_copy(update={"max_retries": 9})
+    ClientFactory(cfg).for_route(ModelRoute("openai", "gpt-5.2", text_only=True))
+    assert captured["max_retries"] == 9
 
 
 def test_factory_gemini_builds_openai_client_with_base_url(tmp_path: Path) -> None:

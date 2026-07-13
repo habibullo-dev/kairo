@@ -65,11 +65,12 @@ class OpenAIChatClient:
         base_url: str | None = None,
         provider: str = "openai",
         context_reuse: bool = False,
+        max_retries: int = 4,
     ) -> None:
         if client is None:
             from openai import AsyncOpenAI
 
-            kwargs: dict = {"api_key": api_key}
+            kwargs: dict = {"api_key": api_key, "max_retries": max_retries}
             if base_url:  # Gemini's OpenAI-compatible endpoint (Phase 10C); None ⇒ OpenAI default
                 kwargs["base_url"] = base_url
             client = AsyncOpenAI(**kwargs)

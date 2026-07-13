@@ -1070,6 +1070,36 @@ async def _migrate_v20(db: aiosqlite.Connection) -> None:
         )
 
 
+# Model-request failures are a separate metadata-only stream.  A failed request has neither
+# tokens nor a price, so putting it in model_calls would misrepresent it as an unpriced successful
+# completion.  Keep only safe routing/scope metadata, elapsed request time, and an exception
+# class -- never an error message, prompt, response, or secret.
+_SCHEMA_V21 = """
+CREATE TABLE IF NOT EXISTS model_failures (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                   TEXT NOT NULL,
+    trace_id             TEXT,
+    session_id           INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    project_id           INTEGER REFERENCES projects(id),
+    orchestration_run_id INTEGER REFERENCES orchestration_runs(id),
+    agent_role           TEXT,
+    purpose              TEXT NOT NULL,
+    provider             TEXT NOT NULL,
+    model                TEXT NOT NULL,
+    latency_ms           REAL NOT NULL,
+    error_class          TEXT NOT NULL,
+    created_at           TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_failures_project_ts
+    ON model_failures(project_id, ts);
+CREATE INDEX IF NOT EXISTS idx_model_failures_provider_model_ts
+    ON model_failures(provider, model, ts);
+CREATE INDEX IF NOT EXISTS idx_model_failures_run
+    ON model_failures(orchestration_run_id);
+"""
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1096,6 +1126,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (18, _migrate_v18),
     (19, _migrate_v19),
     (20, _migrate_v20),
+    (21, _SCHEMA_V21),
 ]
 
 

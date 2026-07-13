@@ -10,8 +10,10 @@ from pathlib import Path
 
 import pytest
 
+from jarvis.attention import AttentionStore
 from jarvis.config import SchedulerConfig
 from jarvis.persistence.db import connect
+from jarvis.projects import ProjectStore
 from jarvis.scheduler.service import ScheduleError, TaskService
 from jarvis.scheduler.store import TaskStore
 
@@ -48,7 +50,12 @@ async def _service(tmp_path: Path, **config_kw) -> tuple[TaskService, Clock]:
     clock = Clock()
     store = TaskStore(await connect(tmp_path / "tasks.db"))
     _OPEN_DBS.append(store.db)
-    service = TaskService(store, SchedulerConfig(**config_kw), now=clock)
+    service = TaskService(
+        store,
+        SchedulerConfig(**config_kw),
+        now=clock,
+        attention=AttentionStore(store.db, store.lock),
+    )
     return service, clock
 
 
@@ -61,6 +68,7 @@ async def _schedule(service: TaskService, **kw):
         schedule_spec=kw.get("schedule_spec", "3600"),
         created_by=kw.get("created_by", "user"),
         timezone=kw.get("timezone", "UTC"),
+        project_id=kw.get("project_id"),
     )
 
 
@@ -199,6 +207,57 @@ async def test_once_job_error_fails_immediately(tmp_path: Path) -> None:
     assert (task.status, task.next_run_at) == ("failed", None)
 
 
+async def test_terminal_failure_creates_one_scoped_dead_letter_without_payload(
+    tmp_path: Path,
+) -> None:
+    service, clock = await _service(tmp_path, max_consecutive_failures=1)
+    project_id = await ProjectStore(service.store.db, service.store.lock).create(name="Scoped")
+    task = await _schedule(
+        service,
+        title="Nightly report",
+        payload="PRIVATE-TASK-BODY-MUST-NOT-ENTER-ATTENTION",
+        project_id=project_id,
+    )
+    clock.advance(hours=1, minutes=1)
+    (due,) = await service.due()
+    run_id = await service.begin_run(due)
+    failed = await service.complete_run(due, run_id, ok=False, error="provider unavailable")
+
+    assert failed.status == "failed"
+    assert service.attention is not None
+    (alert,) = await service.attention.list(state="open", project_id=project_id)
+    assert alert.kind == "alert"
+    assert alert.source == "scheduler" and alert.source_ref == str(task.id)
+    assert alert.dedupe_key == f"scheduler-dead-letter:{task.id}"
+    assert alert.payload == {"task_id": task.id, "consecutive_failures": 1}
+    assert alert.evidence == [{"kind": "task_run", "ref": str(run_id)}]
+    assert "PRIVATE-TASK-BODY" not in str(alert)
+
+
+async def test_dead_letter_write_failure_rolls_back_terminal_task_transition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, clock = await _service(tmp_path, max_consecutive_failures=1)
+    task = await _schedule(service)
+    clock.advance(hours=1, minutes=1)
+    (due,) = await service.due()
+    run_id = await service.begin_run(due)
+    assert service.attention is not None
+
+    async def fail_alert(**_kwargs) -> int:
+        raise RuntimeError("attention storage unavailable")
+
+    monkeypatch.setattr(service.attention, "create_in_transaction", fail_alert)
+    with pytest.raises(RuntimeError, match="attention storage unavailable"):
+        await service.complete_run(due, run_id, ok=False, error="boom")
+
+    # The transaction protects against a visible failed task with no durable alert.
+    current = await service.store.get(task.id)
+    (run,) = await service.store.runs_for(task.id)
+    assert current is not None and current.status == "active"
+    assert run.status == "running"
+
+
 async def test_result_text_is_bounded(tmp_path: Path) -> None:
     service, clock = await _service(tmp_path)
     await _schedule(service, schedule_spec="3600")
@@ -269,6 +328,24 @@ async def test_sweep_once_task_fails_terminal(tmp_path: Path) -> None:
     await service.sweep_stale_runs()
     task = await service.store.get(due.task.id)
     assert (task.status, task.next_run_at) == ("failed", None)
+
+
+async def test_sweep_applies_failure_cap_and_files_one_dead_letter(tmp_path: Path) -> None:
+    service, clock = await _service(tmp_path, max_consecutive_failures=3)
+    task = await _schedule(service, title="Crash-prone")
+    for failures in (1, 2, 3):
+        clock.advance(hours=1, minutes=1)
+        (due,) = await service.due()
+        await service.begin_run(due)  # process dies before the job reports an outcome
+        await service.sweep_stale_runs()
+        current = await service.store.get(task.id)
+        assert current is not None and current.consecutive_failures == failures
+        assert current.status == ("failed" if failures == 3 else "active")
+
+    assert service.attention is not None
+    alerts = await service.attention.list(state="open")
+    assert len(alerts) == 1
+    assert alerts[0].dedupe_key == f"scheduler-dead-letter:{task.id}"
 
 
 # --- cancel + describe ---------------------------------------------------------

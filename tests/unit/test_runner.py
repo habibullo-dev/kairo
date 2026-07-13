@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from jarvis.attention import AttentionStore
 from jarvis.cli.jobs import JobRunner
 from jarvis.config import SchedulerConfig, load_config
 from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
@@ -54,7 +55,12 @@ async def _service(tmp_path: Path, **config_kw) -> tuple[TaskService, Clock, Tas
     clock = Clock()
     store = TaskStore(await connect(tmp_path / "tasks.db"))
     _OPEN_DBS.append(store.db)
-    service = TaskService(store, SchedulerConfig(**config_kw), now=clock)
+    service = TaskService(
+        store,
+        SchedulerConfig(**config_kw),
+        now=clock,
+        attention=AttentionStore(store.db, store.lock),
+    )
     return service, clock, store
 
 
@@ -207,6 +213,27 @@ async def test_job_exception_records_error_and_counts_failure(tmp_path: Path) ->
     assert "exploded" in run.error
     assert (await store.get(task.id)).consecutive_failures == 1
     assert any("✗" in line for line in rec.lines)
+
+
+async def test_runner_terminal_failure_files_scoped_dead_letter(tmp_path: Path) -> None:
+    service, clock, store = await _service(tmp_path, max_consecutive_failures=1)
+    project_id = await ProjectStore(store.db, store.lock).create(name="Scoped")
+    task = await _schedule(service, kind="job", project_id=project_id)
+    rec = Recorder()
+
+    async def _run_job(_t):
+        raise RuntimeError("model API exploded")
+
+    runner = BackgroundRunner(
+        service, notify=rec.notify, run_job=_run_job, turn_lock=asyncio.Lock()
+    )
+    clock.advance(hours=1, minutes=1)
+    await runner.check_due()
+
+    assert service.attention is not None
+    (alert,) = await service.attention.list(state="open", project_id=project_id)
+    assert alert.source == "scheduler" and alert.source_ref == str(task.id)
+    assert alert.payload["task_id"] == task.id
 
 
 async def test_missed_job_records_missed_and_makes_no_model_call(tmp_path: Path) -> None:

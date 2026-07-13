@@ -216,17 +216,24 @@ function renderDetail(container) {
   if (!el || !S.detail || !S.detail.run) { if (el) el.innerHTML = ""; return; }
   const r = S.detail.run;
   const money = (n) => (n == null ? "—" : `$${n.toFixed(4)}`);
+  const recordedSkills = (entries) => (entries || []).map((skill) =>
+    `<span class="chip dim" title="pack ${esc(skill.sha256)} · compiled ${esc(skill.compiled_sha256)}">${esc(skill.pack)} v${esc(skill.version)} · ${esc(skill.member)}/${esc(skill.stage)}</span>`).join(" ");
   const members = (S.detail.members || []).map((m) =>
     `<tr><td><b>${esc(memberLabel(m))}</b><div class="dim mono">${esc(m.role || "?")}</div></td><td class="dim">${esc(m.stage || "")}</td>
-     <td>${statusPill(m.status)}</td><td style="text-align:right" class="dim">${m.iterations} it · ${m.denied_count} denied</td>
-     <td style="text-align:right">${money(m.cost_usd)}<div class="dim mono">${esc((m.models || []).join(" / ") || "model not recorded")}</div></td></tr>`).join("");
+    <td>${statusPill(m.status)}</td><td style="text-align:right" class="dim">${m.iterations} it · ${m.denied_count} denied</td>
+     <td style="text-align:right">${money(m.cost_usd)}<div class="dim mono">${esc((m.models || []).join(" / ") || "model not recorded")}</div>
+     <div class="dim">recorded skills: ${recordedSkills(m.skills_manifest) || "—"}</div></td></tr>`).join("");
   const manifest = (r.context_manifest || []).map((c) =>
     `<span class="chip dim">${esc(c.kind)}:${esc(c.ref)}</span>`).join(" ");
+  const skillManifest = recordedSkills(r.skills_manifest);
   const roi = S.detail.roi;
-  const roiLine = roi
-    ? `<div class="dim">ROI: value ${money(roi.value_usd)} (${roi.baseline_minutes}m) − actual
-       ${money(roi.actual_cost_usd)} = <b>${roi.net_usd == null ? "unknown" : money(roi.net_usd)}</b></div>`
-    : "";
+  const outcome = roi ? esc(String(roi.outcome || "completed_unreviewed").replace(/_/g, " ")) : "";
+  const roiLine = !roi
+    ? ""
+    : roi.outcome === "review_accepted"
+      ? `<div class="dim">ROI (review accepted): value ${money(roi.value_usd)} (${roi.baseline_minutes}m) − actual
+         ${money(roi.actual_cost_usd)} = <b>${roi.net_usd == null ? "unknown" : money(roi.net_usd)}</b></div>`
+      : `<div class="dim">Outcome: ${outcome} · actual model cost ${money(roi.actual_cost_usd)}. Time-saved value is not claimed.</div>`;
   const bd = S.detail.cost_breakdown;
   const bdLine = bd
     ? `<div class="dim" style="margin-top:.3rem">by stage: ${(bd.by_stage || [])
@@ -262,7 +269,9 @@ function renderDetail(container) {
     ${r.synthesis_summary ? `<div class="synth"><div class="synth-head">What the team found ${headBadge(S.head)}</div>${esc(r.synthesis_summary)}</div>` : ""}
     ${actionBlock}${findingBlock}${verdictBlock}
     <table style="margin-top:.4rem">${members || '<tr><td class="dim">no members</td></tr>'}</table>
-    <div class="dim" style="margin-top:.4rem">context: ${manifest || "—"}</div></div>`;
+    <div class="dim" style="margin-top:.4rem">context: ${manifest || "—"}</div>
+    <div class="dim" style="margin-top:.4rem">Skill packs recorded at run start: ${skillManifest || "No skill packs recorded for this run."}</div>
+    <div class="dim" style="margin-top:.2rem">Recorded metadata does not prove prompt injection; Shadow mode records manifests without injecting guidance.</div></div>`;
   el.querySelector("[data-project-tasks]")?.addEventListener("click", (event) => {
     const projectId = Number(event.currentTarget.dataset.projectTasks);
     if (Number.isInteger(projectId) && projectId > 0) location.hash = `workspace/${projectId}/tasks`;

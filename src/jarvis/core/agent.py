@@ -62,6 +62,33 @@ def _latest_user_text(messages: list[dict]) -> str | None:
     return None
 
 
+def _cancellation_snapshot(messages: list[dict]) -> list[dict]:
+    """Return history that is safe to persist after an interrupted turn.
+
+    A cancellation can land after the assistant has emitted ``tool_use`` blocks but before the
+    matching ``tool_result`` user message is appended.  That half-batch is invalid input for the
+    next provider request, so retain only any ordinary text from that final assistant response.
+    Earlier complete assistant/tool-result pairs remain untouched.
+    """
+    snapshot = list(messages)
+    if not snapshot:
+        return snapshot
+    final = snapshot[-1]
+    content = final.get("content") if final.get("role") == "assistant" else None
+    if not isinstance(content, list) or not any(
+        isinstance(block, dict) and block.get("type") == "tool_use" for block in content
+    ):
+        return snapshot
+    text_blocks = [
+        block for block in content if isinstance(block, dict) and block.get("type") == "text"
+    ]
+    if text_blocks:
+        snapshot[-1] = {**final, "content": text_blocks}
+    else:
+        snapshot.pop()
+    return snapshot
+
+
 #: Eval determinism hook: when this env var holds an ISO timestamp, EVERY agent loop (main,
 #: sub-agent, unattended job) reports it as "now" instead of the wall clock. This makes the
 #: time-context line in the system prompt stable, so a recorded eval cassette key reproduces on
@@ -204,6 +231,17 @@ class AgentLoop:
         # after which an egress tool's ALLOW is demoted to a non-persistable ASK. Reset per
         # turn in run_turn; safe as instance state because turns are serialized (turn_lock).
         self._turn_tainted = False
+        # A UI cancellation needs the loop's private, partially-built transcript.  The snapshot
+        # is deliberately read-only to callers and is reset for every turn.
+        self._cancelled_messages: list[dict] | None = None
+
+    @property
+    def cancelled_messages(self) -> list[dict] | None:
+        """Protocol-valid transcript snapshot for the most recently cancelled turn, if any."""
+        return list(self._cancelled_messages) if self._cancelled_messages is not None else None
+
+    def _record_cancellation(self, messages: list[dict]) -> None:
+        self._cancelled_messages = _cancellation_snapshot(messages)
 
     def _system_with_extras(
         self, recall_block: str | None, summary: str | None, project_extra: str | None = None
@@ -246,6 +284,7 @@ class AgentLoop:
         emit: EventSink = on_event or (lambda _e: None)
         trace_id = bind_trace()
         messages = list(messages)
+        self._cancelled_messages = None
         total = Usage()
         total_latency_ms = 0.0
         # The lower limits apply only where the UI composition opted in below; all other loop
@@ -531,7 +570,11 @@ class AgentLoop:
                         "the next model call. Try a shorter request or start a new turn.",
                         iteration=iteration,
                     )
-            response = await turn_client.create(**create_kwargs)
+            try:
+                response = await turn_client.create(**create_kwargs)
+            except asyncio.CancelledError:
+                self._record_cancellation(messages)
+                raise
             total = total + response.usage
             total_latency_ms += response.latency_ms or 0.0
             call_cost = (
@@ -603,7 +646,11 @@ class AgentLoop:
                     budget_usd=turn_budget_usd,
                 )
 
-            results = await self._handle_tools(tool_calls, emit)
+            try:
+                results = await self._handle_tools(tool_calls, emit)
+            except asyncio.CancelledError:
+                self._record_cancellation(messages)
+                raise
             messages.append({"role": "user", "content": results})
 
         emit(TurnCompleted(text="", stop_reason="max_iterations"))

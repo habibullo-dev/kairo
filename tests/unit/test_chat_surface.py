@@ -29,6 +29,26 @@ def test_chat_reuses_existing_turn_and_conversation_state() -> None:
     assert "/api/model" not in CHAT
 
 
+def test_cancelled_streaming_drafts_do_not_survive_in_the_live_chat() -> None:
+    # A partial provider stream has no completed model response to persist; the browser removes it
+    # before adding the durable `(stopped)` marker. Tool-start/deny events settle valid text first.
+    assert (
+        'state.chat = state.chat.filter((item) => item.role !== "assistant" || !item.live)'
+        in APP
+    )
+    assert "function settleLiveAssistantDrafts(state)" in CONVERSATION
+    assert CONVERSATION.count("settleLiveAssistantDrafts(state);") >= 3
+
+
+def test_failed_turn_copy_is_redacted_and_matches_the_durable_marker() -> None:
+    assert '"(unable to complete this turn)"' in APP
+    error_start = APP.index('if (msg.kind === "turn_cancelled"')
+    error_end = APP.index("// The server already")
+    error_handler = APP[error_start:error_end]
+    assert "msg.error" not in error_handler
+    assert "state.chat = state.chat.filter" in error_handler
+
+
 def test_chat_has_readable_full_height_composer_and_context_controls() -> None:
     for token in (
         'id="chat-input"',
@@ -94,7 +114,17 @@ def test_chat_shows_safe_subagent_progress_without_child_payloads() -> None:
     assert "inner.input" not in CONVERSATION
     assert "inner.preview" not in CONVERSATION
     assert "line.textContent" in CONVERSATION
-    assert 'reverse().find((item) => item.role === "assistant" && item.live)' in CONVERSATION
+    assert "settleLiveAssistantDrafts(state);" in CONVERSATION
+
+
+def test_chat_rehydrates_recorded_delegation_summaries_without_child_bodies() -> None:
+    assert "function hydrateTranscript(transcript)" in APP
+    assert "transcript.delegations" in APP
+    assert "recorded delegated work" in APP
+    assert "child event timeline" in APP
+    hydration = APP[APP.index("function hydrateTranscript"):APP.index("// --- WebSocket")]
+    assert "prompt" not in hydration
+    assert "result_text" not in hydration
 
 
 def test_idle_global_chrome_collapses_without_removing_active_controls() -> None:

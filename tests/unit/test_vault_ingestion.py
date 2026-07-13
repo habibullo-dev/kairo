@@ -311,6 +311,7 @@ async def test_folder_upload_finalize_rebuilds_the_project_graph(tmp_path: Path)
         headers=_cookie(auth),
     )
     assert uploaded.status_code == 200 and uploaded.json()["ok"] is True
+    assert "graph_rebuilt" not in uploaded.json()  # only the explicit finalize request rebuilds
 
     finalized = client.post(
         "/api/chat/attachments", data={"finalize": "true"}, headers=_cookie(auth))

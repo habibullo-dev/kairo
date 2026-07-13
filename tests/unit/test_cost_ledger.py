@@ -3,6 +3,7 @@
 Pins: a wrapped completion writes one metadata-only row with the right purpose/scope; an
 unpriced model records cost_usd NULL (never a silent 0.0); cost_scope overrides the purpose
 and resets; a ledger WRITE failure flips ledger_degraded (A5) and never breaks the call;
+model-request failures persist only safe metadata and do not turn cancellation into a failure;
 LedgeredClient is transparent (proxies attributes). Keyless via FakeClient + tmp SQLite."""
 
 from __future__ import annotations
@@ -166,6 +167,58 @@ async def test_ledger_failure_flips_degraded_and_never_raises(tmp_path: Path) ->
     # ...and the failure is VISIBLE (A5), not silent.
     status = ledger.status()
     assert status["degraded"] is True and status["unrecorded"] == 1 and status["since"] is not None
+
+
+async def test_model_failure_is_metadata_only_and_preserves_original_error(tmp_path: Path) -> None:
+    ledger = await _ledger(tmp_path)
+
+    class _Failing:
+        async def create(self, **_kwargs):
+            raise RuntimeError("provider response contained SECRET-FAILURE-CANARY")
+
+    client = LedgeredClient(_Failing(), ledger=ledger, provider="anthropic", effort="high")
+    token = cost_context.set(CostContext(purpose="turn", project_id=2, trace_id="trace-1"))
+    try:
+        with pytest.raises(RuntimeError, match="SECRET-FAILURE-CANARY"):
+            await client.create(
+                model="claude-fable-5", system="s", messages=[], tools=[], max_tokens=10
+            )
+    finally:
+        cost_context.reset(token)
+    success_count = await (await ledger.db.execute("SELECT COUNT(*) FROM model_calls")).fetchone()
+    assert success_count[0] == 0
+    row = await (
+        await ledger.db.execute(
+            "SELECT purpose, provider, model, project_id, latency_ms, error_class "
+            "FROM model_failures"
+        )
+    ).fetchone()
+    assert tuple(row)[:4] == ("turn", "anthropic", "claude-fable-5", 2)
+    assert row[4] >= 0 and row[5] == "RuntimeError"
+    dump = str(tuple(row))
+    assert "SECRET-FAILURE-CANARY" not in dump
+
+
+async def test_cancellation_does_not_record_model_failure(tmp_path: Path) -> None:
+    ledger = await _ledger(tmp_path)
+    started = asyncio.Event()
+
+    class _Blocking:
+        async def create(self, **_kwargs):
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    client = LedgeredClient(_Blocking(), ledger=ledger, provider="anthropic", effort="high")
+    task = asyncio.create_task(
+        client.create(model="claude-fable-5", system="s", messages=[], tools=[], max_tokens=10)
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    count = await (await ledger.db.execute("SELECT COUNT(*) FROM model_failures")).fetchone()
+    assert count[0] == 0
 
 
 async def test_ledgered_client_is_transparent(tmp_path: Path) -> None:

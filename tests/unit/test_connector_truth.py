@@ -11,6 +11,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from jarvis.config import load_config
+from jarvis.permissions import PermissionGate
+from jarvis.permissions.policy import Policy
+from jarvis.tools import Permission
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
 from jarvis.ui.server import STATIC_DIR, create_app
 
@@ -56,6 +59,21 @@ def test_new_and_changed_gets_leak_no_secret(tmp_path: Path) -> None:
     client, auth = _client(tmp_path)
     for path in ("/api/capabilities", "/api/models", "/api/daily", "/api/hub", "/api/settings"):
         assert "SECRET-CANARY-HUB" not in client.get(path, headers=_hdr(auth)).text, path
+
+
+def test_settings_uses_the_active_gate_policy_not_a_separate_config_copy(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    policy = Policy(default=Permission.ASK, tools={"web_search": Permission.ALLOW})
+    app = create_app(cfg, auth=AuthManager(token="tok"), gate=PermissionGate(policy, tmp_path))
+    auth = app.state.auth
+    payload = TestClient(app, base_url="http://127.0.0.1").get("/api/settings", headers=_hdr(auth))
+    assert payload.status_code == 200
+    assert payload.json()["configured_policy"] == {
+        "state": "available",
+        "scope": "configured_policy_only",
+        "global_default": "ask",
+        "overrides": [{"tool": "web_search", "decision": "allow"}],
+    }
 
 
 def test_capability_details_live_in_hub_and_settings() -> None:

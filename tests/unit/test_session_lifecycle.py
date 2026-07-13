@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from jarvis.agents import AgentRunStore
 from jarvis.config import load_config
 from jarvis.core import AgentLoop, FakeClient, build_system
 from jarvis.permissions import PermissionGate, Policy
@@ -116,6 +117,45 @@ async def test_runner_exposes_safe_persistence_lifecycle(tmp_path: Path) -> None
     assert status["session_save_state"] == "failed"
     # The status is a safe lifecycle enum only — no persistence exception/body reaches the UI.
     assert "error" not in status
+
+
+async def test_transcript_rehydrates_only_safe_parent_delegation_metadata(tmp_path: Path) -> None:
+    client, auth, store, sid = await _client(tmp_path)
+    runs = AgentRunStore(store.db, store.lock)
+    await runs.begin_run(
+        parent_session_id=sid,
+        parent_trace_id="SECRET-TRACE-CANARY",
+        title="Research options",
+        prompt="SECRET-PROMPT-CANARY",
+        tools_scope=["read_file"],
+    )
+    run_id = (await runs.list(parent_session_id=sid))[0].id
+    child_session_id = await store.create_session(title="child", kind="subagent")
+    await runs.complete_run(
+        run_id,
+        status="error",
+        child_session_id=child_session_id,
+        child_trace_id="SECRET-CHILD-TRACE-CANARY",
+        result_text="SECRET-REPORT-CANARY",
+        error="SECRET-ERROR-CANARY",
+    )
+    client.app.state.services = UiServices(sessions=store, run_store=runs)
+
+    response = client.get(f"/api/sessions/{sid}", headers=_hdr(auth))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["delegations"] == [
+        {"agent_id": str(run_id), "title": "Research options", "status": "error"}
+    ]
+    rendered = str(body)
+    for canary in (
+        "SECRET-PROMPT-CANARY",
+        "SECRET-REPORT-CANARY",
+        "SECRET-ERROR-CANARY",
+        "SECRET-TRACE-CANARY",
+        "SECRET-CHILD-TRACE-CANARY",
+    ):
+        assert canary not in rendered
 
 
 # --- rename / archive (metadata; archive never deletes) --------------------

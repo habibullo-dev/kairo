@@ -51,9 +51,27 @@ def test_serialize_all_event_types() -> None:
     assert fin["type"] == "tool_finished" and fin["is_error"] is False
     tc = serialize_event(TurnCompleted("done", "end_turn"))
     assert tc["type"] == "turn_completed" and tc["stop_reason"] == "end_turn"
-    # sub-agent event unwraps with the child's title (nothing delegated is hidden)
-    sae = serialize_event(SubAgentEvent("a1", "reader", ToolStarted("c1", "read_file", {})))
+    # Sub-agent activity is visible, but a child payload must never reach the parent browser.
+    sae = serialize_event(
+        SubAgentEvent("a1", "reader", ToolStarted("c1", "read_file", {"path": "SECRET"}))
+    )
     assert sae["type"] == "subagent_event" and sae["inner"]["type"] == "tool_started"
+    assert sae["inner"] == {
+        "schema_version": EVENT_SCHEMA_VERSION,
+        "type": "tool_started",
+        "name": "read_file",
+    }
+    drafting = serialize_event(SubAgentEvent("a1", "reader", TextDelta("SECRET CHILD TEXT")))
+    assert drafting["inner"] == {"schema_version": EVENT_SCHEMA_VERSION, "type": "text_delta"}
+    finished = serialize_event(
+        SubAgentEvent("a1", "reader", ToolFinished("c1", "read_file", True, "SECRET PREVIEW"))
+    )
+    assert finished["inner"] == {
+        "schema_version": EVENT_SCHEMA_VERSION,
+        "type": "tool_finished",
+        "name": "read_file",
+        "is_error": True,
+    }
     sac = serialize_event(
         SubAgentCompleted("a1", "reader", "ok", Usage(input_tokens=10, output_tokens=5), 0.01)
     )

@@ -563,8 +563,19 @@ class OrchestrationEngine:
         if the run's accumulated spend hit the hard cap."""
         if self.budget is None:
             return True
-        spent = (await self.budget.run_spend(run_id))["cost_usd"]
-        return self.budget.check_run(spent) != "hard"
+        try:
+            spent = (await self.budget.run_spend(run_id))["cost_usd"]
+            return self.budget.check_run(spent) != "hard"
+        except Exception as exc:  # noqa: BLE001 - a ledger read must not turn work into an error
+            # The run's terminal cost remains unknown (handled by _finish).  Preserve the prior
+            # execution behavior if this optional observability read is unavailable; a healthy
+            # configured budget still blocks every next paid stage above.
+            self.log.warning(
+                "orchestration_budget_check_unavailable",
+                run_id=run_id,
+                error_type=type(exc).__name__,
+            )
+            return True
 
     async def _stage(self, run_id: int, stage: str) -> None:
         await self.store.set_stage(run_id, stage)
@@ -735,6 +746,14 @@ class OrchestrationEngine:
                 context=context,
                 skill_plans=skill_plans,
             )
+            # Council can be the largest parallel fan-out. Do not spend on the head synthesis
+            # when that completed stage already crossed the hard cap.
+            if not await self._budget_ok(run_id):
+                return await self._finish(
+                    run_id,
+                    status="budget_stopped",
+                    ledger_failure_generation=ledger_failure_generation,
+                )
 
             # B. Synthesis (head, forced schema, over framed untrusted council reports)
             await self._stage(run_id, "synthesis")
@@ -750,13 +769,24 @@ class OrchestrationEngine:
             synthesis_findings = _synthesis_findings(
                 synth.get("findings"), self._members(team, "council")
             )
+            # Synthesis is a paid Fable call. Check before starting either execution or a
+            # read-only workflow's final verdict.
+            if not await self._budget_ok(run_id):
+                return await self._finish(
+                    run_id,
+                    status="budget_stopped",
+                    synthesis_summary=summary,
+                    ledger_failure_generation=ledger_failure_generation,
+                )
 
             verdict = "accept"
             verdict_rationale: str | None = None
             action_items: list[dict[str, str]] = []
             if has_execution:
                 for round_i in range(self.max_rounds):
-                    if not await self._budget_ok(run_id):
+                    # The post-synthesis check covers the first execution. A revise loop needs
+                    # a fresh check before it spends on its next execution stage.
+                    if round_i and not await self._budget_ok(run_id):
                         return await self._finish(
                             run_id,
                             status="budget_stopped",
@@ -782,6 +812,15 @@ class OrchestrationEngine:
                                     skills=skill_plans.get((writer[0].id, "execution")),
                                 )
                             ]
+                    # Never launch the parallel review after a writer has exhausted the cap.
+                    if not await self._budget_ok(run_id):
+                        return await self._finish(
+                            run_id,
+                            status="budget_stopped",
+                            synthesis_summary=summary,
+                            synthesis_findings=synthesis_findings,
+                            ledger_failure_generation=ledger_failure_generation,
+                        )
                     # D. Review (parallel, read-only, over the produced artifact)
                     await self._stage(run_id, "review")
                     reviews = await self._parallel(
@@ -794,6 +833,16 @@ class OrchestrationEngine:
                         context=context,
                         skill_plans=skill_plans,
                     )
+                    # A review fan-out can itself be expensive; do not pay for the verdict once
+                    # the hard cap is already reached.
+                    if not await self._budget_ok(run_id):
+                        return await self._finish(
+                            run_id,
+                            status="budget_stopped",
+                            synthesis_summary=summary,
+                            synthesis_findings=synthesis_findings,
+                            ledger_failure_generation=ledger_failure_generation,
+                        )
                     # E. Verdict
                     await self._stage(run_id, "verdict")
                     v = await self._head_call(

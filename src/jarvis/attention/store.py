@@ -181,35 +181,75 @@ class AttentionStore:
         ``model_generated``; an unknown trust class raises ``ValueError``."""
         if trust_class not in TRUST_CLASSES:
             raise ValueError(f"trust_class must be one of {sorted(TRUST_CLASSES)}")
-        kind_v = kind.value if isinstance(kind, AttentionKind) else kind
-        prio_v = priority.value if isinstance(priority, AttentionPriority) else priority
         now = _now()
         async with self.lock:
-            if dedupe_key is not None:
-                existing = await self._get_by_key_locked(dedupe_key)
-                if existing is not None:
-                    return existing.id
-            cursor = await self.db.execute(
-                "INSERT INTO attention_items (kind, source, source_ref, project_id, priority, "
-                "state, trust_class, title, category, payload_json, evidence_json, dedupe_key, "
-                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    kind_v,
-                    source,
-                    source_ref,
-                    project_id,
-                    prio_v,
-                    trust_class,
-                    title,
-                    category,
-                    json.dumps(payload or {}),
-                    json.dumps(evidence or []),
-                    dedupe_key,
-                    now,
-                    now,
-                ),
+            item_id = await self.create_in_transaction(
+                kind=kind,
+                source=source,
+                title=title,
+                source_ref=source_ref,
+                project_id=project_id,
+                priority=priority,
+                trust_class=trust_class,
+                category=category,
+                payload=payload,
+                evidence=evidence,
+                dedupe_key=dedupe_key,
+                now=now,
             )
             await self.db.commit()
+        return item_id
+
+    async def create_in_transaction(
+        self,
+        *,
+        kind: AttentionKind | str,
+        source: str,
+        title: str,
+        source_ref: str | None = None,
+        project_id: int | None = None,
+        priority: AttentionPriority | str = AttentionPriority.NORMAL,
+        trust_class: str = "model_generated",
+        category: str | None = None,
+        payload: dict | None = None,
+        evidence: list | None = None,
+        dedupe_key: str | None = None,
+        now: str | None = None,
+    ) -> int:
+        """Create an item without committing; caller owns this store's shared transaction.
+
+        This intentionally narrow seam lets another durable state transition and its attention
+        alert commit together. It does not grant authority or interpret payload/evidence bodies.
+        """
+        if trust_class not in TRUST_CLASSES:
+            raise ValueError(f"trust_class must be one of {sorted(TRUST_CLASSES)}")
+        kind_v = kind.value if isinstance(kind, AttentionKind) else kind
+        prio_v = priority.value if isinstance(priority, AttentionPriority) else priority
+        timestamp = now or _now()
+        if dedupe_key is not None:
+            existing = await self._get_by_key_locked(dedupe_key)
+            if existing is not None:
+                return existing.id
+        cursor = await self.db.execute(
+            "INSERT INTO attention_items (kind, source, source_ref, project_id, priority, "
+            "state, trust_class, title, category, payload_json, evidence_json, dedupe_key, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                kind_v,
+                source,
+                source_ref,
+                project_id,
+                prio_v,
+                trust_class,
+                title,
+                category,
+                json.dumps(payload or {}),
+                json.dumps(evidence or []),
+                dedupe_key,
+                timestamp,
+                timestamp,
+            ),
+        )
         assert cursor.lastrowid is not None
         return cursor.lastrowid
 

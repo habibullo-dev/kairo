@@ -29,7 +29,9 @@ from zoneinfo import ZoneInfo
 
 from tzlocal import get_localzone_name
 
+from jarvis.attention import AttentionKind, AttentionPriority, AttentionStore
 from jarvis.config import SchedulerConfig
+from jarvis.persistence.db import transaction
 from jarvis.scheduler.store import Task, TaskAdvance, TaskStore
 from jarvis.scheduler.triggers import compute_next, validate
 
@@ -80,10 +82,16 @@ class TaskService:
         config: SchedulerConfig,
         *,
         now: Callable[[], _dt.datetime] = utc_now,
+        attention: AttentionStore | None = None,
     ) -> None:
         self.store = store
         self.config = config
         self.now = now
+        if attention is not None and (
+            attention.db is not store.db or attention.lock is not store.lock
+        ):
+            raise ValueError("scheduler attention must share the task store's connection and lock")
+        self.attention = attention
         # Set by the REPL (and by the runner during a job) so tool-created tasks
         # carry provenance — "why is Jarvis doing THAT at 3am?" must have an answer.
         self.bound_session_id: int | None = None
@@ -203,7 +211,8 @@ class TaskService:
             advance = _advance_error(task, next_fire, error, self.config)
         if result_text is not None and len(result_text) > MAX_RESULT_CHARS:
             result_text = result_text[:MAX_RESULT_CHARS] + " …[truncated]"
-        await self.store.finish_run(
+        await self._finish_run(
+            task,
             run_id,
             "ok" if ok else "error",
             session_id=session_id,
@@ -253,31 +262,19 @@ class TaskService:
             task = await self.store.get(run.task_id)
             advance: TaskAdvance | None = None
             if task is not None and task.status == "active":
-                if task.schedule_kind == "once":
-                    advance = TaskAdvance(
-                        task_id=task.id,
-                        next_run_at=None,
-                        status="failed",
-                        consecutive_failures=task.consecutive_failures + 1,
-                        last_error="interrupted: process died mid-run",
-                    )
-                else:
-                    next_fire = compute_next(
-                        task.schedule_kind, task.schedule_spec, task.timezone, after=self.now()
-                    )
-                    advance = TaskAdvance(
-                        task_id=task.id,
-                        next_run_at=_iso(next_fire) if next_fire else None,
-                        status="active",
-                        consecutive_failures=task.consecutive_failures + 1,
-                        last_error="interrupted: process died mid-run",
-                    )
-            await self.store.finish_run(
-                run.id,
-                "aborted",
-                error="interrupted: process died mid-run",
-                advance=advance,
-            )
+                advance = _advance_interrupted(task, self.config, self.now())
+            if task is None:
+                await self.store.finish_run(
+                    run.id, "aborted", error="interrupted: process died mid-run"
+                )
+            else:
+                await self._finish_run(
+                    task,
+                    run.id,
+                    "aborted",
+                    error="interrupted: process died mid-run",
+                    advance=advance,
+                )
             title = task.title if task else f"task {run.task_id}"
             notes.append(
                 f'task #{run.task_id} "{title}": a run from {run.scheduled_for} was '
@@ -285,6 +282,63 @@ class TaskService:
                 "completed) — see `tasks` for details"
             )
         return notes
+
+    async def _finish_run(
+        self,
+        task: Task,
+        run_id: int,
+        status: str,
+        *,
+        session_id: int | None = None,
+        result_text: str | None = None,
+        denied_count: int = 0,
+        error: str | None = None,
+        cost_usd: float | None = None,
+        advance: TaskAdvance | None = None,
+    ) -> None:
+        """Finish a task run and its terminal dead-letter alert as one transaction."""
+        if self.attention is None or advance is None or advance.status != "failed":
+            await self.store.finish_run(
+                run_id,
+                status,
+                session_id=session_id,
+                result_text=result_text,
+                denied_count=denied_count,
+                error=error,
+                cost_usd=cost_usd,
+                advance=advance,
+            )
+            return
+        now = _iso(self.now())
+        async with transaction(self.store.db, self.store.lock):
+            await self.store.finish_run_in_transaction(
+                run_id,
+                status,
+                session_id=session_id,
+                result_text=result_text,
+                denied_count=denied_count,
+                error=error,
+                cost_usd=cost_usd,
+                advance=advance,
+                now=now,
+            )
+            await self.attention.create_in_transaction(
+                kind=AttentionKind.ALERT,
+                source="scheduler",
+                source_ref=str(task.id),
+                project_id=task.project_id,
+                priority=AttentionPriority.NORMAL,
+                trust_class="trusted_local",
+                title=f'Scheduled task #{task.id} "{task.title[:120]}" failed',
+                category="scheduler_dead_letter",
+                payload={
+                    "task_id": task.id,
+                    "consecutive_failures": advance.consecutive_failures,
+                },
+                evidence=[{"kind": "task_run", "ref": str(run_id)}],
+                dedupe_key=f"scheduler-dead-letter:{task.id}",
+                now=now,
+            )
 
     # --- rendering -----------------------------------------------------------
 
@@ -330,6 +384,28 @@ def _advance_error(
         status="active",
         consecutive_failures=failures,
         last_error=message,
+    )
+
+
+def _advance_interrupted(task: Task, config: SchedulerConfig, now: _dt.datetime) -> TaskAdvance:
+    """Advance an orphaned run without retrying it, honoring the same terminal failure cap."""
+    failures = task.consecutive_failures + 1
+    error = "interrupted: process died mid-run"
+    if task.schedule_kind == "once" or failures >= config.max_consecutive_failures:
+        return TaskAdvance(
+            task_id=task.id,
+            next_run_at=None,
+            status="failed",
+            consecutive_failures=failures,
+            last_error=error,
+        )
+    next_fire = compute_next(task.schedule_kind, task.schedule_spec, task.timezone, after=now)
+    return TaskAdvance(
+        task_id=task.id,
+        next_run_at=_iso(next_fire) if next_fire else None,
+        status="active",
+        consecutive_failures=failures,
+        last_error=error,
     )
 
 

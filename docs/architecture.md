@@ -1,9 +1,10 @@
-# Architecture (as built — Phase 8)
+# Architecture — Phase 1–9 foundation and current-system map
 
-This describes what exists after Milestone 6 (multi-agent orchestration) on top of
-the Milestone 1 MVP, Milestone 2 (long-term memory), Milestone 3 (tasks &
-scheduling), Milestone 4 (research + knowledge base), and Milestone 5 (evaluation &
-hardening). For the forward-looking plans see [`PLAN.md`](PLAN.md),
+This document preserves the detailed architecture of the Phase 1–9 foundation: the
+agent loop, safety gates, persistence, knowledge, delegation, voice, workstation,
+and daily connectors. The product has since added Phases 10–15.6; the concise map
+below keeps this page honest without rewriting those historical sections or treating
+forward-looking Phase 16 activation as shipped behavior. For the forward-looking plans see [`PLAN.md`](PLAN.md),
 [`PLAN-2-memory.md`](PLAN-2-memory.md), [`PLAN-3-tasks.md`](PLAN-3-tasks.md),
 [`PLAN-4-knowledge.md`](PLAN-4-knowledge.md), [`PLAN-5-evals.md`](PLAN-5-evals.md),
 and [`PLAN-6-multi-agent.md`](PLAN-6-multi-agent.md); for the reasoning behind each
@@ -15,6 +16,23 @@ Kairo **Core** (`core/`), **Command** (`cli/`), **Gate** (`permissions/`), **Vau
 (`memory/` + `knowledge/`), **Trace** (`observability/` + audit tables), **Lab**
 (`tests/evals/`), and **Orchestrator** (`agents/` — this phase). "Hub" is reserved
 for the future connectors/MCP layer.
+
+## Current-system map (committed Phase 10–15.6 baseline)
+
+The later phases extend the same local-first, gate-mediated core; they do not add a
+second execution or permission path.
+
+| Area | Current responsibility | Design record |
+|---|---|---|
+| Projects and models | Project-scoped chats, memory, tasks, artifacts, and model/provider routing with local cost accounting. | [ADR-0011](decisions/0011-projects-and-scoped-memory.md), [ADR-0012](decisions/0012-modes.md), [ADR-0013](decisions/0013-model-registry-and-cost-ledger.md), [ADR-0016](decisions/0016-provider-integration.md) |
+| Orchestration | Teams, bounded multi-stage runs, budget estimates, read-only review stages, and a human-reviewed Studio surface. | [ADR-0014](decisions/0014-orchestration-on-spawn.md), [ADR-0015](decisions/0015-team-tool-intelligence.md) |
+| Workstation evidence | Search, artifacts, connector-write audit, research-service state, AI Team Office, and the graph all project existing records into authenticated UI reads. | [ADR-0017](decisions/0017-workstation-ui.md), [ADR-0019](decisions/0019-research-services-live.md), [ADR-0020](decisions/0020-ai-team-office.md), [ADR-0021](decisions/0021-memory-graph.md) |
+| Efficiency and journey | Context reuse and cost-aware routing are instrumented, configuration-driven extensions; the workstation journey remains an interface over the same Gate. | [ADR-0018](decisions/0018-context-reuse.md), [ADR-0022](decisions/0022-workstation-journey.md), [ADR-0023](decisions/0023-cost-aware-routing.md) |
+| Attention substrate | Attention records and UI surfaces exist; automatic notification routing and unattended expansion remain explicitly checkpointed, not assumed active. | [`ROADMAP-12-16-execution.md`](ROADMAP-12-16-execution.md) |
+
+For the current product status and the phase-by-phase user contract, start with
+[`README.md`](../README.md). This map intentionally describes the committed baseline only;
+uncommitted work belongs in its change set and tests, not in an architecture claim.
 
 ## The one idea
 
@@ -361,9 +379,11 @@ connector status. Daily renders Briefing/Today/What-changed/Workflows (all untru
 ## Persistence (`persistence/`)
 
 SQLite via aiosqlite. `sessions` + `messages` + `memories` + `tasks`/`task_runs` +
-`kb_sources`/`kb_chunks`/`kb_wiki_links` + `agent_runs` + `digests` tables; schema version tracked
-by `PRAGMA user_version` with an ordered migration list (v2 memory; v3 tasks +
-`sessions.kind`; v4 knowledge base; v5 sub-agents). v5 is the highest-blast-radius
+`kb_sources`/`kb_chunks`/`kb_wiki_links` + `agent_runs` + `digests` and the later project,
+orchestration, artifact, connector-write, graph, and attention records are all local tables.
+The current committed schema baseline is v20, tracked by `PRAGMA user_version` with an ordered
+migration list. v2 introduced memory; v3 tasks + `sessions.kind`; v4 the knowledge base; v5
+sub-agents; later migrations add the platform records incrementally. v5 remains the highest-blast-radius
 migration: `sessions.kind`'s CHECK can't be ALTERed to add `'subagent'`, so the table is
 rebuilt via the standard procedure (foreign_keys OFF *outside* a transaction, atomic
 rebuild, `foreign_key_check`, foreign_keys ON) — child FKs survive the drop+rename. The
@@ -382,10 +402,11 @@ tear a session's history.
 
 ## Observability (`observability/`)
 
-structlog writes one JSON object per line to `logs/jarvis-YYYY-MM-DD.jsonl`. A
+structlog writes redacted JSON objects to rotated `logs/jarvis-YYYY-MM-DD.jsonl` files. A
 `trace_id` contextvar, stamped by a processor, ties every event in a turn together
 (`turn_start`, `model_call`, `permission_decision`, `tool_call`, `tool_result`,
-`turn_end`). Cost is computed from a per-model pricing table for observability only.
+`turn_end`). Cost is computed from a per-model pricing table and recorded in the local
+ledger; an unpriced model remains explicitly unknown rather than becoming $0.
 
 ## Data flow of one turn
 
@@ -449,7 +470,7 @@ Repo-native, no framework, no new deps; the *harness* is unit-tested keyless whi
 
 ## Verification
 
-- `uv run pytest` — 820+ unit tests, no API key required (FakeClient + FakeEmbedder,
+- `uv run pytest` — keyless unit tests, no API key required (FakeClient + FakeEmbedder,
   mocked web, fake clock). Includes the compacted-view validity property test, the
   reflection firewall test, the UnattendedGate safety suite, the Phase-4 safety suite
   (converter subprocess kill, zip-bomb refusal, wiki jail, gate field-consistency, SSRF

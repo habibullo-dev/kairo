@@ -35,6 +35,22 @@ def _now() -> str:
     return _dt.datetime.now(_dt.UTC).isoformat()
 
 
+def _skills_manifest(value: str | None) -> list:
+    """Decode historical skills metadata fail-closed.
+
+    The read model applies the field allowlist before any browser response.  Keeping the store
+    tolerant as well means one malformed old row cannot make an otherwise bodies-free Studio
+    detail unavailable.
+    """
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 @dataclass
 class AgentRun:
     """One row of ``agent_runs`` — a single delegated sub-agent run."""
@@ -82,7 +98,7 @@ def _row_to_run(row: tuple) -> AgentRun:
         started_at=row[16],
         finished_at=row[17],
         created_at=row[18],
-        skills_manifest=json.loads(row[19]) if row[19] else [],
+        skills_manifest=_skills_manifest(row[19]),
     )
 
 
@@ -200,10 +216,12 @@ class AgentRunStore:
 
     async def member_runs(self, orchestration_run_id: int) -> list[dict]:
         """Bodies-free per-member metadata for one orchestration run (Phase 10B Studio detail):
-        role / stage / status / iterations / denied / cost — NEVER the prompt or result_text
-        (those are a fresh injection channel and stay off every UI surface)."""
+        role / stage / status / iterations / denied / cost plus recorded skills metadata — NEVER
+        the prompt or result_text (those are a fresh injection channel and stay off every UI
+        surface).  The UI read model further allowlists the metadata before it is exposed."""
         cursor = await self.db.execute(
-            "SELECT id, role, stage, status, iterations, denied_count, cost_usd, title "
+            "SELECT id, role, stage, status, iterations, denied_count, cost_usd, title, "
+            "skills_manifest_json "
             "FROM agent_runs WHERE orchestration_run_id = ? ORDER BY id",
             (orchestration_run_id,),
         )
@@ -217,6 +235,7 @@ class AgentRunStore:
                 "denied_count": r[5],
                 "cost_usd": r[6],
                 "title": r[7],
+                "skills_manifest": _skills_manifest(r[8]),
             }
             for r in await cursor.fetchall()
         ]

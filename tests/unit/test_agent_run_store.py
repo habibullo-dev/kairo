@@ -151,3 +151,25 @@ async def test_get_missing_run_is_none(tmp_path: Path) -> None:
         assert await runs.get(999) is None
     finally:
         await runs.db.close()
+
+
+async def test_malformed_skills_manifest_does_not_break_historical_run_reads(
+    tmp_path: Path,
+) -> None:
+    runs, _ = await _store(tmp_path)
+    try:
+        run_id = await runs.begin_run(
+            parent_session_id=None,
+            parent_trace_id=None,
+            title="historical",
+            prompt="p",
+            tools_scope=[],
+        )
+        await runs.db.execute(
+            "UPDATE agent_runs SET skills_manifest_json = ? WHERE id = ?", ("{not json", run_id)
+        )
+        await runs.db.commit()
+        run = await runs.get(run_id)
+        assert run is not None and run.skills_manifest == []
+    finally:
+        await runs.db.close()

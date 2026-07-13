@@ -932,7 +932,11 @@ def _build_scheduler(
     interactive session as provenance."""
     if not config.scheduler.enabled:
         return None
-    service = TaskService(TaskStore(db, store.lock), config.scheduler)
+    service = TaskService(
+        TaskStore(db, store.lock),
+        config.scheduler,
+        attention=AttentionStore(db, store.lock),
+    )
     service.bound_session_id = session_id
     return service
 

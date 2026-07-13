@@ -260,13 +260,45 @@ class TaskStore:
         the two updates must not be separable."""
         now = _now()
         async with transaction(self.db, self.lock):
-            await self.db.execute(
-                "UPDATE task_runs SET finished_at = ?, status = ?, session_id = ?, "
-                "result_text = ?, denied_count = ?, error = ?, cost_usd = ? WHERE id = ?",
-                (now, status, session_id, result_text, denied_count, error, cost_usd, run_id),
+            await self.finish_run_in_transaction(
+                run_id,
+                status,
+                session_id=session_id,
+                result_text=result_text,
+                denied_count=denied_count,
+                error=error,
+                cost_usd=cost_usd,
+                advance=advance,
+                now=now,
             )
-            if advance is not None:
-                await self._apply_advance(advance, now)
+
+    async def finish_run_in_transaction(
+        self,
+        run_id: int,
+        status: str,
+        *,
+        session_id: int | None = None,
+        result_text: str | None = None,
+        denied_count: int = 0,
+        error: str | None = None,
+        cost_usd: float | None = None,
+        advance: TaskAdvance | None = None,
+        now: str | None = None,
+    ) -> None:
+        """Finish a run inside an already-held shared transaction.
+
+        This is the narrow composition seam for a terminal task transition and its durable
+        attention alert. Callers must own this store's shared lock and transaction; ordinary
+        callers should use :meth:`finish_run`.
+        """
+        now = now or _now()
+        await self.db.execute(
+            "UPDATE task_runs SET finished_at = ?, status = ?, session_id = ?, "
+            "result_text = ?, denied_count = ?, error = ?, cost_usd = ? WHERE id = ?",
+            (now, status, session_id, result_text, denied_count, error, cost_usd, run_id),
+        )
+        if advance is not None:
+            await self._apply_advance(advance, now)
 
     async def record_missed(self, task_id: int, scheduled_for: str, advance: TaskAdvance) -> int:
         """Record a run that never happened (fire time missed beyond grace) and

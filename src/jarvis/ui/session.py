@@ -118,13 +118,15 @@ def serialize_event(event: Event) -> dict:
             "stop_reason": event.stop_reason,
         }
     if isinstance(event, SubAgentEvent):
-        # Unwrap: the child's activity renders inline, tagged with its title (never hidden).
+        # A child's prompt, streamed text, tool input, and previews are a separate untrusted
+        # channel.  The parent browser needs progress only, so expose the small activity shape
+        # consumed by conversation.js — never recursively serialize the child event.
         return {
             **base,
             "type": "subagent_event",
             "agent_id": event.agent_id,
             "title": event.title,
-            "inner": serialize_event(event.inner),
+            "inner": _serialize_subagent_activity(event.inner),
         }
     if isinstance(event, SubAgentCompleted):
         return {
@@ -140,6 +142,37 @@ def serialize_event(event: Event) -> dict:
             },
         }
     return {**base, "type": "unknown", "repr": type(event).__name__}
+
+
+def _serialize_subagent_activity(event: Event) -> dict:
+    """Metadata-only child activity for the attended parent stream.
+
+    The parent still gets enough information to say which tool is running/was approved/failed or
+    that the child is drafting/finished.  Unlike :func:`serialize_event`, this MUST NOT carry any
+    child body or tool argument/result because the child transcript is deliberately isolated.
+    """
+    base = {"schema_version": EVENT_SCHEMA_VERSION}
+    if isinstance(event, TextDelta):
+        return {**base, "type": "text_delta"}
+    if isinstance(event, ToolDecision):
+        return {
+            **base,
+            "type": "tool_decision",
+            "name": event.name,
+            "resolution": event.resolution,
+        }
+    if isinstance(event, ToolStarted):
+        return {**base, "type": "tool_started", "name": event.name}
+    if isinstance(event, ToolFinished):
+        return {
+            **base,
+            "type": "tool_finished",
+            "name": event.name,
+            "is_error": event.is_error,
+        }
+    if isinstance(event, TurnCompleted):
+        return {**base, "type": "turn_completed", "stop_reason": event.stop_reason}
+    return {**base, "type": "unknown"}
 
 
 class UiSession:
@@ -238,15 +271,26 @@ class UiSession:
                 self.session_id = await self.sessions.create_session(project_id=self.project_id)
             context = context or self._context()
             turn_messages = [*self.messages, {"role": "user", "content": text}]
-            if context is None:
-                # No persisted context means no socket delivery.  This is only the bare/test
-                # composition; the workstation registry eagerly calls ensure_session().
-                result = await self.loop.run_turn(turn_messages, on_event=self._emit)
-            else:
-                with bind_execution_context(context):
-                    result = await self.loop.run_turn(
-                        turn_messages, on_event=lambda event: self._emit(event, context)
-                    )
+            # The loop mutates the list it receives while constructing an API transcript.  Keep
+            # this pre-call snapshot so a normal exception never persists an unmatched tool_use
+            # or a partial assistant block.
+            loop_messages = list(turn_messages)
+            try:
+                if context is None:
+                    # No persisted context means no socket delivery.  This is only the bare/test
+                    # composition; the workstation registry eagerly calls ensure_session().
+                    result = await self.loop.run_turn(loop_messages, on_event=self._emit)
+                else:
+                    with bind_execution_context(context):
+                        result = await self.loop.run_turn(
+                            loop_messages, on_event=lambda event: self._emit(event, context)
+                        )
+            except asyncio.CancelledError:
+                await self._persist_cancelled_turn(turn_messages, text, context)
+                raise
+            except Exception:
+                await self._persist_failed_turn(turn_messages, text, context)
+                raise
             self.messages = result.messages
             self.last_turn_cost_usd = getattr(result, "cost_usd", None)
             self.last_turn_model = getattr(result, "model", None)
@@ -254,6 +298,32 @@ class UiSession:
             self.turn_budget_usd = getattr(result, "budget_usd", self.turn_budget_usd)
             await self._persist(context, initial_title=initial_chat_title(text))
             return result
+
+    async def _persist_cancelled_turn(
+        self, turn_messages: list[dict], text: str, context: ExecutionContext | None
+    ) -> None:
+        """Keep a cancelled request resumable before surfacing its websocket cancellation."""
+        saved = getattr(self.loop, "cancelled_messages", None) or turn_messages
+        self.messages = [*saved, {"role": "assistant", "content": "(stopped)"}]
+        # A cancelled turn has no reliable completed-turn cost or routing metadata.
+        self.last_turn_cost_usd = None
+        self.last_turn_model = None
+        self.last_turn_provider = None
+        await self._persist(context, initial_title=initial_chat_title(text))
+
+    async def _persist_failed_turn(
+        self, turn_messages: list[dict], text: str, context: ExecutionContext | None
+    ) -> None:
+        """Make an ordinary failed turn durable without retaining partial model protocol state."""
+        self.messages = [
+            *turn_messages,
+            {"role": "assistant", "content": "(unable to complete this turn)"},
+        ]
+        # A failed request has no safe completed-turn cost or routing metadata.
+        self.last_turn_cost_usd = None
+        self.last_turn_model = None
+        self.last_turn_provider = None
+        await self._persist(context, initial_title=initial_chat_title(text))
 
     async def _set_persistence_state(self, state: str, context: ExecutionContext | None) -> None:
         self.persistence_state = state
@@ -281,10 +351,10 @@ class UiSession:
                 try:
                     await self.sessions.set_title_if_missing(session_id, initial_title)
                 except Exception as exc:  # noqa: BLE001 - title polish must not invalidate a save
-                    self.log.warning("ui_initial_title_failed", error=str(exc))
+                    self.log.warning("ui_initial_title_failed", error_type=type(exc).__name__)
             await self._set_persistence_state("saved", context)
         except Exception as exc:  # noqa: BLE001 - a save failure must not kill the session
-            self.log.warning("ui_persist_failed", error=str(exc))
+            self.log.warning("ui_persist_failed", error_type=type(exc).__name__)
             await self._set_persistence_state("failed", context)
 
     async def resume(self, session_id: int) -> bool:
@@ -331,8 +401,8 @@ class UiSession:
             await self.connections.publish(context, {"kind": "turn_cancelled"})
             raise
         except Exception as exc:  # noqa: BLE001 - a crashed turn is a message, not a dead server
-            self.log.warning("ui_turn_error", error=repr(exc))
-            await self.connections.publish(context, {"kind": "turn_error", "error": str(exc)})
+            self.log.warning("ui_turn_error", error_type=type(exc).__name__)
+            await self.connections.publish(context, {"kind": "turn_error"})
 
     def start_new_session(self, project_id: int | None) -> None:
         """Begin a fresh conversation under a (possibly new) project scope. A session is

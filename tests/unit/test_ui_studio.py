@@ -29,3 +29,15 @@ def test_studio_adds_no_new_authority() -> None:
     # Studio's only mutation is the existing gated orchestration run; no turn / no other route.
     assert "/api/orchestration/run" in STUDIO
     assert "/api/turn" not in STUDIO
+
+
+def test_studio_does_not_claim_roi_before_review_acceptance() -> None:
+    assert 'roi.outcome === "review_accepted"' in STUDIO
+    assert "Time-saved value is not claimed." in STUDIO
+
+
+def test_studio_describes_skill_manifest_as_recorded_evidence_only() -> None:
+    assert "Skill packs recorded at run start" in STUDIO
+    assert "recorded skills:" in STUDIO
+    assert "Recorded metadata does not prove prompt injection" in STUDIO
+    assert "Shadow mode records manifests without injecting guidance." in STUDIO

@@ -224,6 +224,17 @@ async def test_run_detail_exposes_head_synthesis_but_never_raw_child_reports(
         context_manifest=[{"kind": "task_brief", "ref": "brief", "sha256": "abc", "tokens_est": 5}],
         estimated_cost_usd=0.4,
         budget_usd=2.0,
+        skills_manifest=[
+            {
+                "pack": "backend-engineering",
+                "version": "2.1.0",
+                "sha256": "a1b2c3d4e5f6",
+                "compiled_sha256": "f6e5d4c3b2a1",
+                "member": "sec_lead",
+                "stage": "council",
+                "skill_body": "SECRET-SKILL-BODY-CANARY",
+            }
+        ],
     )
     await store.complete_run(
         rid,
@@ -253,6 +264,17 @@ async def test_run_detail_exposes_head_synthesis_but_never_raw_child_reports(
         orchestration_run_id=rid,
         role="security",
         stage="council",
+        skills_manifest=[
+            {
+                "pack": "backend-engineering",
+                "version": "2.1.0",
+                "sha256": "a1b2c3d4e5f6",
+                "compiled_sha256": "f6e5d4c3b2a1",
+                "member": "sec_lead",
+                "stage": "council",
+                "secret": "SECRET-SKILL-BODY-CANARY",
+            }
+        ],
     )
     await run_store.complete_run(mid, status="ok", result_text="SECRET-REPORT-CANARY")
 
@@ -277,6 +299,22 @@ async def test_run_detail_exposes_head_synthesis_but_never_raw_child_reports(
         member["role"] == "security" and member["stage"] == "council" and member["status"] == "ok"
     )
     assert "prompt" not in member and "result_text" not in member  # raw bodies stay private
+    expected_skills = [
+        {
+            "pack": "backend-engineering",
+            "version": "2.1.0",
+            "sha256": "a1b2c3d4e5f6",
+            "compiled_sha256": "f6e5d4c3b2a1",
+            "member": "sec_lead",
+            "stage": "council",
+        }
+    ]
+    assert detail["run"]["skills_manifest"] == expected_skills
+    assert member["skills_manifest"] == expected_skills
+    assert "SECRET-SKILL-BODY-CANARY" not in str(detail)
+    # The history/list endpoint deliberately stays compact; audit evidence is detail-only.
+    history = await orchestration_runs_view(store, project_id=1)
+    assert "skills_manifest" not in history["runs"][0]
 
 
 async def test_runs_view_lists_summaries(tmp_path: Path) -> None:

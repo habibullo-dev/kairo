@@ -683,6 +683,54 @@ async def test_budget_hard_stop_halts_before_execution(tmp_path: Path) -> None:
     assert run.status == "budget_stopped"
     # Council ran (before the round loop), but the hard stop prevented the execution fan-out.
     assert not any(c["stage"] in ("execution", "review") for c in calls)
+    assert head.calls == []  # hard cap after council also prevents the paid synthesis call
+
+
+async def test_budget_hard_stop_after_execution_skips_review_and_verdict(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    calls: list[dict] = []
+
+    async def fake_spawn(**kw) -> ToolResult:
+        calls.append(kw)
+        return ToolResult(content="r", is_error=False)
+
+    class StageBudget:
+        def __init__(self) -> None:
+            self.checks = 0
+
+        async def project_month_exceeded(self, project_id: int) -> bool:
+            return False
+
+        async def run_spend(self, run_id: int) -> dict:
+            return {"cost_usd": float(self.checks)}
+
+        def check_run(self, spent: float) -> str:
+            self.checks += 1
+            # Council and synthesis are under cap; execution crossed it, so review must not run.
+            return "hard" if self.checks >= 3 else "ok"
+
+    budget = StageBudget()
+    head = FakeClient([_synth(), _verdict("accept")])
+    engine = OrchestrationEngine(
+        spawn=fake_spawn,
+        store=store,
+        head_client=head,
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+        budget=budget,
+    )
+    rid = await engine.run(
+        project_id=1,
+        team=resolve_team("backend"),
+        workflow=WORKFLOWS["implement"],
+        context=_CTX,
+        title="stage cap",
+    )
+
+    assert (await store.get(rid)).status == "budget_stopped"
+    assert any(c["stage"] == "execution" for c in calls)
+    assert not any(c["stage"] == "review" for c in calls)
+    assert len(head.calls) == 1  # synthesis only; no paid verdict after the cap
 
 
 async def test_budget_preflight_refuses_before_any_fanout(tmp_path: Path) -> None:

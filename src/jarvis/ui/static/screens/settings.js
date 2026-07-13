@@ -2,10 +2,10 @@
 // ui/theme.js — localStorage, NO server route) + a debug/trace toggle (presentation-only body
 // class) + READ-ONLY policy surfaces (providers w/ authority/private-ok, services w/ availability
 // + egress/context-policy/output-trust badges + credential env NAMES, connectors w/ granted scope
-// names + expiry, budgets + per-service caps) sourced from /api/settings (Phase 13) plus the
-// /api/hub, /api/costs, /api/runner reads. Presence/state/NAMES only — never a key value or a
-// token. Global service flags stay YAML-only (the panel shows the exact line). Nothing here
-// grants authority or mutates.
+// names + expiry, configured Skill Forge pins, budgets + per-service caps) sourced from
+// /api/settings (Phase 13) plus the /api/hub, /api/costs, /api/runner reads. Presence/state/NAMES
+// only — never a key value or a token. Global service flags stay YAML-only (the panel shows the
+// exact line). Nothing here grants authority or mutates.
 import { el } from "../ui/dom.js";
 import { money } from "../ui/format.js";
 import { get, set, THEMES } from "../ui/theme.js";
@@ -188,6 +188,28 @@ function renderStatus(region) {
     el("div", { class: "art-meta" }, routeRows),
   ], "hub"));
 
+  // The configured policy is read-only: it exposes only the global decision and explicit
+  // overrides, so a tool such as web_search cannot quietly be more permissive than the default.
+  // It is deliberately NOT presented as an effective permission: tool defaults and per-call
+  // safety floors (paths, shell, sensitive data, taint) remain in the Gate's decision path.
+  const posture = set.configured_policy || { state: "unavailable", overrides: [] };
+  const postureNodes = posture.state === "available"
+    ? [
+      el("div", { class: "art-meta" }, [metaRow("Configured default", posture.global_default || "?")]),
+      el("div", { class: "set-s", style: "margin:8px 0 4px" }, [
+        "Explicit decisions that differ from the global default",
+      ]),
+      (posture.overrides || []).length
+        ? el("div", { class: "art-meta" }, (posture.overrides || []).map((row) =>
+          metaRow(row.tool || "?", row.decision || "?")))
+        : el("div", { class: "dim" }, ["No explicit tool decision differs from the global default."]),
+      el("div", { class: "set-s", style: "margin-top:8px" }, [
+        "Configured policy only — tool defaults and path, shell, sensitive-data, and taint safety rules still apply per call. Changing a decision still requires the existing Gate policy workflow.",
+      ]),
+    ]
+    : [el("div", { class: "dim" }, ["Configured policy overrides are unavailable."])];
+  region.appendChild(statusSection("Configured policy overrides", postureNodes, "gate"));
+
   // Services catalog — the raw availability + policy badges + credential NAMES + how-to-enable is
   // DEV detail, so it's demoted into a collapsed <details> (the plain truth is up in Capabilities).
   const services = set.services || hub.services || [];
@@ -238,12 +260,41 @@ function renderStatus(region) {
     ]),
   ], "costs"));
 
+  // Skill Forge: configuration projection ONLY.  It intentionally does not load a pack directory
+  // or claim a configured pin is installed, verified, or injected into a prompt.
+  const skills = set.skills || { mode: "off", configured_packs: [] };
+  const skillMode = skills.mode || "off";
+  const skillModeNote = skillMode === "off"
+    ? "Off — runtime inactive; no skill packs are loaded."
+    : skillMode === "shadow"
+      ? "Shadow — configured pins may be observed, but guidance is not injected into prompts."
+      : "Active mode is configured. Pack files are not loaded or verified by this status screen.";
+  const pins = skills.configured_packs || [];
+  const skillNodes = [
+    el("div", { class: "art-meta" }, [
+      metaRow("Configured mode", skillMode),
+      metaRow("Runtime status", skillModeNote),
+    ]),
+    el("div", { class: "set-s", style: "margin:8px 0 4px" }, ["Configured pins"]),
+    pins.length
+      ? el("div", { class: "art-meta" }, pins.map((pin) =>
+        metaRow(pin.pack || "?", `${pin.version || "?"} · hash ${pin.sha256_prefix || "?"}`)))
+      : el("div", { class: "dim" }, ["No skill packs are configured."]),
+    el("div", { class: "set-s", style: "margin-top:8px" }, [
+      "Configuration only — this screen never loads pack files, injects skill text, or changes runtime mode.",
+    ]),
+  ];
+  region.appendChild(statusSection("Skill Forge", skillNodes));
+
   // Privacy & safety
   const eg = hub.egress || {};
+  const attentionRouting = set.attention_routing || {};
   region.appendChild(statusSection("Privacy & safety", [
     el("div", { class: "art-meta" }, [
       metaRow("Run mode", runner.mode || "approval"),
       metaRow("Unattended", "read-only by default — risky actions require the on-screen Gate"),
+      metaRow("Attention routing", attentionRouting.reason ||
+        "Not active — quiet hours and project mutes do not affect attention delivery yet."),
       metaRow("Egress this session", `${eg.text_chars || 0} chars · ${eg.audio_bytes || 0} audio bytes`),
       metaRow("MCP", (hub.mcp && hub.mcp.note) || "not connected"),
     ]),

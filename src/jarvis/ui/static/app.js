@@ -42,6 +42,26 @@ const state = {
   routeArgs: [],       // positional hash args after the screen name (#workspace/{id})
 };
 
+const RECORDED_DELEGATION_STATUSES = new Set(["running", "ok", "error", "timeout", "cancelled", "aborted"]);
+
+// The transcript API intentionally returns only terminal/lifecycle delegation metadata, not a
+// child event timeline. Keep parent messages first and append these honest recorded summaries;
+// their original position in the turn was never persisted and must not be invented on reload.
+function hydrateTranscript(transcript) {
+  const messages = Array.isArray(transcript && transcript.messages) ? transcript.messages : [];
+  const delegations = Array.isArray(transcript && transcript.delegations) ? transcript.delegations : [];
+  return [
+    ...messages.map((m) => ({ role: m.role, text: m.text })),
+    ...delegations.slice(0, 50).map((d) => ({
+      subagent: true,
+      agentId: String(d && d.agent_id || "unknown").slice(0, 80),
+      title: String(d && d.title || "sub-agent").slice(0, 120),
+      status: RECORDED_DELEGATION_STATUSES.has(d && d.status) ? d.status : "aborted",
+      detail: "recorded delegated work",
+    })),
+  ];
+}
+
 const WORKSPACE_KEY = "kairo:workspace-id";
 let workspaceId = null;
 try { workspaceId = sessionStorage.getItem(WORKSPACE_KEY); } catch { /* storage unavailable */ }
@@ -127,9 +147,7 @@ export const api = {
     const res = await api.post(`/api/sessions/${sessionId}/resume`, {});
     if (!res.ok) return false;
     const t = await api.get(`/api/sessions/${sessionId}`);
-    if (t && Array.isArray(t.messages)) {
-      state.chat = t.messages.map((m) => ({ role: m.role, text: m.text }));
-    }
+    if (t && Array.isArray(t.messages)) state.chat = hydrateTranscript(t);
     state.chatAttachments = [];
     return true;
   },
@@ -249,7 +267,10 @@ function handleMessage(msg) {
   if (msg.kind === "voice_state") { onVoiceState(msg.state); return; }
   if (msg.kind === "turn_cancelled" || msg.kind === "turn_error") {
     if (state.runner) state.runner.turn_busy = false;  // settle: the turn ended
-    const text = msg.kind === "turn_cancelled" ? "— turn cancelled —" : `— error: ${msg.error} —`;
+    // Live drafts from an interrupted or failed provider request are not durable protocol
+    // messages. Drop only those drafts; completed tool-round text was settled earlier.
+    state.chat = state.chat.filter((item) => item.role !== "assistant" || !item.live);
+    const text = msg.kind === "turn_cancelled" ? "(stopped)" : "(unable to complete this turn)";
     state.chat.push({ role: "assistant", text });
     refreshConversation();
     renderRunnerState();
@@ -624,7 +645,7 @@ async function rehydrateConversation() {
   if (state.chat.length) return;
   const t = await api.get(`/api/sessions/${sid}`);
   if (t && Array.isArray(t.messages)) {
-    state.chat = t.messages.map((m) => ({ role: m.role, text: m.text }));
+    state.chat = hydrateTranscript(t);
     refreshConversation();
   }
 }

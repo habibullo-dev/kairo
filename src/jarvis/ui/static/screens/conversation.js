@@ -293,6 +293,14 @@ function addSubagentCompletion(state, evt) {
   });
 }
 
+
+function settleLiveAssistantDrafts(state) {
+  for (const item of state.chat) {
+    if (item.role === "assistant" && item.live) item.live = false;
+  }
+}
+
+
 export function onConversationEvent(state, evt) {
   if (evt.type === "text_delta") {
     let last = state.chat[state.chat.length - 1];
@@ -302,8 +310,13 @@ export function onConversationEvent(state, evt) {
     }
     last.text += evt.text;
   } else if (evt.type === "tool_started") {
+    // A tool start proves the model response that requested it is complete and durable in the
+    // loop transcript, even though this turn has not reached its final text response yet.
+    settleLiveAssistantDrafts(state);
     state.chat.push({ tool: evt.name, resolution: "allow" });
   } else if (evt.type === "tool_decision" && evt.resolution === "deny") {
+    // A denial is also a completed tool-use response: the loop will append its tool_result.
+    settleLiveAssistantDrafts(state);
     state.chat.push({ tool: evt.name, resolution: "denied" });
   } else if (evt.type === "subagent_event") {
     // Child payloads are observational only: expose activity, never raw child text or tool data.
@@ -311,9 +324,8 @@ export function onConversationEvent(state, evt) {
   } else if (evt.type === "subagent_completed") {
     addSubagentCompletion(state, evt);
   } else if (evt.type === "turn_completed") {
-    // Delegated-progress lines can arrive after streamed parent text, so settle the last live
-    // assistant bubble rather than assuming it is the final conversation item.
-    const last = [...state.chat].reverse().find((item) => item.role === "assistant" && item.live);
-    if (last && last.role === "assistant") last.live = false;
+    // Delegated-progress lines can arrive after streamed parent text; every live bubble belongs
+    // to this now-complete turn and must settle together.
+    settleLiveAssistantDrafts(state);
   }
 }

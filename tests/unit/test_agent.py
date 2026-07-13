@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
+import pytest
 import structlog
 from pydantic import BaseModel
 
@@ -281,6 +283,60 @@ async def test_caller_messages_not_mutated() -> None:
     original = user("hello")
     await loop.run_turn(original)
     assert len(original) == 1  # loop worked on a copy
+
+
+async def test_cancellation_snapshot_drops_an_incomplete_tool_batch() -> None:
+    loop = build_loop(
+        [tool_use_message([ToolCall("t1", "echo", {"text": "x"})], text="Checking first.")]
+    )
+    entered = asyncio.Event()
+    never = asyncio.Event()
+
+    async def block_tools(*_args: object) -> list[dict]:
+        entered.set()
+        await never.wait()
+        return []
+
+    loop._handle_tools = block_tools  # type: ignore[method-assign]
+    task = asyncio.create_task(loop.run_turn(user("go")))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # There is no matching tool_result yet, so persisting the tool_use would poison the next turn;
+    # ordinary assistant text is still a valid, useful part of the transcript.
+    assert loop.cancelled_messages == [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Checking first."}]},
+    ]
+
+
+async def test_cancellation_snapshot_keeps_completed_tool_rounds() -> None:
+    entered = asyncio.Event()
+    never = asyncio.Event()
+
+    class BlockOnSecondCall(FakeClient):
+        async def create(self, **kwargs):  # type: ignore[override]
+            if self.calls:
+                entered.set()
+                await never.wait()
+            return await super().create(**kwargs)
+
+    client = BlockOnSecondCall([tool_use_message([ToolCall("t1", "echo", {"text": "x"})])])
+    loop = build_loop([])
+    loop.client = client
+    task = asyncio.create_task(loop.run_turn(user("go")))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    snapshot = loop.cancelled_messages
+    assert snapshot is not None
+    assert [message["role"] for message in snapshot] == ["user", "assistant", "user"]
+    assert snapshot[1]["content"][0]["type"] == "tool_use"
+    assert snapshot[2]["content"][0]["tool_use_id"] == "t1"
 
 
 async def test_tool_use_with_no_blocks_ends_turn() -> None:

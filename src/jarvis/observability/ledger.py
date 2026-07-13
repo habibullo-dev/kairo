@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -166,6 +167,56 @@ class CostLedger:
         except Exception as exc:  # noqa: BLE001 - A5: a ledger failure is visible, never fatal
             self._mark_degraded()
             self.log.warning("ledger_write_failed", error=str(exc), purpose=ctx.purpose)
+
+    async def record_failure(
+        self,
+        *,
+        provider: str,
+        model: str,
+        latency_ms: float,
+        error: Exception,
+        ctx: CostContext,
+    ) -> None:
+        """Persist a failed model request as safe telemetry, then let the original error stand.
+
+        Failed requests deliberately live outside ``model_calls``: no completion/tokens/cost were
+        produced, and a ``NULL`` cost row there would look like an unpriced completion.  The
+        exception *message* is never recorded because providers and adapters may include request
+        fragments in it; the bounded class name is sufficient for aggregate health diagnostics.
+        A failed telemetry write shares the normal fail-soft A5 contract.
+        """
+        error_class = type(error).__name__
+        if not error_class.isidentifier() or len(error_class) > 120:
+            error_class = "ModelRequestError"
+        try:
+            async with self.lock:
+                await self.db.execute(
+                    "INSERT INTO model_failures ("
+                    "ts, trace_id, session_id, project_id, orchestration_run_id, agent_role, "
+                    "purpose, provider, model, latency_ms, error_class, created_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        _now(),
+                        ctx.trace_id,
+                        ctx.session_id,
+                        ctx.project_id,
+                        ctx.orchestration_run_id,
+                        ctx.agent_role,
+                        ctx.purpose,
+                        provider,
+                        model,
+                        max(0.0, latency_ms),
+                        error_class,
+                        _now(),
+                    ),
+                )
+                await self.db.commit()
+            self._clear_degraded()
+        except Exception as exc:  # noqa: BLE001 - telemetry must never replace the model failure
+            self._mark_degraded()
+            self.log.warning(
+                "model_failure_ledger_write_failed", error=str(exc), purpose=ctx.purpose
+            )
 
     def _mark_degraded(self) -> None:
         if self._degraded_since is None:
@@ -360,7 +411,20 @@ class LedgeredClient:
         return getattr(self._inner, name)
 
     async def create(self, **kwargs: object) -> ModelResponse:
-        resp = await self._inner.create(**kwargs)  # type: ignore[attr-defined]
+        start = time.perf_counter()
+        try:
+            resp = await self._inner.create(**kwargs)  # type: ignore[attr-defined]
+        except Exception as exc:
+            requested_model = kwargs.get("model")
+            model = requested_model if isinstance(requested_model, str) else "unknown"
+            await self._ledger.record_failure(
+                provider=self._provider,
+                model=model,
+                latency_ms=(time.perf_counter() - start) * 1000.0,
+                error=exc,
+                ctx=cost_context.get(),
+            )
+            raise
         tool_calls = sum(1 for b in resp.content_blocks if b.get("type") == "tool_use")
         cache = self._cache_fields(resp)
         # Record the effort actually requested: a per-call override (the UI's per-model effort

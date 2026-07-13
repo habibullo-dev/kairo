@@ -81,6 +81,7 @@ class ClientFactory:
                 base_url=base_url,
                 provider=route.provider,
                 context_reuse=self.config.context_reuse.enabled,
+                max_retries=self.config.limits.max_retries,
             )
             if self.ledger is not None:
                 client = self._ledgered(

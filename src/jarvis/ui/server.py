@@ -56,6 +56,7 @@ from jarvis.ui.readmodels import (
     list_tasks,
     model_routes_status,
     office_overview,
+    orchestration_outcome_accounting,
     orchestration_roi,
     orchestration_run_detail,
     orchestration_runs_view,
@@ -694,6 +695,7 @@ def create_app(
             config,
             connectors=connectors.status() if connectors is not None else None,
             ledger_status=ledger.status() if ledger is not None else None,
+            policy=gate.policy,
         )
         data["capabilities"] = _capabilities(workspace)  # Phase 15.5: the shared truth, embedded
         return JSONResponse(data)
@@ -1125,7 +1127,9 @@ def create_app(
         # cross-project transition atomically; arbitrary GETs do not get that privilege.
         if workspace is not None and meta.project_id != workspace.context.project_id:
             return JSONResponse({"ok": False, "message": "wrong project scope"}, status_code=404)
-        return JSONResponse(await session_transcript(svc, session_id))
+        return JSONResponse(
+            await session_transcript(svc, session_id, run_store=app.state.services.run_store)
+        )
 
     @app.get("/api/projects")
     async def projects_list(request: Request) -> JSONResponse:
@@ -1146,18 +1150,26 @@ def create_app(
         if budgets is None:
             return _unavailable("costs")
         return JSONResponse(
-            await costs_overview(budgets, project_id=project_id, projects=app.state.projects)
+            await costs_overview(
+                budgets,
+                project_id=project_id,
+                projects=app.state.projects,
+                ledger=app.state.services.ledger,
+            )
         )
 
     @app.get("/api/roi")
     async def roi(project_id: int | None = None) -> JSONResponse:
-        # Per-run ROI (time-saved value − actual cost) for the Cost Center. Read-only, metadata
-        # only (run id / team / workflow / status / costs); net is None when a cost is unpriced.
+        # Outcome-gated per-run ROI plus terminal model-cost accounting for the Cost Center.
+        # Read-only metadata only; service estimates are intentionally outside actual model cost.
         store = app.state.services.orchestration
         budgets = app.state.services.budgets
         if store is None or budgets is None:
             return _unavailable("roi")
-        return JSONResponse({"roi": await orchestration_roi(store, budgets, project_id=project_id)})
+        runs = await orchestration_roi(store, budgets, project_id=project_id)
+        return JSONResponse(
+            {"roi": runs, "outcome_accounting": orchestration_outcome_accounting(runs)}
+        )
 
     # --- Studio (orchestration): catalog + runs + estimate (all read-only) -------------
 
@@ -1399,7 +1411,6 @@ def create_app(
                 project_id=project_id,
                 relative_path=str(relative_path) if relative_path else None,
             )
-            graph_rebuilt = False
         except Exception:  # conversion errors can contain unhelpful local parser details
             log.warning("chat_attachment_ingest_failed", exc_info=True)
             return JSONResponse(
@@ -1420,7 +1431,6 @@ def create_app(
                 "title": result.title or filename,
                 "chunks": result.chunks,
                 "review_status": result.review_status,
-                "graph_rebuilt": graph_rebuilt,
             }
         )
 
