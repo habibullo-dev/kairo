@@ -1214,6 +1214,33 @@ CREATE TABLE IF NOT EXISTS telegram_remote_control_state (
 """
 
 
+async def _migrate_v26(db: aiosqlite.Connection) -> None:
+    """Add an independent rate limit for remote Google status checks.
+
+    No mailbox, calendar, Telegram, prompt, or reply data is stored — only the shared rolling
+    window needed to protect the connected Google account from accidental polling abuse.
+    """
+    # Some backup/doctor fixtures intentionally carry only a user_version.  Reassert the v25
+    # base table first so this additive migration stays safe for those sparse older snapshots too.
+    await db.executescript(_SCHEMA_V25)
+    columns = {
+        row[1]
+        for row in await (
+            await db.execute("PRAGMA table_info(telegram_remote_control_state)")
+        ).fetchall()
+    }
+    if "read_rate_window_started_at" not in columns:
+        await db.execute(
+            "ALTER TABLE telegram_remote_control_state "
+            "ADD COLUMN read_rate_window_started_at TEXT"
+        )
+    if "read_rate_window_count" not in columns:
+        await db.execute(
+            "ALTER TABLE telegram_remote_control_state "
+            "ADD COLUMN read_rate_window_count INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1245,6 +1272,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (23, _migrate_v23),
     (24, _migrate_v24),
     (25, _SCHEMA_V25),
+    (26, _migrate_v26),
 ]
 
 

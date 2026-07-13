@@ -139,6 +139,8 @@ async def test_v25_remote_control_state_is_bodies_free_and_idempotent() -> None:
         await M._migrate_v24(db)
         await db.executescript(M._SCHEMA_V25)
         await db.executescript(M._SCHEMA_V25)
+        await M._migrate_v26(db)
+        await M._migrate_v26(db)
         rows = await (
             await db.execute("PRAGMA table_info(telegram_remote_control_state)")
         ).fetchall()
@@ -148,6 +150,8 @@ async def test_v25_remote_control_state_is_bodies_free_and_idempotent() -> None:
             "next_update_id",
             "rate_window_started_at",
             "rate_window_count",
+            "read_rate_window_started_at",
+            "read_rate_window_count",
         } <= columns
         assert not (columns & {"token", "chat_id", "message", "body", "content", "prompt", "reply"})
     finally:

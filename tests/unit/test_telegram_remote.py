@@ -48,10 +48,18 @@ async def _controller(
     *,
     batches: list[list[object]],
     max_per_hour: int = 20,
+    max_read_per_hour: int = 60,
     max_input_chars: int = 2_000,
 ) -> tuple[TelegramRemoteControl, _TelegramHttp, dict[str, list[str]], object]:
     db = await connect(tmp_path / "remote.db")
-    calls: dict[str, list[str]] = {"status": [], "tasks": [], "chat": []}
+    calls: dict[str, list[str]] = {
+        "status": [],
+        "tasks": [],
+        "inbox": [],
+        "calendar": [],
+        "briefing": [],
+        "chat": [],
+    }
 
     async def status() -> str:
         calls["status"].append("called")
@@ -60,6 +68,18 @@ async def _controller(
     async def tasks() -> str:
         calls["tasks"].append("called")
         return "TASKS"
+
+    async def inbox() -> str:
+        calls["inbox"].append("called")
+        return "INBOX"
+
+    async def calendar() -> str:
+        calls["calendar"].append("called")
+        return "CALENDAR"
+
+    async def briefing() -> str:
+        calls["briefing"].append("called")
+        return "BRIEFING"
 
     async def chat(text: str) -> str:
         calls["chat"].append(text)
@@ -72,11 +92,15 @@ async def _controller(
             enabled=True,
             allowed_chat_id="123",
             max_model_messages_per_hour=max_per_hour,
+            max_read_requests_per_hour=max_read_per_hour,
             max_input_chars=max_input_chars,
         ),
         store=TelegramRemoteControlStore(db, asyncio.Lock()),
         status_handler=status,
         tasks_handler=tasks,
+        inbox_handler=inbox,
+        calendar_handler=calendar,
+        briefing_handler=briefing,
         chat_handler=chat,
         http=http,
     )
@@ -102,7 +126,14 @@ async def test_first_poll_discards_retained_updates_then_handles_fresh_private_o
     )
     try:
         assert await controller.poll_once() == 0  # first enable never replays retained bot traffic
-        assert calls == {"status": [], "tasks": [], "chat": []}
+        assert calls == {
+            "status": [],
+            "tasks": [],
+            "inbox": [],
+            "calendar": [],
+            "briefing": [],
+            "chat": [],
+        }
         assert http.sent == []
 
         assert await controller.poll_once() == 1
@@ -130,7 +161,14 @@ async def test_initialize_consumes_backlog_before_the_channel_is_announced_ready
     )
     try:
         await controller.initialize()
-        assert calls == {"status": [], "tasks": [], "chat": []}
+        assert calls == {
+            "status": [],
+            "tasks": [],
+            "inbox": [],
+            "calendar": [],
+            "briefing": [],
+            "chat": [],
+        }
         assert http.sent == []
         assert await controller.poll_once() == 1
         assert calls["status"] == ["called"]
@@ -148,7 +186,14 @@ async def test_unknown_and_group_chats_are_ignored_without_a_reply(tmp_path: Pat
     try:
         await controller.poll_once()  # initialize cursor
         assert await controller.poll_once() == 0
-        assert calls == {"status": [], "tasks": [], "chat": []}
+        assert calls == {
+            "status": [],
+            "tasks": [],
+            "inbox": [],
+            "calendar": [],
+            "briefing": [],
+            "chat": [],
+        }
         assert http.sent == []
     finally:
         await db.close()
@@ -161,7 +206,14 @@ async def test_nontext_update_advances_cursor_instead_of_spinning(tmp_path: Path
         await controller.poll_once()  # initialize cursor
         assert await controller.poll_once() == 0
         assert await controller.poll_once() == 0
-        assert calls == {"status": [], "tasks": [], "chat": []}
+        assert calls == {
+            "status": [],
+            "tasks": [],
+            "inbox": [],
+            "calendar": [],
+            "briefing": [],
+            "chat": [],
+        }
         # The third request starts after the ignored media update, so Telegram will not replay it.
         assert http.requests[2][1]["offset"] == "6"
     finally:
@@ -211,6 +263,53 @@ async def test_model_chat_is_limited_and_long_input_never_reaches_handler(tmp_pa
         await db.close()
 
 
+async def test_workspace_commands_are_deterministic_and_do_not_reach_remote_chat(
+    tmp_path: Path,
+) -> None:
+    controller, http, calls, db = await _controller(
+        tmp_path,
+        batches=[
+            [],
+            [
+                _update(1, text="/inbox"),
+                _update(2, text="/calendar"),
+                _update(3, text="/briefing"),
+            ],
+        ],
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 3
+        assert calls["inbox"] == ["called"]
+        assert calls["calendar"] == ["called"]
+        assert calls["briefing"] == ["called"]
+        assert calls["chat"] == []
+        assert [message["text"] for message in http.sent] == ["INBOX", "CALENDAR", "BRIEFING"]
+    finally:
+        await db.close()
+
+
+async def test_workspace_commands_have_a_separate_hourly_limit(tmp_path: Path) -> None:
+    controller, http, calls, db = await _controller(
+        tmp_path,
+        max_read_per_hour=1,
+        batches=[[], [_update(1, text="/inbox")], [_update(2, text="/calendar")]],
+    )
+    try:
+        await controller.poll_once()
+        await controller.poll_once()
+        await controller.poll_once()
+        assert calls["inbox"] == ["called"]
+        assert calls["calendar"] == []
+        assert [message["text"] for message in http.sent] == [
+            "INBOX",
+            "Remote workspace checks have reached their hourly limit. "
+            "/status and /tasks still work.",
+        ]
+    finally:
+        await db.close()
+
+
 async def test_rate_reservation_resets_after_one_hour(tmp_path: Path) -> None:
     db = await connect(tmp_path / "remote.db")
     try:
@@ -221,5 +320,10 @@ async def test_rate_reservation_resets_after_one_hour(tmp_path: Path) -> None:
             max_per_hour=1, now=start + dt.timedelta(minutes=59)
         )
         assert await store.reserve_model_message(max_per_hour=1, now=start + dt.timedelta(hours=1))
+        assert await store.reserve_read_request(max_per_hour=1, now=start)
+        assert not await store.reserve_read_request(
+            max_per_hour=1, now=start + dt.timedelta(minutes=59)
+        )
+        assert await store.reserve_read_request(max_per_hour=1, now=start + dt.timedelta(hours=1))
     finally:
         await db.close()

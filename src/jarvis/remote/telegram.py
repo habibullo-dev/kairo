@@ -88,7 +88,7 @@ def _update_id(value: object) -> int | None:
 
 
 class TelegramRemoteControlStore:
-    """Durable cursor and cost-rate limiter, storing no Telegram message bodies or ids."""
+    """Durable cursor and rate limiters, storing no Telegram message bodies or ids."""
 
     def __init__(self, db: aiosqlite.Connection, lock: asyncio.Lock) -> None:
         self.db = db
@@ -98,7 +98,8 @@ class TelegramRemoteControlStore:
         await self.db.execute(
             "INSERT OR IGNORE INTO telegram_remote_control_state "
             "(id, initialized, next_update_id, rate_window_started_at, rate_window_count, "
-            "updated_at) VALUES (1, 0, 0, NULL, 0, ?)",
+            "read_rate_window_started_at, read_rate_window_count, updated_at) "
+            "VALUES (1, 0, 0, NULL, 0, NULL, 0, ?)",
             (_now(),),
         )
 
@@ -146,12 +147,44 @@ class TelegramRemoteControlStore:
         The counter is intentionally global to this Kairo instance; there is only one allowed
         owner chat, so retaining a chat identifier would add sensitive linkage without value.
         """
+        return await self._reserve_hourly(
+            started_column="rate_window_started_at",
+            count_column="rate_window_count",
+            max_per_hour=max_per_hour,
+            now=now,
+        )
+
+    async def reserve_read_request(
+        self, *, max_per_hour: int, now: dt.datetime | None = None
+    ) -> bool:
+        """Reserve one count-only remote workspace request under its own hourly budget."""
+        return await self._reserve_hourly(
+            started_column="read_rate_window_started_at",
+            count_column="read_rate_window_count",
+            max_per_hour=max_per_hour,
+            now=now,
+        )
+
+    async def _reserve_hourly(
+        self,
+        *,
+        started_column: str,
+        count_column: str,
+        max_per_hour: int,
+        now: dt.datetime | None,
+    ) -> bool:
+        """Reserve a request in one of the two fixed, schema-owned rate windows."""
+        # These values come only from the two methods above; callers never supply SQL names.
+        assert (started_column, count_column) in {
+            ("rate_window_started_at", "rate_window_count"),
+            ("read_rate_window_started_at", "read_rate_window_count"),
+        }
         moment = now or dt.datetime.now(dt.UTC)
         async with self.lock:
             await self._ensure_row_locked()
             row = await (
                 await self.db.execute(
-                    "SELECT rate_window_started_at, rate_window_count "
+                    f"SELECT {started_column}, {count_column} "
                     "FROM telegram_remote_control_state WHERE id = 1"
                 )
             ).fetchone()
@@ -164,8 +197,8 @@ class TelegramRemoteControlStore:
                 await self.db.commit()
                 return False
             await self.db.execute(
-                "UPDATE telegram_remote_control_state SET rate_window_started_at = ?, "
-                "rate_window_count = ?, updated_at = ? WHERE id = 1",
+                f"UPDATE telegram_remote_control_state SET {started_column} = ?, "
+                f"{count_column} = ?, updated_at = ? WHERE id = 1",
                 (started.isoformat(), count + 1, _now()),
             )
             await self.db.commit()
@@ -187,6 +220,9 @@ class TelegramRemoteControl:
         store: TelegramRemoteControlStore,
         status_handler: ReplyHandler,
         tasks_handler: ReplyHandler,
+        inbox_handler: ReplyHandler,
+        calendar_handler: ReplyHandler,
+        briefing_handler: ReplyHandler,
         chat_handler: ChatHandler,
         http: Any = None,
         log: Any = None,
@@ -200,6 +236,9 @@ class TelegramRemoteControl:
         self._store = store
         self._status_handler = status_handler
         self._tasks_handler = tasks_handler
+        self._inbox_handler = inbox_handler
+        self._calendar_handler = calendar_handler
+        self._briefing_handler = briefing_handler
         self._chat_handler = chat_handler
         self._http = http
         self._log = log or get_logger("jarvis.remote.telegram")
@@ -342,18 +381,36 @@ class TelegramRemoteControl:
                 "Kairo remote control is online.\n\n"
                 "/status — Kairo and scheduler state\n"
                 "/tasks — active task summary\n"
+                "/inbox — unread inbox count only\n"
+                "/calendar — next-24-hours count and next start time\n"
+                "/briefing — combined status, inbox, calendar, and task count\n"
                 "Any other message — a bounded, tool-less Kairo reply\n\n"
                 "This channel cannot approve actions, write files, run commands, change schedules, "
-                "or access tools or memory. Use local Kairo for actions."
+                "or access tools or memory. Workspace commands are read-only and never show "
+                "mail/event content. Use local Kairo for actions."
             )
         if command == "/status":
             return await self._status_handler()
         if command == "/tasks":
             return await self._tasks_handler()
+        if command in {"/inbox", "/calendar", "/briefing"}:
+            if not await self._store.reserve_read_request(
+                max_per_hour=self._config.max_read_requests_per_hour
+            ):
+                return (
+                    "Remote workspace checks have reached their hourly limit. "
+                    "/status and /tasks still work."
+                )
+            handlers = {
+                "/inbox": self._inbox_handler,
+                "/calendar": self._calendar_handler,
+                "/briefing": self._briefing_handler,
+            }
+            return await handlers[command]()
         if command.startswith("/"):
             return "Unknown command. Send /help for the safe remote-control commands."
         if not stripped:
-            return "Send /help, /status, /tasks, or a short question for Kairo."
+            return "Send /help, /status, /tasks, /inbox, /calendar, /briefing, or a short question."
         if len(text) > self._config.max_input_chars:
             return (
                 "That message is too long for remote chat "

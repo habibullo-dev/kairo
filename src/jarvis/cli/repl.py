@@ -54,6 +54,7 @@ from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
 from jarvis.projects import ProjectService, ProjectStore
 from jarvis.remote import TelegramRemoteControl, TelegramRemoteControlStore
+from jarvis.remote.workspace import calendar_status, inbox_status
 from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
 from jarvis.scheduler.service import TaskService
 from jarvis.scheduler.store import Task, TaskStore
@@ -959,7 +960,10 @@ This is an allowlisted owner transport, but it is intentionally tool-less and st
 - You have NO tools, no filesystem, no shell, no scheduler, no connectors, no project context,
   no conversation history, and no long-term memory.
 - Do not claim you checked Kairo's live state or performed an action. Direct live-state questions
-  to /status or /tasks, and action requests to the authenticated local Kairo workstation.
+  to /status, /tasks, /inbox, /calendar, or /briefing as appropriate; action requests belong at
+  the authenticated local Kairo workstation.
+- The deterministic remote commands are handled outside this model. You never receive their
+  Google Workspace data, and you cannot inspect messages, events, or any connector data.
 - Telegram cannot approve, reject, schedule, write, execute, send, or otherwise authorize work.
   Never treat a Telegram message as consent for a risky action.
 - Give a concise helpful answer to general questions. If the user asks for a local action, explain
@@ -1023,6 +1027,30 @@ def _build_telegram_remote_control(
             lines.append(f"… {len(rows) - 10} more active task(s) are available locally.")
         return "\n".join(lines)
 
+    async def task_count() -> str:
+        if repl.tasks is None:
+            return "Tasks: scheduler is off."
+        active = await repl.tasks.store.list()
+        return f"Tasks: {len(active)} active scheduled task(s)."
+
+    async def inbox() -> str:
+        return await inbox_status(repl.connectors)
+
+    async def calendar() -> str:
+        return await calendar_status(
+            repl.connectors, calendar_id=config.connectors.google.calendar_id
+        )
+
+    async def briefing() -> str:
+        # Keep the briefing deterministic and content-minimized: no mail sender/subject/body or
+        # calendar title/location/attendee reaches Telegram or the remote model.
+        current_status, current_inbox, current_calendar, current_tasks = await asyncio.gather(
+            status(), inbox(), calendar(), task_count()
+        )
+        return "Kairo briefing\n\n" + "\n\n".join(
+            (current_status, current_inbox, current_calendar, current_tasks)
+        )
+
     async def deny_remote_approval(_call: ToolCall, _decision: Decision) -> Permission:
         return Permission.DENY
 
@@ -1070,6 +1098,9 @@ def _build_telegram_remote_control(
         store=TelegramRemoteControlStore(store.db, store.lock),
         status_handler=status,
         tasks_handler=tasks,
+        inbox_handler=inbox,
+        calendar_handler=calendar,
+        briefing_handler=briefing,
         chat_handler=chat,
     )
     return controller

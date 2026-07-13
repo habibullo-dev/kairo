@@ -142,6 +142,26 @@ async def test_calendar_parses_timed_and_all_day(tmp_path: Path) -> None:
     assert events[1].all_day is True and events[1].start == "2026-01-02"
 
 
+async def test_calendar_window_summary_uses_a_content_excluding_field_mask(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.update(req.url.params)
+        return httpx.Response(
+            200,
+            json={
+                "items": [{"start": {"dateTime": "2026-01-01T10:00:00Z"}}],
+                "nextPageToken": "more",
+            },
+        )
+
+    async with _client(handler, tmp_path) as gc:
+        summary = await calendar.upcoming_window_summary(gc, time_min="a", time_max="b")
+    assert summary.event_count == 1 and summary.next_start == "2026-01-01T10:00:00Z"
+    assert summary.next_all_day is False and summary.has_more is True
+    assert captured["fields"] == "items(start),nextPageToken"
+
+
 # --- gmail -----------------------------------------------------------------
 
 
@@ -171,6 +191,21 @@ async def test_gmail_search_lists_then_fetches_metadata(tmp_path: Path) -> None:
     assert len(metas) == 1
     assert metas[0].sender == "alice@example.com"
     assert metas[0].subject == "Hello" and metas[0].snippet == "just a snippet"
+
+
+async def test_gmail_unread_inbox_summary_fetches_no_message_metadata(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req.url.path)
+        assert req.url.params["q"] == "in:inbox is:unread"
+        assert req.url.params["maxResults"] == "1"
+        return httpx.Response(200, json={"resultSizeEstimate": 7, "messages": [{"id": "m1"}]})
+
+    async with _client(handler, tmp_path) as gc:
+        summary = await gmail.unread_inbox_summary(gc)
+    assert summary.unread_estimate == 7
+    assert seen == ["/gmail/v1/users/me/messages"]
 
 
 async def test_gmail_get_message_prefers_plain_and_caps(tmp_path: Path) -> None:

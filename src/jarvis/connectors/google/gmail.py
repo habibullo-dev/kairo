@@ -42,6 +42,18 @@ class Message:
     body: str
 
 
+@dataclass(frozen=True)
+class InboxUnreadSummary:
+    """A count-only inbox result safe for narrow status surfaces.
+
+    This deliberately has no message ids, headers, snippets, or bodies.  Gmail's listing API
+    supplies ``resultSizeEstimate`` without a metadata fetch, so a remote status check never
+    needs to retrieve message content.
+    """
+
+    unread_estimate: int | None
+
+
 def _b64url_decode(data: str) -> str:
     padded = data + "=" * (-len(data) % 4)
     return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
@@ -92,6 +104,22 @@ async def search(client: GoogleClient, *, query: str, max_results: int = 10) -> 
             )
         )
     return metas
+
+
+async def unread_inbox_summary(client: GoogleClient) -> InboxUnreadSummary:
+    """Return Gmail's count estimate for unread Inbox mail without retrieving any message.
+
+    The single-result page is intentional: the result-size estimate is all the remote
+    companion needs, and keeping the response count-only prevents accidental transport of
+    subject lines, senders, snippets, ids, or bodies to Telegram.
+    """
+    listing = await client.get_json(
+        f"{_API}/messages", params={"q": "in:inbox is:unread", "maxResults": 1}
+    )
+    estimate = listing.get("resultSizeEstimate")
+    return InboxUnreadSummary(
+        unread_estimate=estimate if isinstance(estimate, int) and estimate >= 0 else None
+    )
 
 
 async def get_message(client: GoogleClient, message_id: str) -> Message:

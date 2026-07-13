@@ -38,6 +38,7 @@ async def test_remote_wiring_uses_utility_model_and_exposes_no_tools_or_history(
             executor=object(),
             gate=object(),
             cost_ledger=SimpleNamespace(pricing=load_pricing(Path("config/pricing.yaml"))),
+            connectors=None,
         )
         controller = _build_telegram_remote_control(
             config,

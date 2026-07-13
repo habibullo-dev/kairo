@@ -341,6 +341,7 @@ class TelegramRemoteControlConfig(BaseModel):
     allowed_chat_id: str = ""
     poll_timeout_seconds: int = Field(default=25, ge=1, le=50)
     max_model_messages_per_hour: int = Field(default=20, ge=1, le=100)
+    max_read_requests_per_hour: int = Field(default=60, ge=1, le=500)
     max_input_chars: int = Field(default=2_000, ge=1, le=4_000)
 
     @model_validator(mode="after")

@@ -37,6 +37,21 @@ class CalendarEvent:
     all_day: bool
 
 
+@dataclass(frozen=True)
+class CalendarWindowSummary:
+    """The minimum calendar data needed by a remote status surface.
+
+    It intentionally holds no title, location, attendee, organizer, or event identifier.  The
+    underlying API request also uses a partial-response field mask so those fields never cross
+    this adapter boundary in the first place.
+    """
+
+    event_count: int
+    next_start: str | None
+    next_all_day: bool
+    has_more: bool
+
+
 async def list_events(
     client: GoogleClient,
     *,
@@ -72,6 +87,48 @@ async def list_events(
             )
         )
     return events
+
+
+async def upcoming_window_summary(
+    client: GoogleClient,
+    *,
+    time_min: str,
+    time_max: str,
+    calendar_id: str = "primary",
+    max_results: int = _MAX_RESULTS,
+) -> CalendarWindowSummary:
+    """Return a count/timing-only calendar window without fetching event content.
+
+    The fixed field mask asks Google solely for each event's start and a pagination sentinel.
+    A ``has_more`` result means the displayed count is a lower bound rather than a misleading
+    complete count.
+    """
+    cap = max(1, min(max_results, _MAX_RESULTS))
+    data = await client.get_json(
+        f"{_CAL_API}/calendars/{quote(calendar_id, safe='')}/events",
+        params={
+            "timeMin": time_min,
+            "timeMax": time_max,
+            "singleEvents": "true",
+            "orderBy": "startTime",
+            "maxResults": cap,
+            "fields": "items(start),nextPageToken",
+        },
+    )
+    items = data.get("items") or []
+    if not isinstance(items, list):
+        items = []
+    first = items[0] if items and isinstance(items[0], dict) else {}
+    start = first.get("start", {}) if isinstance(first, dict) else {}
+    if not isinstance(start, dict):
+        start = {}
+    next_start = start.get("dateTime") or start.get("date")
+    return CalendarWindowSummary(
+        event_count=len(items),
+        next_start=next_start if isinstance(next_start, str) else None,
+        next_all_day="date" in start,
+        has_more=bool(data.get("nextPageToken")),
+    )
 
 
 # --- writes (Phase 12) -----------------------------------------------------

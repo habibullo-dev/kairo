@@ -117,7 +117,10 @@ class DemoGoogleClient:
             msg = next((m for m in self._emails if m["id"] == mid), None)
             return _message_payload(msg) if msg else {}
         if url.endswith("/messages"):  # search listing
-            return {"messages": [{"id": m["id"]} for m in self._emails]}
+            return {
+                "messages": [{"id": m["id"]} for m in self._emails],
+                "resultSizeEstimate": len(self._emails),
+            }
         if "/files/" in url:  # drive file metadata
             return self._files[0] if self._files else {}
         if "/files" in url:  # drive search
