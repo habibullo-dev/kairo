@@ -38,7 +38,7 @@ _RETRY_SECONDS = 5.0
 
 _ACTION_VERBS = (
     r"(?:add|approve|archive|build|cancel|change|compose|create|delete|deny|draft|edit|"
-    r"fix|forward|launch|mark|move|open|remind|repair|reply|respond|run|schedule|send|"
+    r"email|fix|forward|launch|mark|move|open|remind|repair|reply|respond|run|schedule|send|"
     r"start|update|work on|write)"
 )
 _ACTION_REQUEST = re.compile(
@@ -68,8 +68,9 @@ def natural_remote_read_command(text: str) -> str | None:
     if re.search(r"\b(?:briefing|daily overview|today's overview)\b", value):
         return "/briefing"
     if re.search(r"\b(?:inbox|e ?mails?|mail)\b", value) and re.search(
-        r"\b(?:anything|check|do i have|have i|how many|latest|list|new|read|received|"
-        r"recent|show|status|summarize|summary|today'?s?|unread|what|what's|which)\b",
+        r"\b(?:anything|check|do i have|filter|find|get|have i|how many|latest|list|new|"
+        r"only|read|received|recent|related|show|status|summarize|summary|today'?s?|"
+        r"unread|what|what's|which)\b",
         value,
     ):
         return "/inbox"
@@ -100,6 +101,21 @@ def natural_remote_read_command(text: str) -> str | None:
     ):
         return "/status"
     return None
+
+
+_INBOX_FILTER_FILLER = re.compile(
+    r"\b(?:about|all|can you|check|do i have|e ?mails?|filter|find|for|from|get|gimme|"
+    r"give me|have i|i|inbox|latest|list|mail|me|messages?|my|new|of|only|please|read|received|"
+    r"recent|related|show|status|summarize|summary|tell me|the|today'?s?|unread)\b",
+    re.IGNORECASE,
+)
+
+
+def natural_inbox_filter(text: str) -> str:
+    """Extract owner-supplied search terms from a natural inbox read request."""
+    value = _INBOX_FILTER_FILLER.sub(" ", text)
+    value = re.sub(r"[^\w@.+-]+", " ", value, flags=re.UNICODE)
+    return " ".join(value.split())[:160]
 
 
 def compact_remote_model_reply(text: str, *, max_chars: int = 600) -> str:
@@ -381,6 +397,7 @@ class TelegramRemoteControlStore:
 
 ReplyHandler = Callable[[], Awaitable[str]]
 ChatHandler = Callable[[str], Awaitable[str]]
+InboxHandler = Callable[[str], Awaitable[str]]
 AttachmentHandler = Callable[[RemoteAttachment, bytes, str], Awaitable[str]]
 OperatorResolutionHandler = Callable[[str, str], Awaitable[str]]
 OperatorCancelHandler = Callable[[str], Awaitable[str]]
@@ -398,7 +415,7 @@ class TelegramRemoteControl:
         store: TelegramRemoteControlStore,
         status_handler: ReplyHandler,
         tasks_handler: ReplyHandler,
-        inbox_handler: ReplyHandler,
+        inbox_handler: InboxHandler,
         calendar_handler: ReplyHandler,
         briefing_handler: ReplyHandler,
         chat_handler: ChatHandler,
@@ -667,8 +684,12 @@ class TelegramRemoteControl:
         parts = stripped.split(maxsplit=1)
         command = parts[0].lower().split("@", 1)[0] if parts else ""
         argument = parts[1].strip() if len(parts) > 1 else ""
+        inbox_filter = argument
         if command and not command.startswith("/"):
-            command = natural_remote_read_command(stripped) or command
+            natural_command = natural_remote_read_command(stripped)
+            command = natural_command or command
+            if natural_command == "/inbox":
+                inbox_filter = natural_inbox_filter(stripped)
         if command in {"/start", "/help"}:
             operator_help = (
                 "\n/projects — registered project aliases\n"
@@ -684,7 +705,7 @@ class TelegramRemoteControl:
                 "Kairo remote control is online.\n\n"
                 "/status — Kairo and scheduler state\n"
                 "/tasks — active task summary\n"
-                "/inbox — today's recent sender, subject, and snippet summary\n"
+                "/inbox [filter] — today's recent sender, subject, and snippet summary\n"
                 "/calendar — next-24-hours count and next start time\n"
                 "/briefing — combined status, inbox, calendar, and task count\n"
                 "Photos/files/voice — attach one item with an optional question\n"
@@ -706,11 +727,9 @@ class TelegramRemoteControl:
                     "Remote workspace checks have reached their hourly limit. "
                     "/status and /tasks still work."
                 )
-            handlers = {
-                "/inbox": self._inbox_handler,
-                "/calendar": self._calendar_handler,
-                "/briefing": self._briefing_handler,
-            }
+            if command == "/inbox":
+                return await self._inbox_handler(inbox_filter)
+            handlers = {"/calendar": self._calendar_handler, "/briefing": self._briefing_handler}
             return await handlers[command]()
         operator_reads = {
             "/projects": self._projects_handler,

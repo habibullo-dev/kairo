@@ -1100,8 +1100,8 @@ def _build_telegram_remote_control(
         active = await repl.tasks.store.list()
         return f"Tasks: {len(active)} active scheduled task(s)."
 
-    async def inbox() -> str:
-        return await inbox_today_summary(repl.connectors)
+    async def inbox(filter_terms: str) -> str:
+        return await inbox_today_summary(repl.connectors, filter_terms=filter_terms)
 
     async def calendar() -> str:
         return await calendar_status(

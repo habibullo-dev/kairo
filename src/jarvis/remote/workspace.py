@@ -69,11 +69,19 @@ def _message_time(value: str, *, timezone: dt.tzinfo | None) -> str:
         return "time unknown"
 
 
+def _search_terms(value: str) -> tuple[str, str]:
+    tokens = [token[:40] for token in re.findall(r"[\w@.+-]+", value, re.UNICODE)[:8]]
+    display = " ".join(tokens)
+    gmail_query = " ".join(f'"{token}"' for token in tokens)
+    return display, gmail_query
+
+
 async def inbox_today_summary(
     connectors: ConnectorRegistry | None,
     *,
     now: dt.datetime | None = None,
     max_messages: int = _REMOTE_INBOX_MAX_MESSAGES,
+    filter_terms: str = "",
 ) -> str:
     """Return today's capped sender/subject/snippet view without exposing full message bodies."""
     client = _google_client(connectors)
@@ -83,7 +91,10 @@ async def inbox_today_summary(
     start = current.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + dt.timedelta(days=1)
     cap = max(1, min(max_messages, _REMOTE_INBOX_MAX_MESSAGES))
+    display_filter, gmail_filter = _search_terms(filter_terms)
     query = f"in:inbox after:{int(start.timestamp())} before:{int(end.timestamp())}"
+    if gmail_filter:
+        query += f" {gmail_filter}"
     try:
         messages = await gmail.search(client, query=query, max_results=cap)
     except ConnectorError as exc:
@@ -91,10 +102,13 @@ async def inbox_today_summary(
     except Exception:
         return "Kairo could not check Gmail right now. Please try again or use local Kairo."
     if not messages:
+        if display_filter:
+            return f"Today's inbox: no messages matched {display_filter}."
         return "Today's inbox: no messages received since local midnight."
 
     qualifier = f"up to {cap} recent" if len(messages) == cap else str(len(messages))
-    lines = [f"Today's inbox — {qualifier} message(s):"]
+    scope = f" matching {display_filter}" if display_filter else ""
+    lines = [f"Today's inbox{scope} — {qualifier} message(s):"]
     for index, message in enumerate(messages, start=1):
         sender = _sender_name(message.sender)
         subject = _one_line(message.subject, limit=120) or "(no subject)"

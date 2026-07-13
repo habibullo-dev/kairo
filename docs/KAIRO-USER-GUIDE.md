@@ -105,6 +105,11 @@ they cannot become work after a restart. Ordinary remote questions and proposal 
 Kairo's economical utility model, preserving the expensive Fable model for its deliberate
 skills-authoring workflow.
 
+Add plain search terms after `/inbox` to filter today's view, for example `/inbox YGP`, or ask
+naturally: “Get only YGP related emails.” Kairo extracts the meaningful terms and applies them
+inside the same local-day boundary; the email text remains display-only and never enters the
+remote model or action loop.
+
 With `attachments.enabled: true`, that same private chat can send one photo, supported document,
 voice note, or audio file per message. Add a caption such as “What is wrong in this screenshot?” or
 “Summarize this PDF”; without a caption, Kairo describes images, summarizes documents, and answers

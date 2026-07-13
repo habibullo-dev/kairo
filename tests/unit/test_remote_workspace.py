@@ -108,6 +108,18 @@ async def test_today_inbox_summary_reports_an_empty_day() -> None:
     assert reply == "Today's inbox: no messages received since local midnight."
 
 
+async def test_today_inbox_summary_quotes_bounded_filter_terms() -> None:
+    google = _InboxGoogle(messages=False)
+    reply = await inbox_today_summary(
+        ConnectorRegistry(google=google),
+        now=dt.datetime(2026, 7, 13, 18, 0, tzinfo=dt.UTC),
+        filter_terms="YGP OR after:0",
+    )
+    query = google.calls[0][1]["q"]  # type: ignore[index]
+    assert query.endswith('"YGP" "OR" "after" "0"')
+    assert reply == "Today's inbox: no messages matched YGP OR after 0."
+
+
 async def test_calendar_status_excludes_event_content_from_telegram_reply() -> None:
     google = _Google()
     reply = await calendar_status(

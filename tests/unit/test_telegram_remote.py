@@ -15,6 +15,7 @@ from jarvis.remote.telegram import (
     TelegramRemoteControl,
     TelegramRemoteControlStore,
     compact_remote_model_reply,
+    natural_inbox_filter,
     natural_remote_read_command,
     parse_telegram_update,
 )
@@ -87,8 +88,8 @@ async def _controller(
         calls["tasks"].append("called")
         return "TASKS"
 
-    async def inbox() -> str:
-        calls["inbox"].append("called")
+    async def inbox(filter_terms: str) -> str:
+        calls["inbox"].append(filter_terms)
         return "INBOX"
 
     async def calendar() -> str:
@@ -223,7 +224,7 @@ async def test_allowlisted_attachment_downloads_once_and_reaches_handler(tmp_pat
         store=store,
         status_handler=fixed,
         tasks_handler=fixed,
-        inbox_handler=fixed,
+        inbox_handler=lambda _query: fixed(),
         calendar_handler=fixed,
         briefing_handler=fixed,
         chat_handler=chat,
@@ -266,7 +267,7 @@ async def test_unknown_chat_attachment_is_never_downloaded(tmp_path: Path) -> No
         store=store,
         status_handler=fixed,
         tasks_handler=fixed,
-        inbox_handler=fixed,
+        inbox_handler=lambda _query: fixed(),
         calendar_handler=fixed,
         briefing_handler=fixed,
         chat_handler=chat,
@@ -300,6 +301,10 @@ def test_natural_read_intents_route_to_verified_host_commands() -> None:
     assert natural_remote_read_command("Show me my emails from today") == "/inbox"
     assert natural_remote_read_command("Do I have email today?") == "/inbox"
     assert natural_remote_read_command("Gimme summary of my todays inbox emails") == "/inbox"
+    assert natural_remote_read_command("Get only YGP related emails") == "/inbox"
+    assert natural_inbox_filter("Get only YGP related emails") == "YGP"
+    assert natural_inbox_filter("Show emails from DaeYoung PARK") == "DaeYoung PARK"
+    assert natural_inbox_filter("Gimme summary of my todays inbox emails") == ""
     assert natural_remote_read_command("What meetings are on my calendar today?") == "/calendar"
     assert natural_remote_read_command("What time does my next meeting start?") == "/calendar"
     assert natural_remote_read_command("Show my registered projects") == "/projects"
@@ -334,7 +339,22 @@ async def test_natural_inbox_question_bypasses_stateless_model_chat(tmp_path: Pa
     try:
         await controller.poll_once()
         assert await controller.poll_once() == 1
-        assert calls["inbox"] == ["called"]
+        assert calls["inbox"] == [""]
+        assert calls["chat"] == []
+        assert [message["text"] for message in http.sent] == ["INBOX"]
+    finally:
+        await db.close()
+
+
+async def test_natural_filtered_inbox_question_passes_only_search_terms(tmp_path: Path) -> None:
+    controller, http, calls, db = await _controller(
+        tmp_path,
+        batches=[[], [_update(1, text="Get only YGP related emails")]],
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 1
+        assert calls["inbox"] == ["YGP"]
         assert calls["chat"] == []
         assert [message["text"] for message in http.sent] == ["INBOX"]
     finally:
@@ -504,7 +524,7 @@ async def test_workspace_commands_are_deterministic_and_do_not_reach_remote_chat
     try:
         await controller.poll_once()
         assert await controller.poll_once() == 3
-        assert calls["inbox"] == ["called"]
+        assert calls["inbox"] == [""]
         assert calls["calendar"] == ["called"]
         assert calls["briefing"] == ["called"]
         assert calls["chat"] == []
@@ -523,7 +543,7 @@ async def test_workspace_commands_have_a_separate_hourly_limit(tmp_path: Path) -
         await controller.poll_once()
         await controller.poll_once()
         await controller.poll_once()
-        assert calls["inbox"] == ["called"]
+        assert calls["inbox"] == [""]
         assert calls["calendar"] == []
         assert [message["text"] for message in http.sent] == [
             "INBOX",
@@ -593,7 +613,7 @@ async def test_operator_commands_are_host_routed_and_never_reach_model_chat(
         store=TelegramRemoteControlStore(db, asyncio.Lock()),
         status_handler=lambda: fixed("status"),
         tasks_handler=lambda: fixed("tasks"),
-        inbox_handler=lambda: fixed("inbox"),
+        inbox_handler=lambda _query: fixed("inbox"),
         calendar_handler=lambda: fixed("calendar"),
         briefing_handler=lambda: fixed("briefing"),
         chat_handler=chat,
@@ -648,7 +668,7 @@ async def test_operator_lifecycle_stops_even_when_poller_was_never_started(
         store=TelegramRemoteControlStore(db, asyncio.Lock()),
         status_handler=reply,
         tasks_handler=reply,
-        inbox_handler=reply,
+        inbox_handler=lambda _query: reply(),
         calendar_handler=reply,
         briefing_handler=reply,
         chat_handler=chat,
