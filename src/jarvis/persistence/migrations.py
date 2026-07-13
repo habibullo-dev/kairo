@@ -1293,6 +1293,11 @@ async def _migrate_v28(db: aiosqlite.Connection) -> None:
     columns = {
         row[1] for row in await (await db.execute("PRAGMA table_info(tasks)")).fetchall()
     }
+    # Backup/repair validation may present a synthetic version-stamped database with no schema.
+    # Earlier migrations deliberately tolerate that shape; keep the final additive migration
+    # equally safe. A genuine v27 Kairo database always has ``tasks``.
+    if not columns:
+        return
     if "origin" not in columns:
         await db.execute(
             "ALTER TABLE tasks ADD COLUMN origin TEXT NOT NULL DEFAULT 'local' "
