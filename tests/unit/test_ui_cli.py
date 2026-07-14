@@ -18,6 +18,7 @@ from jarvis.attention import AttentionStore
 from jarvis.cli.repl import (
     Repl,
     _build_project_intelligence_coordinator,
+    _ui_access_urls,
     build_ui_app,
     run_ui,
 )
@@ -31,6 +32,7 @@ from jarvis.orchestration import OrchestrationStore
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
 from jarvis.ui.approver import UIApprover
+from jarvis.ui.auth import AuthManager
 from jarvis.ui.readmodels import UiServices
 from jarvis.ui.session import UiSession
 
@@ -68,6 +70,28 @@ def test_services_bundle_wired(tmp_path: Path) -> None:
     assert svc.memory is repl.memory
     assert svc.tasks is repl.tasks
     assert svc.knowledge is repl.knowledge
+
+
+def test_owner_auth_is_passed_through_composition(tmp_path: Path) -> None:
+    config = load_config(root=tmp_path, env_file=None)
+    repl = Repl(config, client=FakeClient([]), console=_console())
+    owner_auth = object()
+    app = build_ui_app(config, repl=repl, owner_auth=owner_auth)
+    assert app.state.owner_auth is owner_auth
+
+
+def test_ui_access_urls_separate_normal_login_from_recovery(tmp_path: Path) -> None:
+    config = load_config(root=tmp_path, env_file=None)
+    config.ui.host = "127.0.0.1"
+    config.ui.port = 8787
+    auth = AuthManager(token="one-use-token")
+    assert _ui_access_urls(config, auth, enrolled=False) == {
+        "setup": "http://127.0.0.1:8787/?token=one-use-token"
+    }
+    assert _ui_access_urls(config, auth, enrolled=True) == {
+        "login": "http://127.0.0.1:8787/login",
+        "recovery": "http://127.0.0.1:8787/?token=one-use-token",
+    }
 
 
 async def test_project_intelligence_stores_share_the_host_database(tmp_path: Path) -> None:

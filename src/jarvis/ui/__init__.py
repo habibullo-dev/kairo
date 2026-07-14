@@ -2,8 +2,9 @@
 
 It drives the same ``AgentLoop`` through the same seams (events out, injected ``Approver``
 in) and adds **no new authority**. Safety floor: docs/PLAN-8-ui.md + ADR-0008 — loopback
-only, a per-launch token exchanged for a session, approvals explicit/audited/replay-proof,
-and the UI is voice's fail-closed "screen".
+only, a singleton owner credential with digest-only durable sessions, a per-launch token that
+can issue only one setup/recovery grant, approvals explicit/audited/replay-proof, and the UI is
+voice's fail-closed "screen".
 
 FastAPI/uvicorn live behind the optional ``ui`` extra, so this package imports them lazily
 (``server`` pulls FastAPI); ``auth``/``connections`` are dependency-free and always import.

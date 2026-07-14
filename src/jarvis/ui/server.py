@@ -121,6 +121,9 @@ _OWNER_OPEN_PATHS = frozenset(
         "/auth/enroll",
         "/auth/login",
         "/auth/recover",
+        "/static/auth/auth.css",
+        "/static/auth/auth.js",
+        "/static/assets/kairo-favicon.svg",
     }
 )
 
@@ -436,6 +439,12 @@ def create_app(
             max_age=issued.cookie_max_age,
         )
 
+    def _owner_auth_shell() -> Response:
+        auth_shell = STATIC_DIR / "auth.html"
+        if auth_shell.is_file():
+            return FileResponse(auth_shell, headers={"Cache-Control": "no-cache"})
+        return _deny(status.HTTP_503_SERVICE_UNAVAILABLE, "authentication screen unavailable")
+
     async def _invalidate_owner_runtime(owner_session: str | None = None) -> None:
         """Remove revoked browser authority from every in-memory safety surface immediately."""
         targets = (
@@ -565,7 +574,7 @@ def create_app(
             return RedirectResponse(url=destination, status_code=status.HTTP_303_SEE_OTHER)
         if not await owner_auth.auth_grant_valid(request.cookies.get(AUTH_GRANT_COOKIE), "enroll"):
             return _deny(status.HTTP_401_UNAUTHORIZED, "setup link required")
-        return JSONResponse({"page": "setup", "ready": True})
+        return _owner_auth_shell()
 
     @app.get("/login")
     async def owner_login_page(request: Request) -> Response:
@@ -575,7 +584,7 @@ def create_app(
             return RedirectResponse(url="/setup", status_code=status.HTTP_303_SEE_OTHER)
         if request.state.owner_session_state is not None:
             return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-        return JSONResponse({"page": "login", "ready": True})
+        return _owner_auth_shell()
 
     @app.get("/recover")
     async def owner_recovery_page(request: Request) -> Response:
@@ -585,7 +594,7 @@ def create_app(
             return RedirectResponse(url="/setup", status_code=status.HTTP_303_SEE_OTHER)
         if not await owner_auth.auth_grant_valid(request.cookies.get(AUTH_GRANT_COOKIE), "recover"):
             return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
-        return JSONResponse({"page": "recover", "ready": True})
+        return _owner_auth_shell()
 
     @app.post("/auth/enroll")
     async def owner_enroll(request: Request) -> Response:
@@ -621,10 +630,12 @@ def create_app(
         if error is not None:
             return error
         assert body is not None
+        username = _body_text(body, "username")
+        if not username:
+            profile = await owner_auth.profile()
+            username = profile.username if profile is not None else ""
         try:
-            outcome = await owner_auth.login(
-                _body_text(body, "username"), _body_text(body, "password")
-            )
+            outcome = await owner_auth.login(username, _body_text(body, "password"))
         except OwnerLoginThrottledError as exc:
             resp = _deny(status.HTTP_429_TOO_MANY_REQUESTS, "login temporarily unavailable")
             resp.headers["Retry-After"] = str(exc.retry_after_seconds)

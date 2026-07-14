@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-07
+- **Amended:** 2026-07-14 (singleton owner identity replaces direct launch-token sessions)
 - **Context phase:** Phase 8 (workstation UI)
 
 ## Context
@@ -48,15 +49,21 @@ The server earns TTY-equivalent authority or does not run:
 - **Loopback bind only.** A non-loopback `ui.host` is a config error (enforced in
   `UIConfig`, fail-closed). Off-box access needs TLS + real identity — a future phase, not
   a YAML edit.
-- **Per-launch 128-bit token**, printed once, exchanged for an expiring
-  `HttpOnly; SameSite=Strict` session cookie via a **clean-URL `303` redirect**
-  (`Cache-Control: no-store`), so the token never persists in browser history, a `Referer`, or a
-  served page URL. The token is never logged and never echoed by any route. To avoid repeating
-  this exchange after ordinary workstation restarts, production persists only a SHA-256 digest of
-  the opaque session id plus its 30-day expiry; neither the cookie bearer value nor launch token is
-  written to disk.
-- **Every mutating route and the WebSocket require the session.** Data GETs require it too
-  (memory/KB contents are sensitive); only static app assets are open.
+- **Singleton owner identity.** First run requires the per-launch 128-bit token, but the token is
+  consumable exactly once and creates only a 10-minute, purpose-bound enrollment grant via a
+  **clean-URL `303` redirect** (`Cache-Control: no-store`). The owner then chooses the only account
+  name and an Argon2id-protected passphrase. After enrollment, ordinary access is passphrase login;
+  the launch token may create only a recovery grant and never application authority.
+- **Digest-only durable sessions.** Successful enrollment/login/recovery creates an opaque
+  `HttpOnly; SameSite=Strict` cookie whose SHA-256 digest, credential epoch, 30-day sliding idle
+  deadline, and 90-day absolute deadline are stored in SQLite. Recovery changes the passphrase,
+  increments the epoch, and revokes all older sessions atomically. Password step-up rotates the
+  session id. Neither a cookie bearer, passphrase, launch token, nor grant bearer is written to
+  disk.
+- **Every workstation mutation, data GET, app asset, and WebSocket require the owner session.**
+  Anonymous access is limited to health plus the exact setup/login/recovery shell and its three
+  authored assets. Open WebSockets revalidate the durable session before every frame; logout,
+  recovery, and step-up invalidate live approval nonces and browser workspaces immediately.
 - **Host-header allowlist** (defeats DNS rebinding) and **Origin check** on the WebSocket
   and mutating routes (defeats CSRF even if a cookie's scope leaks).
 - **`Referrer-Policy: no-referrer`, CSP `default-src 'self'`, and no CORS whatsoever** (no

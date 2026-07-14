@@ -60,7 +60,7 @@ async def _owner_client(tmp_path: Path, *, pre_enrolled: bool = False):
 async def _login(client: httpx.AsyncClient, password: str = PASSWORD) -> httpx.Response:
     return await client.post(
         "/auth/login",
-        json={"username": "habib", "password": password},
+        json={"password": password},
         headers=ORIGIN,
     )
 
@@ -78,7 +78,8 @@ async def test_launch_grant_enrolls_once_without_direct_app_authority(tmp_path: 
         assert TOKEN not in exchange.text + str(exchange.headers)
         assert (await client.get("/api/tasks")).status_code == 401
         assert (await client.get("/static/app.js")).status_code == 401
-        assert (await client.get("/setup")).json() == {"page": "setup", "ready": True}
+        setup = await client.get("/setup")
+        assert setup.status_code == 200 and "Create the owner account" in setup.text
         assert (await client.get(f"/?token={TOKEN}")).status_code == 401
 
         enrolled = await client.post(

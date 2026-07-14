@@ -1877,7 +1877,9 @@ async def run_voice(config: Config, *, console: Console | None = None) -> None:
 # --- workstation UI (Phase 8) ----------------------------------------------
 
 
-def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
+def build_ui_app(
+    config: Config, *, repl: Repl, auth=None, owner_auth=None, artifacts=None
+):
     """Compose the workstation app from the REPL's already-built collaborators, with the UI
     approver seams swapped in (ADR-0008): the turn loop's approver is the ``UIApprover`` (Gate
     queue), sub-agent ASKs escalate to the UI screen, and the shared turn lock serializes UI
@@ -1889,7 +1891,12 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
     from jarvis.ui.server import create_app
     from jarvis.ui.state import InteractiveModelState
 
-    app = create_app(config, auth=auth or AuthManager(), gate=repl.gate)
+    app = create_app(
+        config,
+        auth=auth or AuthManager(),
+        owner_auth=owner_auth,
+        gate=repl.gate,
+    )
     # Phase 15.5: the interactive model selector. The loop reads it via model_override (frozen per
     # turn); a switch is Anthropic-only (private-context pin) and never touches the ModelRegistry
     # routes. Default = config.models.main ⇒ byte-identical until the human picks another model.
@@ -2254,9 +2261,21 @@ def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None, workspac
     return voice
 
 
+def _ui_access_urls(config: Config, auth, *, enrolled: bool) -> dict[str, str]:
+    """Render the one normal entrypoint and the process-bound setup/recovery entrypoint."""
+    base = f"http://{config.ui.host}:{config.ui.port}"
+    if enrolled:
+        return {
+            "login": f"{base}/login",
+            "recovery": f"{base}/?token={auth.launch_token}",
+        }
+    return {"setup": f"{base}/?token={auth.launch_token}"}
+
+
 async def run_ui(config: Config, *, console: Console | None = None) -> None:
     """Open the database, compose the same services the REPL uses, and serve the workstation
-    UI on loopback. Prints the tokened URL once (the token drops from the URL after login).
+    UI on loopback. First run prints a one-use setup link; later runs print the normal login URL
+    plus a separately labeled process-bound recovery link.
     Shuts down with REPL parity: the background runner finishes any in-flight job (never a
     torn write) then stops, and the session is reflected on exit."""
     console = console or Console()
@@ -2332,11 +2351,22 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
             artifacts=artifacts,  # Phase 13: lets generate_image register its PNG as an artifact
         )
         from jarvis.ui import AuthManager
+        from jarvis.ui.owner_auth import OwnerAuthService
 
-        # Persist only SHA-256 digests of browser sessions so the one-time launch exchange
-        # survives ordinary browser/server restarts without storing a replayable cookie value.
-        auth = AuthManager(session_store_path=config.data_dir / "ui_sessions.json")
-        app = build_ui_app(config, repl=repl, auth=auth, artifacts=artifacts)
+        # The launch token can issue one short-lived setup/recovery grant only. Application
+        # sessions live in the shared database and are credential/expiry/epoch checked. Legacy
+        # digest-only sessions are deliberately retired, never imported into owner authority.
+        auth = AuthManager()
+        owner_auth = OwnerAuthService(db, store.lock)
+        with _ctx.suppress(OSError):
+            (config.data_dir / "ui_sessions.json").unlink(missing_ok=True)
+        app = build_ui_app(
+            config,
+            repl=repl,
+            auth=auth,
+            owner_auth=owner_auth,
+            artifacts=artifacts,
+        )
         project_intelligence = app.state.project_intelligence
 
         # Wire the real Playwright driver for the inspect-only browser-QA tool + the screenshot
@@ -2429,11 +2459,20 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
                 app.state.project_intelligence = None
                 project_intelligence = None
 
-        url = f"http://{config.ui.host}:{config.ui.port}/?token={auth.launch_token}"
-        console.print(
-            f"\n[bold cyan]Kairo Workstation[/] — open this once "
-            f"(the token drops from the URL after login):\n  [underline]{url}[/]\n"
-        )
+        enrolled = await owner_auth.is_enrolled()
+        urls = _ui_access_urls(config, auth, enrolled=enrolled)
+        if enrolled:
+            console.print(
+                "\n[bold cyan]Kairo Workstation[/]\n"
+                f"  Sign in: [underline]{urls['login']}[/]\n"
+                f"  [dim]Recovery only: {urls['recovery']}[/]\n"
+            )
+        else:
+            console.print(
+                "\n[bold cyan]Kairo Workstation[/] — create the single owner account:\n"
+                f"  [underline]{urls['setup']}[/]\n"
+                "  [dim]This setup link is one-use and expires after 10 minutes.[/]\n"
+            )
         server = uvicorn.Server(
             uvicorn.Config(app, host=config.ui.host, port=config.ui.port, log_level="warning")
         )

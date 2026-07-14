@@ -300,12 +300,16 @@ localhost port is not private, so the UI authenticates or refuses to serve, and 
 is a *view* over an existing service — the only mutations are a closed, route-pinned set of
 pre-existing human-authority ops.
 
-- **`auth.py` + `server.py`** — the private-admin-console floor: loopback-only bind (a
-  non-loopback `ui.host` is a config error), a per-launch token exchanged for an expiring
-  `HttpOnly; SameSite=Strict` session via a **clean-URL 303** (no token in history/logs).
-  Production persists only the session's SHA-256 digest + expiry, so the clean URL survives
-  ordinary browser/server restarts without writing a replayable cookie value. A Host allowlist
-  (anti DNS-rebinding), an Origin check on mutations + the WS (anti-CSRF),
+- **`auth.py` + `owner_auth.py` + `server.py`** — the private-admin-console floor:
+  loopback-only bind (a non-loopback `ui.host` is a config error), one singleton owner account,
+  an Argon2id passphrase verifier, and digest-only durable sessions. The per-launch token is
+  consumable exactly once and can issue only a 10-minute, purpose-bound enrollment or recovery
+  grant via a **clean-URL 303**; it never creates application authority. Normal login creates a
+  30-day sliding / 90-day absolute `HttpOnly; SameSite=Strict` session. Recovery bumps the
+  credential epoch and revokes every older session; step-up rotates the session id. Active
+  WebSockets revalidate the durable session and logout/recovery/rotation immediately invalidate
+  their approval nonces and browser workspaces. A Host allowlist (anti DNS-rebinding), an Origin
+  check on mutations + the WS (anti-CSRF),
   strict CSP, `Referrer-Policy: no-referrer`, and **no CORS middleware at all**. FastAPI +
   uvicorn behind the optional `ui` extra; the frontend is hand-written static assets (no
   build step, no CDN).
@@ -394,9 +398,11 @@ connector status. Daily renders Briefing/Today/What-changed/Workflows (all untru
 SQLite via aiosqlite. `sessions` + `messages` + `memories` + `tasks`/`task_runs` +
 `kb_sources`/`kb_chunks`/`kb_wiki_links` + `agent_runs` + `digests` and the later project,
 orchestration, artifact, connector-write, graph, and attention records are all local tables.
-The current committed schema baseline is v20, tracked by `PRAGMA user_version` with an ordered
+The current committed schema baseline is v31, tracked by `PRAGMA user_version` with an ordered
 migration list. v2 introduced memory; v3 tasks + `sessions.kind`; v4 the knowledge base; v5
-sub-agents; later migrations add the platform records incrementally. v5 remains the highest-blast-radius
+sub-agents; later migrations add the platform records incrementally, with v31 adding the singleton
+owner, passkey-ready credential storage, digest-only sessions, and one-use auth grants. v5 remains
+the highest-blast-radius
 migration: `sessions.kind`'s CHECK can't be ALTERed to add `'subagent'`, so the table is
 rebuilt via the standard procedure (foreign_keys OFF *outside* a transaction, atomic
 rebuild, `foreign_key_check`, foreign_keys ON) — child FKs survive the drop+rename. The

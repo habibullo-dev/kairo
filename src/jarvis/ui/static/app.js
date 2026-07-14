@@ -72,6 +72,12 @@ function workspaceHeaders(base = {}) {
   return workspaceId ? { ...base, "x-kairo-workspace-id": workspaceId } : base;
 }
 
+function sessionAlive(response) {
+  if (response.status !== 401) return true;
+  location.replace("/login");
+  return false;
+}
+
 // --- tiny API helper (same-origin; cookie carried automatically) ---
 let runnerStatusRequest = null;
 export const api = {
@@ -79,6 +85,7 @@ export const api = {
   async get(path) {
     try {
       const r = await fetch(path, { headers: workspaceHeaders({ "accept": "application/json" }) });
+      if (!sessionAlive(r)) return null;
       return r.ok ? await r.json() : null;
     } catch {
       return null;  // read surfaces render a distinct unavailable state instead of throwing
@@ -103,18 +110,21 @@ export const api = {
       headers: workspaceHeaders({ "content-type": "application/json" }),
       body: JSON.stringify(body || {}),
     });
+    if (!sessionAlive(r)) return { ok: false, status: r.status, data: {} };
     return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
   },
   async upload(path, body) {
     // FormData lets the browser set its own multipart boundary. The server still receives the
     // same authenticated, server-owned workspace handle as every other attended UI action.
     const r = await fetch(path, { method: "POST", headers: workspaceHeaders(), body });
+    if (!sessionAlive(r)) return { ok: false, status: r.status, data: {} };
     return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
   },
   async download(path, filename) {
     // Keep the opaque, server-owned workspace handle on downloads too.  This avoids opening a
     // new unbound tab just to fetch an output from another chat/project.
     const r = await fetch(path, { headers: workspaceHeaders() });
+    if (!sessionAlive(r)) return false;
     if (!r.ok) return false;
     const url = URL.createObjectURL(await r.blob());
     const link = document.createElement("a");
@@ -223,11 +233,27 @@ function connect() {
     startHeartbeat(socket);
   };
   socket.onmessage = (e) => handleMessage(JSON.parse(e.data));
-  socket.onclose = () => {
+  socket.onclose = (event) => {
     // A late close from a superseded socket cannot tear down the new connection's heartbeat.
     if (ws !== socket) return;
     clearHeartbeat();
     ws = null;
+    if (event.code === 1008) {
+      // Logout/recovery/session expiry close live authority with policy code 1008. Allow a
+      // concurrent step-up response to install its replacement cookie before deciding whether
+      // this browser must return to login.
+      setTimeout(async () => {
+        try {
+          const response = await fetch("/auth/session", { headers: { "accept": "application/json" } });
+          if (response.status === 401) location.replace("/login");
+          else if (response.ok) connect();
+          else setTimeout(connect, 1500);
+        } catch {
+          setTimeout(connect, 1500);
+        }
+      }, 200);
+      return;
+    }
     setTimeout(connect, 1500); // best-effort reconnect
   };
 }
@@ -753,6 +779,11 @@ function init() {
   document.getElementById("ap-deny").addEventListener("click", () => resolveApproval("deny"));
   document.getElementById("st-stop").addEventListener("click", async () => { await api.post("/api/runner/pause"); pollStatus(); });
   document.getElementById("st-resume").addEventListener("click", async () => { await api.post("/api/runner/resume"); pollStatus(); });
+  document.getElementById("st-logout").addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
+    await api.post("/auth/logout", {});
+    location.replace("/login");
+  });
   document.getElementById("st-mic").addEventListener("click", talk);  // browser push-to-talk
   document.getElementById("st-play").addEventListener("click", () => {  // toggle spoken replies
     setPlayback(!playbackOn());

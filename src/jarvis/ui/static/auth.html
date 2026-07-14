@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Kairo · Owner access</title>
+  <link rel="icon" href="/static/assets/kairo-favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/auth/auth.css">
+</head>
+<body>
+  <main class="auth-layout">
+    <section class="identity" aria-label="Kairo Workstation">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>KAIRO</div>
+      <div class="identity-copy">
+        <p class="eyebrow">PRIVATE WORKSTATION</p>
+        <h1>Your work stays behind one owner key.</h1>
+        <p class="lede">Projects, approvals, connectors, and live agent runs remain locked until
+          this browser proves owner access.</p>
+      </div>
+      <div class="boundary"><span aria-hidden="true"></span>Local browser session</div>
+    </section>
+
+    <section class="auth-card" aria-live="polite">
+      <div class="view" data-view="setup" hidden>
+        <p class="step">FIRST-RUN SETUP</p>
+        <h2>Create the owner account</h2>
+        <p class="intro">This becomes the only administrator on this Kairo installation.</p>
+        <form method="post" action="/auth/enroll" data-endpoint="/auth/enroll" novalidate>
+          <label for="setup-username">Owner name</label>
+          <input id="setup-username" name="username" type="text" autocomplete="username"
+            minlength="3" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._@+\-]{2,63}"
+            spellcheck="false" required autofocus>
+          <p class="hint">3–64 characters. Letters, numbers, and . _ @ + -</p>
+
+          <label for="setup-password">Passphrase</label>
+          <input id="setup-password" name="password" type="password" autocomplete="new-password"
+            minlength="15" maxlength="1024" required>
+          <p class="hint">Use at least 15 characters. A short sentence works well.</p>
+
+          <label for="setup-confirm">Confirm passphrase</label>
+          <input id="setup-confirm" name="confirm" type="password" autocomplete="new-password"
+            minlength="15" maxlength="1024" required>
+
+          <label class="show-password"><input type="checkbox" data-show-password>Show passphrase</label>
+          <button type="submit">Create owner and enter Kairo</button>
+          <p class="form-status" role="status"></p>
+        </form>
+      </div>
+
+      <div class="view" data-view="login" hidden>
+        <p class="step">OWNER ACCESS</p>
+        <h2>Welcome back</h2>
+        <p class="intro">Enter your passphrase. There is no shared or guest account.</p>
+        <form method="post" action="/auth/login" data-endpoint="/auth/login" novalidate>
+          <label for="login-password">Passphrase</label>
+          <input id="login-password" name="password" type="password"
+            autocomplete="current-password" maxlength="1024" required autofocus>
+          <label class="show-password"><input type="checkbox" data-show-password>Show passphrase</label>
+          <button type="submit">Enter Kairo</button>
+          <p class="form-status" role="status"></p>
+        </form>
+      </div>
+
+      <div class="view" data-view="recover" hidden>
+        <p class="step">OWNER RECOVERY</p>
+        <h2>Replace the owner passphrase</h2>
+        <p class="intro">Completing recovery signs out every other browser session.</p>
+        <form method="post" action="/auth/recover" data-endpoint="/auth/recover" novalidate>
+          <label for="recover-password">New passphrase</label>
+          <input id="recover-password" name="password" type="password" autocomplete="new-password"
+            minlength="15" maxlength="1024" required autofocus>
+          <p class="hint">Use at least 15 characters. Do not reuse the old passphrase.</p>
+
+          <label for="recover-confirm">Confirm new passphrase</label>
+          <input id="recover-confirm" name="confirm" type="password" autocomplete="new-password"
+            minlength="15" maxlength="1024" required>
+
+          <label class="show-password"><input type="checkbox" data-show-password>Show passphrase</label>
+          <button type="submit">Replace passphrase and sign in</button>
+          <p class="form-status" role="status"></p>
+        </form>
+      </div>
+
+      <footer><span aria-hidden="true">●</span> Owner credentials never leave this workstation.</footer>
+    </section>
+  </main>
+  <script type="module" src="/static/auth/auth.js"></script>
+</body>
+</html>

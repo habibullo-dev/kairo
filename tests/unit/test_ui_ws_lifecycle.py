@@ -13,7 +13,9 @@ def test_reconnect_replaces_and_clears_the_single_heartbeat_timer() -> None:
     assert "clearInterval(heartbeatTimer);" in APP
     # Reconnect clears a previous interval before creating a socket; close clears the active one.
     assert "function connect() {\n  clearHeartbeat();" in APP
-    assert "socket.onclose = () => {" in APP
+    assert "socket.onclose = (event) => {" in APP
+    assert "if (event.code === 1008)" in APP
+    assert 'fetch("/auth/session"' in APP
     assert "if (ws !== socket) return;\n    clearHeartbeat();\n    ws = null;" in APP
     # The fresh socket is the only one permitted to heartbeat after reconnecting.
     assert "startHeartbeat(socket);" in APP
