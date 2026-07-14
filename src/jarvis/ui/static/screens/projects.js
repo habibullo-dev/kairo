@@ -336,7 +336,7 @@ export async function render(container, api) {
       await api.post("/api/projects/select", { project_id: null });
       refresh();
     }, "ghost");
-    container.appendChild(el("div", { class: "rise", style: "margin-top:12px" }, [back]));
+    container.appendChild(el("div", { class: "rise project-scope-return" }, [back]));
   }
 
   const archived = data.archived || [];
@@ -351,7 +351,7 @@ export async function render(container, api) {
     ]));
     const details = el("details", { class: "surface rise archived" }, [
       el("summary", {}, [`Archived (${archived.length})`]),
-      el("div", { class: "daily-rows", style: "margin-top:10px" }, rows),
+      el("div", { class: "daily-rows archived-project-rows" }, rows),
     ]);
     container.appendChild(details);
   }

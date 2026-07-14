@@ -19,6 +19,64 @@ from jarvis.ui.server import STATIC_DIR, create_app
 
 STATIC_FILES = sorted(STATIC_DIR.rglob("*.*"))
 TEXT_ASSET_SUFFIXES = {".css", ".html", ".js", ".json", ".svg", ".txt"}
+CSP_BLOCKED_STYLE_PATTERNS = {
+    "inline style element": re.compile(r"<style(?:\s|>)", re.IGNORECASE),
+    "inline style attribute": re.compile(
+        r"<[a-z][^<>]*\sstyle\s*=", re.IGNORECASE
+    ),
+    # Reserve the ``style`` object key throughout production UI JavaScript. This intentionally
+    # errs safe: every DOM builder funnels presentation through classes, and the shared ``el``
+    # helper also rejects computed/spread style keys at runtime.
+    "style object key": re.compile(r"\bstyle\s*:", re.IGNORECASE),
+    "setAttribute style attribute": re.compile(
+        r"\.setAttribute\(\s*[\"']style[\"']", re.IGNORECASE
+    ),
+    # Chromium currently permits cssText through CSSOM, but banning it keeps dynamic changes
+    # reviewable as discrete properties and avoids browser-specific CSP behavior.
+    "cssText assignment": re.compile(r"\.style\.cssText\s*=", re.IGNORECASE),
+}
+
+
+def _without_js_comments(source: str) -> str:
+    """Remove JavaScript comments while preserving quoted and template-string source."""
+    out: list[str] = []
+    quote: str | None = None
+    escaped = False
+    i = 0
+    while i < len(source):
+        char = source[i]
+        following = source[i + 1] if i + 1 < len(source) else ""
+        if quote is not None:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            i += 1
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            out.append(char)
+            i += 1
+            continue
+        if char == "/" and following == "/":
+            i += 2
+            while i < len(source) and source[i] not in "\r\n":
+                i += 1
+            continue
+        if char == "/" and following == "*":
+            i += 2
+            while i + 1 < len(source) and source[i : i + 2] != "*/":
+                if source[i] in "\r\n":
+                    out.append(source[i])
+                i += 1
+            i = min(len(source), i + 2)
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out)
 
 
 def _client(tmp_path: Path):
@@ -37,7 +95,10 @@ def test_index_served_authenticated_under_csp(tmp_path: Path) -> None:
     r = client.get("/", headers=_cookie(auth))
     assert r.status_code == 200
     assert "KAIRO" in r.text and "/static/app.js" in r.text
-    assert "default-src 'self'" in r.headers.get("content-security-policy", "")
+    csp = r.headers.get("content-security-policy", "")
+    assert "default-src 'self'" in csp
+    assert "style-src 'self'" in csp
+    assert "'unsafe-inline'" not in csp
 
 
 def test_static_assets_served_and_gated(tmp_path: Path) -> None:
@@ -78,6 +139,57 @@ def test_assets_have_no_inline_event_handlers() -> None:
         if f.suffix in {".html", ".js"}:
             text = f.read_text(encoding="utf-8")
             assert " onclick=" not in text and " onload=" not in text, f.name
+
+
+def test_assets_have_no_csp_blocked_inline_styles() -> None:
+    """Keep every shipped style declaration compatible with ``style-src 'self'``.
+
+    Static HTML attributes, template-string attributes, and ``el(..., {style: ...})`` create
+    inline style attributes that Chromium refuses under the production CSP.  Direct property
+    updates such as ``node.style.width = ...`` remain available for genuinely dynamic geometry;
+    durable presentation belongs in ``kairo.css``.  ``cssText`` is banned as a portability and
+    reviewability convention even though current Chromium applies it through CSSOM.
+    """
+    for f in STATIC_FILES:
+        if f.suffix not in {".html", ".js"}:
+            continue
+        text = f.read_text(encoding="utf-8")
+        if f.suffix == ".js":
+            text = _without_js_comments(text)
+        for label, pattern in CSP_BLOCKED_STYLE_PATTERNS.items():
+            assert pattern.search(text) is None, f"{f.relative_to(STATIC_DIR)}: {label}"
+
+
+def test_csp_style_scanner_ignores_comments_but_checks_runtime_source() -> None:
+    comments_only = _without_js_comments(
+        '// style="display:none"\n/* el("div", {style: "display:none"}) */\n'
+    )
+    assert all(
+        pattern.search(comments_only) is None
+        for pattern in CSP_BLOCKED_STYLE_PATTERNS.values()
+    )
+    safe_sources = (
+        "const style = getComputedStyle(node);",
+        'node.style.display = "none";',
+        'node.style.setProperty("--accent", value);',
+    )
+    for source in safe_sources:
+        assert all(
+            pattern.search(_without_js_comments(source)) is None
+            for pattern in CSP_BLOCKED_STYLE_PATTERNS.values()
+        ), source
+    blocked_sources = (
+        'const rules = "<style>body{display:none}</style>";',
+        'const markup = `<div style="display:none"></div>`;',
+        'el("div", {style: "display:none"});',
+        'node.setAttribute("style", "display:none");',
+        'node.style.cssText = "display:none";',
+    )
+    for source in blocked_sources:
+        assert any(
+            pattern.search(_without_js_comments(source)) is not None
+            for pattern in CSP_BLOCKED_STYLE_PATTERNS.values()
+        ), source
 
 
 def test_shell_hides_via_class_not_blocked_inline_style() -> None:

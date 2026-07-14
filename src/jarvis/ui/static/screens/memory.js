@@ -37,7 +37,7 @@ export async function render(container, api) {
     return;
   }
   for (const m of rows) {
-    const actions = el("td", { style: "text-align:right" });
+    const actions = el("td", { class: "actions-cell" });
     const b = el("button", { class: "rowbtn", type: "button", text: "Forget" });
     b.addEventListener("click", async () => { await api.post(`/api/memory/${m.id}/forget`); render(container, api); });
     actions.append(b);

@@ -60,7 +60,7 @@ export async function render(container, api, ctx) {
       const copy = el("button", { class: "plain-button ghost" }, ["Copy: jarvis graph rebuild"]);
       copy.addEventListener("click", () =>
         navigator.clipboard && navigator.clipboard.writeText("jarvis graph rebuild"));
-      const help = el("div", { class: "dim", style: "margin-top:10px;max-width:62ch" }, [
+      const help = el("div", { class: "dim graph-empty-help" }, [
         "The graph links this project's chats, runs, artifacts, memory, sources and people into a "
         + "calm map you can explore and search. It's read-only — exploring it never changes your "
         + "data, and new memories still go through review before they appear."]);
@@ -80,7 +80,7 @@ export async function render(container, api, ctx) {
     container.appendChild(buildHeader(data));
     const main = el("div", { class: "graph-main" });
     const canvasHost = el("div", { class: "graph-host" });
-    const sideItems = [el("div", { class: "dim", style: "padding:12px" }, [
+    const sideItems = [el("div", { class: "dim graph-side-intro" }, [
       "Click a node to highlight its relationships and inspect safe metadata.",
     ])];
     if (Array.isArray(data.communities) && data.communities.length) {

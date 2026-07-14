@@ -100,14 +100,14 @@ function metaRow(k, v) {
 }
 
 function badge(text) {
-  return el("span", { class: "chip", style: "font-size:11px;margin:0 4px 4px 0" }, [text]);
+  return el("span", { class: "chip settings-badge" }, [text]);
 }
 
 // One service row: name + state pill + policy badges (egress / context-policy / output-trust) +
 // the credential env-var NAMES (never a value). Read-only.
 function serviceRow(x) {
   const ok = x.state === "available";
-  const head = el("div", { style: "display:flex;align-items:center;gap:8px;flex-wrap:wrap" }, [
+  const head = el("div", { class: "settings-service-head" }, [
     el("span", { class: "status-pill" + (ok ? " good" : "") }, [
       el("span", { class: "dot" + (ok ? "" : " off") }, []), el("span", {}, [`${x.name} · ${x.state}`]),
     ]),
@@ -116,8 +116,8 @@ function serviceRow(x) {
     badge(x.output_trust),
     (x.credential_env || []).length ? badge("key: " + x.credential_env.join(", ")) : null,
   ].filter(Boolean));
-  const note = x.note ? el("div", { class: "set-s", style: "margin:2px 0 8px" }, [x.note]) : null;
-  return el("div", { style: "margin-bottom:6px" }, [head, note].filter(Boolean));
+  const note = x.note ? el("div", { class: "set-s settings-service-note" }, [x.note]) : null;
+  return el("div", { class: "settings-service-row" }, [head, note].filter(Boolean));
 }
 
 // One capability line: name · state (+ "not in chat" when connected-but-unexposed) + plain reason.
@@ -130,7 +130,7 @@ function capLine(r) {
     el("span", {}, [`${r.name} · ${r.state}${notInChat ? " · not in chat" : ""}`]),
   ]);
   const reason = r.reason
-    ? el("span", { class: "set-s", style: "margin-left:8px" }, [r.reason]) : null;
+    ? el("span", { class: "set-s settings-reason" }, [r.reason]) : null;
   return el("div", { class: "cap-line" }, [pill, reason].filter(Boolean));
 }
 
@@ -184,7 +184,7 @@ function renderStatus(region) {
     metaRow(r.role, `${r.model || "?"}${r.provider ? " · " + r.provider : ""}${r.configured ? "" : " · no key"}`));
   region.appendChild(statusSection("Providers & model routes", [
     el("div", { class: "art-meta" }, provRows.length ? provRows : [el("div", { class: "dim" }, ["No providers."])]),
-    el("div", { class: "set-s", style: "margin:8px 0 4px" }, ["Model routes"]),
+    el("div", { class: "set-s settings-section-label" }, ["Model routes"]),
     el("div", { class: "art-meta" }, routeRows),
   ], "hub"));
 
@@ -196,14 +196,14 @@ function renderStatus(region) {
   const postureNodes = posture.state === "available"
     ? [
       el("div", { class: "art-meta" }, [metaRow("Configured default", posture.global_default || "?")]),
-      el("div", { class: "set-s", style: "margin:8px 0 4px" }, [
+      el("div", { class: "set-s settings-section-label" }, [
         "Explicit decisions that differ from the global default",
       ]),
       (posture.overrides || []).length
         ? el("div", { class: "art-meta" }, (posture.overrides || []).map((row) =>
           metaRow(row.tool || "?", row.decision || "?")))
         : el("div", { class: "dim" }, ["No explicit tool decision differs from the global default."]),
-      el("div", { class: "set-s", style: "margin-top:8px" }, [
+      el("div", { class: "set-s settings-section-note" }, [
         "Configured policy only — tool defaults and path, shell, sensitive-data, and taint safety rules still apply per call. Changing a decision still requires the existing Gate policy workflow.",
       ]),
     ]
@@ -217,7 +217,7 @@ function renderStatus(region) {
     ? services.map(serviceRow)
     : [el("div", { class: "dim" }, ["No services in the catalog."])];
   if (set.enable_hint) {
-    svcNodes.push(el("pre", { class: "set-s", style: "white-space:pre-wrap;margin-top:8px;opacity:.8" }, [set.enable_hint]));
+    svcNodes.push(el("pre", { class: "set-s settings-enable-hint" }, [set.enable_hint]));
   }
   const details = el("details", { class: "advanced" }, [
     el("summary", {}, ["Advanced: full service catalog + policies"]), ...svcNodes,
@@ -237,7 +237,7 @@ function renderStatus(region) {
   }
   connNodes.push(el("div", { class: "conn-strip" }, connChips));
   if (g && g.connected && (g.scopes || g.expires_at)) {
-    connNodes.push(el("div", { class: "art-meta", style: "margin-top:8px" }, [
+    connNodes.push(el("div", { class: "art-meta settings-meta" }, [
       g.scopes ? metaRow("Google scopes", g.scopes.map((x) => x.split("/").pop()).join(", ")) : null,
       g.expires_at ? metaRow("Token expires", g.expires_at) : null,
     ].filter(Boolean)));
@@ -275,12 +275,12 @@ function renderStatus(region) {
       metaRow("Configured mode", skillMode),
       metaRow("Runtime status", skillModeNote),
     ]),
-    el("div", { class: "set-s", style: "margin:8px 0 4px" }, ["Configured pins"]),
+    el("div", { class: "set-s settings-section-label" }, ["Configured pins"]),
     pins.length
       ? el("div", { class: "art-meta" }, pins.map((pin) =>
         metaRow(pin.pack || "?", `${pin.version || "?"} · hash ${pin.sha256_prefix || "?"}`)))
       : el("div", { class: "dim" }, ["No skill packs are configured."]),
-    el("div", { class: "set-s", style: "margin-top:8px" }, [
+    el("div", { class: "set-s settings-section-note" }, [
       "Configuration only — this screen never loads pack files, injects skill text, or changes runtime mode.",
     ]),
   ];

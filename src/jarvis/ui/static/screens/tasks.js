@@ -21,7 +21,7 @@ export async function render(container, api) {
     tr.innerHTML = `<td>${esc(t.title)}</td><td class="dim">${esc(t.kind)}</td>
       <td class="mono dim">${esc(t.next_run_at || "—")}</td>
       <td><span class="tag ${active ? "ok" : ""}">${esc(t.status)}</span></td>
-      <td style="text-align:right"></td>`;
+      <td class="actions-cell"></td>`;
     const history = document.createElement("button");
     history.className = "rowbtn";
     history.textContent = "History";

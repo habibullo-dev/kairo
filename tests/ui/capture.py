@@ -4,6 +4,8 @@ test (its filename doesn't match ``test_*`` so pytest never collects it).
 It drives a real headless browser (the ``browser`` extra) against an ALREADY-RUNNING workstation
 UI: it exchanges the one-shot launch ``?token=`` for the httponly session cookie, then for each
 screen × theme × viewport it saves a PNG and runs the no-overlap / no-horizontal-scroll check.
+It also records ``securitypolicyviolation`` events from the real FastAPI response, so a screenshot
+cannot pass while the production CSP is silently refusing part of the interface.
 The pure machinery (viewport matrix, filename, overlap analysis) lives in
 ``jarvis.ui.screenshots`` and is unit-tested keyless; this file is only the Playwright glue.
 
@@ -14,7 +16,7 @@ running so you have the tokened URL it printed):
         --screen daily:daily:populated --screen projects:projects:populated
 
 Each --screen is ``hash:screen:state`` (the URL hash to visit, and the screen/state labels for
-the filename). Exits non-zero if any viewport shows a layout violation.
+the filename). Exits non-zero if any viewport shows a layout or CSP violation.
 """
 
 from __future__ import annotations
@@ -35,6 +37,17 @@ from jarvis.ui.screenshots import (
 # {theme, density, layout, motion, accent}. The harness writes {"theme": <name>} before first
 # paint so initTheme() applies the requested theme (merged over the defaults).
 _THEME_STORAGE_KEY = "kairo:appearance"
+_CSP_PROBE_INIT = """
+window.__kairoCspViolations = [];
+document.addEventListener("securitypolicyviolation", (event) => {
+  window.__kairoCspViolations.push({
+    directive: event.effectiveDirective || event.violatedDirective || "unknown",
+    blocked: event.blockedURI || "inline",
+    source: event.sourceFile || "document",
+    line: event.lineNumber || 0,
+  });
+});
+"""
 
 
 def _parse_screens(specs: list[str]) -> list[tuple[str, str, str]]:
@@ -71,6 +84,7 @@ async def _run(base: str, token: str, out_dir: Path, screens: list[tuple[str, st
                         f"try{{localStorage.setItem('{_THEME_STORAGE_KEY}',"
                         f"JSON.stringify({{theme:'{theme}'}}));}}catch(e){{}}"
                     )
+                    await page.add_init_script(_CSP_PROBE_INIT)
                     for hash_, screen, state in screens:
                         target = f"{base}/#{hash_}" if hash_ else f"{base}/"
                         # A fragment change alone is JS-driven and networkidle won't wait for the
@@ -84,13 +98,24 @@ async def _run(base: str, token: str, out_dir: Path, screens: list[tuple[str, st
                         metrics = await page.evaluate(OVERLAP_PROBE_JS)
                         for v in analyze_overlap(metrics):
                             problems.append(f"[{theme} {width}w {screen}/{state}] {v}")
+                        violations = await page.evaluate("window.__kairoCspViolations || []")
+                        # reload() above creates a fresh document today, but clear explicitly so a
+                        # future navigation optimization cannot attribute one screen's violation
+                        # to every later screen in the same capture page.
+                        await page.evaluate("window.__kairoCspViolations = []")
+                        for violation in violations:
+                            problems.append(
+                                f"[{theme} {width}w {screen}/{state}] CSP "
+                                f"{violation['directive']} blocked {violation['blocked']} at "
+                                f"{violation['source']}:{violation['line']}"
+                            )
                     await page.close()
         finally:
             await browser.close()
 
     print(f"captured {len(screens) * len(themes) * len(VIEWPORTS)} shots -> {out_dir}")
     if problems:
-        print(f"\n{len(problems)} layout violation(s):")
+        print(f"\n{len(problems)} layout/CSP violation(s):")
         for p in problems:
             print(f"  - {p}")
         return 1

@@ -64,7 +64,7 @@ export async function render(container, api) {
       head.innerHTML = `<span>${esc(s.title || "(untitled)")} <span class="tag amber">${esc(s.review_status)}</span></span>
         <span class="mono dim">${esc(s.origin)}</span>`;
       const actions = document.createElement("div");
-      actions.style.cssText = "white-space:nowrap";
+      actions.className = "review-actions";
       actions.append(btn("Approve", async () => { await api.post(`/api/vault/sources/${s.id}/approve`); render(container, api); }));
       actions.append(btn("Reject", async () => { await api.post(`/api/vault/sources/${s.id}/reject`); render(container, api); }));
       head.appendChild(actions);

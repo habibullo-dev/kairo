@@ -10,7 +10,7 @@ import { money } from "../ui/format.js";
 function metric(p, label) {
   return `<div class="metric"><div class="n">${money(p ? p.cost_usd : 0)}</div>
     <div class="l">${esc(label)}</div>
-    <div class="dim" style="font-size:11px;margin-top:2px">${p ? p.calls : 0} calls${
+    <div class="dim metric-detail">${p ? p.calls : 0} calls${
       p && p.unpriced ? ` · ${p.unpriced} unpriced` : ""}</div></div>`;
 }
 
@@ -18,8 +18,8 @@ function dimRows(arr, key) {
   return (arr || [])
     .filter((r) => r[key] != null)
     .map((r) => `<tr><td>${esc(String(r[key]))}</td>
-      <td style="text-align:right">${money(r.cost_usd)}</td>
-      <td style="text-align:right" class="dim">${r.calls ?? "—"}${r.unpriced ? ` · ${r.unpriced}?` : ""}</td></tr>`)
+      <td class="num">${money(r.cost_usd)}</td>
+      <td class="dim num">${r.calls ?? "—"}${r.unpriced ? ` · ${r.unpriced}?` : ""}</td></tr>`)
     .join("");
 }
 
@@ -53,13 +53,13 @@ function roiBlock(roi, hourly) {
   const pricedAccepted = runs.filter((r) => r.outcome === "review_accepted" && r.net_usd != null);
   const sum = (f) => pricedAccepted.reduce((a, r) => a + (r[f] || 0), 0);
   const agg = pricedAccepted.length
-    ? `<div class="cost-row" style="margin-bottom:10px">
+    ? `<div class="cost-row cost-summary">
         <div class="metric"><div class="n">${money(sum("value_usd"))}</div><div class="l">time-saved value</div></div>
         <div class="metric"><div class="n">${money(sum("actual_cost_usd"))}</div><div class="l">actual cost</div></div>
         <div class="metric"><div class="n">${money(sum("net_usd"))}</div><div class="l">net (${pricedAccepted.length} accepted runs)</div></div></div>`
     : `<div class="dim">No priced review-accepted runs yet.</div>`;
   const unknown = accounting.unknown_actual_model_cost_runs || 0;
-  const accountingBlock = `<div class="cost-row" style="margin-bottom:10px">
+  const accountingBlock = `<div class="cost-row cost-summary">
       <div class="metric"><div class="n">${accounting.completed_runs || 0}</div><div class="l">terminal runs</div></div>
       <div class="metric"><div class="n">${accounting.review_accepted_runs || 0}</div><div class="l">review accepted</div></div>
       <div class="metric"><div class="n">${money(accounting.known_actual_model_cost_usd)}</div><div class="l">known model cost</div></div>
@@ -68,17 +68,17 @@ function roiBlock(roi, hourly) {
   const rows = runs.map((r) => `<tr><td class="dim">${esc(String(r.workflow || "?"))}</td>
     <td class="dim">${esc(String(r.team || "—"))}</td>
     <td class="dim">${esc(String(r.outcome || r.status || "—").replace(/_/g, " "))}</td>
-    <td style="text-align:right">${r.value_usd == null ? "—" : money(r.value_usd)}</td>
-    <td style="text-align:right" class="dim">${money(r.actual_cost_usd)}</td>
-    <td style="text-align:right">${r.net_usd == null ? "—" : money(r.net_usd)}</td></tr>`).join("");
+    <td class="num">${r.value_usd == null ? "—" : money(r.value_usd)}</td>
+    <td class="dim num">${money(r.actual_cost_usd)}</td>
+    <td class="num">${r.net_usd == null ? "—" : money(r.net_usd)}</td></tr>`).join("");
   return `<div class="surface rise"><div class="panel-title"><h3>ROI · review accepted</h3>
       <span class="dim">rate ${money(hourly)}/hr</span></div>
-    <div class="dim" style="margin-bottom:10px">Only review-accepted runs receive time-saved value; other outcomes retain cost without claimed value.</div>
+    <div class="dim cost-note-bottom">Only review-accepted runs receive time-saved value; other outcomes retain cost without claimed value.</div>
     ${agg}
     <details class="dim-section"><summary>Model-cost accounting</summary>${accountingBlock}</details>
     ${rows ? `<details class="dim-section"><summary>Per-run</summary>
-      <table class="dim-table"><thead><tr><th>workflow</th><th>team</th><th>outcome</th><th style="text-align:right">value</th>
-      <th style="text-align:right">cost</th><th style="text-align:right">net</th></tr></thead>
+      <table class="dim-table"><thead><tr><th>workflow</th><th>team</th><th>outcome</th><th class="num">value</th>
+      <th class="num">cost</th><th class="num">net</th></tr></thead>
       <tbody>${rows}</tbody></table></details>` : ""}</div>`;
 }
 
@@ -90,7 +90,7 @@ function estimateAccuracyCard(calibration) {
     + (calibration.missing_estimate_runs || 0)
     + (calibration.zero_or_invalid_estimate_runs || 0);
   const body = comparable
-    ? `<div class="cost-row" style="margin-bottom:10px">
+    ? `<div class="cost-row cost-summary">
         <div class="metric"><div class="n">${comparable}</div><div class="l">comparable runs</div></div>
         <div class="metric"><div class="n">${ratio(calibration.actual_to_estimate_ratio)}</div><div class="l">actual / estimate</div></div>
         <div class="metric"><div class="n">${ratio(calibration.p50_actual_to_estimate_ratio)}</div><div class="l">p50 actual / estimate</div></div>
@@ -103,9 +103,9 @@ function estimateAccuracyCard(calibration) {
     : `<div class="dim">No terminal runs with both a positive estimate and known actual model cost yet.</div>`;
   const scope = calibration.terminal_runs || 0;
   return `<details class="surface rise dim-section"><summary>Estimate calibration</summary>
-    <div class="dim" style="margin:10px 0">Read-only comparison of the most recent ${calibration.sample_limit || 0} runs. It never changes pricing, routing, or budget limits automatically.</div>
+    <div class="dim cost-note">Read-only comparison of the most recent ${calibration.sample_limit || 0} runs. It never changes pricing, routing, or budget limits automatically.</div>
     ${body}
-    <div class="dim" style="margin-top:10px">${scope} terminal run${scope === 1 ? "" : "s"} sampled; ${unavailable} excluded because the actual cost or a usable estimate was unavailable.</div>
+    <div class="dim cost-note-top">${scope} terminal run${scope === 1 ? "" : "s"} sampled; ${unavailable} excluded because the actual cost or a usable estimate was unavailable.</div>
   </details>`;
 }
 
@@ -118,18 +118,18 @@ function contextReuseCard(cr) {
   const rows = (cr.by_provider || [])
     .filter((r) => r.hit_tokens || r.cache_write_tokens || r.cached_input_tokens)
     .map((r) => `<tr><td>${esc(String(r.provider))}</td>
-      <td style="text-align:right">${(r.hit_tokens || 0).toLocaleString()}</td>
-      <td style="text-align:right">${money(r.estimated_savings_usd)}</td>
-      <td style="text-align:right" class="dim">${Math.round((r.hit_rate || 0) * 100)}%</td></tr>`)
+      <td class="num">${(r.hit_tokens || 0).toLocaleString()}</td>
+      <td class="num">${money(r.estimated_savings_usd)}</td>
+      <td class="dim num">${Math.round((r.hit_rate || 0) * 100)}%</td></tr>`)
     .join("");
   const body = active
-    ? `<div class="cost-row" style="margin-bottom:10px">
+    ? `<div class="cost-row cost-summary">
         <div class="metric"><div class="n">${(t.hit_tokens || 0).toLocaleString()}</div><div class="l">cache-hit tokens</div></div>
         <div class="metric"><div class="n">${(t.cache_write_tokens || 0).toLocaleString()}</div><div class="l">cache writes</div></div>
         <div class="metric"><div class="n">${money(t.estimated_savings_usd)}</div><div class="l">est. savings</div></div>
         <div class="metric"><div class="n">${Math.round((t.hit_rate || 0) * 100)}%</div><div class="l">hit rate</div></div></div>
-      <table class="dim-table"><tr><th style="text-align:left">Provider</th><th style="text-align:right">Hit tokens</th>
-        <th style="text-align:right">Est. savings</th><th style="text-align:right">Hit rate</th></tr>${rows}</table>`
+      <table class="dim-table"><tr><th>Provider</th><th class="num">Hit tokens</th>
+        <th class="num">Est. savings</th><th class="num">Hit rate</th></tr>${rows}</table>`
     : `<div class="dim">No prompt/context cache reuse recorded yet (caching is off until enabled).</div>`;
   return `<details class="surface rise dim-section"><summary>Context reuse · prompt caching</summary>${body}</details>`;
 }
@@ -143,26 +143,26 @@ function modelRequestHealthCard(health) {
   const latency = (value) => value == null ? "—" : `${Math.round(value)} ms`;
   const routes = (health.by_provider_model || []).map((row) => `<tr>
     <td>${esc(String(row.provider || "?"))}</td><td>${esc(String(row.model || "?"))}</td>
-    <td style="text-align:right">${row.attempts || 0}</td><td style="text-align:right">${row.failed_requests || 0}</td>
-    <td style="text-align:right">${row.error_rate == null ? "—" : `${Math.round(row.error_rate * 10000) / 100}%`}</td>
-    <td style="text-align:right">${latency(row.p50_completed_latency_ms)}</td>
-    <td style="text-align:right">${latency(row.p95_completed_latency_ms)}</td></tr>`).join("");
+    <td class="num">${row.attempts || 0}</td><td class="num">${row.failed_requests || 0}</td>
+    <td class="num">${row.error_rate == null ? "—" : `${Math.round(row.error_rate * 10000) / 100}%`}</td>
+    <td class="num">${latency(row.p50_completed_latency_ms)}</td>
+    <td class="num">${latency(row.p95_completed_latency_ms)}</td></tr>`).join("");
   const days = (health.by_day || []).map((row) => {
     const day = row.totals || {};
     return `<tr><td>${esc(String(row.day || "?"))}</td>
-      <td style="text-align:right">${day.attempts || 0}</td>
-      <td style="text-align:right">${day.failed_requests || 0}</td>
-      <td style="text-align:right">${day.error_rate == null ? "—" : `${Math.round(day.error_rate * 10000) / 100}%`}</td>
-      <td style="text-align:right">${latency(day.p50_completed_latency_ms)}</td>
-      <td style="text-align:right">${latency(day.p95_completed_latency_ms)}</td></tr>`;
+      <td class="num">${day.attempts || 0}</td>
+      <td class="num">${day.failed_requests || 0}</td>
+      <td class="num">${day.error_rate == null ? "—" : `${Math.round(day.error_rate * 10000) / 100}%`}</td>
+      <td class="num">${latency(day.p50_completed_latency_ms)}</td>
+      <td class="num">${latency(day.p95_completed_latency_ms)}</td></tr>`;
   }).join("");
   const dayRoutes = (health.by_day || []).flatMap((day) => (day.by_provider_model || []).map((row) => `<tr>
     <td>${esc(String(day.day || "?"))}</td><td>${esc(String(row.provider || "?"))}</td>
-    <td>${esc(String(row.model || "?"))}</td><td style="text-align:right">${row.attempts || 0}</td>
-    <td style="text-align:right">${row.failed_requests || 0}</td>
-    <td style="text-align:right">${row.error_rate == null ? "—" : `${Math.round(row.error_rate * 10000) / 100}%`}</td>
-    <td style="text-align:right">${latency(row.p50_completed_latency_ms)}</td>
-    <td style="text-align:right">${latency(row.p95_completed_latency_ms)}</td></tr>`)).join("");
+    <td>${esc(String(row.model || "?"))}</td><td class="num">${row.attempts || 0}</td>
+    <td class="num">${row.failed_requests || 0}</td>
+    <td class="num">${row.error_rate == null ? "—" : `${Math.round(row.error_rate * 10000) / 100}%`}</td>
+    <td class="num">${latency(row.p50_completed_latency_ms)}</td>
+    <td class="num">${latency(row.p95_completed_latency_ms)}</td></tr>`)).join("");
   const errors = (health.error_classes || []).map((row) =>
     `${esc(String(row.error_class || "ModelRequestError"))} (${row.failed_requests || 0})`
   ).join(", ");
@@ -174,8 +174,8 @@ function modelRequestHealthCard(health) {
       ? `Failure telemetry recording is degraded; ${recording.unrecorded || 0} request record${recording.unrecorded === 1 ? "" : "s"} may be missing.`
       : "Failure telemetry is recording normally.";
   return `<details class="surface rise dim-section"><summary>Model request health</summary>
-    <div class="dim" style="margin:10px 0">Completed model-request latency only; this is not end-to-end turn time. Failed requests have no cost or token estimate.</div>
-    <div class="cost-row" style="margin-bottom:10px">
+    <div class="dim cost-note">Completed model-request latency only; this is not end-to-end turn time. Failed requests have no cost or token estimate.</div>
+    <div class="cost-row cost-summary">
       <div class="metric"><div class="n">${totals.attempts || 0}</div><div class="l">${incomplete ? "recorded attempts" : "attempts"}</div></div>
       <div class="metric"><div class="n">${totals.completed_requests || 0}</div><div class="l">${incomplete ? "recorded completed" : "completed"}</div></div>
       <div class="metric"><div class="n">${totals.failed_requests || 0}</div><div class="l">${incomplete ? "recorded failed" : "failed"}</div></div>
@@ -183,11 +183,11 @@ function modelRequestHealthCard(health) {
       <div class="metric"><div class="n">${latency(totals.p50_completed_latency_ms)}</div><div class="l">p50 latency</div></div>
       <div class="metric"><div class="n">${latency(totals.p95_completed_latency_ms)}</div><div class="l">p95 latency</div></div></div>
     <div class="dim">${totals.measured_completed_latency_requests || 0} measured completed request${totals.measured_completed_latency_requests === 1 ? "" : "s"}; ${totals.unmeasured_completed_latency_requests || 0} unmeasured. ${esc(recordingNote)}</div>
-    ${errors ? `<div class="dim" style="margin-top:8px">Failure classes: ${errors}</div>` : ""}
-    ${routes ? `<table class="dim-table" style="margin-top:10px"><thead><tr><th>provider</th><th>model</th><th style="text-align:right">attempts</th><th style="text-align:right">failed</th><th style="text-align:right">error rate</th><th style="text-align:right">p50</th><th style="text-align:right">p95</th></tr></thead><tbody>${routes}</tbody></table>` : ""}
-    ${days ? `<details class="dim-section" style="margin-top:10px"><summary>Daily health (UTC)</summary>
-      <table class="dim-table"><thead><tr><th>day</th><th style="text-align:right">attempts</th><th style="text-align:right">failed</th><th style="text-align:right">error rate</th><th style="text-align:right">p50</th><th style="text-align:right">p95</th></tr></thead><tbody>${days}</tbody></table>
-      ${dayRoutes ? `<table class="dim-table" style="margin-top:10px"><thead><tr><th>day</th><th>provider</th><th>model</th><th style="text-align:right">attempts</th><th style="text-align:right">failed</th><th style="text-align:right">error rate</th><th style="text-align:right">p50</th><th style="text-align:right">p95</th></tr></thead><tbody>${dayRoutes}</tbody></table>` : ""}
+    ${errors ? `<div class="dim cost-health-note">Failure classes: ${errors}</div>` : ""}
+    ${routes ? `<table class="dim-table"><thead><tr><th>provider</th><th>model</th><th class="num">attempts</th><th class="num">failed</th><th class="num">error rate</th><th class="num">p50</th><th class="num">p95</th></tr></thead><tbody>${routes}</tbody></table>` : ""}
+    ${days ? `<details class="dim-section nested"><summary>Daily health (UTC)</summary>
+      <table class="dim-table"><thead><tr><th>day</th><th class="num">attempts</th><th class="num">failed</th><th class="num">error rate</th><th class="num">p50</th><th class="num">p95</th></tr></thead><tbody>${days}</tbody></table>
+      ${dayRoutes ? `<table class="dim-table"><thead><tr><th>day</th><th>provider</th><th>model</th><th class="num">attempts</th><th class="num">failed</th><th class="num">error rate</th><th class="num">p50</th><th class="num">p95</th></tr></thead><tbody>${dayRoutes}</tbody></table>` : ""}
     </details>` : ""}
   </details>`;
 }

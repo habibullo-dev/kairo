@@ -13,7 +13,7 @@ export function esc(s) {
 const _ATTR = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&#34;", "'": "&#39;", "`": "&#96;" };
 
 // Attribute-value safe: escapes & < > AND " ' ` so an interpolated value can never break out of a
-// quoted attribute (closes the projects.js style=/studio.js title= injection smell). & is in the
+// quoted attribute (closes the projects/studio interpolated-attribute injection smell). & is in the
 // class so it is replaced once, no double-encoding.
 export function escAttr(s) {
   return String(s ?? "").replace(/[&<>"'`]/g, (c) => _ATTR[c]);
@@ -31,6 +31,7 @@ export function el(tag, attrs, children) {
       else if (k === "html") node.innerHTML = v;
       else if (k === "dataset") for (const [dk, dv] of Object.entries(v)) node.dataset[dk] = dv;
       else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2), v);
+      else if (k === "style") throw new TypeError("Inline styles are blocked by Kairo's CSP; use a CSS class");
       else node.setAttribute(k, v);
     }
   }

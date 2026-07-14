@@ -86,10 +86,10 @@ export async function render(container, api, args = []) {
         <select id="st-team">${team ? cat.teams.map((t) =>
           `<option value="${t.id}" ${t.id === S.team ? "selected" : ""}>${esc(t.icon)} ${esc(t.name)}</option>`
         ).join("") : ""}</select>
-        <div class="dim" style="margin:.3rem 0 .6rem">${esc(team ? team.description : "")}</div>
+        <div class="dim studio-team-description">${esc(team ? team.description : "")}</div>
         <div class="card-label">Workflow</div>
         <select id="st-workflow">${workflowOptions(cat, team)}</select>
-        <div class="card-label" style="margin-top:.6rem">Task brief</div>
+        <div class="card-label studio-task-label">Task brief</div>
         <textarea id="st-task" rows="4" placeholder="What should this team do?"></textarea>
         <div class="studio-run-row">
           <input id="st-budget" type="number" step="0.01" min="0" placeholder="per-run $ (optional)">
@@ -308,15 +308,15 @@ function renderEstimatePanel(container) {
   const cls = e.decision === "block" ? "warn" : e.decision === "confirm" ? "amber" : "ok";
   const members = (e.members || []).map((m) =>
     `<tr><td>${esc(m.member_id)}</td><td class="dim">${esc(m.model)}</td>
-     <td style="text-align:right" class="dim">×${m.turns}</td>
-     <td style="text-align:right">${money(m.model_usd)}</td></tr>`).join("");
+     <td class="dim num">×${m.turns}</td>
+     <td class="num">${money(m.model_usd)}</td></tr>`).join("");
   const confirmBtn = (e.decision === "confirm" && e._needs_confirm)
     ? `<button id="st-confirm" class="btn-always">Confirm & run (${money(e.total_usd)})</button>` : "";
   el.innerHTML = `<div class="est-panel ${cls}">
     <div><b>Worst case: ${money(e.total_usd)}</b> · ${esc(e.decision)}</div>
     <div class="dim">${esc(e.reason || "")}</div>
     ${e.unpriced && e.unpriced.length ? `<div class="warn dim">unpriced: ${esc(e.unpriced.join(", "))}</div>` : ""}
-    <table style="margin-top:.4rem">${members}</table>
+    <table class="studio-table">${members}</table>
     ${confirmBtn}</div>`;
   el.querySelector("#st-confirm")?.addEventListener("click", () => doRun(container, api_(), true));
 }
@@ -338,7 +338,7 @@ function renderLive(container) {
     <div class="card-label">Live · ${esc(L.title || "run")} ${statusPill(L.status, L.verdict)}</div>
     <div class="timeline">${timeline}</div>
     ${atHead ? `<div class="head-line">Head reviewer ${headBadge(S.head)}</div>` : ""}
-    <div style="margin-top:.5rem">${agents}</div></div>`;
+    <div class="studio-agent-list">${agents}</div></div>`;
 }
 
 function renderDetail(container) {
@@ -350,8 +350,8 @@ function renderDetail(container) {
     `<span class="chip dim" title="pack ${esc(skill.sha256)} · compiled ${esc(skill.compiled_sha256)}">${esc(skill.pack)} v${esc(skill.version)} · ${esc(skill.member)}/${esc(skill.stage)}</span>`).join(" ");
   const members = (S.detail.members || []).map((m) =>
     `<tr><td><b>${esc(memberLabel(m))}</b><div class="dim mono">${esc(m.role || "?")}</div></td><td class="dim">${esc(m.stage || "")}</td>
-    <td>${statusPill(m.status)}</td><td style="text-align:right" class="dim">${m.iterations} it · ${m.denied_count} denied</td>
-     <td style="text-align:right">${money(m.cost_usd)}<div class="dim mono">${esc((m.models || []).join(" / ") || "model not recorded")}</div>
+    <td>${statusPill(m.status)}</td><td class="dim num">${m.iterations} it · ${m.denied_count} denied</td>
+     <td class="num">${money(m.cost_usd)}<div class="dim mono">${esc((m.models || []).join(" / ") || "model not recorded")}</div>
      <div class="dim">recorded skills: ${recordedSkills(m.skills_manifest) || "—"}</div></td></tr>`).join("");
   const manifest = (r.context_manifest || []).map((c) =>
     `<span class="chip dim">${esc(c.kind)}:${esc(c.ref)}</span>`).join(" ");
@@ -366,7 +366,7 @@ function renderDetail(container) {
       : `<div class="dim">Outcome: ${outcome} · actual model cost ${money(roi.actual_cost_usd)}. Time-saved value is not claimed.</div>`;
   const bd = S.detail.cost_breakdown;
   const bdLine = bd
-    ? `<div class="dim" style="margin-top:.3rem">by stage: ${(bd.by_stage || [])
+    ? `<div class="dim studio-breakdown">by stage: ${(bd.by_stage || [])
         .map((s) => `${esc(s.stage || "?")} ${money(s.cost_usd)}`).join(" · ") || "—"}
         ${(bd.services || []).length ? ` · services: ${bd.services
           .map((s) => `${esc(s.service)}×${s.calls}`).join(" · ")}` : ""}</div>`
@@ -405,10 +405,10 @@ function renderDetail(container) {
     ${roiLine}${bdLine}
     ${r.synthesis_summary ? `<div class="synth"><div class="synth-head">What the team found ${headBadge(S.head)}</div>${esc(r.synthesis_summary)}</div>` : ""}
     ${actionBlock}${resumeBlock}${findingBlock}${verdictBlock}
-    <table style="margin-top:.4rem">${members || '<tr><td class="dim">no members</td></tr>'}</table>
-    <div class="dim" style="margin-top:.4rem">context: ${manifest || "—"}</div>
-    <div class="dim" style="margin-top:.4rem">Skill packs recorded at run start: ${skillManifest || "No skill packs recorded for this run."}</div>
-    <div class="dim" style="margin-top:.2rem">Recorded metadata does not prove prompt injection; Shadow mode records manifests without injecting guidance.</div></div>`;
+    <table class="studio-table">${members || '<tr><td class="dim">no members</td></tr>'}</table>
+    <div class="dim studio-context">context: ${manifest || "—"}</div>
+    <div class="dim studio-context">Skill packs recorded at run start: ${skillManifest || "No skill packs recorded for this run."}</div>
+    <div class="dim studio-context-note">Recorded metadata does not prove prompt injection; Shadow mode records manifests without injecting guidance.</div></div>`;
   el.querySelector("[data-project-tasks]")?.addEventListener("click", (event) => {
     const projectId = Number(event.currentTarget.dataset.projectTasks);
     if (Number.isInteger(projectId) && projectId > 0) location.hash = `workspace/${projectId}/tasks`;
@@ -468,7 +468,7 @@ function runsRows(runs) {
   return runs.map((r) =>
     `<tr data-run="${r.id}" class="clickable"><td>${esc(r.team || "?")}</td>
      <td class="dim">${esc(r.workflow)}</td><td>${statusPill(r.status, r.verdict)}</td>
-     <td style="text-align:right" class="dim">${money(r.actual_cost_usd ?? r.estimated_cost_usd)}</td></tr>`
+     <td class="dim num">${money(r.actual_cost_usd ?? r.estimated_cost_usd)}</td></tr>`
   ).join("");
 }
 
