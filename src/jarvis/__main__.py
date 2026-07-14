@@ -100,6 +100,7 @@ def main() -> None:
     from jarvis.cli.repl import run_repl, run_ui, run_voice
     from jarvis.config import ConfigError, load_config
     from jarvis.observability import configure_logging
+    from jarvis.persistence.instance_lock import InstanceAlreadyRunning, InstanceLock
 
     console = Console()
     try:
@@ -112,12 +113,16 @@ def main() -> None:
     configure_logging(config.logs_dir, **config.logging.model_dump())
 
     try:
-        if args.ui:
-            asyncio.run(run_ui(config, console=console))
-        elif args.voice:
-            asyncio.run(run_voice(config, console=console))
-        else:
-            asyncio.run(run_repl(config, resume=args.resume, console=console))
+        with InstanceLock(config.data_dir):
+            if args.ui:
+                asyncio.run(run_ui(config, console=console))
+            elif args.voice:
+                asyncio.run(run_voice(config, console=console))
+            else:
+                asyncio.run(run_repl(config, resume=args.resume, console=console))
+    except InstanceAlreadyRunning as exc:
+        console.print(f"[red]Startup blocked:[/] {exc}")
+        sys.exit(1)
     except KeyboardInterrupt:
         console.print("\nBye.")
 
