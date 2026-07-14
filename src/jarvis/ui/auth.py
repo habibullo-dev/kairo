@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import secrets
 import time
@@ -25,8 +26,9 @@ from urllib.parse import urlsplit
 
 from jarvis.config import _LOOPBACK_HOSTS
 
-#: Name of the session cookie set after a successful token exchange.
-SESSION_COOKIE = "kairo_session"
+#: Canonical session cookie plus the previous-brand alias accepted during migration.
+SESSION_COOKIE = "kira_session"
+LEGACY_SESSION_COOKIE = "kairo_session"
 
 # A workstation login should survive ordinary browser/server restarts without becoming a
 # permanent bearer credential.  Thirty days keeps the daily experience seamless while retaining
@@ -277,6 +279,25 @@ class AuthManager:
             self._persist_sessions()
             return False
         return True
+
+    def session_cookie_max_age(self, sid: str | None) -> int | None:
+        """Return the remaining browser lifetime for a valid legacy-named session.
+
+        Reusing the exact bearer under the canonical cookie name must not extend its durable
+        server-side expiry.  ``None`` deliberately covers unknown and expired sessions.
+        """
+        if not sid:
+            return None
+        digest = self._digest(sid)
+        expiry = self._sessions.get(digest)
+        if expiry is None:
+            return None
+        remaining = expiry - self._clock()
+        if remaining <= 0:
+            self._sessions.pop(digest, None)
+            self._persist_sessions()
+            return None
+        return max(1, math.ceil(remaining))
 
     def revoke(self, sid: str) -> None:
         if self._sessions.pop(self._digest(sid), None) is not None:

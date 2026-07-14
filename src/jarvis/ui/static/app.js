@@ -80,20 +80,31 @@ function hydrateTranscript(transcript) {
   ];
 }
 
-const WORKSPACE_KEY = "kairo:workspace-id";
+const WORKSPACE_KEY = "kira:workspace-id";
+const LEGACY_WORKSPACE_KEY = "kairo:workspace-id";
 let workspaceId = null;
-try { workspaceId = sessionStorage.getItem(WORKSPACE_KEY); } catch { /* storage unavailable */ }
+try {
+  workspaceId = sessionStorage.getItem(WORKSPACE_KEY);
+  if (workspaceId === null) {
+    const legacyWorkspaceId = sessionStorage.getItem(LEGACY_WORKSPACE_KEY);
+    if (legacyWorkspaceId !== null) {
+      workspaceId = legacyWorkspaceId;
+      sessionStorage.setItem(WORKSPACE_KEY, legacyWorkspaceId);
+      sessionStorage.removeItem(LEGACY_WORKSPACE_KEY);
+    }
+  }
+} catch { /* storage unavailable — the server will assign a fresh workspace */ }
 
 function workspaceHeaders(base = {}) {
-  return workspaceId ? { ...base, "x-kairo-workspace-id": workspaceId } : base;
+  return workspaceId ? { ...base, "x-kira-workspace-id": workspaceId } : base;
 }
 
 function expectedContextHeaders(context = state.context) {
   if (!Number.isInteger(context?.session_id) || !Number.isInteger(context?.context_revision)) return {};
   return {
-    "x-kairo-expected-session-id": String(context.session_id),
-    "x-kairo-expected-project-id": context.project_id == null ? "global" : String(context.project_id),
-    "x-kairo-expected-context-revision": String(context.context_revision),
+    "x-kira-expected-session-id": String(context.session_id),
+    "x-kira-expected-project-id": context.project_id == null ? "global" : String(context.project_id),
+    "x-kira-expected-context-revision": String(context.context_revision),
   };
 }
 
@@ -529,8 +540,13 @@ function handleMessage(msg) {
     const authorityChanged = workspaceChanged || contextChanged;
     workspaceId = nextWorkspaceId;
     try {
-      if (workspaceId) sessionStorage.setItem(WORKSPACE_KEY, workspaceId);
-      else sessionStorage.removeItem(WORKSPACE_KEY);
+      if (workspaceId) {
+        sessionStorage.setItem(WORKSPACE_KEY, workspaceId);
+        sessionStorage.removeItem(LEGACY_WORKSPACE_KEY);
+      } else {
+        sessionStorage.removeItem(WORKSPACE_KEY);
+        sessionStorage.removeItem(LEGACY_WORKSPACE_KEY);
+      }
     } catch { /* storage unavailable — this socket remains usable */ }
     advanceContextGeneration();
     if (authorityChanged) authorityGeneration += 1;

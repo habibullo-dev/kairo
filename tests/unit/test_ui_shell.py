@@ -63,6 +63,21 @@ def test_router_supports_hash_args() -> None:
     assert "state.routeArgs" in APP_JS  # args threaded into the screen render
 
 
+def test_shell_writes_only_canonical_kira_transport_headers() -> None:
+    for header in (
+        "x-kira-workspace-id",
+        "x-kira-expected-session-id",
+        "x-kira-expected-project-id",
+        "x-kira-expected-context-revision",
+    ):
+        assert header in APP_JS
+    assert "x-kairo-" not in APP_JS
+    assert 'const WORKSPACE_KEY = "kira:workspace-id"' in APP_JS
+    assert 'const LEGACY_WORKSPACE_KEY = "kairo:workspace-id"' in APP_JS
+    assert "sessionStorage.getItem(LEGACY_WORKSPACE_KEY)" in APP_JS
+    assert "sessionStorage.setItem(WORKSPACE_KEY, legacyWorkspaceId)" in APP_JS
+
+
 def test_keys_module_is_the_single_dispatcher() -> None:
     # One document keydown listener owns the shortcut surface.
     assert APP_JS.count('addEventListener("keydown"') == 0  # app.js delegates to keys.js

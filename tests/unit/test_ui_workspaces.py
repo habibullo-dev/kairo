@@ -48,6 +48,10 @@ from jarvis.ui.server import (
     EXPECTED_CONTEXT_REVISION_HEADER,
     EXPECTED_PROJECT_HEADER,
     EXPECTED_SESSION_HEADER,
+    LEGACY_EXPECTED_CONTEXT_REVISION_HEADER,
+    LEGACY_EXPECTED_PROJECT_HEADER,
+    LEGACY_EXPECTED_SESSION_HEADER,
+    LEGACY_WORKSPACE_HEADER,
     WORKSPACE_HEADER,
     create_app,
 )
@@ -383,6 +387,63 @@ async def test_project_metadata_update_refreshes_live_contexts_without_switching
         headers={"cookie": f"{SESSION_COOKIE}={owner_a}", "origin": "http://127.0.0.1"},
     )
     assert missing_workspace.status_code == 409
+
+
+async def test_legacy_workspace_headers_work_but_canonical_claims_take_precedence(
+    tmp_path: Path,
+) -> None:
+    registry, connections, projects = await _registry(tmp_path)
+    project_id = await projects.store.create(name="Legacy tab")
+    auth = AuthManager(token="tok")
+    owner = auth.mint_session()
+    workspace = await registry.attach(
+        connections.register(_Socket(), owner_session=owner), owner_session=owner
+    )
+    await workspace.select_project(project_id)
+
+    app = create_app(load_config(root=tmp_path, env_file=None), auth=auth, connections=connections)
+    app.state.projects = projects
+    app.state.workspaces = registry
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    def legacy_headers() -> dict[str, str]:
+        return {
+            "cookie": f"{SESSION_COOKIE}={owner}",
+            "origin": "http://127.0.0.1",
+            LEGACY_WORKSPACE_HEADER: workspace.workspace_id,
+            LEGACY_EXPECTED_SESSION_HEADER: str(workspace.context.session_id),
+            LEGACY_EXPECTED_PROJECT_HEADER: str(workspace.context.project_id),
+            LEGACY_EXPECTED_CONTEXT_REVISION_HEADER: str(workspace.context_revision),
+        }
+
+    misrouted = client.post(
+        f"/api/projects/{project_id}/update",
+        json={"name": "Must not route"},
+        headers={**legacy_headers(), WORKSPACE_HEADER: "z" * 24},
+    )
+    assert misrouted.status_code == 409
+    assert (await projects.store.get(project_id)).name == "Legacy tab"
+
+    updated = client.post(
+        f"/api/projects/{project_id}/update",
+        json={"name": "Migrated tab"},
+        headers=legacy_headers(),
+    )
+    assert updated.status_code == 200
+
+    conflicting = client.post(
+        f"/api/projects/{project_id}/update",
+        json={"name": "Must not apply"},
+        headers={
+            **legacy_headers(),
+            WORKSPACE_HEADER: workspace.workspace_id,
+            EXPECTED_SESSION_HEADER: "999999",
+            EXPECTED_PROJECT_HEADER: str(workspace.context.project_id),
+            EXPECTED_CONTEXT_REVISION_HEADER: str(workspace.context_revision),
+        },
+    )
+    assert conflicting.status_code == 409
+    assert (await projects.store.get(project_id)).name == "Migrated tab"
 
 
 async def test_project_service_change_refreshes_every_bound_context_and_exact_socket(

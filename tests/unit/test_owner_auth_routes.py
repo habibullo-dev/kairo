@@ -12,9 +12,9 @@ import httpx
 from jarvis.config import load_config
 from jarvis.persistence.db import connect
 from jarvis.persistence.sessions import SessionStore
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
+from jarvis.ui.auth import LEGACY_SESSION_COOKIE, SESSION_COOKIE, AuthManager
 from jarvis.ui.owner_auth import Argon2PasswordHasher, OwnerAuthService
-from jarvis.ui.server import AUTH_GRANT_COOKIE, create_app
+from jarvis.ui.server import AUTH_GRANT_COOKIE, LEGACY_AUTH_GRANT_COOKIE, create_app
 
 TOKEN = "owner-launch-token-canary"
 PASSWORD = "A unique owner passphrase 2026!"
@@ -100,6 +100,66 @@ async def test_launch_grant_enrolls_once_without_direct_app_authority(tmp_path: 
         assert session.json()["fresh"] is True
 
 
+async def test_legacy_grant_and_session_names_migrate_to_kira_cookies(tmp_path: Path) -> None:
+    async with _owner_client(tmp_path) as (client, _app, _owner, _now):
+        exchange = await client.get(f"/?token={TOKEN}")
+        assert exchange.status_code == 303
+        grant = client.cookies[AUTH_GRANT_COOKIE]
+        client.cookies.delete(AUTH_GRANT_COOKIE)
+        client.cookies.set(
+            LEGACY_AUTH_GRANT_COOKIE, grant, domain="127.0.0.1", path="/"
+        )
+
+        assert (await client.get("/setup")).status_code == 200
+        enrolled = await client.post(
+            "/auth/enroll",
+            json={"username": "habib", "password": PASSWORD},
+            headers=ORIGIN,
+        )
+        assert enrolled.status_code == 200
+        assert AUTH_GRANT_COOKIE not in client.cookies
+        assert LEGACY_AUTH_GRANT_COOKIE not in client.cookies
+
+        bearer = client.cookies[SESSION_COOKIE]
+        client.cookies.delete(SESSION_COOKIE)
+        client.cookies.set(LEGACY_SESSION_COOKIE, bearer, domain="127.0.0.1", path="/")
+        migrated = await client.get("/auth/session")
+        assert migrated.status_code == 200
+        assert client.cookies[SESSION_COOKIE] == bearer
+        assert LEGACY_SESSION_COOKIE not in client.cookies
+
+
+async def test_invalid_canonical_owner_cookie_never_falls_back_to_legacy(
+    tmp_path: Path,
+) -> None:
+    async with _owner_client(tmp_path, pre_enrolled=True) as (client, _app, owner, _now):
+        valid = await owner.login("habib", PASSWORD)
+        assert valid is not None
+        client.cookies.set(
+            LEGACY_SESSION_COOKIE, valid.session.token, domain="127.0.0.1", path="/"
+        )
+        client.cookies.set(
+            SESSION_COOKIE, "invalid-canonical", domain="127.0.0.1", path="/"
+        )
+
+        assert (await client.get("/auth/session")).status_code == 401
+
+
+async def test_invalid_canonical_grant_never_falls_back_to_legacy(tmp_path: Path) -> None:
+    async with _owner_client(tmp_path) as (client, _app, _owner, _now):
+        assert (await client.get(f"/?token={TOKEN}")).status_code == 303
+        valid_grant = client.cookies[AUTH_GRANT_COOKIE]
+        client.cookies.delete(AUTH_GRANT_COOKIE)
+        client.cookies.set(
+            LEGACY_AUTH_GRANT_COOKIE, valid_grant, domain="127.0.0.1", path="/"
+        )
+        client.cookies.set(
+            AUTH_GRANT_COOKIE, "invalid-canonical", domain="127.0.0.1", path="/"
+        )
+
+        assert (await client.get("/setup")).status_code == 401
+
+
 async def test_login_logout_revokes_cookie_socket_and_session(tmp_path: Path) -> None:
     async with _owner_client(tmp_path, pre_enrolled=True) as (client, app, owner, _now):
         root = await client.get("/")
@@ -108,13 +168,21 @@ async def test_login_logout_revokes_cookie_socket_and_session(tmp_path: Path) ->
         logged_in = await _login(client)
         assert logged_in.status_code == 200
         old_bearer = client.cookies[SESSION_COOKIE]
+        legacy_login = await owner.login("habib", PASSWORD)
+        assert legacy_login is not None
+        legacy_bearer = legacy_login.session.token
+        client.cookies.set(
+            LEGACY_SESSION_COOKIE, legacy_bearer, domain="127.0.0.1", path="/"
+        )
 
         socket = _FakeWebSocket()
         conn = app.state.connections.register(socket, owner_session=old_bearer)
         logged_out = await client.post("/auth/logout", headers=ORIGIN)
         assert logged_out.status_code == 200
         assert SESSION_COOKIE not in client.cookies
+        assert LEGACY_SESSION_COOKIE not in client.cookies
         assert await owner.validate_session(old_bearer) is None
+        assert await owner.validate_session(legacy_bearer) is None
         assert app.state.connections.get(conn.id) is None
         assert socket.close_code == 1008
         assert (await client.get("/auth/session")).status_code == 401
@@ -221,7 +289,7 @@ async def test_step_up_rotates_session_and_renewal_never_extends_absolute(tmp_pa
         now[0] += dt.timedelta(hours=25)
         renewed = await client.get("/auth/session")
         assert renewed.status_code == 200
-        assert "kairo_session=" in renewed.headers.get("set-cookie", "")
+        assert f"{SESSION_COOKIE}=" in renewed.headers.get("set-cookie", "")
         assert renewed.json()["absolute_expires_at"] == old_state.absolute_expires_at
 
 

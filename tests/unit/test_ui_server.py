@@ -16,7 +16,12 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from jarvis.config import load_config
-from jarvis.ui.auth import DEFAULT_SESSION_TTL_SECONDS, SESSION_COOKIE, AuthManager
+from jarvis.ui.auth import (
+    DEFAULT_SESSION_TTL_SECONDS,
+    LEGACY_SESSION_COOKIE,
+    SESSION_COOKIE,
+    AuthManager,
+)
 from jarvis.ui.connections import ConnectionManager
 from jarvis.ui.server import _handle_ws_message, create_app
 
@@ -81,6 +86,50 @@ def test_token_exchange_redirects_clean_and_sets_cookie(tmp_path: Path) -> None:
     assert f"Max-Age={DEFAULT_SESSION_TTL_SECONDS}" in r.headers["set-cookie"]
     assert r.headers.get("cache-control") == "no-store"
     _assert_hardened(r)
+
+
+def test_legacy_session_cookie_is_accepted_and_migrated_without_extending_authority(
+    tmp_path: Path,
+) -> None:
+    now = [1_000.0]
+    auth = AuthManager(token=TOKEN, session_ttl_seconds=60, clock=lambda: now[0])
+    app = create_app(load_config(root=tmp_path, env_file=None), auth=auth)
+    client = TestClient(app, base_url="http://127.0.0.1")
+    sid = auth.mint_session()
+    now[0] += 25
+
+    response = client.get("/", headers={"cookie": f"{LEGACY_SESSION_COOKIE}={sid}"})
+
+    assert response.status_code == 200
+    set_cookies = response.headers.get_list("set-cookie")
+    canonical = next(value for value in set_cookies if f"{SESSION_COOKIE}={sid}" in value)
+    assert "Max-Age=35" in canonical
+    assert any(
+        value.startswith(f"{LEGACY_SESSION_COOKIE}=") and "Max-Age=0" in value
+        for value in set_cookies
+    )
+    assert auth.is_valid_session(sid)
+    now[0] = 1_060.0
+    assert not auth.is_valid_session(sid)
+
+
+def test_invalid_canonical_session_never_falls_back_to_valid_legacy_cookie(
+    tmp_path: Path,
+) -> None:
+    client, _app_, auth = _app(tmp_path)
+    legacy_sid = auth.mint_session()
+
+    response = client.get(
+        "/",
+        headers={
+            "cookie": (
+                f"{SESSION_COOKIE}=invalid-canonical; "
+                f"{LEGACY_SESSION_COOKIE}={legacy_sid}"
+            )
+        },
+    )
+
+    assert response.status_code == 401
 
 
 def test_bad_token_refused(tmp_path: Path) -> None:
@@ -223,6 +272,34 @@ def test_ws_authed_gets_server_hello(tmp_path: Path) -> None:
     with client.websocket_connect("/ws", headers=_ws_headers(auth)) as ws:
         hello = ws.receive_json()
         assert hello["type"] == "hello" and "heartbeat_seconds" in hello
+
+
+def test_ws_accepts_a_legacy_only_session_cookie(tmp_path: Path) -> None:
+    client, _app_, auth = _app(tmp_path)
+    headers = {
+        "host": "127.0.0.1",
+        "origin": "http://127.0.0.1",
+        "cookie": f"{LEGACY_SESSION_COOKIE}={auth.mint_session()}",
+    }
+    with client.websocket_connect("/ws", headers=headers) as ws:
+        assert ws.receive_json()["type"] == "hello"
+
+
+def test_ws_canonical_session_shadows_a_valid_legacy_cookie(tmp_path: Path) -> None:
+    client, _app_, auth = _app(tmp_path)
+    headers = {
+        "host": "127.0.0.1",
+        "origin": "http://127.0.0.1",
+        "cookie": (
+            f"{SESSION_COOKIE}=invalid-canonical; "
+            f"{LEGACY_SESSION_COOKIE}={auth.mint_session()}"
+        ),
+    }
+    with (
+        pytest.raises(WebSocketDisconnect),
+        client.websocket_connect("/ws", headers=headers) as ws,
+    ):
+        ws.receive_json()
 
 
 # --- WS message dispatch (pure; deterministic, no socket race) --------------

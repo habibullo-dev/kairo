@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -50,7 +51,13 @@ from jarvis.ui.approver import (
     UIApprover,
     UIScreenApprover,
 )
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager, host_allowed, origin_allowed
+from jarvis.ui.auth import (
+    LEGACY_SESSION_COOKIE,
+    SESSION_COOKIE,
+    AuthManager,
+    host_allowed,
+    origin_allowed,
+)
 from jarvis.ui.connections import Connection, ConnectionManager
 from jarvis.ui.gate_api import policy_snapshot, read_today_audit
 from jarvis.ui.owner_auth import (
@@ -134,7 +141,8 @@ _OWNER_OPEN_PATHS = frozenset(
 )
 
 #: Short-lived, HttpOnly bootstrap credential.  It can enroll/recover but never enter the app.
-AUTH_GRANT_COOKIE = "kairo_auth_grant"
+AUTH_GRANT_COOKIE = "kira_auth_grant"
+LEGACY_AUTH_GRANT_COOKIE = "kairo_auth_grant"
 
 #: Bound authentication payloads before JSON decoding or Argon2 work.
 _AUTH_BODY_MAX_BYTES = 4096
@@ -145,10 +153,32 @@ ORCHESTRATION_CANCEL_SETTLE_TIMEOUT_SECONDS = 5.0
 
 #: Browser-provided only as an opaque routing handle.  The server resolves it against the
 #: authenticated cookie and a currently-live WebSocket before it can select a UI workspace.
-WORKSPACE_HEADER = "x-kairo-workspace-id"
-EXPECTED_SESSION_HEADER = "x-kairo-expected-session-id"
-EXPECTED_PROJECT_HEADER = "x-kairo-expected-project-id"
-EXPECTED_CONTEXT_REVISION_HEADER = "x-kairo-expected-context-revision"
+WORKSPACE_HEADER = "x-kira-workspace-id"
+EXPECTED_SESSION_HEADER = "x-kira-expected-session-id"
+EXPECTED_PROJECT_HEADER = "x-kira-expected-project-id"
+EXPECTED_CONTEXT_REVISION_HEADER = "x-kira-expected-context-revision"
+LEGACY_WORKSPACE_HEADER = "x-kairo-workspace-id"
+LEGACY_EXPECTED_SESSION_HEADER = "x-kairo-expected-session-id"
+LEGACY_EXPECTED_PROJECT_HEADER = "x-kairo-expected-project-id"
+LEGACY_EXPECTED_CONTEXT_REVISION_HEADER = "x-kairo-expected-context-revision"
+
+
+def _canonical_or_legacy(
+    values: Mapping[str, str], canonical: str, legacy: str
+) -> tuple[str | None, bool, bool]:
+    """Resolve a renamed browser value without reviving legacy authority.
+
+    The canonical name always wins when both are present, even when its value is invalid.  That
+    prevents a stale or revoked canonical credential from falling through to a still-valid legacy
+    bearer.  The flags report whether the selected value came from the legacy name and whether a
+    legacy value was present, allowing successful responses to clean up old cookies.
+    """
+    legacy_present = legacy in values
+    if canonical in values:
+        return values.get(canonical), False, legacy_present
+    if legacy_present:
+        return values.get(legacy), True, True
+    return None, False, False
 
 
 @dataclass(frozen=True)
@@ -318,9 +348,15 @@ def create_app(
         registry = app.state.workspaces
         if registry is None:
             return None
+        owner_session, _from_legacy, _legacy_present = _canonical_or_legacy(
+            request.cookies, SESSION_COOKIE, LEGACY_SESSION_COOKIE
+        )
+        workspace_id, _from_legacy, _legacy_present = _canonical_or_legacy(
+            request.headers, WORKSPACE_HEADER, LEGACY_WORKSPACE_HEADER
+        )
         return registry.resolve(
-            owner_session=request.cookies.get(SESSION_COOKIE),
-            workspace_id=request.headers.get(WORKSPACE_HEADER),
+            owner_session=owner_session,
+            workspace_id=workspace_id,
         )
 
     def _expected_context(session_value: object, project_value: object) -> ExecutionContext | None:
@@ -366,10 +402,21 @@ def create_app(
         )
 
     def _expected_header_claim(request: Request) -> _WorkspaceContextClaim | None:
+        session_id, _from_legacy, _legacy_present = _canonical_or_legacy(
+            request.headers, EXPECTED_SESSION_HEADER, LEGACY_EXPECTED_SESSION_HEADER
+        )
+        project_id, _from_legacy, _legacy_present = _canonical_or_legacy(
+            request.headers, EXPECTED_PROJECT_HEADER, LEGACY_EXPECTED_PROJECT_HEADER
+        )
+        revision, _from_legacy, _legacy_present = _canonical_or_legacy(
+            request.headers,
+            EXPECTED_CONTEXT_REVISION_HEADER,
+            LEGACY_EXPECTED_CONTEXT_REVISION_HEADER,
+        )
         return _expected_claim(
-            request.headers.get(EXPECTED_SESSION_HEADER),
-            request.headers.get(EXPECTED_PROJECT_HEADER),
-            request.headers.get(EXPECTED_CONTEXT_REVISION_HEADER),
+            session_id,
+            project_id,
+            revision,
         )
 
     def _request_claim(request: Request, body: object = None) -> _WorkspaceContextClaim | None:
@@ -553,6 +600,17 @@ def create_app(
             path="/",
             max_age=issued.cookie_max_age,
         )
+        resp.delete_cookie(LEGACY_SESSION_COOKIE, path="/", samesite="strict")
+
+    def _delete_auth_grant_cookies(resp: Response) -> None:
+        resp.delete_cookie(AUTH_GRANT_COOKIE, path="/", samesite="strict")
+        resp.delete_cookie(LEGACY_AUTH_GRANT_COOKIE, path="/", samesite="strict")
+
+    def _auth_grant(request: Request) -> str | None:
+        grant, _from_legacy, _legacy_present = _canonical_or_legacy(
+            request.cookies, AUTH_GRANT_COOKIE, LEGACY_AUTH_GRANT_COOKIE
+        )
+        return grant
 
     def _owner_auth_shell() -> Response:
         auth_shell = STATIC_DIR / "auth.html"
@@ -645,6 +703,7 @@ def create_app(
                     path="/",
                     max_age=AUTH_GRANT_MINUTES * 60,
                 )
+                resp.delete_cookie(LEGACY_AUTH_GRANT_COOKIE, path="/", samesite="strict")
                 log.info("ui_auth_grant_minted", scope=scope)
                 return _secure(resp, no_store=True)
             if not auth.check_token(token):
@@ -657,15 +716,20 @@ def create_app(
                 httponly=True,
                 samesite="strict",
                 secure=False,
+                path="/",
                 max_age=auth.session_ttl_seconds,
             )
+            resp.delete_cookie(LEGACY_SESSION_COOKIE, path="/", samesite="strict")
             log.info("ui_session_minted")  # note: the token is NOT logged
             return _secure(resp, no_store=True)
 
         # 4. Owner sessions are durable, sliding, credential-epoch-bound records. The exact open
         #    surface is only health plus setup/login/recovery. Legacy mode remains byte-compatible.
+        bearer, bearer_from_legacy, legacy_session_present = _canonical_or_legacy(
+            request.cookies, SESSION_COOKIE, LEGACY_SESSION_COOKIE
+        )
+        legacy_session_valid = False
         if owner_auth is not None:
-            bearer = request.cookies.get(SESSION_COOKIE)
             owner_state = await owner_auth.validate_session(bearer)
             request.state.owner_session_state = owner_state
             request.state.skip_session_renewal = False
@@ -677,17 +741,17 @@ def create_app(
                 )
             if request.url.path not in _OWNER_OPEN_PATHS and owner_state is None:
                 return _deny(status.HTTP_401_UNAUTHORIZED, "authentication required")
-        elif request.url.path not in _OPEN_PATHS and not auth.is_valid_session(
-            request.cookies.get(SESSION_COOKIE)
-        ):
-            return _deny(status.HTTP_401_UNAUTHORIZED, "authentication required")
+        elif request.url.path not in _OPEN_PATHS:
+            legacy_session_valid = auth.is_valid_session(bearer)
+            if not legacy_session_valid:
+                return _deny(status.HTTP_401_UNAUTHORIZED, "authentication required")
         resp = await call_next(request)
         if (
             owner_auth is not None
             and (owner_state := getattr(request.state, "owner_session_state", None)) is not None
-            and owner_state.renew_cookie
             and not request.state.skip_session_renewal
-            and (bearer := request.cookies.get(SESSION_COOKIE)) is not None
+            and bearer is not None
+            and (owner_state.renew_cookie or bearer_from_legacy)
         ):
             _set_owner_session_cookie(
                 resp,
@@ -698,6 +762,26 @@ def create_app(
                     owner_state.cookie_max_age,
                 ),
             )
+        elif owner_auth is not None and owner_state is not None and legacy_session_present:
+            resp.delete_cookie(LEGACY_SESSION_COOKIE, path="/", samesite="strict")
+        elif (
+            owner_auth is None
+            and legacy_session_valid
+            and bearer_from_legacy
+            and bearer is not None
+        ):
+            max_age = auth.session_cookie_max_age(bearer)
+            if max_age is not None:
+                resp.set_cookie(
+                    SESSION_COOKIE,
+                    bearer,
+                    httponly=True,
+                    samesite="strict",
+                    secure=False,
+                    path="/",
+                    max_age=max_age,
+                )
+                resp.delete_cookie(LEGACY_SESSION_COOKIE, path="/", samesite="strict")
         return _secure(
             resp,
             no_store=(
@@ -719,7 +803,7 @@ def create_app(
         if await owner_auth.is_enrolled():
             destination = "/" if request.state.owner_session_state is not None else "/login"
             return RedirectResponse(url=destination, status_code=status.HTTP_303_SEE_OTHER)
-        if not await owner_auth.auth_grant_valid(request.cookies.get(AUTH_GRANT_COOKIE), "enroll"):
+        if not await owner_auth.auth_grant_valid(_auth_grant(request), "enroll"):
             return _deny(status.HTTP_401_UNAUTHORIZED, "setup link required")
         return _owner_auth_shell()
 
@@ -739,7 +823,7 @@ def create_app(
             return _deny(status.HTTP_404_NOT_FOUND, "not found")
         if not await owner_auth.is_enrolled():
             return RedirectResponse(url="/setup", status_code=status.HTTP_303_SEE_OTHER)
-        if not await owner_auth.auth_grant_valid(request.cookies.get(AUTH_GRANT_COOKIE), "recover"):
+        if not await owner_auth.auth_grant_valid(_auth_grant(request), "recover"):
             return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
         return _owner_auth_shell()
 
@@ -753,7 +837,7 @@ def create_app(
         assert body is not None
         try:
             outcome = await owner_auth.enroll(
-                request.cookies.get(AUTH_GRANT_COOKIE) or "",
+                _auth_grant(request) or "",
                 _body_text(body, "username"),
                 _body_text(body, "password"),
             )
@@ -766,7 +850,7 @@ def create_app(
         request.state.skip_session_renewal = True
         resp = JSONResponse({"ok": True, "username": outcome.profile.username})
         _set_owner_session_cookie(resp, outcome.session)
-        resp.delete_cookie(AUTH_GRANT_COOKIE, path="/", samesite="strict")
+        _delete_auth_grant_cookies(resp)
         return resp
 
     @app.post("/auth/login")
@@ -804,7 +888,7 @@ def create_app(
         assert body is not None
         try:
             outcome = await owner_auth.recover(
-                request.cookies.get(AUTH_GRANT_COOKIE) or "",
+                _auth_grant(request) or "",
                 _body_text(body, "password"),
             )
         except OwnerGrantError:
@@ -815,20 +899,25 @@ def create_app(
         await _invalidate_owner_runtime()
         resp = JSONResponse({"ok": True, "username": outcome.profile.username})
         _set_owner_session_cookie(resp, outcome.session)
-        resp.delete_cookie(AUTH_GRANT_COOKIE, path="/", samesite="strict")
+        _delete_auth_grant_cookies(resp)
         return resp
 
     @app.post("/auth/logout")
     async def owner_logout(request: Request) -> Response:
         if owner_auth is None:
             return _deny(status.HTTP_404_NOT_FOUND, "not found")
-        bearer = request.cookies.get(SESSION_COOKIE)
-        if bearer is not None:
-            await owner_auth.revoke_session(bearer)
-            await _invalidate_owner_runtime(bearer)
+        presented_bearers = {
+            bearer
+            for name in (SESSION_COOKIE, LEGACY_SESSION_COOKIE)
+            if (bearer := request.cookies.get(name))
+        }
+        for presented_bearer in presented_bearers:
+            await owner_auth.revoke_session(presented_bearer)
+            await _invalidate_owner_runtime(presented_bearer)
         request.state.skip_session_renewal = True
         resp = JSONResponse({"ok": True})
         resp.delete_cookie(SESSION_COOKIE, path="/", samesite="strict")
+        resp.delete_cookie(LEGACY_SESSION_COOKIE, path="/", samesite="strict")
         return resp
 
     @app.post("/auth/step-up")
@@ -839,7 +928,10 @@ def create_app(
         if error is not None:
             return error
         assert body is not None
-        bearer = request.cookies.get(SESSION_COOKIE) or ""
+        bearer, _from_legacy, _legacy_present = _canonical_or_legacy(
+            request.cookies, SESSION_COOKIE, LEGACY_SESSION_COOKIE
+        )
+        bearer = bearer or ""
         try:
             replacement = await owner_auth.step_up(bearer, _body_text(body, "password"))
         except OwnerLoginThrottledError as exc:
@@ -4503,7 +4595,9 @@ def create_app(
     async def ws(websocket: WebSocket) -> None:
         # HTTP middleware does not run for WS, so authenticate the handshake here: Host
         # (anti-rebinding), Origin (anti-CSRF), and a valid session cookie — else refuse.
-        owner_session = websocket.cookies.get(SESSION_COOKIE)
+        owner_session, _from_legacy, _legacy_present = _canonical_or_legacy(
+            websocket.cookies, SESSION_COOKIE, LEGACY_SESSION_COOKIE
+        )
         session_valid = (
             await owner_auth.validate_session(owner_session)
             if owner_auth is not None
