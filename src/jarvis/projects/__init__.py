@@ -16,12 +16,14 @@ from jarvis.projects.snapshot import (
     SnapshotSource,
     seal_snapshot,
 )
-from jarvis.projects.store import Project, ProjectStore, slugify
+from jarvis.projects.store import Project, ProjectReset, ProjectResetError, ProjectStore, slugify
 
 __all__ = [
     "GLOBAL",
     "Project",
     "ProjectContext",
+    "ProjectReset",
+    "ProjectResetError",
     "ProjectService",
     "ProjectSnapshot",
     "ProjectStore",

@@ -21,6 +21,8 @@ from dataclasses import dataclass
 
 import aiosqlite
 
+from jarvis.persistence.db import transaction
+
 _COLUMNS = (
     "id, name, slug, description, status, color, icon, repos_json, settings_json, "
     "created_at, updated_at, archived_at, pinned"
@@ -63,6 +65,20 @@ class Project:
     updated_at: str
     archived_at: str | None
     pinned: bool = False  # Phase 11: surfaced-first in the Projects grid (default last)
+
+
+@dataclass(frozen=True)
+class ProjectReset:
+    """Durable lineage for one archive-and-successor project reset."""
+
+    predecessor_id: int
+    successor_id: int
+    retained_repositories: bool
+    created_at: str
+
+
+class ProjectResetError(RuntimeError):
+    """The requested project cannot be reset from its current lifecycle state."""
 
 
 def _row_to_project(row: tuple) -> Project:
@@ -258,6 +274,67 @@ class ProjectStore:
         """Archive a project (status flip + archived_at) — the row is kept, never DELETEd.
         Scoped rows keep their ``project_id``; archiving hides, it does not erase."""
         return await self.set_status(project_id, "archived")
+
+    async def reset(self, project_id: int, *, retain_repositories: bool) -> ProjectReset | None:
+        """Archive one project and create its clean successor atomically.
+
+        Historical chats, memory, knowledge, tasks, reports, ledgers, and artifacts remain scoped
+        to the archived predecessor.  The successor receives only display metadata, the narrow
+        ``label``/``services`` preferences, and optionally the repository links that Kairo may
+        relearn.  No linked repository or shared content-addressed file is touched.
+        """
+        now = _now()
+        async with transaction(self.db, self.lock):
+            row = await (
+                await self.db.execute(
+                    f"SELECT {_COLUMNS} FROM projects WHERE id = ?", (project_id,)
+                )
+            ).fetchone()
+            if row is None:
+                return None
+            predecessor = _row_to_project(row)
+            if predecessor.status == "archived":
+                raise ProjectResetError("archived projects cannot be reset")
+
+            slug = await self._unique_slug(predecessor.name)
+            preserved_settings = {
+                key: predecessor.settings[key]
+                for key in ("label", "services")
+                if key in predecessor.settings
+            }
+            cursor = await self.db.execute(
+                "INSERT INTO projects (name, slug, description, status, color, icon, "
+                "repos_json, settings_json, created_at, updated_at, pinned) "
+                "VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    predecessor.name,
+                    slug,
+                    predecessor.description,
+                    predecessor.color,
+                    predecessor.icon,
+                    json.dumps(list(predecessor.repos) if retain_repositories else []),
+                    json.dumps(preserved_settings),
+                    now,
+                    now,
+                    1 if predecessor.pinned else 0,
+                ),
+            )
+            assert cursor.lastrowid is not None
+            successor_id = int(cursor.lastrowid)
+            archived = await self.db.execute(
+                "UPDATE projects SET status = 'archived', archived_at = ?, updated_at = ? "
+                "WHERE id = ? AND status <> 'archived'",
+                (now, now, project_id),
+            )
+            if archived.rowcount != 1:
+                raise ProjectResetError("project reset lost its lifecycle race")
+            await self.db.execute(
+                "INSERT INTO project_reset_events "
+                "(predecessor_project_id, successor_project_id, retained_repositories, "
+                "created_at) VALUES (?, ?, ?, ?)",
+                (project_id, successor_id, 1 if retain_repositories else 0, now),
+            )
+        return ProjectReset(project_id, successor_id, retain_repositories, now)
 
     async def set_pinned(self, project_id: int, pinned: bool) -> bool:
         """Pin/unpin a project for the Projects grid — a display preference, no new authority.
