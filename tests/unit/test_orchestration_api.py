@@ -96,6 +96,7 @@ class FakeProjects:
     def __init__(self, pid: int | None) -> None:
         self._pid = pid
         self.store = _FakeProjStore()
+        self.service_access_lock = asyncio.Lock()
 
     def current(self):
         return SimpleNamespace(project_id=self._pid, name="Proj")
@@ -307,6 +308,60 @@ async def test_automatic_assessment_is_busy_but_never_studio_cancellable() -> No
 
     engine.gate.set()
     await automatic
+
+
+async def test_automatic_admission_waits_for_service_policy_publication() -> None:
+    ctrl, engine, _conn = _controller(1, estimate=_estimate("ok"))
+    await ctrl.projects.service_access_lock.acquire()
+    automatic = asyncio.create_task(
+        ctrl.run_automatic_project_assessment(
+            project_id=1,
+            context=ctrl._build_context("automatic"),
+            budget_usd=5.0,
+        )
+    )
+    try:
+        for _ in range(20):
+            if ctrl.busy_project(1):
+                break
+            await asyncio.sleep(0)
+        assert ctrl.busy_project(1) is True
+        assert engine.calls == []
+    finally:
+        ctrl.projects.service_access_lock.release()
+
+    for _ in range(20):
+        if engine.calls:
+            break
+        await asyncio.sleep(0)
+    assert len(engine.calls) == 1
+    engine.gate.set()
+    await automatic
+
+
+async def test_cancelled_automatic_admission_releases_the_engine() -> None:
+    ctrl, _engine, _conn = _controller(1, estimate=_estimate("ok"))
+    await ctrl.projects.service_access_lock.acquire()
+    automatic = asyncio.create_task(
+        ctrl.run_automatic_project_assessment(
+            project_id=1,
+            context=ctrl._build_context("automatic"),
+            budget_usd=5.0,
+        )
+    )
+    try:
+        for _ in range(20):
+            if ctrl.busy_project(1):
+                break
+            await asyncio.sleep(0)
+        assert ctrl.busy_project(1) is True
+        automatic.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await automatic
+        assert ctrl.busy is False
+        assert ctrl.busy_project(1) is False
+    finally:
+        ctrl.projects.service_access_lock.release()
 
 
 async def test_manual_start_is_busy_while_automatic_assessment_runs() -> None:

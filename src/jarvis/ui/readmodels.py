@@ -2059,6 +2059,7 @@ def capability_truth(
     connectors: dict | None = None,
     voice: dict | None = None,
     registered_tools: set[str] | None = None,
+    project_services: tuple[str, ...] | list[str] | None = None,
 ) -> dict:
     """THE one availability truth (Phase 15.5) — connectors / providers / services / voice / MCP as
     ``{name, state, exposed_to_chat, reason}`` rows. Daily, Hub, Settings, and the conversation
@@ -2145,17 +2146,36 @@ def capability_truth(
 
     svc_rows = []
     try:
-        services = services_status(config)
+        services = services_status(
+            config,
+            project_services=list(project_services) if project_services is not None else None,
+        )
     except Exception:  # noqa: BLE001 - services availability needs pricing; degrade to none
         services = []
+    enabled_services = set(config.services.enabled)
+    project_service_set = set(project_services) if project_services is not None else None
     for s in services:
         avail = s.get("state") == "available"
+        narrowed = (
+            project_service_set is not None
+            and s.get("state") == "disabled"
+            and s.get("name") in enabled_services
+            and s.get("name") not in project_service_set
+        )
         svc_rows.append(
             {
                 "name": s.get("name"),
                 "state": s.get("state"),
                 "exposed_to_chat": avail,
-                "reason": "" if avail else f"Service {s.get('state')}.",
+                "reason": (
+                    ""
+                    if avail
+                    else (
+                        "Not enabled for this project."
+                        if narrowed
+                        else f"Service {s.get('state')}."
+                    )
+                ),
             }
         )
 

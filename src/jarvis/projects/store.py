@@ -17,7 +17,8 @@ import asyncio
 import datetime as _dt
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Literal
 
 import aiosqlite
 
@@ -33,6 +34,9 @@ _STATUSES = ("active", "paused", "archived")
 # Columns update() will set, mapped to how the value is serialized. Whitelisted so the
 # SET clause is built from constants, never caller-supplied column names.
 _UPDATABLE = ("name", "description", "color", "icon")
+
+ServiceSelectionCheck = Literal["ready", "unchanged", "conflict", "missing"]
+ServiceSelectionUpdate = Literal["updated", "unchanged", "conflict", "missing"]
 
 
 def _now() -> str:
@@ -245,21 +249,118 @@ class ProjectStore:
         settings_json, without disturbing sibling overrides (model routes/budgets/roster/label).
         The caller (the route) enforces the narrow-only subset invariant; this just persists the
         list. Read-modify-write under the lock. Returns False if the project doesn't exist."""
+        result = await self.compare_and_set_services(project_id, services)
+        return result in {"updated", "unchanged"}
+
+    async def compare_and_set_services(
+        self,
+        project_id: int,
+        services: list[str] | None,
+        *,
+        expected_services: list[str] | None = None,
+        expected_provided: bool = False,
+    ) -> ServiceSelectionUpdate:
+        """Atomically apply one canonical service selection.
+
+        ``None`` is inherited global access, while ``[]`` is an explicit deny-all selection.
+        When an expected value is provided, a concurrent change returns ``"conflict"`` instead
+        of silently overwriting it.  An already-applied desired value wins before that comparison,
+        making a lost-response retry idempotently successful.
+        """
+        result, _project = await self.compare_and_set_services_with_project(
+            project_id,
+            services,
+            expected_services=expected_services,
+            expected_provided=expected_provided,
+        )
+        return result
+
+    async def compare_and_set_services_with_project(
+        self,
+        project_id: int,
+        services: list[str] | None,
+        *,
+        expected_services: list[str] | None = None,
+        expected_provided: bool = False,
+    ) -> tuple[ServiceSelectionUpdate, Project | None]:
+        """Apply a service CAS and return the exact row snapshot that was committed.
+
+        The UI publishes this snapshot synchronously into live execution contexts. Returning it
+        from inside the store lock avoids a fallible second database read after commit, which
+        would otherwise permit durable policy and in-memory tool authority to diverge.
+        """
+        desired = None if services is None else sorted(set(services))
+        expected = None if expected_services is None else sorted(set(expected_services))
         async with self.lock:
             p = await self.get(project_id)
             if p is None:
-                return False
+                return "missing", None
+            current_valid, current = self._service_selection(p.settings)
+            if current_valid and current == desired and self._service_selection_is_canonical(
+                p.settings, desired
+            ):
+                return "unchanged", p
+            if expected_provided and (not current_valid or current != expected):
+                return "conflict", None
             settings = dict(p.settings)
-            if services is None:
+            if desired is None:
                 settings.pop("services", None)
             else:
-                settings["services"] = list(services)
+                settings["services"] = desired
+            updated_at = _now()
             cursor = await self.db.execute(
                 "UPDATE projects SET settings_json = ?, updated_at = ? WHERE id = ?",
-                (json.dumps(settings), _now(), project_id),
+                (json.dumps(settings), updated_at, project_id),
             )
             await self.db.commit()
-        return cursor.rowcount > 0
+        if cursor.rowcount <= 0:
+            return "missing", None
+        return "updated", replace(p, settings=settings, updated_at=updated_at)
+
+    async def check_services(
+        self,
+        project_id: int,
+        services: list[str] | None,
+        *,
+        expected_services: list[str] | None = None,
+        expected_provided: bool = False,
+    ) -> ServiceSelectionCheck:
+        """Read the same canonical comparison used by :meth:`compare_and_set_services`.
+
+        This non-mutating preflight lets a lost-response retry succeed without waiting for the
+        execution barrier.  The later atomic compare-and-set repeats every check before a write.
+        """
+        desired = None if services is None else sorted(set(services))
+        expected = None if expected_services is None else sorted(set(expected_services))
+        async with self.lock:
+            p = await self.get(project_id)
+            if p is None:
+                return "missing"
+            current_valid, current = self._service_selection(p.settings)
+            if current_valid and current == desired and self._service_selection_is_canonical(
+                p.settings, desired
+            ):
+                return "unchanged"
+            if expected_provided and (not current_valid or current != expected):
+                return "conflict"
+            return "ready"
+
+    @staticmethod
+    def _service_selection(settings: dict) -> tuple[bool, list[str] | None]:
+        saved = settings.get("services")
+        if saved is None:
+            return True, None
+        if isinstance(saved, list) and all(isinstance(name, str) for name in saved):
+            return True, sorted(set(saved))
+        return False, None
+
+    @staticmethod
+    def _service_selection_is_canonical(
+        settings: dict, desired: list[str] | None
+    ) -> bool:
+        if desired is None:
+            return "services" not in settings
+        return settings.get("services") == desired
 
     async def set_status(self, project_id: int, status: str) -> bool:
         """Flip an existing project's lifecycle status. Returns False if unknown."""

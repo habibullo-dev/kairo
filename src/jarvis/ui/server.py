@@ -1464,11 +1464,20 @@ def create_app(
                 registered = set(names())
             except Exception:  # noqa: BLE001 - capability status must remain a read-only fallback
                 registered = None
+        projects = app.state.projects
+        active_project = (
+            workspace.project
+            if workspace is not None
+            else (projects.current() if projects is not None else None)
+        )
         return capability_truth(
             config,
             connectors=connectors.status() if connectors is not None else None,
             voice=voice,
             registered_tools=registered,
+            project_services=(
+                active_project.services if active_project is not None else None
+            ),
         )
 
     @app.get("/api/capabilities")
@@ -2650,10 +2659,13 @@ def create_app(
                 if not _claim_matches(workspace, claim):
                     return _context_changed()
                 try:
+                    prepared = await workspace.refresh_prepared_resume(prepared)
                     resumed = workspace.commit_resume(prepared)
                 except RuntimeError as exc:
                     if str(exc) == "context_changed":
                         return _context_changed()
+                    if str(exc) == "busy":
+                        return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
                     return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
                 if resumed:
                     app.state.workspaces.refresh_context(workspace)
@@ -2708,10 +2720,13 @@ def create_app(
                 if not _claim_matches(workspace, claim):
                     return _context_changed()
                 try:
+                    prepared = await workspace.refresh_prepared_new_session(prepared)
                     workspace.commit_new_session(prepared)
                 except RuntimeError as exc:
                     if str(exc) == "context_changed":
                         return _context_changed()
+                    if str(exc) == "busy":
+                        return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
                     return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
                 app.state.workspaces.refresh_context(workspace)
                 publication = (
@@ -3196,6 +3211,7 @@ def create_app(
                 async with app.state.workspaces.transition_lock:
                     if not _claim_matches(workspace, claim):
                         return _context_changed()
+                    prepared = await workspace.refresh_prepared_new_session(prepared)
                     ctx = workspace.commit_new_session(prepared)
                     app.state.workspaces.refresh_context(workspace)
                     publication = (
@@ -3213,6 +3229,8 @@ def create_app(
             except RuntimeError as exc:
                 if str(exc) == "context_changed":
                     return _context_changed()
+                if str(exc) == "busy":
+                    return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
                 return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
             except KeyError as exc:
                 return JSONResponse({"ok": False, "message": str(exc)}, status_code=404)
@@ -3277,6 +3295,11 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
+        if "services" not in body:
+            return JSONResponse(
+                {"ok": False, "message": "services is required"},
+                status_code=400,
+            )
         names = body.get("services")
         if names is not None and (
             not isinstance(names, list) or not all(isinstance(name, str) for name in names)
@@ -3285,7 +3308,20 @@ def create_app(
                 {"ok": False, "message": "services must be a list of names or null"},
                 status_code=400,
             )
+        expected_provided = "expected_services" in body
+        expected_names = body.get("expected_services")
+        if expected_provided and expected_names is not None and (
+            not isinstance(expected_names, list)
+            or not all(isinstance(name, str) for name in expected_names)
+        ):
+            return JSONResponse(
+                {"ok": False, "message": "expected_services must be a list of names or null"},
+                status_code=400,
+            )
         normalized = None if names is None else sorted(set(names))
+        normalized_expected = (
+            None if expected_names is None else sorted(set(expected_names))
+        )
         if normalized is not None:
             enabled = set(config.services.enabled)
             invalid = sorted(name for name in normalized if name not in enabled)
@@ -3294,6 +3330,99 @@ def create_app(
                     {"ok": False, "message": f"not globally enabled (cannot widen): {invalid}"},
                     status_code=400,
                 )
+        def busy_response() -> JSONResponse:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "reason": "project_busy",
+                    "message": "work is active; stop it before changing service access",
+                },
+                status_code=409,
+            )
+
+        def conflict_response() -> JSONResponse:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "reason": "service_access_changed",
+                    "message": (
+                        "service access changed in another workspace; review the latest setting"
+                    ),
+                },
+                status_code=409,
+            )
+
+        def lock_barrier(candidate):
+            methods = (
+                getattr(candidate, "locked", None),
+                getattr(candidate, "acquire", None),
+                getattr(candidate, "release", None),
+            )
+            return candidate if all(callable(method) for method in methods) else None
+
+        def service_barrier(runner, fallback_session):
+            candidate = getattr(runner, "turn_lock", None)
+            if candidate is None:
+                candidate = getattr(fallback_session, "turn_lock", None)
+            return lock_barrier(candidate)
+
+        async def acquire_barrier(barrier) -> bool:
+            if barrier is None:
+                return True
+            if barrier.locked():
+                return False
+            await barrier.acquire()
+            return True
+
+        async def complete_critical(operation):
+            """Finish commit plus cache publication before honoring request cancellation."""
+            task = asyncio.create_task(operation)
+            cancelled = False
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            result = task.result()
+            return result, cancelled
+
+        desired_context_services = None if normalized is None else tuple(normalized)
+
+        async def persist_and_apply(affected_workspaces):
+            change, project = await svc.store.compare_and_set_services_with_project(
+                project_id,
+                normalized,
+                expected_services=normalized_expected,
+                expected_provided=expected_provided,
+            )
+            if change in {"updated", "unchanged"}:
+                if project is None:  # defensive: a successful result always owns its row snapshot
+                    raise RuntimeError("service policy commit returned no project")
+                refreshed = svc.apply_project_context(project)
+                for item in affected_workspaces:
+                    item.refresh_project_context(refreshed)
+            return change
+
+        affected = []
+        publications = []
+        ok = False
+        request_cancelled = False
+
+        async def publish_changes() -> None:
+            # Delivery is best-effort and independently bounded per socket. Fan out together so
+            # holding the transition lock adds at most one delivery timeout, not one per workspace.
+            await asyncio.gather(
+                *(
+                    app.state.workspaces.publish_workspace(
+                        item,
+                        {"kind": "project_services_changed"},
+                        context=context,
+                        context_revision=context_revision,
+                    )
+                    for item, context, context_revision in publications
+                )
+            )
+
         if workspace is not None:
             claim = _request_claim(request, body)
             async with app.state.workspaces.transition_lock:
@@ -3301,9 +3430,133 @@ def create_app(
                     return _context_changed()
                 if not _claim_can_access_project(project_id, claim, include_global=False):
                     return _deny(status.HTTP_404_NOT_FOUND, "not found")
-                ok = await svc.store.set_services(project_id, normalized)
+                affected = app.state.workspaces.for_project(project_id)
+                preflight = await svc.store.check_services(
+                    project_id,
+                    normalized,
+                    expected_services=normalized_expected,
+                    expected_provided=expected_provided,
+                )
+                if preflight == "missing":
+                    return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                if preflight == "conflict":
+                    return conflict_response()
+                orchestrator = app.state.orchestrator
+                orchestration_busy = getattr(orchestrator, "busy_project", None)
+                runner = app.state.runner
+                barriers = (
+                    lock_barrier(svc.service_access_lock),
+                    service_barrier(runner, workspace.session),
+                )
+
+                def work_is_busy() -> bool:
+                    return bool(
+                        any(item.attended_busy for item in affected)
+                        or (callable(orchestration_busy) and orchestration_busy(project_id))
+                        or (runner is not None and getattr(runner, "in_flight", None))
+                    )
+
+                caches_current = bool(
+                    svc.project_services_are_current(project_id, normalized)
+                    and all(
+                        item.project.services == desired_context_services for item in affected
+                    )
+                )
+                requires_change = preflight != "unchanged" or not caches_current
+                held_barriers = []
+                try:
+                    if requires_change:
+                        if work_is_busy():
+                            return busy_response()
+                        for barrier in barriers:
+                            if barrier is None or any(barrier is held for held in held_barriers):
+                                continue
+                            if not await acquire_barrier(barrier):
+                                return busy_response()
+                            held_barriers.append(barrier)
+                        if work_is_busy():
+                            return busy_response()
+                        change, request_cancelled = await complete_critical(
+                            persist_and_apply(affected)
+                        )
+                    else:
+                        change = "unchanged"
+                    if change == "missing":
+                        return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                    if change == "conflict":
+                        return conflict_response()
+                    ok = change in {"updated", "unchanged"}
+                    if requires_change:
+                        for item in affected:
+                            publications.append((item, item.context, item.context_revision))
+                finally:
+                    for barrier in reversed(held_barriers):
+                        barrier.release()
+                if publications:
+                    # Keep context transitions serialized until each exact workspace has accepted
+                    # the invalidation envelope. Execution and orchestration barriers are already
+                    # released, and ConnectionManager bounds/fans out the socket work.
+                    _published, publish_cancelled = await complete_critical(publish_changes())
+                    request_cancelled = request_cancelled or publish_cancelled
         else:
-            ok = await svc.store.set_services(project_id, normalized)
+            orchestrator = app.state.orchestrator
+            orchestration_busy = getattr(orchestrator, "busy_project", None)
+            runner = app.state.runner
+            session = app.state.session
+            preflight = await svc.store.check_services(
+                project_id,
+                normalized,
+                expected_services=normalized_expected,
+                expected_provided=expected_provided,
+            )
+            if preflight == "missing":
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
+            if preflight == "conflict":
+                return conflict_response()
+            barriers = (
+                lock_barrier(svc.service_access_lock),
+                service_barrier(runner, session),
+            )
+
+            def work_is_busy() -> bool:
+                return bool(
+                    (callable(orchestration_busy) and orchestration_busy(project_id))
+                    or (runner is not None and getattr(runner, "in_flight", None))
+                    or (
+                        session is not None
+                        and getattr(session, "busy", False)
+                        and svc.current().project_id == project_id
+                    )
+                )
+
+            caches_current = svc.project_services_are_current(project_id, normalized)
+            requires_change = preflight != "unchanged" or not caches_current
+            held_barriers = []
+            try:
+                if requires_change:
+                    if work_is_busy():
+                        return busy_response()
+                    for barrier in barriers:
+                        if barrier is None or any(barrier is held for held in held_barriers):
+                            continue
+                        if not await acquire_barrier(barrier):
+                            return busy_response()
+                        held_barriers.append(barrier)
+                    if work_is_busy():
+                        return busy_response()
+                    change, request_cancelled = await complete_critical(persist_and_apply(()))
+                else:
+                    change = "unchanged"
+                if change == "missing":
+                    return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                if change == "conflict":
+                    return conflict_response()
+                ok = change in {"updated", "unchanged"}
+            finally:
+                for barrier in reversed(held_barriers):
+                    barrier.release()
+        if request_cancelled:
+            raise asyncio.CancelledError()
         return JSONResponse({"ok": ok, "services": normalized})
 
     @app.get("/api/artifacts")

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -20,6 +21,7 @@ from jarvis.projects.context import ProjectContext
 from jarvis.services.exa import ExaSearchTool
 from jarvis.tools.base import ToolContext
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
+from jarvis.ui.orchestration import OrchestrationController
 from jarvis.ui.server import create_app
 
 _OPEN: list = []
@@ -74,6 +76,18 @@ async def test_route_accepts_a_subset(tmp_path: Path) -> None:
     assert (await store.get(pid)).settings["services"] == ["firecrawl"]
 
 
+async def test_route_preserves_an_explicit_empty_selection(tmp_path: Path) -> None:
+    client, auth, store = await _client(tmp_path)
+    pid = await _make_project(client, auth)
+    r = client.post(
+        f"/api/projects/{pid}/services",
+        json={"services": [], "expected_services": None},
+        headers=_hdr(auth, post=True),
+    )
+    assert r.status_code == 200 and r.json() == {"ok": True, "services": []}
+    assert (await store.get(pid)).settings["services"] == []
+
+
 async def test_route_rejects_a_name_not_globally_enabled(tmp_path: Path) -> None:
     client, auth, store = await _client(tmp_path)
     pid = await _make_project(client, auth)
@@ -94,12 +108,135 @@ async def test_route_clears_narrowing_with_null(tmp_path: Path) -> None:
     assert "services" not in (await store.get(pid)).settings  # back to the full global set
 
 
+async def test_route_refreshes_the_legacy_active_context_and_rejects_stale_writes(
+    tmp_path: Path,
+) -> None:
+    client, auth, store = await _client(tmp_path)
+    pid = await _make_project(client, auth)
+    projects = client.app.state.projects
+    await projects.activate(pid)
+    post = _hdr(auth, post=True)
+
+    narrowed = client.post(
+        f"/api/projects/{pid}/services",
+        json={"services": ["exa"], "expected_services": None},
+        headers=post,
+    )
+    assert narrowed.status_code == 200 and projects.current().services == ("exa",)
+
+    stale = client.post(
+        f"/api/projects/{pid}/services",
+        json={"services": ["firecrawl"], "expected_services": None},
+        headers=post,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["reason"] == "service_access_changed"
+    assert (await store.get(pid)).settings["services"] == ["exa"]
+    assert projects.current().services == ("exa",)
+
+    cleared = client.post(
+        f"/api/projects/{pid}/services",
+        json={"services": None, "expected_services": ["exa"]},
+        headers=post,
+    )
+    assert cleared.status_code == 200 and projects.current().services is None
+
+
+async def test_route_rejects_service_changes_while_background_work_is_active(
+    tmp_path: Path,
+) -> None:
+    client, auth, store = await _client(tmp_path)
+    pid = await _make_project(client, auth)
+    client.app.state.runner = SimpleNamespace(in_flight="running task")
+
+    response = client.post(
+        f"/api/projects/{pid}/services",
+        json={"services": [], "expected_services": None},
+        headers=_hdr(auth, post=True),
+    )
+    assert response.status_code == 409
+    assert response.json()["reason"] == "project_busy"
+    assert "services" not in (await store.get(pid)).settings
+
+
+async def test_route_rejects_a_locked_execution_barrier_before_runner_labels_work(
+    tmp_path: Path,
+) -> None:
+    client, auth, store = await _client(tmp_path)
+    pid = await _make_project(client, auth)
+    turn_lock = asyncio.Lock()
+    await turn_lock.acquire()
+    client.app.state.runner = SimpleNamespace(in_flight=None, turn_lock=turn_lock)
+    try:
+        response = client.post(
+            f"/api/projects/{pid}/services",
+            json={"services": [], "expected_services": None},
+            headers=_hdr(auth, post=True),
+        )
+    finally:
+        turn_lock.release()
+    assert response.status_code == 409
+    assert response.json()["reason"] == "project_busy"
+    assert "services" not in (await store.get(pid)).settings
+
+
+async def test_route_rejects_policy_change_for_an_automatic_run_project(
+    tmp_path: Path,
+) -> None:
+    client, auth, store = await _client(tmp_path)
+    pid = await _make_project(client, auth)
+    projects = client.app.state.projects
+    await projects.activate(pid)
+
+    class AutomaticEngine:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def run(self, **_kwargs) -> int:
+            self.started.set()
+            await self.release.wait()
+            return 17
+
+    engine = AutomaticEngine()
+    controller = OrchestrationController(
+        engine=engine,
+        connections=SimpleNamespace(),
+        projects=projects,
+    )
+    client.app.state.orchestrator = controller
+    automatic = asyncio.create_task(
+        controller.run_automatic_project_assessment(
+            project_id=pid,
+            context=controller._build_context("automatic"),
+            budget_usd=5.0,
+        )
+    )
+    await asyncio.wait_for(engine.started.wait(), timeout=1)
+    try:
+        response = client.post(
+            f"/api/projects/{pid}/services",
+            json={"services": [], "expected_services": None},
+            headers=_hdr(auth, post=True),
+        )
+        assert response.status_code == 409
+        assert response.json()["reason"] == "project_busy"
+        assert "services" not in (await store.get(pid)).settings
+    finally:
+        engine.release.set()
+        await automatic
+
+
 async def test_route_rejects_non_list(tmp_path: Path) -> None:
     client, auth, _ = await _client(tmp_path)
     pid = await _make_project(client, auth)
     r = client.post(f"/api/projects/{pid}/services", json={"services": "firecrawl"},
                     headers=_hdr(auth, post=True))
     assert r.status_code == 400
+    missing = client.post(
+        f"/api/projects/{pid}/services", json={}, headers=_hdr(auth, post=True)
+    )
+    assert missing.status_code == 400 and "required" in missing.json()["message"]
 
 
 # --- merge-safe store write (never clobbers sibling settings) ---------------
@@ -117,6 +254,51 @@ async def test_set_services_is_merge_safe(tmp_path: Path) -> None:
     await store.set_services(pid, None)  # clearing services keeps the label
     p2 = await store.get(pid)
     assert p2.settings["label"] == "backend" and "services" not in p2.settings
+
+
+async def test_service_compare_and_set_is_atomic_idempotent_and_canonical(
+    tmp_path: Path,
+) -> None:
+    db = await connect(tmp_path / "cas.db")
+    _OPEN.append(db)
+    store = ProjectStore(db, asyncio.Lock())
+    pid = await store.create(name="P", settings={"label": "backend"})
+
+    assert await store.compare_and_set_services(
+        pid, ["exa"], expected_services=None, expected_provided=True
+    ) == "updated"
+    # A lost response is safe to retry even though its original expected value is now stale.
+    assert await store.compare_and_set_services(
+        pid, ["exa"], expected_services=None, expected_provided=True
+    ) == "unchanged"
+    assert await store.compare_and_set_services(
+        pid, ["firecrawl"], expected_services=None, expected_provided=True
+    ) == "conflict"
+    assert (await store.get(pid)).settings == {"label": "backend", "services": ["exa"]}
+
+    # A legacy caller without an expected value remains compatible, while non-canonical JSON is
+    # repaired instead of trapping the browser in a permanent “needs review” state.
+    assert await store.compare_and_set_services(pid, ["firecrawl"]) == "updated"
+    assert await store.update(pid, settings={"label": "backend", "services": None})
+    assert await store.compare_and_set_services(
+        pid, None, expected_services=None, expected_provided=True
+    ) == "updated"
+    assert (await store.get(pid)).settings == {"label": "backend"}
+
+
+async def test_expected_snapshot_may_name_a_service_no_longer_globally_enabled(
+    tmp_path: Path,
+) -> None:
+    client, auth, store = await _client(tmp_path)
+    pid = await _make_project(client, auth)
+    assert await store.set_services(pid, ["retired-service"])
+    response = client.post(
+        f"/api/projects/{pid}/services",
+        json={"services": ["exa"], "expected_services": ["retired-service"]},
+        headers=_hdr(auth, post=True),
+    )
+    assert response.status_code == 200
+    assert (await store.get(pid)).settings["services"] == ["exa"]
 
 
 # --- run-time enforcement: a narrowed-out tool refuses ----------------------

@@ -2953,6 +2953,295 @@ async def _assert_report_dialog_survives_passive_render_and_traps_keys(
         await context.close()
 
 
+async def _assert_project_service_access_is_scoped_retryable_and_race_safe(
+    browser: object, base: str
+) -> None:
+    context, page, errors = await _open_page(browser, base)
+    try:
+        await page.evaluate(
+            """async () => {
+              window.__SEED__['/api/projects/overview'] = {
+                projects: [
+                  { id: 1, name: 'Project One', slug: 'project-one', status: 'active',
+                    settings: {}, health: {} },
+                  { id: 2, name: 'Project Two', slug: 'project-two', status: 'active',
+                    settings: {}, health: {} }
+                ], archived: [], active_project_id: 2
+              };
+              window.__SEED__['/api/projects'] = {
+                projects: [{ id: 1, name: 'Project One' }, { id: 2, name: 'Project Two' }],
+                active_project_id: 2
+              };
+              const { api } = await import('/static/app.js');
+              window.__serviceOriginalGet = api.get.bind(api);
+              window.__serviceOriginalPost = api.post.bind(api);
+              window.__serviceSettingsFail = true;
+              window.__serviceSettingsReads = 0;
+              window.__servicePostMode = 'busy';
+              window.__servicePosts = [];
+              window.__serviceResolve = null;
+              window.__serviceWriteSignal = null;
+              window.__serviceWriteAborted = false;
+              window.__serviceSetSettings = services => {
+                const project = window.__SEED__['/api/projects/overview'].projects
+                  .find(item => item.id === 1);
+                project.settings = { ...(project.settings || {}) };
+                if (services === null) delete project.settings.services;
+                else project.settings.services = [...services];
+              };
+              api.get = (path, options) => {
+                if (path !== '/api/settings') return window.__serviceOriginalGet(path, options);
+                window.__serviceSettingsReads += 1;
+                if (window.__serviceSettingsFail) return Promise.resolve(null);
+                return Promise.resolve({
+                  services_enabled: ['exa', 'firecrawl'],
+                  credential_env: ['SECRET_SHOULD_NOT_RENDER'],
+                  credentials_present: { exa: true }
+                });
+              };
+              api.post = (path, body, options) => {
+                if (path !== '/api/projects/1/services') {
+                  return window.__serviceOriginalPost(path, body, options);
+                }
+                window.__servicePosts.push(JSON.parse(JSON.stringify(body)));
+                if (window.__servicePostMode === 'busy') {
+                  return Promise.resolve({ ok: false, status: 409, data: {
+                    ok: false, reason: 'project_busy', message: 'work is active'
+                  } });
+                }
+                if (window.__servicePostMode === 'conflict') {
+                  window.__serviceSetSettings(['firecrawl']);
+                  return Promise.resolve({ ok: false, status: 409, data: {
+                    ok: false, reason: 'service_access_changed',
+                    message: 'service access changed elsewhere'
+                  } });
+                }
+                if (window.__servicePostMode === 'delay') {
+                  window.__serviceWriteSignal = options?.signal || null;
+                  window.__serviceWriteAborted = Boolean(options?.signal?.aborted);
+                  options?.signal?.addEventListener('abort', () => {
+                    window.__serviceWriteAborted = true;
+                  }, { once: true });
+                  return new Promise(resolve => {
+                    window.__serviceResolve = () => {
+                      window.__serviceSetSettings(body.services);
+                      resolve({ ok: true, status: 200, data: {
+                        ok: true, services: body.services
+                      } });
+                    };
+                  });
+                }
+                window.__serviceSetSettings(body.services);
+                return Promise.resolve({ ok: true, status: 200, data: {
+                  ok: true, services: body.services
+                } });
+              };
+              location.hash = 'projects';
+            }"""
+        )
+        project_one = page.locator(".project-card").filter(has_text="Project One")
+        project_two = page.locator(".project-card").filter(has_text="Project Two")
+        await project_one.wait_for()
+        # The live handshake says Project One; the deliberately stale process-global overview says
+        # Project Two. Only live context may expose the scoped safety control.
+        assert await project_one.get_by_role("button", name="Service access").count() == 1
+        assert await project_two.get_by_role("button", name="Service access").count() == 0
+
+        trigger = project_one.get_by_role("button", name="Service access")
+        await trigger.click()
+        dialog = page.get_by_role("dialog", name="Service access for Project One")
+        await dialog.wait_for()
+        await dialog.get_by_text("Service choices are unavailable.", exact=True).wait_for()
+        assert await page.evaluate("window.__serviceSettingsReads") == 1
+        await page.evaluate("window.__serviceSettingsFail = false")
+        await dialog.get_by_role("button", name="Retry loading").click()
+        await dialog.get_by_text("exa", exact=True).wait_for()
+        assert "SECRET_SHOULD_NOT_RENDER" not in (await dialog.text_content() or "")
+
+        # Modal keyboard ownership and narrow layout remain usable.
+        await page.set_viewport_size({"width": 390, "height": 844})
+        await dialog.get_by_role("button", name="Save service access").focus()
+        await page.keyboard.press("Tab")
+        assert await dialog.evaluate("node => node.contains(document.activeElement)") is True
+        await page.keyboard.press("Control+K")
+        assert await page.locator(".command-overlay.open").count() == 0
+        assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+        await dialog.get_by_text("Only selected services", exact=True).click()
+        for checkbox in await dialog.locator('input[type="checkbox"]').all():
+            await checkbox.uncheck()
+        await dialog.get_by_role("button", name="Save service access").click()
+        await dialog.get_by_text("work is active", exact=True).wait_for()
+        assert await dialog.get_by_role("button", name="Save service access").is_enabled()
+        assert await page.evaluate("window.__servicePosts.length") == 1
+
+        # Two submits in one event turn remain one request. An exact self-event may refresh the
+        # route behind a saving dialog, but must not steal settlement ownership.
+        await page.evaluate(
+            """() => {
+              window.__servicePostMode = 'delay';
+              const form = document.querySelector('.service-access-dialog form');
+              form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+              form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+            }"""
+        )
+        await page.wait_for_function(
+            "window.__servicePosts.length === 2 && typeof window.__serviceResolve === 'function'"
+        )
+        await page.evaluate(
+            """() => {
+              window.__serviceSetSettings([]);
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                kind: 'project_services_changed', workspace_id: 'router-workspace',
+                session_id: 5, project_id: 1, context_revision: 1
+              }) });
+            }"""
+        )
+        await page.wait_for_timeout(80)
+        assert await dialog.count() == 1
+        await page.evaluate("window.__serviceResolve()")
+        await page.wait_for_function("!document.querySelector('.service-access-dialog')")
+        await page.get_by_text("Optional services: blocked", exact=True).wait_for()
+        assert await page.evaluate("window.__servicePosts[1]") == {
+            "services": [],
+            "expected_services": None,
+        }
+
+        # Reopening proves [] is not confused with inheritance. Saving null carries [] as the
+        # immutable CAS snapshot and restores inheritance.
+        trigger = project_one.get_by_role("button", name="Service access")
+        await trigger.click()
+        dialog = page.get_by_role("dialog", name="Service access for Project One")
+        await dialog.wait_for()
+        await dialog.get_by_text("Only selected services", exact=True).wait_for()
+        assert await dialog.locator('input[type="radio"]').nth(1).is_checked()
+        assert await dialog.locator('input[type="checkbox"]:checked').count() == 0
+        await dialog.get_by_text("Use all globally enabled services", exact=True).click()
+        await page.evaluate("window.__servicePostMode = 'success'")
+        await dialog.get_by_role("button", name="Save service access").click()
+        await page.wait_for_function("!document.querySelector('.service-access-dialog')")
+        await page.get_by_text("Optional services: inherit global", exact=True).wait_for()
+        assert await page.evaluate("window.__servicePosts.at(-1)") == {
+            "services": None,
+            "expected_services": [],
+        }
+
+        # A CAS conflict without a WebSocket frame closes stale review and re-reads authoritative
+        # project truth instead of treating a same-context change as an authority failure.
+        await project_one.get_by_role("button", name="Service access").click()
+        dialog = page.get_by_role("dialog", name="Service access for Project One")
+        await dialog.get_by_text("Only selected services", exact=True).click()
+        await dialog.locator('input[type="checkbox"]').nth(1).uncheck()
+        await page.evaluate("window.__servicePostMode = 'conflict'")
+        await dialog.get_by_role("button", name="Save service access").click()
+        await page.wait_for_function("!document.querySelector('.service-access-dialog')")
+        await page.get_by_text("Optional services: 1 allowed", exact=True).wait_for()
+        await page.get_by_text("service access changed elsewhere", exact=True).wait_for()
+
+        # An idle peer update explains the dismissal, refreshes the card, and restores focus to
+        # the replacement trigger after the passive render.
+        await project_one.get_by_role("button", name="Service access").click()
+        await page.get_by_role("dialog", name="Service access for Project One").wait_for()
+        await page.evaluate(
+            """() => {
+              window.__serviceSetSettings([]);
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                kind: 'project_services_changed', workspace_id: 'router-workspace',
+                session_id: 5, project_id: 1, context_revision: 1
+              }) });
+            }"""
+        )
+        await page.wait_for_function("!document.querySelector('.service-access-dialog')")
+        await page.get_by_text("Optional services: blocked", exact=True).wait_for()
+        await page.wait_for_function(
+            "document.activeElement?.dataset?.serviceAccessProject === '1'"
+        )
+
+        # An already-loaded dialog belongs to Projects and must not survive browser history
+        # navigation. Return to Projects afterward so the saving-time hash boundary can be tested
+        # independently.
+        await project_one.get_by_role("button", name="Service access").click()
+        dialog = page.get_by_role("dialog", name="Service access for Project One")
+        await dialog.get_by_text("Only selected services", exact=True).wait_for()
+        await page.go_back()
+        await page.wait_for_function("location.hash === '#chat'")
+        await page.wait_for_function("!document.querySelector('.service-access-dialog')")
+        await page.evaluate("location.hash = 'projects'")
+        await project_one.get_by_role("button", name="Service access").wait_for()
+
+        # A direct hash change while the POST is pending force-closes the modal and aborts the
+        # request. Even a transport mock that ignores AbortSignal and settles late cannot refresh
+        # the old route or announce success in Daily.
+        await project_one.get_by_role("button", name="Service access").click()
+        dialog = page.get_by_role("dialog", name="Service access for Project One")
+        await dialog.get_by_text("Use all globally enabled services", exact=True).click()
+        post_count = await page.evaluate("window.__servicePosts.length")
+        success_before_navigation = await page.get_by_text(
+            "This project now inherits all globally enabled services.", exact=True
+        ).count()
+        await page.evaluate(
+            """() => {
+              window.__servicePostMode = 'delay';
+              window.__serviceResolve = null;
+              window.__serviceWriteSignal = null;
+              window.__serviceWriteAborted = false;
+            }"""
+        )
+        await dialog.get_by_role("button", name="Save service access").click()
+        await page.wait_for_function(
+            "count => window.__servicePosts.length === count + 1 "
+            "&& typeof window.__serviceResolve === 'function' "
+            "&& window.__serviceWriteSignal instanceof AbortSignal",
+            arg=post_count,
+        )
+        await page.evaluate("location.hash = 'daily'")
+        await page.wait_for_function("location.hash === '#daily'")
+        await page.wait_for_function("!document.querySelector('.service-access-dialog')")
+        await page.wait_for_function("window.__serviceWriteAborted === true")
+        await page.evaluate("window.__serviceResolve()")
+        await page.wait_for_timeout(120)
+        assert await page.evaluate("location.hash") == "#daily"
+        assert await page.locator(".service-access-dialog").count() == 0
+        assert await page.get_by_text(
+            "This project now inherits all globally enabled services.", exact=True
+        ).count() <= success_before_navigation
+        await page.evaluate("location.hash = 'projects'")
+        await project_one.get_by_role("button", name="Service access").wait_for()
+
+        # A late successful response from replaced authority cannot revive the dialog, refresh the
+        # old route, or emit success feedback into Project Two.
+        await project_one.get_by_role("button", name="Service access").click()
+        dialog = page.get_by_role("dialog", name="Service access for Project One")
+        await dialog.get_by_text("Use all globally enabled services", exact=True).click()
+        await page.evaluate("window.__servicePostMode = 'delay'")
+        success_before = await page.get_by_text(
+            "This project now inherits all globally enabled services.", exact=True
+        ).count()
+        await dialog.get_by_role("button", name="Save service access").click()
+        await page.wait_for_function("typeof window.__serviceResolve === 'function'")
+        await page.evaluate(
+            """() => {
+              Object.assign(window.__SEED__['/api/runner'], {
+                session_id: 6, project: { id: 2, name: 'Project Two' }, context_revision: 2
+              });
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                kind: 'project_changed', workspace_id: 'router-workspace', session_id: 6,
+                project_id: 2, context_revision: 2, name: 'Project Two'
+              }) });
+            }"""
+        )
+        await page.wait_for_function("!document.querySelector('.service-access-dialog')")
+        await page.evaluate("window.__serviceResolve()")
+        await page.wait_for_timeout(120)
+        assert await page.get_by_text(
+            "This project now inherits all globally enabled services.", exact=True
+        ).count() == success_before
+        assert await project_two.get_by_role("button", name="Service access").count() == 1
+        assert errors == []
+    finally:
+        await context.close()
+
+
 async def _assert_delayed_project_navigation_respects_newer_authority_and_intent(
     browser: object, base: str
 ) -> None:
@@ -3782,6 +4071,10 @@ async def main() -> int:
                         (
                             "report dialog",
                             _assert_report_dialog_survives_passive_render_and_traps_keys,
+                        ),
+                        (
+                            "project service access",
+                            _assert_project_service_access_is_scoped_retryable_and_race_safe,
                         ),
                         (
                             "project navigation",

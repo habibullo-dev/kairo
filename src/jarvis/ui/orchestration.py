@@ -144,16 +144,28 @@ class OrchestrationController:
         return run_id
 
     async def _reserve(
-        self, project_id: int, execution_context: ExecutionContext | None
+        self,
+        project_id: int,
+        execution_context: ExecutionContext | None,
+        *,
+        wait: bool = False,
     ) -> bool:
-        """Atomically reserve the one shared engine for an attended launch."""
-        if self._operation_lock.locked():
+        """Reserve the engine, then cross the shared service-policy admission fence."""
+        if not wait and self._operation_lock.locked():
             return False
         await self._operation_lock.acquire()
         self._current_run_id = None
         self._current_context = execution_context
         self._current_project_id = project_id
         self._cancel_ticket = None
+        barrier = getattr(self.projects, "service_access_lock", None)
+        try:
+            if barrier is not None:
+                async with barrier:
+                    pass
+        except BaseException:
+            self._release()
+            raise
         return True
 
     def _release(self) -> None:
@@ -357,20 +369,17 @@ class OrchestrationController:
         """
         if project_id <= 0 or budget_usd <= 0:
             raise ValueError("automatic assessment requires a project and positive budget")
-        await self._operation_lock.acquire()
-        self._current_run_id = None
-        self._current_context = None
-        self._current_project_id = project_id
-        team = resolve_team("project_intelligence")  # fixed code roster; no project overrides
-        workflow = WORKFLOWS["project_assessment"]
-
-        async def sink(payload: dict) -> None:
-            if payload.get("kind") == "orchestration_started":
-                self._current_run_id = payload.get("run_id")
-            if on_event is not None:
-                await on_event(payload)
-
+        await self._reserve(project_id, None, wait=True)
         try:
+            team = resolve_team("project_intelligence")  # fixed code roster; no project overrides
+            workflow = WORKFLOWS["project_assessment"]
+
+            async def sink(payload: dict) -> None:
+                if payload.get("kind") == "orchestration_started":
+                    self._current_run_id = payload.get("run_id")
+                if on_event is not None:
+                    await on_event(payload)
+
             return await self.engine.run(
                 project_id=project_id,
                 team=team,

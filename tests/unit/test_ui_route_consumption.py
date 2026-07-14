@@ -27,7 +27,6 @@ INTENTIONALLY_NON_BROWSER: dict[str, str] = {
     "/api/intents/{param}": (
         "The queue list contains the currently supported intent inspection detail."
     ),
-    "/api/projects/{param}/services": "Service narrowing awaits a project-settings safety surface.",
     "/api/voice/listen": "Server-mic capture is superseded by browser voice capture.",
 }
 

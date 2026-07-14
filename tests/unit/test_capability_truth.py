@@ -96,3 +96,23 @@ def test_resilient_to_provider_registry_failure(tmp_path: Path, monkeypatch) -> 
     assert len(cap["connectors"]) == 5  # ALWAYS the five connector rows
     assert cap["providers"][0]["name"] == "Anthropic"  # anthropic still shown (the main chat)
     assert cap["services"] == [] and "summary" in cap  # services degrade; no crash
+
+
+def test_service_truth_distinguishes_project_narrowing_from_global_policy(
+    tmp_path: Path,
+) -> None:
+    config = _cfg(tmp_path)
+    config.services.enabled = ["searxng"]
+    cap = capability_truth(
+        config,
+        connectors=None,
+        voice={"enabled": False},
+        project_services=[],
+    )
+
+    narrowed = _row(cap["services"], "searxng")
+    assert narrowed["state"] == "disabled"
+    assert narrowed["exposed_to_chat"] is False
+    assert narrowed["reason"] == "Not enabled for this project."
+    assert _row(cap["services"], "exa")["reason"] == "Service disabled."
+    assert _row(cap["services"], "browserbase")["reason"] == "Service deferred."

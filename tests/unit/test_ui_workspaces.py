@@ -385,6 +385,465 @@ async def test_project_metadata_update_refreshes_live_contexts_without_switching
     assert missing_workspace.status_code == 409
 
 
+async def test_project_service_change_refreshes_every_bound_context_and_exact_socket(
+    tmp_path: Path,
+) -> None:
+    registry, connections, projects = await _registry(tmp_path)
+    project_a = await projects.store.create(name="Project A")
+    project_b = await projects.store.create(name="Project B")
+    await projects.activate(project_a)
+    auth = AuthManager(token="tok")
+    owner_a, owner_b, owner_c = auth.mint_session(), auth.mint_session(), auth.mint_session()
+    socket_a, socket_a_peer, socket_b, socket_c = _Socket(), _Socket(), _Socket(), _Socket()
+    workspace_a = await registry.attach(
+        connections.register(socket_a, owner_session=owner_a), owner_session=owner_a
+    )
+    workspace_b = await registry.attach(
+        connections.register(socket_b, owner_session=owner_b), owner_session=owner_b
+    )
+    workspace_c = await registry.attach(
+        connections.register(socket_c, owner_session=owner_c), owner_session=owner_c
+    )
+    await workspace_a.select_project(project_a)
+    await workspace_b.select_project(project_a)
+    await workspace_c.select_project(project_b)
+    for workspace in (workspace_a, workspace_b, workspace_c):
+        registry.refresh_context(workspace)
+    duplicate_a = await registry.attach(
+        connections.register(socket_a_peer, owner_session=owner_a),
+        owner_session=owner_a,
+        requested_workspace_id=workspace_a.workspace_id,
+    )
+    assert duplicate_a is workspace_a
+
+    config = load_config(root=tmp_path, env_file=None)
+    config.services.enabled = ["exa", "firecrawl"]
+    app = create_app(config, auth=auth, connections=connections)
+    app.state.projects = projects
+    app.state.workspaces = registry
+    client = TestClient(app, base_url="http://127.0.0.1")
+    headers = {
+        **_workspace_post_headers(owner_a, workspace_a),
+        EXPECTED_SESSION_HEADER: str(workspace_a.context.session_id),
+        EXPECTED_PROJECT_HEADER: str(project_a),
+        EXPECTED_CONTEXT_REVISION_HEADER: str(workspace_a.context_revision),
+    }
+    before = {
+        workspace.workspace_id: (workspace.context, workspace.context_revision)
+        for workspace in (workspace_a, workspace_b, workspace_c)
+    }
+
+    workspace_b.voice_active = 1
+    busy = client.post(
+        f"/api/projects/{project_a}/services",
+        json={"services": [], "expected_services": None},
+        headers=headers,
+    )
+    workspace_b.voice_active = 0
+    assert busy.status_code == 409 and busy.json()["reason"] == "project_busy"
+    assert "services" not in (await projects.store.get(project_a)).settings
+    assert not any(socket.sent for socket in (socket_a, socket_a_peer, socket_b, socket_c))
+
+    saved = client.post(
+        f"/api/projects/{project_a}/services",
+        json={"services": [], "expected_services": None},
+        headers=headers,
+    )
+    assert saved.status_code == 200 and saved.json()["services"] == []
+    assert workspace_a.project.services == workspace_b.project.services == ()
+    assert workspace_c.project.services is None
+    assert projects.current().services == ()
+    with bind_execution_context(workspace_a.context):
+        assert projects.current().services == ()
+    with bind_execution_context(workspace_b.context):
+        assert projects.current().services == ()
+    with bind_execution_context(workspace_c.context):
+        assert projects.current().project_id == project_b
+        assert projects.current().services is None
+    for workspace in (workspace_a, workspace_b, workspace_c):
+        assert (workspace.context, workspace.context_revision) == before[workspace.workspace_id]
+
+    for socket, workspace in (
+        (socket_a, workspace_a),
+        (socket_a_peer, workspace_a),
+        (socket_b, workspace_b),
+    ):
+        assert socket.sent == [
+            {
+                "kind": "project_services_changed",
+                **workspace.context.to_wire(),
+                "workspace_id": workspace.workspace_id,
+                "context_revision": workspace.context_revision,
+            }
+        ]
+    assert socket_c.sent == []
+
+    read_a = {
+        "cookie": f"{SESSION_COOKIE}={owner_a}",
+        WORKSPACE_HEADER: workspace_a.workspace_id,
+    }
+    capabilities = client.get("/api/capabilities", headers=read_a).json()
+    firecrawl = next(row for row in capabilities["services"] if row["name"] == "firecrawl")
+    assert firecrawl["state"] == "disabled"
+    assert firecrawl["reason"] == "Not enabled for this project."
+    studio = client.get("/api/studio", headers=read_a).json()
+    assert studio["active_project_id"] == project_a
+    assert all(
+        row["state"] == "disabled"
+        for row in studio["services"]
+        if row["name"] in {"exa", "firecrawl"}
+    )
+
+    for socket in (socket_a, socket_a_peer, socket_b, socket_c):
+        socket.sent.clear()
+    cleared = client.post(
+        f"/api/projects/{project_a}/services",
+        json={"services": None, "expected_services": []},
+        headers=headers,
+    )
+    assert cleared.status_code == 200 and cleared.json()["services"] is None
+    assert workspace_a.project.services is workspace_b.project.services is None
+    assert projects.current().services is None
+    assert len(socket_a.sent) == len(socket_a_peer.sent) == len(socket_b.sent) == 1
+    assert socket_c.sent == []
+
+
+@pytest.mark.parametrize("transition_kind", ["new", "select", "resume"])
+async def test_delayed_context_transition_reloads_latest_service_policy(
+    tmp_path: Path, monkeypatch, transition_kind: str
+) -> None:
+    registry, connections, projects = await _registry(tmp_path)
+    project_a = await projects.store.create(name="Project A")
+    project_b = await projects.store.create(name="Project B")
+    auth = AuthManager(token="tok")
+    transition_owner, policy_owner = auth.mint_session(), auth.mint_session()
+    transition_socket, policy_socket = _Socket(), _Socket()
+    transition_workspace = await registry.attach(
+        connections.register(transition_socket, owner_session=transition_owner),
+        owner_session=transition_owner,
+    )
+    policy_workspace = await registry.attach(
+        connections.register(policy_socket, owner_session=policy_owner),
+        owner_session=policy_owner,
+    )
+    await transition_workspace.select_project(
+        project_a if transition_kind == "new" else project_b
+    )
+    await policy_workspace.select_project(project_a)
+    registry.refresh_context(transition_workspace)
+    registry.refresh_context(policy_workspace)
+
+    target_session = None
+    if transition_kind == "resume":
+        target_session = await transition_workspace.session.sessions.create_session(
+            project_id=project_a
+        )
+        await transition_workspace.session.sessions.save_messages(
+            target_session, [{"role": "user", "content": "resume Project A"}]
+        )
+
+    if transition_kind == "new":
+        path = "/api/sessions/new"
+        payload = {"expected_context": _workspace_claim(transition_workspace)}
+        prepare_name = "prepare_new_session"
+    elif transition_kind == "select":
+        path = "/api/projects/select"
+        payload = {
+            "project_id": project_a,
+            "expected_context": _workspace_claim(transition_workspace),
+        }
+        prepare_name = "prepare_new_session"
+    else:
+        path = f"/api/sessions/{target_session}/resume"
+        payload = {"expected_context": _workspace_claim(transition_workspace)}
+        prepare_name = "prepare_resume"
+
+    prepared_old_policy = asyncio.Event()
+    release_transition = asyncio.Event()
+    original_prepare = getattr(transition_workspace, prepare_name)
+
+    async def delayed_prepare(*args, **kwargs):
+        prepared = await original_prepare(*args, **kwargs)
+        assert prepared is not None and prepared.project.services is None
+        prepared_old_policy.set()
+        await release_transition.wait()
+        return prepared
+
+    monkeypatch.setattr(transition_workspace, prepare_name, delayed_prepare)
+    config = load_config(root=tmp_path, env_file=None)
+    config.services.enabled = ["exa", "firecrawl"]
+    app = create_app(config, auth=auth, connections=connections)
+    app.state.projects = projects
+    app.state.workspaces = registry
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        transition_request = asyncio.create_task(
+            client.post(
+                path,
+                json=payload,
+                headers=_workspace_post_headers(transition_owner, transition_workspace),
+            )
+        )
+        await asyncio.wait_for(prepared_old_policy.wait(), timeout=1)
+        policy_response = await client.post(
+            f"/api/projects/{project_a}/services",
+            json={
+                "services": [],
+                "expected_services": None,
+                "expected_context": _workspace_claim(policy_workspace),
+            },
+            headers=_workspace_post_headers(policy_owner, policy_workspace),
+        )
+        assert policy_response.status_code == 200
+        release_transition.set()
+        transition_response = await asyncio.wait_for(transition_request, timeout=2)
+
+    assert transition_response.status_code == 200
+    assert transition_workspace.project.project_id == project_a
+    assert transition_workspace.project.services == ()
+    with bind_execution_context(transition_workspace.context):
+        assert projects.current().services == ()
+
+
+@pytest.mark.parametrize("transition_kind", ["new", "select", "resume"])
+async def test_context_transition_reload_translates_busy_to_409(
+    tmp_path: Path, monkeypatch, transition_kind: str
+) -> None:
+    registry, connections, projects = await _registry(tmp_path)
+    project_a = await projects.store.create(name="Project A")
+    project_b = await projects.store.create(name="Project B")
+    auth = AuthManager(token="tok")
+    owner = auth.mint_session()
+    workspace = await registry.attach(
+        connections.register(_Socket(), owner_session=owner), owner_session=owner
+    )
+    await workspace.select_project(project_a if transition_kind == "new" else project_b)
+    registry.refresh_context(workspace)
+    before = (workspace.context, workspace.context_revision, workspace.project)
+
+    if transition_kind == "new":
+        path = "/api/sessions/new"
+        payload = {"expected_context": _workspace_claim(workspace)}
+        refresh_name = "refresh_prepared_new_session"
+    elif transition_kind == "select":
+        path = "/api/projects/select"
+        payload = {
+            "project_id": project_a,
+            "expected_context": _workspace_claim(workspace),
+        }
+        refresh_name = "refresh_prepared_new_session"
+    else:
+        target_session = await workspace.session.sessions.create_session(project_id=project_a)
+        await workspace.session.sessions.save_messages(
+            target_session, [{"role": "user", "content": "resume Project A"}]
+        )
+        path = f"/api/sessions/{target_session}/resume"
+        payload = {"expected_context": _workspace_claim(workspace)}
+        refresh_name = "refresh_prepared_resume"
+
+    async def became_busy(_prepared):
+        raise RuntimeError("busy")
+
+    monkeypatch.setattr(workspace, refresh_name, became_busy)
+    app = create_app(
+        load_config(root=tmp_path, env_file=None), auth=auth, connections=connections
+    )
+    app.state.projects = projects
+    app.state.workspaces = registry
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.post(
+            path, json=payload, headers=_workspace_post_headers(owner, workspace)
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {"ok": False, "message": "busy"}
+    assert (workspace.context, workspace.context_revision, workspace.project) == before
+
+
+async def test_cancelled_service_commit_finishes_cache_publication_before_unlocking(
+    tmp_path: Path, monkeypatch
+) -> None:
+    registry, connections, projects = await _registry(tmp_path)
+    project_id = await projects.store.create(name="Project A")
+    await projects.activate(project_id)
+    auth = AuthManager(token="tok")
+    owner, peer_owner = auth.mint_session(), auth.mint_session()
+    socket, peer_socket = _Socket(), _Socket()
+    workspace = await registry.attach(
+        connections.register(socket, owner_session=owner), owner_session=owner
+    )
+    peer_workspace = await registry.attach(
+        connections.register(peer_socket, owner_session=peer_owner), owner_session=peer_owner
+    )
+    await workspace.select_project(project_id)
+    await peer_workspace.select_project(project_id)
+    registry.refresh_context(workspace)
+    registry.refresh_context(peer_workspace)
+
+    config = load_config(root=tmp_path, env_file=None)
+    config.services.enabled = ["exa", "firecrawl"]
+    app = create_app(config, auth=auth, connections=connections)
+    app.state.projects = projects
+    app.state.workspaces = registry
+    committed = asyncio.Event()
+    release_commit = asyncio.Event()
+    publication_entered = asyncio.Event()
+    release_publication = asyncio.Event()
+    cas_calls = 0
+    apply_calls = 0
+    original_cas = projects.store.compare_and_set_services_with_project
+    original_apply = projects.apply_project_context
+    original_publish = registry.publish_workspace
+
+    async def delayed_cas(*args, **kwargs):
+        nonlocal cas_calls
+        cas_calls += 1
+        result = await original_cas(*args, **kwargs)
+        committed.set()
+        await release_commit.wait()
+        return result
+
+    def observed_apply(project):
+        nonlocal apply_calls
+        apply_calls += 1
+        return original_apply(project)
+
+    async def delayed_publish(*args, **kwargs):
+        publication_entered.set()
+        await release_publication.wait()
+        await original_publish(*args, **kwargs)
+
+    monkeypatch.setattr(projects.store, "compare_and_set_services_with_project", delayed_cas)
+    monkeypatch.setattr(projects, "apply_project_context", observed_apply)
+    monkeypatch.setattr(registry, "publish_workspace", delayed_publish)
+    payload = {
+        "services": [],
+        "expected_services": None,
+        "expected_context": _workspace_claim(workspace),
+    }
+    headers = _workspace_post_headers(owner, workspace)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        request_task = asyncio.create_task(
+            client.post(
+                f"/api/projects/{project_id}/services", json=payload, headers=headers
+            )
+        )
+        await asyncio.wait_for(committed.wait(), timeout=1)
+        request_task.cancel()
+        await asyncio.sleep(0)
+        request_task.cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not request_task.done()
+        assert registry.transition_lock.locked()
+        assert projects.service_access_lock.locked()
+        assert workspace.session.turn_lock.locked()
+        assert (await projects.store.get(project_id)).settings["services"] == []
+        assert workspace.project.services is None
+        assert peer_workspace.project.services is None
+
+        turn_barrier_waiter = asyncio.create_task(workspace.session.turn_lock.acquire())
+        await asyncio.sleep(0)
+        assert not turn_barrier_waiter.done()
+        release_commit.set()
+        await asyncio.wait_for(publication_entered.wait(), timeout=1)
+        assert registry.transition_lock.locked()
+        transition_waiter = asyncio.create_task(registry.transition_lock.acquire())
+        await asyncio.sleep(0)
+        assert not transition_waiter.done()
+        release_publication.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+        await asyncio.wait_for(turn_barrier_waiter, timeout=1)
+        workspace.session.turn_lock.release()
+        await asyncio.wait_for(transition_waiter, timeout=1)
+        registry.transition_lock.release()
+
+        assert workspace.project.services == ()
+        assert peer_workspace.project.services == ()
+        assert projects.current().services == ()
+        with bind_execution_context(workspace.context):
+            assert projects.current().services == ()
+        assert not registry.transition_lock.locked()
+        assert not projects.service_access_lock.locked()
+        assert cas_calls == apply_calls == 1
+        for event_socket, event_workspace in (
+            (socket, workspace),
+            (peer_socket, peer_workspace),
+        ):
+            assert event_socket.sent == [
+                {
+                    "kind": "project_services_changed",
+                    **event_workspace.context.to_wire(),
+                    "workspace_id": event_workspace.workspace_id,
+                    "context_revision": event_workspace.context_revision,
+                }
+            ]
+
+        socket.sent.clear()
+        peer_socket.sent.clear()
+        workspace.voice_active = 1
+        retry = await client.post(
+            f"/api/projects/{project_id}/services", json=payload, headers=headers
+        )
+        workspace.voice_active = 0
+
+    assert retry.status_code == 200 and retry.json()["services"] == []
+    assert cas_calls == apply_calls == 1
+    assert socket.sent == []
+    assert peer_socket.sent == []
+
+
+async def test_unchanged_durable_policy_never_repairs_stale_cache_during_work(
+    tmp_path: Path,
+) -> None:
+    registry, connections, projects = await _registry(tmp_path)
+    project_id = await projects.store.create(name="Project A")
+    auth = AuthManager(token="tok")
+    owner = auth.mint_session()
+    workspace = await registry.attach(
+        connections.register(_Socket(), owner_session=owner), owner_session=owner
+    )
+    await workspace.select_project(project_id)
+    registry.refresh_context(workspace)
+    assert workspace.project.services is None
+    # Reproduce the only state an interrupted pre-fix request could leave: durable policy is new,
+    # while the live immutable execution binding is still old.
+    assert await projects.store.set_services(project_id, [])
+
+    config = load_config(root=tmp_path, env_file=None)
+    config.services.enabled = ["exa", "firecrawl"]
+    app = create_app(config, auth=auth, connections=connections)
+    app.state.projects = projects
+    app.state.workspaces = registry
+    payload = {
+        "services": [],
+        "expected_services": None,
+        "expected_context": _workspace_claim(workspace),
+    }
+    headers = _workspace_post_headers(owner, workspace)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        workspace.voice_active = 1
+        busy = await client.post(
+            f"/api/projects/{project_id}/services", json=payload, headers=headers
+        )
+        assert busy.status_code == 409 and busy.json()["reason"] == "project_busy"
+        assert workspace.project.services is None
+
+        workspace.voice_active = 0
+        repaired = await client.post(
+            f"/api/projects/{project_id}/services", json=payload, headers=headers
+        )
+
+    assert repaired.status_code == 200
+    assert workspace.project.services == ()
+    with bind_execution_context(workspace.context):
+        assert projects.current().services == ()
+
+
 async def test_emergency_cancel_covers_every_live_workspace(tmp_path: Path) -> None:
     registry, connections, _projects = await _registry(tmp_path)
     workspace_a = await registry.attach(

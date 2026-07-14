@@ -17,7 +17,7 @@ import asyncio
 import secrets
 from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from jarvis.core.execution import ExecutionContext
@@ -174,6 +174,25 @@ class UiWorkspace:
             session_id=session_id,
         )
 
+    async def refresh_prepared_new_session(
+        self, prepared: PreparedWorkspaceNewSession
+    ) -> PreparedWorkspaceNewSession:
+        """Reload a prepared target immediately before its serialized commit.
+
+        Preparation deliberately performs fallible I/O outside the registry transition lock.
+        A project policy edit can therefore land while the durable session row is being
+        allocated.  Callers holding that lock use this final reload so the delayed transition
+        cannot reinstall the old immutable :class:`ProjectContext` snapshot.
+        """
+        if not self._source_matches(prepared.source_context, prepared.source_revision):
+            raise RuntimeError("context_changed")
+        project = await self._project_context(prepared.project.project_id)
+        if not self._source_matches(prepared.source_context, prepared.source_revision):
+            raise RuntimeError("context_changed")
+        if self._attended_busy_now():
+            raise RuntimeError("busy")
+        return replace(prepared, project=project)
+
     def commit_new_session(self, prepared: PreparedWorkspaceNewSession) -> ExecutionContext:
         """Publish one prepared fresh-session transition as a non-yielding state change."""
         if not self._source_matches(prepared.source_context, prepared.source_revision):
@@ -288,6 +307,19 @@ class UiWorkspace:
             project=project,
             session=prepared_session,
         )
+
+    async def refresh_prepared_resume(
+        self, prepared: PreparedWorkspaceResume
+    ) -> PreparedWorkspaceResume:
+        """Reload a resume target under the registry transition lock before commit."""
+        if not self._source_matches(prepared.source_context, prepared.source_revision):
+            raise RuntimeError("context_changed")
+        project = await self._project_context(prepared.project.project_id)
+        if not self._source_matches(prepared.source_context, prepared.source_revision):
+            raise RuntimeError("context_changed")
+        if self._attended_busy_now():
+            raise RuntimeError("busy")
+        return replace(prepared, project=project)
 
     def commit_resume(self, prepared: PreparedWorkspaceResume) -> bool:
         """Publish a prepared resume as one non-yielding session/project transition."""

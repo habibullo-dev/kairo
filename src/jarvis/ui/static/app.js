@@ -6,7 +6,11 @@
 import { render as renderDaily } from "./screens/daily.js";
 import { render as renderChat } from "./screens/chat.js";
 import { onConversationEvent } from "./screens/conversation.js";
-import { dismissProjectDialogs, render as renderProjects } from "./screens/projects.js";
+import {
+  dismissProjectDialogs,
+  dismissProjectServiceAccess,
+  render as renderProjects,
+} from "./screens/projects.js";
 import { render as renderStudio, onEvent as studioOnEvent } from "./screens/studio.js";
 import { render as renderGate } from "./screens/gate.js";
 import { render as renderVault } from "./screens/vault.js";
@@ -212,11 +216,12 @@ export const api = {
     runnerStatusAbort = controller;
     return request;
   },
-  async post(path, body) {
+  async post(path, body, { signal } = {}) {
     const r = await fetch(path, {
       method: "POST",
       headers: workspaceHeaders({ ...expectedContextHeaders(), "content-type": "application/json" }),
       body: JSON.stringify(body || {}),
+      signal,
     });
     if (!sessionAlive(r)) return { ok: false, status: r.status, data: {} };
     return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
@@ -596,6 +601,27 @@ function handleMessage(msg) {
   if (msg.kind === "effort_changed") {
     if (state.runner) state.runner.effort = msg.effort;
     renderRunnerState(); refreshHeader(); return;
+  }
+  if (msg.kind === "project_services_changed") {
+    // The server has already refreshed this exact workspace's immutable project context. Re-read
+    // every mounted surface that reports service/capability truth; the frame carries no settings
+    // payload, so a socket can never become an optimistic authority for the selection itself.
+    busEmit("project_services_changed", msg);
+    const invalidatedProjectId = dismissProjectServiceAccess();
+    refreshHeader();
+    let rendered = Promise.resolve();
+    if (["daily", "hub", "projects", "settings", "studio", "workspace"].includes(state.route)) {
+      rendered = renderRoute();
+    }
+    if (invalidatedProjectId !== null) {
+      showToast("Service access changed in another workspace. Review the latest setting.");
+      rendered.then(() => {
+        document.querySelector(
+          `[data-service-access-project="${invalidatedProjectId}"]`,
+        )?.focus?.();
+      }).catch(() => {});
+    }
+    return;
   }
   if (msg.kind === "project_changed") {
     // A scope switch started a fresh scoped conversation server-side — clear the local view.
@@ -1741,6 +1767,11 @@ function parseHash() {
 }
 
 function navigate({ preserveIntent = false } = {}) {
+  // A service policy editor belongs to the route on which it was opened. Browser Back/Forward
+  // and direct hash changes do not pass through the modal's controls, so close it here as the
+  // navigation boundary. Force also aborts an in-flight fetch; the dialog owner is retired before
+  // aborting, which keeps a late server response from refreshing or announcing into the new route.
+  dismissProjectServiceAccess({ force: true });
   if (!preserveIntent) navigationGeneration += 1;
   const { name, args } = parseHash();
   if (state.route && state.route !== name) setSurface(state.route, false);

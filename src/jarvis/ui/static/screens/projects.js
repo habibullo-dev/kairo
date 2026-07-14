@@ -1,9 +1,9 @@
 // Projects — the workspace grid (Phase 11 T9). Each project is a card: color tile, name, editable
 // category label, pinned star, status, and health chips (open tasks · chats this week · last run ·
 // month spend). A collections row surfaces built-in navigation presets. The card
-// opens the project Workspace (#workspace/{id}, T10). Every write is an existing/enumerated
-// metadata mutation (create/select/archive/pin/label) — no new authority. Built entirely with
-// el() so a project name/label can never inject markup.
+// opens the project Workspace (#workspace/{id}, T10). Writes are the enumerated project
+// lifecycle/metadata routes plus an attended, narrow-only service policy for the exact active
+// project. Built entirely with el() so a project name/label can never inject markup.
 import { el } from "../ui/dom.js";
 import { showToast } from "../ui/feedback.js";
 import { money } from "../ui/format.js";
@@ -27,6 +27,10 @@ const BUILTIN_VIEWS = [
 let activeProjectEdit = null;
 let projectEditSequence = 0;
 let activeProjectReset = null;
+let activeServiceAccess = null;
+let serviceAccessSequence = 0;
+const SERVICE_ACCESS_READ_TIMEOUT_MS = 10000;
+const SERVICE_ACCESS_WRITE_TIMEOUT_MS = 15000;
 
 function captureAuthority(api) {
   const context = api.state?.context;
@@ -55,6 +59,354 @@ function isExactProjectSuccessor(api, before, projectId) {
   return current.project_id === projectId
     && current.session_id !== before.context.session_id
     && current.context_revision === before.context.context_revision + 1;
+}
+
+function isExactProjectAuthority(api, before, projectId) {
+  const current = api.state?.context;
+  if (!before.context || !current || current.project_id !== projectId) return false;
+  if (typeof api.workspaceToken === "function" && api.workspaceToken() !== before.workspace) {
+    return false;
+  }
+  if (typeof api.authorityToken === "function" && api.authorityToken() !== before.authority) {
+    return false;
+  }
+  if (typeof api.navigationToken === "function" && api.navigationToken() !== before.navigation) {
+    return false;
+  }
+  return current.session_id === before.context.session_id
+    && current.project_id === before.context.project_id
+    && current.context_revision === before.context.context_revision;
+}
+
+function hasExplicitServiceAccess(project) {
+  return Object.hasOwn(project.settings || {}, "services");
+}
+
+function serviceAccessSummary(project) {
+  if (!hasExplicitServiceAccess(project)) return "inherit global";
+  const selected = project.settings?.services;
+  if (!Array.isArray(selected)) return "review needed";
+  return selected.length === 0 ? "blocked" : `${selected.length} allowed`;
+}
+
+function sameServiceSelection(expected, actual) {
+  if (expected === null || actual === null) return expected === actual;
+  return Array.isArray(expected) && Array.isArray(actual)
+    && expected.length === actual.length
+    && expected.every((name, index) => name === actual[index]);
+}
+
+function closeServiceAccess(value, owner = null) {
+  const current = activeServiceAccess;
+  if (!current || (owner !== null && current.owner !== owner)) return false;
+  activeServiceAccess = null;
+  current.readAbort?.abort();
+  current.writeAbort?.abort();
+  current.unregisterEscape();
+  current.overlay.remove();
+  const restore = current.restoreFocus?.isConnected
+    ? current.restoreFocus
+    : document.querySelector(`[data-service-access-project="${current.projectId}"]`);
+  restore?.focus?.();
+  current.resolve(value);
+  return true;
+}
+
+function openProjectServiceAccess(project, api) {
+  const binding = captureAuthority(api);
+  if (!isExactProjectAuthority(api, binding, project.id)) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    if (activeServiceAccess) {
+      if (activeServiceAccess.saving) { resolve(false); return; }
+      closeServiceAccess(false);
+    }
+    const owner = ++serviceAccessSequence;
+    const titleId = `service-access-title-${owner}`;
+    const descriptionId = `service-access-description-${owner}`;
+    const overlay = el("div", { class: "dialog-overlay", role: "presentation" });
+    const card = el("section", {
+      class: "dialog-card project-edit-dialog service-access-dialog",
+      role: "dialog", "aria-modal": "true", "aria-labelledby": titleId,
+      "aria-describedby": descriptionId, tabindex: "-1",
+    });
+    const status = el("div", {
+      class: "service-access-status", role: "status", text: "Loading globally enabled services…",
+    });
+    const error = el("div", { class: "project-edit-error", role: "alert", hidden: true });
+    const retry = el("button", {
+      class: "dialog-button secondary", type: "button", text: "Retry loading", hidden: true,
+    });
+    const inherit = el("input", {
+      type: "radio", name: `service-access-mode-${owner}`, required: true,
+    });
+    const subset = el("input", {
+      type: "radio", name: `service-access-mode-${owner}`, required: true,
+    });
+    const explicit = hasExplicitServiceAccess(project);
+    const currentSettingValid = !explicit || (
+      Array.isArray(project.settings?.services)
+      && project.settings.services.every((name) => typeof name === "string")
+    );
+    const currentSelection = explicit && currentSettingValid
+      ? [...new Set(project.settings.services)].sort()
+      : [];
+    inherit.checked = currentSettingValid && !explicit;
+    subset.checked = currentSettingValid && explicit;
+    const modes = el("fieldset", { class: "service-access-modes", hidden: true }, [
+      el("legend", { class: "project-edit-label", text: "Access mode" }),
+      el("label", { class: "service-access-mode" }, [
+        inherit,
+        el("span", {}, [
+          el("strong", { text: "Use all globally enabled services" }),
+          el("small", { text: "Future globally enabled services are inherited automatically." }),
+        ]),
+      ]),
+      el("label", { class: "service-access-mode" }, [
+        subset,
+        el("span", {}, [
+          el("strong", { text: "Only selected services" }),
+          el("small", { text: "An empty selection blocks every optional service for this project." }),
+        ]),
+      ]),
+    ]);
+    const choices = el("div", { class: "service-access-choices", hidden: true });
+    const cancel = el("button", { class: "dialog-button secondary", type: "button", text: "Cancel" });
+    const submit = el("button", {
+      class: "dialog-button primary", type: "submit", text: "Save service access", disabled: true,
+    });
+    const form = el("form", { class: "project-edit-form" }, [
+      el("h2", {
+        id: titleId, class: "dialog-title",
+        text: `Service access for ${project.name || "this project"}`,
+      }),
+      el("p", {
+        id: descriptionId, class: "dialog-message",
+        text: "Choose which globally enabled optional services this project may use. Credentials, pricing, and approval policy still apply. Active work must stop before this safety setting can change.",
+      }),
+      status, modes, choices, error, retry,
+      el("div", { class: "dialog-actions" }, [cancel, submit]),
+    ]);
+    card.append(form);
+    overlay.append(card);
+
+    let checkboxes = [];
+    let loaded = false;
+    const showError = (message) => {
+      error.hidden = false;
+      error.textContent = message || "Service access could not be saved.";
+    };
+    const selectedMode = () => (inherit.checked ? "inherit" : (subset.checked ? "subset" : null));
+    const syncControls = () => {
+      const current = activeServiceAccess;
+      if (!current || current.owner !== owner) return;
+      const busy = current.saving;
+      const waiting = busy || current.loading;
+      inherit.disabled = busy || !loaded;
+      subset.disabled = busy || !loaded;
+      for (const checkbox of checkboxes) {
+        checkbox.disabled = busy || !loaded || !subset.checked;
+      }
+      cancel.disabled = busy;
+      submit.disabled = busy || !loaded || selectedMode() === null;
+      card.setAttribute("aria-busy", waiting ? "true" : "false");
+    };
+    const renderChoices = (names) => {
+      const allowed = [...new Set(names.map((name) => name.trim()).filter(Boolean))].sort();
+      const allowedSet = new Set(allowed);
+      choices.replaceChildren();
+      checkboxes = allowed.map((name) => {
+        const checkbox = el("input", { type: "checkbox", value: name });
+        checkbox.checked = explicit ? currentSelection.includes(name) : true;
+        choices.append(el("label", { class: "service-access-choice" }, [
+          checkbox, el("span", { class: "mono", text: name }),
+        ]));
+        return checkbox;
+      });
+      if (!allowed.length) {
+        choices.append(el("p", {
+          class: "project-edit-hint", text: "No optional services are globally enabled.",
+        }));
+      }
+      const stale = currentSelection.filter((name) => !allowedSet.has(name));
+      if (stale.length) {
+        choices.append(el("p", {
+          class: "project-edit-hint",
+          text: `Already globally disabled and removed on save: ${stale.join(", ")}`,
+        }));
+      }
+      modes.hidden = false;
+      choices.hidden = false;
+      loaded = true;
+      activeServiceAccess.loading = false;
+      status.textContent = allowed.length
+        ? `${allowed.length} globally enabled service${allowed.length === 1 ? "" : "s"} available to narrow.`
+        : "The global service set is empty.";
+      if (!currentSettingValid) {
+        showError("The saved setting needs review. Choose an access mode before saving.");
+      }
+      syncControls();
+    };
+    const loadSettings = async () => {
+      const current = activeServiceAccess;
+      if (!current || current.owner !== owner || current.saving) return;
+      current.readAbort?.abort();
+      const controller = new AbortController();
+      current.readAbort = controller;
+      current.loading = true;
+      loaded = false;
+      retry.hidden = true;
+      retry.disabled = true;
+      error.hidden = true;
+      status.textContent = "Loading globally enabled services…";
+      syncControls();
+      let settings = null;
+      const timeout = setTimeout(() => controller.abort(), SERVICE_ACCESS_READ_TIMEOUT_MS);
+      try {
+        settings = await api.get("/api/settings", { signal: controller.signal });
+      } catch {
+        settings = null;
+      } finally {
+        clearTimeout(timeout);
+      }
+      if (activeServiceAccess?.owner !== owner || current.readAbort !== controller) return;
+      current.readAbort = null;
+      current.loading = false;
+      if (!isExactProjectAuthority(api, binding, project.id)) {
+        closeServiceAccess(false, owner);
+        return;
+      }
+      if (!Array.isArray(settings?.services_enabled)
+          || !settings.services_enabled.every((name) => typeof name === "string")) {
+        status.textContent = "Service choices are unavailable.";
+        showError("Could not load the globally enabled service names. Retry from this project.");
+        retry.hidden = false;
+        retry.disabled = false;
+        syncControls();
+        return;
+      }
+      renderChoices(settings.services_enabled);
+    };
+    const restoreAfterFailure = () => {
+      const current = activeServiceAccess;
+      if (!current || current.owner !== owner) return;
+      current.saving = false;
+      submit.textContent = "Save service access";
+      syncControls();
+    };
+    const closeIfIdle = () => {
+      if (activeServiceAccess?.owner !== owner || activeServiceAccess.saving) return;
+      closeServiceAccess(false, owner);
+    };
+    retry.addEventListener("click", () => { void loadSettings(); });
+    const modeChanged = () => {
+      if (!currentSettingValid && loaded) error.hidden = true;
+      syncControls();
+    };
+    inherit.addEventListener("change", modeChanged);
+    subset.addEventListener("change", modeChanged);
+    cancel.addEventListener("click", closeIfIdle);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const current = activeServiceAccess;
+      if (!current || current.owner !== owner || current.saving || !loaded) return;
+      if (!isExactProjectAuthority(api, binding, project.id)) {
+        closeServiceAccess(false, owner);
+        return;
+      }
+      const mode = selectedMode();
+      if (mode === null) {
+        showError("Choose whether this project inherits all services or uses a selected set.");
+        inherit.focus();
+        return;
+      }
+      const services = mode === "inherit"
+        ? null
+        : checkboxes.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value).sort();
+      const expected = services === null ? null : [...services];
+      current.saving = true;
+      error.hidden = true;
+      submit.textContent = "Saving…";
+      syncControls();
+      let result;
+      const writeController = new AbortController();
+      current.writeAbort = writeController;
+      const writeTimeout = setTimeout(
+        () => writeController.abort(), SERVICE_ACCESS_WRITE_TIMEOUT_MS,
+      );
+      try {
+        const payload = { services: expected };
+        if (currentSettingValid) {
+          payload.expected_services = explicit ? [...currentSelection] : null;
+        }
+        result = await api.post(
+          `/api/projects/${encodeURIComponent(project.id)}/services`, payload,
+          { signal: writeController.signal },
+        );
+      } catch {
+        result = { ok: false, status: 0, data: {} };
+      } finally {
+        clearTimeout(writeTimeout);
+        if (activeServiceAccess?.owner === owner
+            && current.writeAbort === writeController) current.writeAbort = null;
+      }
+      if (activeServiceAccess?.owner !== owner) return;
+      if (!isExactProjectAuthority(api, binding, project.id)) {
+        current.saving = false;
+        closeServiceAccess(false, owner);
+        return;
+      }
+      if (result.status === 409 && result.data?.reason === "service_access_changed") {
+        const message = result.data?.message
+          || "Service access changed in another workspace. Review the latest setting.";
+        current.saving = false;
+        closeServiceAccess(false, owner);
+        await api.refreshRoute();
+        if (isExactProjectAuthority(api, binding, project.id)) {
+          showToast(message, "error");
+          document.querySelector(
+            `[data-service-access-project="${project.id}"]`,
+          )?.focus?.();
+        }
+        return;
+      }
+      if (result.status === 404 || (result.status === 409 && result.data?.reason !== "project_busy")) {
+        const message = result.data?.message || "The workspace changed. Reopen Service access.";
+        current.saving = false;
+        closeServiceAccess(false, owner);
+        if (typeof api.runnerStatus === "function") {
+          await api.runnerStatus({ refresh: true, timeoutMs: 7000 });
+        }
+        if (isExactProjectAuthority(api, binding, project.id)) showToast(message, "error");
+        return;
+      }
+      if (result.ok && result.data?.ok && sameServiceSelection(expected, result.data.services)) {
+        current.saving = false;
+        closeServiceAccess(true, owner);
+        showToast(expected === null
+          ? "This project now inherits all globally enabled services."
+          : (expected.length === 0
+            ? "All optional services are blocked for this project."
+            : `Service access limited to ${expected.length} selected service${expected.length === 1 ? "" : "s"}.`));
+        return;
+      }
+      restoreAfterFailure();
+      showError(result.data?.message || (
+        result.status >= 400 && result.status < 500
+          ? "Service access was rejected. Review the selection and retry."
+          : "Could not confirm the saved service access. This set operation is safe to retry."
+      ));
+    });
+    overlay.addEventListener("click", (event) => { if (event.target === overlay) closeIfIdle(); });
+    const restoreFocus = document.activeElement;
+    const unregisterEscape = pushEscape(closeIfIdle, card);
+    activeServiceAccess = {
+      owner, projectId: project.id, overlay, resolve, unregisterEscape, restoreFocus,
+      saving: false, loading: true, readAbort: null, writeAbort: null,
+    };
+    document.body.append(overlay);
+    card.focus();
+    void loadSettings();
+  });
 }
 
 function closeProjectReset(value, owner = null) {
@@ -207,7 +559,15 @@ export function dismissProjectDialogs() {
   // finish. Before submission, an authority change still dismisses it immediately.
   if (activeProjectReset?.operationPending) detachProjectReset(activeProjectReset);
   else closeProjectReset(false);
+  closeServiceAccess(false);
   closeProjectEdit(false);
+}
+
+export function dismissProjectServiceAccess({ force = false } = {}) {
+  if (!activeServiceAccess || (activeServiceAccess.saving && !force)) return null;
+  const projectId = activeServiceAccess.projectId;
+  closeServiceAccess(false);
+  return projectId;
 }
 
 function closeProjectEdit(value, owner = null) {
@@ -423,17 +783,34 @@ function projectCard(p, activeId, api, refresh) {
   const meta = el("div", { class: "pc-meta" }, [
     labelSelect(p, api, refresh),
     active ? el("span", { class: "status-pill good" }, ["active"]) : chip(p.status),
+    chip(`Optional services: ${serviceAccessSummary(p)}`),
   ]);
   const desc = p.description
     ? el("div", { class: "pc-desc dim" }, [p.description])
     : null;
   const health = el("div", { class: "pc-health" }, healthChips(p.health || {}));
+  let serviceAccess = null;
+  if (active) {
+    serviceAccess = plainButton("Service access", async () => {
+      if (api.state?.context?.project_id !== p.id) {
+        showToast("Switch back to this project before changing service access.", "error");
+        refresh();
+        return;
+      }
+      const saved = await openProjectServiceAccess(p, api);
+      if (!saved) return;
+      await refresh();
+      document.querySelector(`[data-service-access-project="${p.id}"]`)?.focus?.();
+    }, "ghost");
+    serviceAccess.dataset.serviceAccessProject = String(p.id);
+  }
   const actions = el("div", { class: "pc-actions" }, [
     active ? el("span", { class: "dim" }, ["Working here"]) : plainButton("Set active", async () => {
       await api.post("/api/projects/select", { project_id: p.id });
       refresh();
     }),
     plainButton(active ? "Open →" : "Open & switch", () => { void openWorkspace(); }, "ghost"),
+    ...(serviceAccess ? [serviceAccess] : []),
     plainButton("Edit details", async () => {
       const saved = await openProjectEdit(p, api);
       if (!saved) return;
@@ -491,6 +868,16 @@ export async function render(container, api) {
     return;
   }
 
+  // The overview's process-global active id is only a legacy fallback. In the simultaneous
+  // workspace UI, the server-owned live context is the sole authority for which card may expose
+  // project-scoped settings.
+  const hasLiveProjectScope = Boolean(
+    api.state?.context && Object.hasOwn(api.state.context, "project_id"),
+  );
+  const activeProjectId = hasLiveProjectScope
+    ? api.state.context.project_id
+    : data.active_project_id;
+
   // New project
   const nameInput = el("input", { id: "pj-name", placeholder: "Project name", maxlength: "120" });
   const createBtn = plainButton("Create", async () => {
@@ -515,12 +902,12 @@ export async function render(container, api) {
     ]));
   } else {
     const grid = el("div", { class: "projects-grid rise" }, active.map((p) =>
-      projectCard(p, data.active_project_id, api, refresh)));
+      projectCard(p, activeProjectId, api, refresh)));
     container.appendChild(grid);
   }
 
   // Global scope + archived
-  if (data.active_project_id != null) {
+  if (activeProjectId != null) {
     const back = plainButton("Return to global scope", async () => {
       await api.post("/api/projects/select", { project_id: null });
       refresh();

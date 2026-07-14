@@ -18,10 +18,11 @@ def test_grid_over_the_overview_read_model() -> None:
 
 
 def test_writes_are_the_enumerated_project_mutations_only() -> None:
-    # create / select / update / archive / pin / label — the metadata set. No turn/executor.
+    # create / select / update / archive / pin / label / services — attended project settings.
     for ep in (
         "/api/projects", "/api/projects/select", "/update", "/pin", "/label", "/archive",
         "/reset",
+        "/services",
     ):
         assert ep in PROJECTS_JS, ep
     assert "/api/turn" not in PROJECTS_JS
@@ -81,3 +82,21 @@ def test_opening_an_inactive_workspace_switches_to_its_scoped_context_first() ->
     assert 'api.post("/api/projects/select", { project_id: p.id })' in PROJECTS_JS
     assert "Open & switch" in PROJECTS_JS
     assert "workspace/" in PROJECTS_JS
+
+
+def test_service_access_is_attended_scoped_and_names_only() -> None:
+    for token in (
+        "Service access",
+        'Object.hasOwn(project.settings || {}, "services")',
+        "services_enabled",
+        "api.state?.context?.project_id",
+        "current.saving",
+        "sameServiceSelection",
+        "expected_services",
+        "project_busy",
+        "service_access_changed",
+        "pushEscape(closeIfIdle, card)",
+    ):
+        assert token in PROJECTS_JS
+    assert "credentials_present" not in PROJECTS_JS
+    assert "credential_env" not in PROJECTS_JS

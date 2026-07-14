@@ -152,3 +152,24 @@ def test_error_ui_never_interpolates_exception_detail() -> None:
     assert "error.message" not in failure
     assert "error.stack" not in failure
     assert "Check the connection and try again." in failure
+
+
+def test_project_service_change_refreshes_only_authoritative_truth_surfaces() -> None:
+    handler = APP[
+        APP.index('if (msg.kind === "project_services_changed")')
+        : APP.index('if (msg.kind === "project_changed")')
+    ]
+    assert 'busEmit("project_services_changed", msg)' in handler
+    assert "dismissProjectServiceAccess()" in handler
+    assert "refreshHeader()" in handler
+    assert "renderRoute()" in handler
+    for route in ("daily", "hub", "projects", "settings", "studio", "workspace"):
+        assert f'"{route}"' in handler
+    assert "msg.services" not in handler
+    handler_start = APP.index('if (msg.kind === "project_services_changed")')
+    workspace_filter = APP.index(
+        'if (msg.workspace_id && msg.workspace_id !== workspaceId) return;'
+    )
+    context_filter = APP.index('if (msg.session_id != null && !acceptsContext(msg)')
+    assert workspace_filter < handler_start
+    assert context_filter < handler_start
