@@ -4,6 +4,7 @@
 // nothing here mutates. All text is textContent (el()/_util); the canvas is token-drawn (no assets).
 import { el } from "../../ui/dom.js";
 import { mountGraph } from "../../ui/graphview.js";
+import { readMigrated, removeStored, writeStored } from "../../ui/storage.js";
 import { chip, emptyState, row, section } from "./_util.js";
 
 const KIND_ICON = {
@@ -19,16 +20,18 @@ export async function render(container, api, ctx) {
   // cannot accidentally reapply a former project's filter to its newly reused numeric id.
   // No server route is involved, so the tab stays read-only.
   const stamp = String((ctx.project && ctx.project.created_at) || "unknown");
-  const LKEY = `kairo:graph:v4:${pid}:${stamp}`;
-  const pendingFocusKey = `kairo:graph:focus:${pid}`;
+  const LKEY = `kira:graph:v4:${pid}:${stamp}`;
+  const legacyLKey = `kairo:graph:v4:${pid}:${stamp}`;
+  const pendingFocusKey = `kira:graph:focus:${pid}`;
+  const legacyPendingFocusKey = `kairo:graph:focus:${pid}`;
   function loadState() {
-    let pendingFocus = null;
+    const pendingFocus = readMigrated(
+      "session", pendingFocusKey, [legacyPendingFocusKey],
+    );
+    // A palette jump is one-time, never stale state. Once read into memory, retire either name.
+    removeStored("session", [pendingFocusKey, legacyPendingFocusKey]);
     try {
-      pendingFocus = sessionStorage.getItem(pendingFocusKey);
-      sessionStorage.removeItem(pendingFocusKey); // a palette jump is one-time, never stale state
-    } catch { /* session storage disabled — persisted view still works */ }
-    try {
-      const r = JSON.parse(localStorage.getItem(LKEY) || "{}") || {};
+      const r = JSON.parse(readMigrated("local", LKEY, [legacyLKey]) || "{}") || {};
       return { focus: pendingFocus || r.focus || null,
         kinds: new Set(Array.isArray(r.kinds) ? r.kinds : []),
         depth: [2, 4, 6].includes(r.depth) ? r.depth : 6,
@@ -38,13 +41,13 @@ export async function render(container, api, ctx) {
     }
   }
   function saveState() {
-    try {
-      localStorage.setItem(
-        LKEY, JSON.stringify({
-          focus: state.focus, kinds: [...state.kinds], view: state.view, depth: state.depth,
-        }),
-      );
-    } catch { /* storage disabled — the view just isn't remembered */ }
+    writeStored(
+      "local",
+      LKEY,
+      JSON.stringify({
+        focus: state.focus, kinds: [...state.kinds], view: state.view, depth: state.depth,
+      }),
+    );
   }
   const state = loadState();
 

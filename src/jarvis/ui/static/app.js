@@ -35,6 +35,7 @@ import { dismissTaskDialogs, openParkedTaskApproval } from "./ui/task-draft.js";
 import { dismissMemoryDraft } from "./ui/memory-draft.js";
 import { dismissFeedbackDialogs, showToast } from "./ui/feedback.js";
 import { dismissProjectReport } from "./ui/project-report.js";
+import { readMigrated, removeStored, writeStored } from "./ui/storage.js";
 
 const state = {
   chat: [],            // Daily conversation items {role, text} | {tool, resolution}
@@ -82,18 +83,7 @@ function hydrateTranscript(transcript) {
 
 const WORKSPACE_KEY = "kira:workspace-id";
 const LEGACY_WORKSPACE_KEY = "kairo:workspace-id";
-let workspaceId = null;
-try {
-  workspaceId = sessionStorage.getItem(WORKSPACE_KEY);
-  if (workspaceId === null) {
-    const legacyWorkspaceId = sessionStorage.getItem(LEGACY_WORKSPACE_KEY);
-    if (legacyWorkspaceId !== null) {
-      workspaceId = legacyWorkspaceId;
-      sessionStorage.setItem(WORKSPACE_KEY, legacyWorkspaceId);
-      sessionStorage.removeItem(LEGACY_WORKSPACE_KEY);
-    }
-  }
-} catch { /* storage unavailable — the server will assign a fresh workspace */ }
+let workspaceId = readMigrated("session", WORKSPACE_KEY, [LEGACY_WORKSPACE_KEY]);
 
 function workspaceHeaders(base = {}) {
   return workspaceId ? { ...base, "x-kira-workspace-id": workspaceId } : base;
@@ -539,15 +529,14 @@ function handleMessage(msg) {
       || priorContext.context_revision !== contextRevision;
     const authorityChanged = workspaceChanged || contextChanged;
     workspaceId = nextWorkspaceId;
-    try {
-      if (workspaceId) {
-        sessionStorage.setItem(WORKSPACE_KEY, workspaceId);
-        sessionStorage.removeItem(LEGACY_WORKSPACE_KEY);
-      } else {
-        sessionStorage.removeItem(WORKSPACE_KEY);
-        sessionStorage.removeItem(LEGACY_WORKSPACE_KEY);
-      }
-    } catch { /* storage unavailable — this socket remains usable */ }
+    if (workspaceId) {
+      writeStored("session", WORKSPACE_KEY, workspaceId);
+      // Unlike appearance preferences, workspace routing must not become stale on a same-tab
+      // rollback to a cached Kairo shell. Keep the exact compatibility alias synchronized.
+      writeStored("session", LEGACY_WORKSPACE_KEY, workspaceId);
+    } else {
+      removeStored("session", [WORKSPACE_KEY, LEGACY_WORKSPACE_KEY]);
+    }
     advanceContextGeneration();
     if (authorityChanged) authorityGeneration += 1;
     state.context = {

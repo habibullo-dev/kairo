@@ -7,6 +7,7 @@ import { el } from "../../ui/dom.js";
 import { emptyState, row, section, actionButton } from "./_util.js";
 import { relTime } from "../../ui/format.js";
 import { openMemoryDraft } from "../../ui/memory-draft.js";
+import { writeStored } from "../../ui/storage.js";
 
 export async function render(container, api, ctx) {
   container.textContent = "";
@@ -68,13 +69,12 @@ function graphLink(project, ref) {
   const a = el("a", { class: "plain-button ghost", href: `#workspace/${projectId}/graph` },
     ["In graph"]);
   a.addEventListener("click", () => {
-    try {
-      const stamp = String((project && project.created_at) || "unknown");
-      localStorage.setItem(
-        `kairo:graph:v4:${projectId}:${stamp}`,
-        JSON.stringify({ focus: ref, kinds: [], view: "structure", depth: 6 }),
-      );
-    } catch { /* storage disabled — the graph opens unfocused */ }
+    const stamp = String((project && project.created_at) || "unknown");
+    writeStored(
+      "local",
+      `kira:graph:v4:${projectId}:${stamp}`,
+      JSON.stringify({ focus: ref, kinds: [], view: "structure", depth: 6 }),
+    );
   });
   return a;
 }

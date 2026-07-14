@@ -74,8 +74,10 @@ def test_shell_writes_only_canonical_kira_transport_headers() -> None:
     assert "x-kairo-" not in APP_JS
     assert 'const WORKSPACE_KEY = "kira:workspace-id"' in APP_JS
     assert 'const LEGACY_WORKSPACE_KEY = "kairo:workspace-id"' in APP_JS
-    assert "sessionStorage.getItem(LEGACY_WORKSPACE_KEY)" in APP_JS
-    assert "sessionStorage.setItem(WORKSPACE_KEY, legacyWorkspaceId)" in APP_JS
+    assert 'readMigrated("session", WORKSPACE_KEY, [LEGACY_WORKSPACE_KEY])' in APP_JS
+    assert 'writeStored("session", WORKSPACE_KEY, workspaceId)' in APP_JS
+    assert 'writeStored("session", LEGACY_WORKSPACE_KEY, workspaceId)' in APP_JS
+    assert 'removeStored("session", [WORKSPACE_KEY, LEGACY_WORKSPACE_KEY])' in APP_JS
 
 
 def test_keys_module_is_the_single_dispatcher() -> None:

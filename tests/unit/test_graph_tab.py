@@ -35,8 +35,10 @@ def test_graph_canvas_is_read_only() -> None:
 def test_saved_view_persists_to_localstorage_only() -> None:
     # The saved view (last focus + kind filters) is remembered in localStorage ONLY — never via a
     # server route — so the tab stays strictly read-only (Phase 15 Task 8).
-    assert "localStorage" in GRAPH_JS and "kairo:graph:v4:" in GRAPH_JS
-    assert "sessionStorage" in GRAPH_JS and "kairo:graph:focus:" in GRAPH_JS
+    assert 'readMigrated("local"' in GRAPH_JS and "kira:graph:v4:" in GRAPH_JS
+    assert 'readMigrated(\n      "session"' in GRAPH_JS and "kira:graph:focus:" in GRAPH_JS
+    assert "kairo:graph:v4:" in GRAPH_JS and "kairo:graph:focus:" in GRAPH_JS
+    assert "writeStored(" in GRAPH_JS
     assert "saveState(" in GRAPH_JS  # called on filter / focus / reset
 
 

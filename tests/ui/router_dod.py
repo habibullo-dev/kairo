@@ -1117,7 +1117,7 @@ async def _assert_meeting_operation_recovers_on_remount(browser: object, base: s
         # The request settles with Meetings unmounted. Receipt clearing proves the completion
         # continuation ran before we return; the same-authority outcome must then replay on mount.
         await page.wait_for_function(
-            "sessionStorage.getItem('kairo:meeting-capture:project-1') === null"
+            "sessionStorage.getItem('kira:meeting-capture:project-1') === null"
         )
         assert "Recovered remount" not in (await page.locator("#screen").text_content() or "")
         await page.evaluate("location.hash = 'meetings'")

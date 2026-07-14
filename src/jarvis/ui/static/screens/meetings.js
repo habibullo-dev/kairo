@@ -2,6 +2,7 @@
 // seconds and ending after silence.  The UI names that exact boundary; a browser-controlled,
 // long-running meeting recorder is a separate feature and must not be implied here.
 import { on as busOn } from "../ui/bus.js";
+import { readStored, removeStoredIfValue, writeStored } from "../ui/storage.js";
 
 let activeContainer = null;
 let activeApi = null;
@@ -18,34 +19,37 @@ const memoryReceipts = new Map();
 
 const CAPTURE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-function captureStorageKey(api) {
+function captureStorageKeys(api) {
   const context = api.state?.context;
   if (!Number.isInteger(context?.session_id)) return null;
   const scope = context.project_id == null ? "global" : `project-${context.project_id}`;
-  return `kairo:meeting-capture:${scope}`;
+  return {
+    key: `kira:meeting-capture:${scope}`,
+    legacyKey: `kairo:meeting-capture:${scope}`,
+  };
 }
 
 function captureReceiptFor(api) {
-  const key = captureStorageKey(api);
-  if (!key) return null;
-  const remembered = memoryReceipts.get(key);
-  if (CAPTURE_ID.test(remembered || "")) return { key, id: remembered };
-  let id = null;
-  try { id = sessionStorage.getItem(key); } catch { /* storage can be disabled */ }
+  const keys = captureStorageKeys(api);
+  if (!keys) return null;
+  const remembered = memoryReceipts.get(keys.key);
+  if (CAPTURE_ID.test(remembered || "")) return { ...keys, id: remembered };
+  const canonical = readStored("session", keys.key);
+  const legacy = readStored("session", keys.legacyKey);
+  let id = CAPTURE_ID.test(canonical || "") ? canonical : legacy;
   if (!CAPTURE_ID.test(id || "")) id = crypto.randomUUID();
-  memoryReceipts.set(key, id);
-  try { sessionStorage.setItem(key, id); } catch { /* in-memory receipt still prevents replay */ }
-  return { key, id };
+  memoryReceipts.set(keys.key, id);
+  // A meeting receipt is recovery state, not a preference. Dual-write it during the compatibility
+  // window so either a Kira reload or a rollback/cached Kairo page retries the exact same UUID.
+  writeStored("session", keys.key, id);
+  writeStored("session", keys.legacyKey, id);
+  return { ...keys, id };
 }
 
 function clearCaptureReceipt(receipt) {
   if (!receipt) return;
   if (memoryReceipts.get(receipt.key) === receipt.id) memoryReceipts.delete(receipt.key);
-  try {
-    if (sessionStorage.getItem(receipt.key) === receipt.id) {
-      sessionStorage.removeItem(receipt.key);
-    }
-  } catch { /* storage can be disabled */ }
+  removeStoredIfValue("session", [receipt.key, receipt.legacyKey], receipt.id);
 }
 
 const BUSY_PHASES = new Set(["requesting", "recording", "transcribing", "saving", "finalizing"]);

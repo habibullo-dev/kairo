@@ -64,7 +64,7 @@ HARNESS = """<!doctype html><html><head><meta charset="utf-8">
 #root{padding:16px}</style></head><body>
 <div id="root"></div>
 <script type="module">
-try { const a = JSON.parse(localStorage.getItem('kairo:appearance')||'{}');
+try { const a = JSON.parse(localStorage.getItem('kira:appearance')||'{}');
       if (a.theme) document.documentElement.dataset.theme = a.theme; } catch(e){}
 const q = new URLSearchParams(location.search);
 const data = await (await fetch('./__office_'+(q.get('state')||'populated')+'.json')).json();
@@ -143,7 +143,7 @@ async def _capture(base: str, out: Path) -> int:
                         # theme/mode are trusted constants; concatenation dodges brace/percent
                         # clashes with the JS object literals in the script.
                         await ctx.add_init_script(
-                            "try{localStorage.setItem('kairo:appearance',JSON.stringify({theme:'"
+                            "try{localStorage.setItem('kira:appearance',JSON.stringify({theme:'"
                             + theme + "'}));localStorage.setItem('kairo:office:1',JSON.stringify("
                             "{mode:'" + mode + "'}));}catch(e){}"
                         )
@@ -153,6 +153,25 @@ async def _capture(base: str, out: Path) -> int:
                             await page.wait_for_function("window.__READY__ === true", timeout=5000)
                         except Exception:
                             problems.append(f"[{theme} {width}w {label}] office did not render")
+                        if not await page.evaluate("localStorage.getItem('kira:office:1')"):
+                            problems.append(
+                                f"[{theme} {width}w {label}] legacy layout not migrated"
+                            )
+                        applied_layout = await page.evaluate(
+                            "expected => ({ stored: JSON.parse(localStorage.getItem("
+                            "'kira:office:1') || '{}').mode, "
+                            "root: document.querySelector('.office')?.classList.contains("
+                            "expected === 'office' ? 'office-full' : 'office-compact'), "
+                            "pressed: document.querySelector("
+                            "`.mode-btn[data-mode='${expected}']`)?.getAttribute("
+                            "'aria-pressed') })",
+                            mode,
+                        )
+                        if applied_layout != {"stored": mode, "root": True, "pressed": "true"}:
+                            problems.append(
+                                f"[{theme} {width}w {label}] legacy layout not applied: "
+                                f"{applied_layout!r}"
+                            )
                         await page.wait_for_timeout(150)
                         await page.screenshot(
                             path=str(out / screenshot_name("office", label, theme, width)),

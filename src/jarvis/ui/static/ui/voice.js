@@ -5,6 +5,11 @@
 // a risky action — the screen (the Gate modal) remains the only approval surface; voice only
 // PREPARES a turn. It also never renders raw content: it moves audio + fixed state strings only.
 
+import { readMigrated, writeStored } from "./storage.js";
+
+const PLAYBACK_KEY = "kira:voice:playback";
+const LEGACY_PLAYBACK_KEYS = ["kairo:voice:playback"];
+
 let _rec = null;
 let _stream = null;
 let _chunks = [];
@@ -22,11 +27,11 @@ export function canCapture() {
 }
 
 export function playbackOn() {
-  try { return localStorage.getItem("kairo:voice:playback") === "1"; } catch { return false; }
+  return readMigrated("local", PLAYBACK_KEY, LEGACY_PLAYBACK_KEYS) === "1";
 }
 
 export function setPlayback(on) {
-  try { localStorage.setItem("kairo:voice:playback", on ? "1" : "0"); } catch { /* disabled */ }
+  writeStored("local", PLAYBACK_KEY, on ? "1" : "0");
 }
 
 export function recording() {

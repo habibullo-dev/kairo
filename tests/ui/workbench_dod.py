@@ -791,7 +791,10 @@ data-layout="focused"><head><meta charset="utf-8">
 (function () {
   var q = new URLSearchParams(location.search);
   var th = q.get('theme') || 'noir';
-  try { localStorage.setItem('kairo:appearance', JSON.stringify({ theme: th })); } catch (e) {}
+  try {
+    localStorage.removeItem('kira:appearance');
+    localStorage.setItem('kairo:appearance', JSON.stringify({ theme: th }));
+  } catch (e) {}
   window.WebSocket = function () {
     var socket = {
       readyState: 3, send: function () {}, close: function () {}, addEventListener: function () {},
@@ -906,6 +909,15 @@ async def _capture(
                             await page.wait_for_function("window.__READY__ === true", timeout=8000)
                         except Exception:
                             problems.append(f"[{theme} {width}w {state}] shell not ready")
+                        applied_theme = await page.evaluate(
+                            "() => ({ stored: JSON.parse(localStorage.getItem('kira:appearance') "
+                            "|| '{}').theme, applied: document.documentElement.dataset.theme })"
+                        )
+                        if applied_theme != {"stored": theme, "applied": theme}:
+                            problems.append(
+                                f"[{theme} {width}w {state}] legacy theme not migrated/applied: "
+                                f"{applied_theme!r}"
+                            )
                         await page.wait_for_timeout(250)
                         await page.screenshot(
                             path=str(out / screenshot_name("workbench", state, theme, width)),

@@ -55,7 +55,7 @@ HARNESS = """<!doctype html><html><head><meta charset="utf-8">
 #root{padding:16px}</style></head><body>
 <div id="root"></div>
 <script type="module">
-try { const a = JSON.parse(localStorage.getItem('kairo:appearance')||'{}');
+try { const a = JSON.parse(localStorage.getItem('kira:appearance')||'{}');
   if (a.theme) document.documentElement.dataset.theme = a.theme;
   document.documentElement.classList.add('reduce-motion'); } catch(e){}
 const q = new URLSearchParams(location.search);
@@ -67,6 +67,9 @@ const api = { get: async (url) => (url.includes('/node/') ? {} : data), post: as
 const { render } = await import('./screens/workspace/graph.js');
 await render(document.getElementById('root'), api,
   { projectId: 1, project: {id:1, created_at:'graph-dod'} });
+if (q.get('state') === 'code-map' && !localStorage.getItem('kira:graph:v4:1:graph-dod')) {
+  throw new Error('legacy graph state was not migrated');
+}
 window.__READY__ = true;
 </script></body></html>"""
 
@@ -172,7 +175,7 @@ async def _capture(base: str, out: Path) -> int:
                         print(f"  shot {shots + 1}/{total}: {theme} {width}w {state}", flush=True)
                         ctx = await browser.new_context(viewport={"width": width, "height": height})
                         await ctx.add_init_script(
-                            "try{localStorage.setItem('kairo:appearance',JSON.stringify({theme:'"
+                            "try{localStorage.setItem('kira:appearance',JSON.stringify({theme:'"
                             + theme + "'}));}catch(e){}")
                         page = await ctx.new_page()
                         await page.goto(f"{base}/__graph_dod.html?state={state}", wait_until="load")
@@ -180,6 +183,22 @@ async def _capture(base: str, out: Path) -> int:
                             await page.wait_for_function("window.__READY__ === true", timeout=5000)
                         except Exception:
                             problems.append(f"[{theme} {width}w {state}] graph did not render")
+                        if state == "code-map":
+                            migrated_view = await page.evaluate(
+                                "JSON.parse(localStorage.getItem("
+                                "'kira:graph:v4:1:graph-dod') || '{}').view"
+                            )
+                            code_map_pressed = await page.evaluate(
+                                "() => Array.from(document.querySelectorAll("
+                                "'.graph-view-toggle button')).find("
+                                "button => button.textContent === 'Code map')?.getAttribute("
+                                "'aria-pressed')"
+                            )
+                            if migrated_view != "dependencies" or code_map_pressed != "true":
+                                problems.append(
+                                    f"[{theme} {width}w {state}] legacy Code map state not "
+                                    f"applied: view={migrated_view!r}, pressed={code_map_pressed!r}"
+                                )
                         await page.wait_for_timeout(150)
                         await page.screenshot(
                             path=str(out / screenshot_name("graph", state, theme, width)),

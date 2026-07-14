@@ -2,8 +2,10 @@
 // <html> (documentElement) so <body> stays plain. There is deliberately NO server theme route
 // (that would be new authority). Themes: noir (default, dark), light, neon.
 import { emit as busEmit } from "./bus.js";
+import { readMigrated, writeStored } from "./storage.js";
 
-const KEY = "kairo:appearance";
+const KEY = "kira:appearance";
+const LEGACY_KEYS = ["kairo:appearance"];
 export const THEMES = ["noir", "light", "neon"];
 const DEFAULTS = { theme: "noir", density: "comfortable", layout: "focused", motion: "on", accent: "" };
 
@@ -11,18 +13,14 @@ let state = { ...DEFAULTS };
 
 function load() {
   try {
-    return { ...DEFAULTS, ...(JSON.parse(localStorage.getItem(KEY) || "{}") || {}) };
+    return { ...DEFAULTS, ...(JSON.parse(readMigrated("local", KEY, LEGACY_KEYS) || "{}") || {}) };
   } catch {
     return { ...DEFAULTS };
   }
 }
 
 function save() {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(state));
-  } catch {
-    /* storage disabled — appearance falls back to the in-memory defaults */
-  }
+  writeStored("local", KEY, JSON.stringify(state));
 }
 
 function hexToRgb(hex) {

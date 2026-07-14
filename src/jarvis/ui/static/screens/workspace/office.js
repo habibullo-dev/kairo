@@ -12,6 +12,7 @@ import { el } from "../../ui/dom.js";
 import { money, relTime } from "../../ui/format.js";
 import { on as busOn } from "../../ui/bus.js";
 import { pushEscape } from "../../ui/keys.js";
+import { readMigrated, writeStored } from "../../ui/storage.js";
 import { chip, emptyState, section, statusPill } from "./_util.js";
 
 const STAGE_LABEL = {
@@ -59,10 +60,13 @@ const rootClass = () => "office " + (_mode === "office" ? "office-full" : "offic
 // client-side; there is deliberately NO server route, no new authority, the mutation-route set is
 // unchanged). Blob: { mode, collapsed:[team] }. Values are clamped on read (localStorage is
 // same-origin + user-writable, so never trust its shape).
-const _LKEY = (pid) => `kairo:office:${pid}`;
+const _LKEY = (pid) => `kira:office:${pid}`;
+const _LEGACY_LKEY = (pid) => `kairo:office:${pid}`;
 function loadLayout(pid) {
   try {
-    const raw = JSON.parse(localStorage.getItem(_LKEY(pid)) || "{}") || {};
+    const raw = JSON.parse(
+      readMigrated("local", _LKEY(pid), [_LEGACY_LKEY(pid)]) || "{}",
+    ) || {};
     const mode = raw.mode === "office" ? "office" : "compact"; // clamp to a known mode
     const collapsed = Array.isArray(raw.collapsed)
       ? raw.collapsed.filter((t) => typeof t === "string") : [];
@@ -73,10 +77,8 @@ function loadLayout(pid) {
 }
 function saveLayout() {
   if (!_mounted) return;
-  try {
-    localStorage.setItem(_LKEY(_mounted.projectId), JSON.stringify(
-      { mode: _mode, collapsed: [..._mounted.collapsed] }));
-  } catch { /* storage disabled — layout falls back to defaults next open */ }
+  writeStored("local", _LKEY(_mounted.projectId), JSON.stringify(
+    { mode: _mode, collapsed: [..._mounted.collapsed] }));
 }
 
 const initials = (s) =>

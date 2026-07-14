@@ -11,8 +11,9 @@ OFFICE_JS = (STATIC_DIR / "screens" / "workspace" / "office.js").read_text(encod
 
 
 def test_layout_persists_per_project_in_localstorage() -> None:
-    assert "kairo:office:" in OFFICE_JS  # namespaced per-project key (theme.js convention)
-    assert "localStorage.getItem" in OFFICE_JS and "localStorage.setItem" in OFFICE_JS
+    assert "kira:office:" in OFFICE_JS  # canonical per-project key (theme.js convention)
+    assert "kairo:office:" in OFFICE_JS  # previous-brand value is migrated once
+    assert "readMigrated(" in OFFICE_JS and "writeStored(" in OFFICE_JS
 
 
 def test_layout_mode_is_clamped_on_read() -> None:

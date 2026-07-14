@@ -657,9 +657,15 @@ async def _assert_same_workspace_handshake_preserves_local_revision(
         await context.close()
 
 
-async def _assert_receipt_survives_reload(browser: object, base: str) -> None:
+async def _assert_invalid_canonical_receipt_falls_back(browser: object, base: str) -> None:
     context, page, errors = await _open_page(browser, base)
     try:
+        legacy_id = "11111111-1111-4111-8111-111111111111"
+        await page.evaluate(
+            "id => { sessionStorage.setItem('kira:meeting-capture:project-1', 'invalid'); "
+            "sessionStorage.setItem('kairo:meeting-capture:project-1', id); }",
+            legacy_id,
+        )
         await page.evaluate("window.__meetingMode = 'network'")
         await page.locator("#mtg-consent").check()
         await page.locator("#mtg-start").click()
@@ -667,9 +673,45 @@ async def _assert_receipt_survives_reload(browser: object, base: str) -> None:
             "document.getElementById('mtg-out').textContent.includes('before Kairo could confirm')"
         )
         first_id = await page.evaluate("window.__meetingPosts[0].capture_id")
+        assert first_id == legacy_id
+        assert (
+            await page.evaluate("sessionStorage.getItem('kira:meeting-capture:project-1')")
+            == first_id
+        )
         assert (
             await page.evaluate("sessionStorage.getItem('kairo:meeting-capture:project-1')")
             == first_id
+        )
+        assert errors == []
+    finally:
+        await context.close()
+
+
+async def _assert_receipt_survives_reload(browser: object, base: str) -> None:
+    context, page, errors = await _open_page(browser, base)
+    try:
+        canonical_id = "22222222-2222-4222-8222-222222222222"
+        stale_legacy_id = "33333333-3333-4333-8333-333333333333"
+        await page.evaluate(
+            "ids => { sessionStorage.setItem('kira:meeting-capture:project-1', ids[0]); "
+            "sessionStorage.setItem('kairo:meeting-capture:project-1', ids[1]); }",
+            [canonical_id, stale_legacy_id],
+        )
+        await page.evaluate("window.__meetingMode = 'network'")
+        await page.locator("#mtg-consent").check()
+        await page.locator("#mtg-start").click()
+        await page.wait_for_function(
+            "document.getElementById('mtg-out').textContent.includes('before Kairo could confirm')"
+        )
+        first_id = await page.evaluate("window.__meetingPosts[0].capture_id")
+        assert first_id == canonical_id
+        assert (
+            await page.evaluate("sessionStorage.getItem('kira:meeting-capture:project-1')")
+            == canonical_id
+        )
+        assert (
+            await page.evaluate("sessionStorage.getItem('kairo:meeting-capture:project-1')")
+            == canonical_id
         )
 
         await page.reload(wait_until="load")
@@ -683,6 +725,9 @@ async def _assert_receipt_survives_reload(browser: object, base: str) -> None:
             "document.getElementById('mtg-out').textContent.includes('source #92')"
         )
         assert await page.evaluate("window.__meetingPosts[0].capture_id") == first_id
+        assert (
+            await page.evaluate("sessionStorage.getItem('kira:meeting-capture:project-1')") is None
+        )
         assert (
             await page.evaluate("sessionStorage.getItem('kairo:meeting-capture:project-1')") is None
         )
@@ -724,6 +769,7 @@ async def main() -> int:
                     await _assert_replacement_workspace_clears_local_meeting_phase(browser, base)
                     await _assert_handshake_cannot_reopen_stale_global_revision(browser, base)
                     await _assert_same_workspace_handshake_preserves_local_revision(browser, base)
+                    await _assert_invalid_canonical_receipt_falls_back(browser, base)
                     await _assert_receipt_survives_reload(browser, base)
                 finally:
                     await browser.close()

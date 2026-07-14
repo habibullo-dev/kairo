@@ -29,6 +29,7 @@ def test_graph_empty_state_teaches_and_offers_rebuild() -> None:
 
 def test_memory_rows_deep_link_into_the_focused_graph() -> None:
     assert "graphLink" in MEMORY
-    assert "kairo:graph:" in MEMORY and "#workspace/${projectId}/graph" in MEMORY
+    assert "kira:graph:" in MEMORY and "#workspace/${projectId}/graph" in MEMORY
+    assert "writeStored(" in MEMORY
     # the deep-link is navigate-only — it adds NO new mutation to the Memory panel's routes.
     assert "memory:${m.id}" in MEMORY  # focuses this specific memory node

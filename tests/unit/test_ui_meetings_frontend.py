@@ -28,7 +28,7 @@ def test_meeting_screen_requires_consent_and_tracks_each_phase() -> None:
     assert "try" in MEETINGS_JS and "catch" in MEETINGS_JS
     assert "confirm(" not in MEETINGS_JS
     assert "crypto.randomUUID()" in MEETINGS_JS
-    assert "sessionStorage" in MEETINGS_JS
+    assert 'readStored("session"' in MEETINGS_JS
     assert "capture_id" in MEETINGS_JS
 
 
@@ -75,7 +75,9 @@ def test_meeting_privacy_and_busy_copy_do_not_overpromise() -> None:
 
 
 def test_meeting_receipt_scope_matches_server_and_clear_uses_frozen_key() -> None:
-    assert "return `kairo:meeting-capture:${scope}`" in MEETINGS_JS
+    assert "key: `kira:meeting-capture:${scope}`" in MEETINGS_JS
+    assert "legacyKey: `kairo:meeting-capture:${scope}`" in MEETINGS_JS
     assert "session-${session}" not in MEETINGS_JS
     assert "clearCaptureReceipt(receipt)" in MEETINGS_JS
-    assert "sessionStorage.removeItem(receipt.key)" in MEETINGS_JS
+    assert "removeStoredIfValue" in MEETINGS_JS
+    assert "[receipt.key, receipt.legacyKey]" in MEETINGS_JS

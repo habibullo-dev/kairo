@@ -36,7 +36,7 @@ from jarvis.ui.screenshots import (
 # localStorage key the appearance layer (theme.js, Phase 11 T5) reads on load — a JSON blob
 # {theme, density, layout, motion, accent}. The harness writes {"theme": <name>} before first
 # paint so initTheme() applies the requested theme (merged over the defaults).
-_THEME_STORAGE_KEY = "kairo:appearance"
+_THEME_STORAGE_KEY = "kira:appearance"
 _CSP_PROBE_INIT = """
 window.__kairoCspViolations = [];
 document.addEventListener("securitypolicyviolation", (event) => {
