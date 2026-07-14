@@ -12,6 +12,7 @@ __pycache__/
 .env
 data/
 logs/
+.kairo-reset-manifests/
 
 # OS / editor cruft
 .DS_Store

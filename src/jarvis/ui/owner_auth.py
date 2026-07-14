@@ -454,6 +454,60 @@ class OwnerAuthService:
         profile = await self.profile()
         return OwnerAuthOutcome(profile, session) if profile is not None else None
 
+    async def verify_owner_password(self, password: str) -> bool:
+        """Verify the enrolled owner's password without creating a browser session.
+
+        Offline maintenance uses this narrower primitive after acquiring the process-wide
+        instance lock.  It shares the durable login throttle and opportunistic Argon2 rehash,
+        but deliberately has no token/session side effect.
+        """
+        try:
+            normalized = self._normalize_password(password, new=False)
+        except OwnerAuthError:
+            if await self.is_enrolled():
+                await self._record_failure()
+            return False
+        row = await self._credential_row()
+        record = str(row[4]) if row is not None else self._dummy_hash
+        if row is not None:
+            retry_after = self._retry_after(row[3])
+            if retry_after:
+                raise OwnerLoginThrottledError(retry_after)
+        password_ok = await self._verify_password(normalized, record)
+        if row is None or not password_ok:
+            if row is not None:
+                delay = await self._record_failure()
+                if delay:
+                    raise OwnerLoginThrottledError(delay)
+            return False
+
+        replacement = None
+        if self.hasher.needs_rehash(record):
+            replacement = await self._hash_password(normalized)
+        now = self._now()
+        async with transaction(self.db, self.lock):
+            current = await (
+                await self.db.execute(
+                    "SELECT a.locked_until, p.password_hash FROM owner_accounts a "
+                    "JOIN owner_password_credentials p ON p.owner_id = a.id WHERE a.id = 1"
+                )
+            ).fetchone()
+            if current is None or str(current[1]) != record:
+                return False
+            retry_after = self._retry_after(current[0])
+            if retry_after:
+                raise OwnerLoginThrottledError(retry_after)
+            await self.db.execute(
+                "UPDATE owner_accounts SET failed_attempts = 0, locked_until = NULL WHERE id = 1"
+            )
+            if replacement is not None:
+                await self.db.execute(
+                    "UPDATE owner_password_credentials SET password_hash = ?, updated_at = ? "
+                    "WHERE owner_id = 1",
+                    (replacement, now.isoformat()),
+                )
+        return True
+
     async def recover(self, grant_token: str, new_password: str) -> OwnerAuthOutcome:
         if not await self.auth_grant_valid(grant_token, "recover"):
             raise OwnerGrantError("Authentication grant is invalid or expired")

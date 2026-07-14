@@ -61,6 +61,13 @@ def main() -> None:
 
         sys.exit(backup_cli(argv[1:]))
 
+    # ``jarvis reset data`` is an attended, offline-only, quarantine-first reset. It runs
+    # before provider-key validation and acquires the same exclusive lock as the workstation.
+    if argv and argv[0] == "reset":
+        from jarvis.cli.reset import reset_cli
+
+        sys.exit(reset_cli(argv[1:]))
+
     # `jarvis graph <cmd>` — memory-graph rituals (rebuild the derived edge cache, …). Derive/
     # read-only; a thin delegate imported on demand.
     if argv and argv[0] == "graph":

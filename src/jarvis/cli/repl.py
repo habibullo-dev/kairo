@@ -25,6 +25,7 @@ from jarvis.attention import AttentionStore
 from jarvis.cli.jobs import JobRunner
 from jarvis.cli.render import ConsoleRenderer
 from jarvis.config import Config
+from jarvis.connectors.consent import integration_is_locked
 from jarvis.connectors.factory import build_connectors
 from jarvis.core import AgentLoop, AnthropicClient, Approver
 from jarvis.core.client import LLMClient, ToolCall
@@ -1049,6 +1050,15 @@ def _build_telegram_remote_control(
     """
     remote = config.connectors.telegram.remote_control
     if not remote.enabled:
+        return None
+    if integration_is_locked(config.data_dir, "telegram"):
+        console.print(
+            "[yellow]Telegram remote control is locked after the data reset. "
+            "Run `jarvis connect telegram` to enable it for the new owner.[/]"
+        )
+        get_logger("jarvis.remote.telegram").warning(
+            "telegram_remote_disabled", reason="reset_consent_required"
+        )
         return None
     if not config.secrets.telegram_bot_token:
         console.print(

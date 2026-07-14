@@ -127,6 +127,22 @@ async def test_login_is_generic_rehashes_and_durably_throttles(tmp_path) -> None
         await db.close()
 
 
+async def test_offline_password_verification_issues_no_session(tmp_path) -> None:
+    db, service, _now = await _service(tmp_path)
+    try:
+        enrolled = await _enroll(service)
+        before = await (await db.execute("SELECT COUNT(*) FROM owner_sessions")).fetchone()
+        assert before == (1,)
+
+        assert not await service.verify_owner_password("A wrong maintenance password")
+        assert await service.verify_owner_password(PASSWORD)
+        after = await (await db.execute("SELECT COUNT(*) FROM owner_sessions")).fetchone()
+        assert after == before
+        assert await service.validate_session(enrolled.session.token) is not None
+    finally:
+        await db.close()
+
+
 async def test_session_rolls_idle_but_never_absolute_and_stores_no_bearer(tmp_path) -> None:
     db, service, now = await _service(tmp_path)
     try:

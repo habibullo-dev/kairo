@@ -15,6 +15,7 @@ from tests.unit.test_telegram_remote import _TelegramHttp, _update
 
 from jarvis.cli.repl import _build_telegram_remote_control, _start_runtime_services
 from jarvis.config import load_config
+from jarvis.connectors.consent import lock_all_integrations
 from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
 from jarvis.observability.cost import load_pricing
 from jarvis.persistence import SessionStore
@@ -57,6 +58,25 @@ class _WebSearch(Tool):
     async def run(self, params: _WebSearchParams) -> str:
         self.calls.append(params)
         return "Public result: Seoul is 28 C with light rain today."
+
+
+async def test_reset_consent_lock_keeps_telegram_remote_control_off(tmp_path: Path) -> None:
+    config = load_config(root=tmp_path, env_file=None)
+    config.connectors.telegram.remote_control.enabled = True
+    config.secrets = config.secrets.model_copy(update={"telegram_bot_token": "BOT-CANARY"})
+    lock_all_integrations(config.data_dir)
+    output = io.StringIO()
+
+    controller = _build_telegram_remote_control(
+        config,
+        repl=SimpleNamespace(),
+        store=SimpleNamespace(),
+        runner=None,
+        console=Console(file=output, force_terminal=False),
+    )
+
+    assert controller is None
+    assert "locked after the data reset" in output.getvalue()
 
 
 async def test_runtime_reconciles_operator_before_scheduler_catchup_and_polling() -> None:

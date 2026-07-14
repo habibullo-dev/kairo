@@ -21,6 +21,7 @@ from typing import Any
 
 from jarvis.config import Config, resolve_kakao_redirect_uri, resolve_telegram_chat_id
 from jarvis.connectors.base import ConnectorError
+from jarvis.connectors.consent import integration_is_locked, unlock_integration
 from jarvis.connectors.google import google_provider
 from jarvis.connectors.kakao import KakaoNotifier, kakao_provider
 from jarvis.connectors.oauth import authorize
@@ -156,6 +157,9 @@ async def connect_telegram(config: Config, *, test: bool, emit=print) -> int:
 def show_status(config: Config, *, emit=print) -> int:
     emit("Connector status:")
     for provider in ("google", "kakao"):
+        if integration_is_locked(config.data_dir, provider):
+            emit(f"  {provider}: locked after data reset (run: jarvis connect {provider})")
+            continue
         state = read_token_state(token_path(config, provider))
         if state is None:
             emit(f"  {provider}: not connected (run: jarvis connect {provider})")
@@ -165,15 +169,21 @@ def show_status(config: Config, *, emit=print) -> int:
     # Effective chat id from TELEGRAM_CHAT_ID (.env) or settings.yaml — presence only, never
     # the value (a routing id, but there's no need to print it).
     ready = bool(config.secrets.telegram_bot_token and resolve_telegram_chat_id(config))
-    emit(f"  telegram: {'configured' if ready else 'not configured'}")
+    if integration_is_locked(config.data_dir, "telegram"):
+        emit("  telegram: locked after data reset (run: jarvis connect telegram)")
+    else:
+        emit(f"  telegram: {'configured' if ready else 'not configured'}")
     remote = config.connectors.telegram.remote_control
     if remote.enabled:
-        remote_ready = bool(config.secrets.telegram_bot_token)
-        emit(
-            "  telegram remote control: "
-            f"{'configured' if remote_ready else 'missing TELEGRAM_BOT_TOKEN'} "
-            "(starts only while Kairo is running)"
-        )
+        if integration_is_locked(config.data_dir, "telegram"):
+            emit("  telegram remote control: locked after data reset")
+        else:
+            remote_ready = bool(config.secrets.telegram_bot_token)
+            emit(
+                "  telegram remote control: "
+                f"{'configured' if remote_ready else 'missing TELEGRAM_BOT_TOKEN'} "
+                "(starts only while Kairo is running)"
+            )
     return 0
 
 
@@ -181,10 +191,14 @@ async def _dispatch(args: argparse.Namespace, config: Config) -> int:
     if args.provider == "status":
         return show_status(config)
     if args.provider == "google":
-        return await connect_google(config)
-    if args.provider == "kakao":
-        return await connect_kakao(config, test=args.test)
-    return await connect_telegram(config, test=args.test)
+        result = await connect_google(config)
+    elif args.provider == "kakao":
+        result = await connect_kakao(config, test=args.test)
+    else:
+        result = await connect_telegram(config, test=args.test)
+    if result == 0:
+        unlock_integration(config.data_dir, args.provider)
+    return result
 
 
 def connect_cli(argv: list[str]) -> int:

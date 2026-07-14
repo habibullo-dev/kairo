@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from jarvis.config import Config, resolve_telegram_chat_id
 from jarvis.connectors.base import ConnectorRegistry, Notifier
+from jarvis.connectors.consent import integration_is_locked
 from jarvis.connectors.demo import DemoGoogleClient, DemoNotifier
 from jarvis.connectors.google import google_provider
 from jarvis.connectors.google.client import GoogleClient
@@ -56,7 +57,12 @@ def build_connectors(config: Config) -> ConnectorRegistry | None:
     google = None
     notifiers: dict[str, Notifier] = {}
 
-    if c.google.enabled and sec.google_client_id and sec.google_client_secret:
+    if (
+        c.google.enabled
+        and sec.google_client_id
+        and sec.google_client_secret
+        and not integration_is_locked(config.data_dir, "google")
+    ):
         store = TokenStore(
             _token_path(config, "google"),
             provider=google_provider(),
@@ -67,12 +73,21 @@ def build_connectors(config: Config) -> ConnectorRegistry | None:
             google = GoogleClient(store)
 
     telegram_chat_id = resolve_telegram_chat_id(config)
-    if c.telegram.enabled and sec.telegram_bot_token and telegram_chat_id:
+    if (
+        c.telegram.enabled
+        and sec.telegram_bot_token
+        and telegram_chat_id
+        and not integration_is_locked(config.data_dir, "telegram")
+    ):
         notifiers["telegram"] = TelegramNotifier(
             bot_token=sec.telegram_bot_token, chat_id=telegram_chat_id
         )
 
-    if c.kakao.enabled and sec.kakao_rest_api_key:
+    if (
+        c.kakao.enabled
+        and sec.kakao_rest_api_key
+        and not integration_is_locked(config.data_dir, "kakao")
+    ):
         kstore = TokenStore(
             _token_path(config, "kakao"),
             provider=kakao_provider(c.kakao.redirect_port),
