@@ -25,7 +25,8 @@ async def test_v32_adds_project_reset_lineage_idempotently() -> None:
             "created_at",
         }
         await db.executescript(M._SCHEMA_V32)
-        assert await M.migrate(db) == M.latest_version() == 32
+        assert await M.migrate(db) == M.latest_version()
+        assert M.latest_version() >= 32
     finally:
         await db.close()
 

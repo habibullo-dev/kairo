@@ -90,6 +90,24 @@ async def test_supersede_lineage(tmp_path: Path) -> None:
     assert live is not None and live.id == new
 
 
+async def test_exact_origin_receipt_lookup_includes_terminal_audit_rows(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    project_id = await ProjectStore(store.db, store.lock).create(name="Receipt project")
+    source_id = await _add_source(
+        store,
+        f"meeting-capture:project:{project_id}:123e4567-e89b-42d3-a456-426614174000",
+        kind="note",
+        project_id=project_id,
+    )
+    assert await store.reject_source(source_id)
+
+    receipt = await store.find_by_origin(
+        f"meeting-capture:project:{project_id}:123e4567-e89b-42d3-a456-426614174000",
+        project_id=project_id,
+    )
+    assert receipt is not None and receipt.id == source_id and receipt.status == "rejected"
+
+
 async def test_reject_and_review_status(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     sid = await _add_source(store, "u.txt", review_status="unreviewed")
@@ -151,11 +169,17 @@ async def test_detach_folder_purges_derived_chunks_and_fts_but_keeps_audit_sourc
 
     # A prior interrupted release could leave a rejected folder with derived rows.  Detach is
     # safe to retry: it repairs that cache without resurrecting or deleting the audit source.
+    # Temporarily recreate the pre-invariant state because replace_chunks now refuses to create
+    # this inconsistency through the public store API.
+    await store.db.execute("UPDATE kb_sources SET status='live' WHERE id=?", (detached_source,))
+    await store.db.commit()
     await store.replace_chunks(
         source_id=detached_source,
         chunks=[NewChunk("", 0, "retry-detach-cache-canary", [1.0, 0.0])],
         embedding_model=MODEL,
     )
+    await store.db.execute("UPDATE kb_sources SET status='rejected' WHERE id=?", (detached_source,))
+    await store.db.commit()
     retry = await store.reject_project_folder_import(project_id=project_id, root="wrong")
     assert retry.sources_rejected == 0 and retry.chunks_cleared == 1
     assert await store.chunks_for_source(detached_source) == []
@@ -264,6 +288,25 @@ async def test_replace_chunks_replaces_per_owner(tmp_path: Path) -> None:
     )
     remaining = await store.chunks_for_source(sid)
     assert len(remaining) == 1 and remaining[0].text == "only"
+
+
+async def test_replace_chunks_cannot_repopulate_a_rejected_source(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    sid = await _add_source(store, "rejected.txt")
+    await store.replace_chunks(
+        source_id=sid,
+        chunks=[NewChunk("", 0, "before rejection", [1, 0])],
+        embedding_model=MODEL,
+    )
+    assert await store.reject_source(sid)
+
+    written = await store.replace_chunks(
+        source_id=sid,
+        chunks=[NewChunk("", 0, "late index write", [0, 1])],
+        embedding_model=MODEL,
+    )
+    assert written is False
+    assert await store.chunks_for_source(sid) == []
 
 
 async def test_replace_chunks_atomic_on_failure(tmp_path: Path, monkeypatch) -> None:

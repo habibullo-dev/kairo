@@ -89,7 +89,7 @@ class PushToTalkListener:
         if self.on_state is not None:
             self.on_state(state)  # observable — the UI reflects listening state
 
-    async def listen_once(self) -> TurnResult | None:
+    async def listen_once(self, *, capture: CaptureSource | None = None) -> TurnResult | None:
         """One activation: capture a single utterance and run one turn, then return to
         idle (least-listening; never an indefinite window)."""
         if not self.attended:
@@ -100,7 +100,7 @@ class PushToTalkListener:
             )
         self._set(LISTENING)
         try:
-            audio = await self.capture.capture_utterance()
+            audio = await (capture or self.capture).capture_utterance()
             self._set(CAPTURING)
             if not audio:
                 return None  # silence — no turn

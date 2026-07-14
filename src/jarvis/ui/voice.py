@@ -10,9 +10,11 @@ a voice turn still escalate through the unchanged ``VoiceApprover`` to the ``UIS
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from jarvis.core.execution import current_execution_context
+from jarvis.core.execution import ExecutionContext, current_execution_context
 from jarvis.observability import get_logger
 from jarvis.voice.render import VoiceRenderer, _mask_secrets
 
@@ -79,6 +81,7 @@ class UiVoice:
     #: TTS caption cap — the safe caption is short by construction; this is a belt so a browser
     #: can't push a long string off-device via the playback route.
     TTS_MAX_CHARS = 600
+    MEETING_PUSH_TIMEOUT_SECONDS = 0.5
 
     def __init__(
         self,
@@ -90,6 +93,9 @@ class UiVoice:
         tts: object | None = None,
         stt_name: str = "local",
         tts_name: str = "local",
+        meeting_state_publish: (
+            Callable[[ExecutionContext | None, str, int], Awaitable[None]] | None
+        ) = None,
         log=None,
     ) -> None:
         self.listener = listener
@@ -101,9 +107,12 @@ class UiVoice:
         self.tts = tts
         self.stt_name = stt_name
         self.tts_name = tts_name
+        self.meeting_state_publish = meeting_state_publish
         self.log = log or get_logger("jarvis.ui.voice")
         self.state = IDLE
+        self.meeting_revision = 0
         self._pushes: set = set()
+        self._meeting_push_tail: asyncio.Task | None = None
 
     def note_state(self, state: str) -> None:
         """Read-only voice-state hook — wired to the listener/session/meeting ``on_state``.
@@ -124,28 +133,91 @@ class UiVoice:
         except RuntimeError:
             pass  # no running loop (sync context) — status() poll still reflects self.state
 
+    def note_meeting_state(self, state: str) -> None:
+        """Stream the workspace-local meeting lifecycle without carrying captured content."""
+        self.meeting_revision += 1
+        revision = self.meeting_revision
+        context = current_execution_context()
+        publisher = self.meeting_state_publish
+        if publisher is None and self.connections is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            previous = self._meeting_push_tail
+
+            async def deliver() -> None:
+                if previous is not None:
+                    with suppress(BaseException):
+                        await previous
+                request = loop.create_task(
+                    publisher(context, state, revision)
+                    if publisher is not None
+                    else self.connections.publish(  # type: ignore[union-attr]
+                        context,
+                        {
+                            "kind": "meeting_state",
+                            "state": state,
+                            "revision": revision,
+                        },
+                    )
+                )
+                done, pending = await asyncio.wait(
+                    {request}, timeout=self.MEETING_PUSH_TIMEOUT_SECONDS
+                )
+                if pending:
+                    request.cancel()
+                    request.add_done_callback(self._consume_push_result)
+                    self.log.warning("meeting_state_push_timed_out", revision=revision)
+                    return
+                with suppress(BaseException):
+                    next(iter(done)).result()
+
+            task = loop.create_task(deliver())
+            self._meeting_push_tail = task
+            self._pushes.add(task)
+            task.add_done_callback(self._pushes.discard)
+        except RuntimeError:
+            pass
+
+    @staticmethod
+    def _consume_push_result(task: asyncio.Task) -> None:
+        with suppress(BaseException):
+            task.result()
+
     def status(self) -> dict:
         """Calm, honest voice status: availability, the live listening state, the meeting
         recording state, WHY it's off if it is, the STT/TTS provider names (presence only, never
         a key), and whether TTS playback can produce audio (cloud) vs subtitle-only (local)."""
         enabled = self.listener is not None or self.meeting is not None
+        meeting_available = self.meeting is not None and self.capture is not None
         return {
             "enabled": enabled,
             "listening": self.state,
             "meeting": getattr(self.meeting, "state", IDLE) if self.meeting is not None else IDLE,
+            "meeting_revision": self.meeting_revision,
             "reason": "" if enabled else "Voice is wired but no listener is available.",
             "stt": self.stt_name,
             "tts": self.tts_name,
             "playback": self.tts is not None and self.tts_name != "local",  # cloud TTS → audio
+            "meeting_available": meeting_available,
+            "meeting_reason": (
+                ""
+                if meeting_available
+                else "Meeting notes need both Knowledge and a workstation microphone."
+            ),
         }
 
-    async def listen_once(self) -> bool:
+    async def listen_once(self, *, capture: CaptureSource | None = None) -> bool:
         """One SERVER-mic push-to-talk activation (kept as a fallback; the browser mic is the
         primary path in the workstation). A single utterance → one turn. Returns whether a turn
         ran; state transitions stream via the listener's ``on_state`` → :meth:`note_state`."""
         if self.listener is None:
             return False
-        result = await self.listener.listen_once()
+        result = (
+            await self.listener.listen_once()
+            if capture is None
+            else await self.listener.listen_once(capture=capture)
+        )
         return result is not None
 
     async def handle_utterance(self, audio: bytes) -> bool:
@@ -188,10 +260,44 @@ class UiVoice:
             return None
         return await self.tts.synthesize(safe)
 
-    async def capture_meeting(self, *, title: str | None = None) -> object | None:
-        """Capture one consented meeting recording → an unreviewed KB source. Requires both a
-        capture source and a meeting mode; returns the ingest result (or None if unwired)."""
-        if self.meeting is None or self.capture is None:
+    async def capture_meeting(
+        self,
+        *,
+        title: str | None = None,
+        capture_id: str | None = None,
+        capture: CaptureSource | None = None,
+        source_session_id: int | None = None,
+        project_id: int | None = None,
+    ) -> object | None:
+        """Capture one short, consented spoken note → an unreviewed KB source.
+
+        ``MeetingCapture.capture_from`` owns the microphone lifecycle so its observable state says
+        ``recording`` only while the capture source is actually open, followed by transcription
+        and persistence.  Scope provenance comes from the authenticated server workspace.
+        """
+        source = capture or self.capture
+        if self.meeting is None or source is None:
             return None
-        audio = await self.capture.capture_utterance()
-        return await self.meeting.capture(audio, title=title)
+        return await self.meeting.capture_from(
+            source,
+            title=title,
+            capture_id=capture_id,
+            source_session_id=source_session_id,
+            project_id=project_id,
+        )
+
+    async def reconcile_meeting(
+        self,
+        *,
+        capture_id: str,
+        source_session_id: int | None = None,
+        project_id: int | None = None,
+    ) -> object | None:
+        """Resolve a durable meeting receipt without acquiring or opening a microphone."""
+        if self.meeting is None:
+            return None
+        return await self.meeting.reconcile(
+            capture_id,
+            source_session_id=source_session_id,
+            project_id=project_id,
+        )

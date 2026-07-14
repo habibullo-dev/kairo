@@ -38,6 +38,19 @@ export async function render(container, api, ctx) {
   }
 
   const rerender = () => render(container, api, ctx);
+  const reviewFeedback = el("div", {
+    class: "dim",
+    role: "status",
+    "aria-live": "polite",
+  });
+  const reviewSource = async (sourceId, action) => {
+    const path = action === "approve"
+      ? `/api/vault/sources/${sourceId}/approve`
+      : `/api/vault/sources/${sourceId}/reject`;
+    const result = await api.post(path, {});
+    if (result.ok) rerender();
+    else reviewFeedback.textContent = result.data.message || "This review action could not be completed.";
+  };
   const projectSources = knowledge && knowledge.project_id === ctx.projectId
     ? (knowledge.sources || []) : [];
   const tree = projectSources.length
@@ -63,13 +76,15 @@ export async function render(container, api, ctx) {
   const rows = (data.unreviewed || []).map((s) =>
     row("📄", s.title || s.origin, s.preview, {
       trailing: el("div", { class: "ws-rowacts" }, [
-        actionButton("Approve", () => api.post(`/api/vault/sources/${s.id}/approve`, {}).then(rerender)),
-        actionButton("Reject", () => api.post(`/api/vault/sources/${s.id}/reject`, {}).then(rerender), "ghost"),
+        actionButton("Approve", () => reviewSource(s.id, "approve")),
+        actionButton("Reject", () => reviewSource(s.id, "reject"), "ghost"),
       ]),
     })
   );
 
   container.appendChild(
-    section("Awaiting review", rows.length ? rows : [emptyState("Nothing awaiting review", "New sources land here for a quick approve or reject before they can be cited.")])
+    section("Awaiting review", rows.length
+      ? [...rows, reviewFeedback]
+      : [emptyState("Nothing awaiting review", "New sources land here for a quick approve or reject before they can be cited.")])
   );
 }

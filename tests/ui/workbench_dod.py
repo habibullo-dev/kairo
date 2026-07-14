@@ -359,6 +359,13 @@ def _base() -> dict:
         "/api/voice/status": {
             "enabled": False,
             "listening": "idle",
+            "meeting": "idle",
+            "meeting_recording": False,
+            "meeting_recording_epoch": "workbench-process",
+            "meeting_revision": 0,
+            "meeting_recording_revision": 0,
+            "meeting_available": False,
+            "meeting_reason": "Voice and Knowledge are off.",
             "reason": "Voice is off.",
             "stt": "local",
             "tts": "local",
@@ -519,6 +526,26 @@ def _seed_for(state: str) -> dict:
         r["project"] = {"id": 1, "name": "Kairo"}
     elif state == "settings":
         s["_hash"] = "settings"
+    elif state == "meetings":
+        s["_hash"] = "meetings"
+        r["session_id"] = 5
+        r["project"] = {"id": 1, "name": "Kairo"}
+        s["/api/projects"]["active_project_id"] = 1
+        s["/api/voice/status"] = {
+            "enabled": True,
+            "listening": "idle",
+            "meeting": "idle",
+            "meeting_recording": False,
+            "meeting_recording_epoch": "workbench-process",
+            "meeting_revision": 0,
+            "meeting_recording_revision": 0,
+            "meeting_available": True,
+            "meeting_reason": "",
+            "reason": "",
+            "stt": "local",
+            "tts": "local",
+            "playback": False,
+        }
     elif state == "chat-project":
         s["_hash"] = "chat"
         r["project"] = {"id": 1, "name": "Kairo"}
@@ -678,6 +705,11 @@ def _seed_for(state: str) -> dict:
         s["/api/voice/status"] = {
             "enabled": True,
             "listening": "idle",
+            "meeting": "idle",
+            "meeting_recording": False,
+            "meeting_recording_epoch": "workbench-process",
+            "meeting_revision": 0,
+            "meeting_recording_revision": 0,
             "reason": "",
             "stt": "openai",
             "tts": "openai",
@@ -709,6 +741,7 @@ STATES = [
     "studio-result",
     "costs",
     "settings",
+    "meetings",
     "model-selector",
     "palette",
     "hub-truth",

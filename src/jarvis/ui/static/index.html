@@ -32,11 +32,11 @@
     <a href="#gate" data-screen="gate" class="mobile-secondary"><span class="nav-icon" aria-hidden="true">!</span><span class="label">Notifications</span><span class="badge" id="gate-badge">0</span></a>
     <a href="#hub" data-screen="hub" class="mobile-secondary"><span class="nav-icon" aria-hidden="true">⌘</span><span class="label">Connectors</span></a>
     <a href="#settings" data-screen="settings" class="mobile-secondary"><span class="nav-icon" aria-hidden="true">⚙</span><span class="label">Settings</span></a>
-    <a href="#meetings" data-screen="meetings" class="mobile-secondary"><span class="nav-icon" aria-hidden="true">◉</span><span class="label">Meetings</span><span class="rec-dot" id="rec-dot"></span></a>
+    <a href="#meetings" data-screen="meetings" class="mobile-secondary"><span class="nav-icon" aria-hidden="true">◉</span><span class="label">Meetings</span><span class="rec-dot" id="rec-dot" data-meeting-rec-dot aria-hidden="true"></span></a>
     <a href="#trace" data-screen="trace" class="debug-only mobile-secondary"><span class="nav-icon" aria-hidden="true">›</span><span class="label">Trace</span></a>
     <a href="#lab" data-screen="lab" class="debug-only mobile-secondary"><span class="nav-icon" aria-hidden="true">⌁</span><span class="label">Lab</span></a>
     <details class="mobile-more">
-      <summary><span class="nav-icon" aria-hidden="true">•••</span><span>More</span></summary>
+      <summary><span class="nav-icon" aria-hidden="true">•••</span><span>More</span><span class="rec-dot" data-meeting-rec-dot aria-hidden="true"></span></summary>
       <div class="mobile-more-menu">
         <a href="#artifacts">Artifacts</a><a href="#vault">Knowledge</a><a href="#costs">Costs</a>
         <a href="#gate">Notifications</a><a href="#hub">Connectors</a><a href="#settings">Settings</a>
@@ -44,6 +44,7 @@
       </div>
     </details>
     <div class="foot">Local AI Workstation</div>
+    <span class="sr-only" id="meeting-recording-status" role="status" aria-live="polite" aria-atomic="true"></span>
   </nav>
 
   <header class="status">

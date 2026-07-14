@@ -170,9 +170,11 @@ async def test_on_escalate_announcement_is_the_safe_line_not_the_input() -> None
 class _FakeKnowledge:
     def __init__(self) -> None:
         self.bound_unattended = False
+        self.ingested: list[dict] = []
 
     async def ingest(self, **kw):
-        review = "unreviewed" if self.bound_unattended else "reviewed"
+        self.ingested.append(kw)
+        review = "unreviewed" if self.bound_unattended or kw.get("quarantine") else "reviewed"
         return SimpleNamespace(
             action="ingested", source_id=1, chunks=1, review_status=review, title=kw.get("title")
         )
@@ -185,6 +187,45 @@ async def test_meeting_capture_lands_unreviewed(tmp_path: Path) -> None:
     voice = UiVoice(meeting=meeting, capture=FakeCapture(scripted=[b"audio"]))
     result = await voice.capture_meeting(title="Standup")
     assert result is not None and result.review_status == "unreviewed"
+
+
+async def test_meeting_capture_state_and_provenance_match_the_real_lifecycle() -> None:
+    knowledge = _FakeKnowledge()
+    states: list[str] = []
+    meeting = MeetingCapture(
+        knowledge,
+        FakeTranscriber(scripted=["Standup notes"]),
+        on_state=states.append,
+    )
+    seen_while_microphone_open: list[str] = []
+
+    class _Capture:
+        async def capture_utterance(self) -> bytes:
+            seen_while_microphone_open.append(meeting.state)
+            return b"audio"
+
+    result = await UiVoice(meeting=meeting, capture=_Capture()).capture_meeting(
+        title="Standup",
+        project_id=7,
+        source_session_id=42,
+    )
+
+    assert result is not None
+    assert seen_while_microphone_open == ["recording"]
+    assert states == ["recording", "transcribing", "saving", "idle"]
+    assert knowledge.ingested[0]["project_id"] == 7
+    assert knowledge.ingested[0]["source_session_id"] == 42
+    assert knowledge.ingested[0]["origin_override"].startswith("meeting-capture:")
+
+
+def test_meeting_availability_is_separate_from_generic_voice() -> None:
+    class _Listener:
+        pass
+
+    voice = UiVoice(listener=_Listener())
+    assert voice.status()["enabled"] is True
+    assert voice.status()["meeting_available"] is False
+    assert voice.status()["meeting_reason"]
 
 
 async def test_status_and_listen_delegate() -> None:

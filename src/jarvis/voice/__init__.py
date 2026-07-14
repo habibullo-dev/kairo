@@ -25,7 +25,7 @@ from jarvis.voice.listening import (
     PushToTalkListener,
     wake_active,
 )
-from jarvis.voice.meeting import MeetingCapture
+from jarvis.voice.meeting import MeetingCapture, NoSpeechDetectedError
 from jarvis.voice.protocols import (
     FakeSynthesizer,
     FakeTranscriber,
@@ -46,6 +46,7 @@ __all__ = [
     "FakeTranscriber",
     "LocalTranscriber",
     "MeetingCapture",
+    "NoSpeechDetectedError",
     "OpenAISynthesizer",
     "OpenAITranscriber",
     "PrintSynthesizer",

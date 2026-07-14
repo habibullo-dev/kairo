@@ -185,30 +185,37 @@ class KnowledgeStore:
         retrieval only surfaces sources in the querying project's scope (Phase 10 A1)."""
         now = _now()
         async with self.lock:
-            cursor = await self.db.execute(
-                f"INSERT INTO kb_sources ({_SOURCE_COLUMNS}) VALUES "
-                "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live', NULL, ?, ?, ?, ?, ?, ?)",
-                (
-                    kind,
-                    origin,
-                    title,
-                    content_hash,
-                    raw_path,
-                    markdown_path,
-                    markdown_hash,
-                    converter,
-                    converter_version,
-                    byte_size,
-                    mime,
-                    review_status,
-                    created_by,
-                    source_session_id,
-                    now,
-                    now,
-                    project_id,
-                ),
-            )
-            await self.db.commit()
+            try:
+                cursor = await self.db.execute(
+                    f"INSERT INTO kb_sources ({_SOURCE_COLUMNS}) VALUES "
+                    "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live', NULL, ?, ?, ?, ?, ?, ?)",
+                    (
+                        kind,
+                        origin,
+                        title,
+                        content_hash,
+                        raw_path,
+                        markdown_path,
+                        markdown_hash,
+                        converter,
+                        converter_version,
+                        byte_size,
+                        mime,
+                        review_status,
+                        created_by,
+                        source_session_id,
+                        now,
+                        now,
+                        project_id,
+                    ),
+                )
+                await self.db.commit()
+            except BaseException:
+                # A uniqueness race is an expected receipt-reconciliation path. SQLite leaves
+                # the implicit transaction open after the failed statement unless we explicitly
+                # roll it back, poisoning the shared connection for the next store transaction.
+                await self.db.rollback()
+                raise
         assert cursor.lastrowid is not None
         return cursor.lastrowid
 
@@ -242,6 +249,21 @@ class KnowledgeStore:
         """The current live source for one exact scoped origin (for re-ingest supersede)."""
         cursor = await self.db.execute(
             f"SELECT {_SOURCE_COLUMNS} FROM kb_sources WHERE origin=? AND status='live' "
+            "AND project_id IS ? ORDER BY id DESC LIMIT 1",
+            (origin, project_id),
+        )
+        row = await cursor.fetchone()
+        return _row_to_source(row) if row else None
+
+    async def find_by_origin(self, origin: str, *, project_id: int | None = None) -> Source | None:
+        """Find the durable audit row for one exact scoped logical origin.
+
+        Unlike :meth:`find_live_by_origin`, terminal rows are included. Meeting-capture receipt
+        reconciliation must never reopen the microphone merely because the already-committed
+        source was later reviewed, superseded, or rejected.
+        """
+        cursor = await self.db.execute(
+            f"SELECT {_SOURCE_COLUMNS} FROM kb_sources WHERE origin=? "
             "AND project_id IS ? ORDER BY id DESC LIMIT 1",
             (origin, project_id),
         )
@@ -382,13 +404,18 @@ class KnowledgeStore:
         wiki_path: str | None = None,
         chunks: list[NewChunk],
         embedding_model: str,
-    ) -> None:
+    ) -> bool:
         """Atomically replace all chunks for one owner (a source *or* a wiki page).
 
         Delete + re-insert in one ``transaction()`` — a failure mid-way rolls back,
         leaving the prior chunks intact (they are a rebuildable cache, but a torn
         rebuild would silently drop retrieval). Exactly one of ``source_id`` /
-        ``wiki_path`` must be given (the table's owner CHECK enforces it too)."""
+        ``wiki_path`` must be given (the table's owner CHECK enforces it too).
+
+        Source chunks are inserted only while the source is still live. The status check and
+        replacement share the store transaction, so a concurrent rejection either runs first
+        and refuses the write or runs second and purges it. Returns ``False`` only when a source
+        became terminal; wiki-page replacements always return ``True``."""
         if (source_id is None) == (wiki_path is None):
             raise ValueError("replace_chunks needs exactly one of source_id / wiki_path")
         now = _now()
@@ -408,6 +435,17 @@ class KnowledgeStore:
         col = "source_id" if source_id is not None else "wiki_path"
         owner = source_id if source_id is not None else wiki_path
         async with transaction(self.db, self.lock):
+            if source_id is not None:
+                live = await (
+                    await self.db.execute(
+                        "SELECT 1 FROM kb_sources WHERE id=? AND status='live'", (source_id,)
+                    )
+                ).fetchone()
+                if live is None:
+                    # Preserve the terminal-source purge invariant even for data created by an
+                    # older build or an indexer that reached this transaction after rejection.
+                    await self.db.execute("DELETE FROM kb_chunks WHERE source_id=?", (source_id,))
+                    return False
             await self.db.execute(f"DELETE FROM kb_chunks WHERE {col}=?", (owner,))
             if rows:
                 await self.db.executemany(
@@ -415,6 +453,7 @@ class KnowledgeStore:
                     "embedding, embedding_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     rows,
                 )
+        return True
 
     async def chunks_for_source(self, source_id: int) -> list[Chunk]:
         cursor = await self.db.execute(

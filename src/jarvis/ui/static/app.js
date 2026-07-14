@@ -36,13 +36,20 @@ const state = {
   parkedTaskApprovals: new Map(), // run_id -> exact durable unattended ASK (+ live nonce)
   runner: null,        // last /api/runner status; null until the first shared read succeeds
   runnerStatusError: false, // latest shared runner read failed; cached state is not current
-  voice: { enabled: false },
+  voice: { enabled: false, meeting: "idle", meeting_recording: false },
   trace: [],           // raw events (Debug/Trace)
   notices: [],         // background job/reminder/digest notices (Phase 9)
   context: null,       // server-owned {session_id, project_id}; never inferred from a hash
   route: "chat",
   routeArgs: [],       // positional hash args after the screen name (#workspace/{id})
 };
+let meetingEventGeneration = 0;
+let meetingRecordingEventGeneration = 0;
+let meetingStateRevision = -1;
+let meetingRecordingRevision = -1;
+let meetingRecordingEpoch = null;
+let voiceStatusSequence = 0;
+let lastPublishedVoiceStatus = null;
 
 const RECORDED_DELEGATION_STATUSES = new Set(["running", "ok", "error", "timeout", "cancelled", "aborted"]);
 
@@ -90,6 +97,9 @@ export const api = {
     } catch {
       return null;  // read surfaces render a distinct unavailable state instead of throwing
     }
+  },
+  async voiceStatus() {
+    return refreshVoiceStatus();
   },
   async runnerStatus({ refresh = false } = {}) {
     // Retain last-known state for passive chrome, but never hand it to an interactive surface
@@ -244,6 +254,12 @@ function setSurface(name, on) {
 
 function connect() {
   clearHeartbeat();
+  // Only the newly assigned socket can reach handleMessage. Open a fresh process-epoch window
+  // before any global frame can arrive; the workspace handshake will then pin its exact epoch.
+  meetingRecordingEpoch = null;
+  meetingRecordingRevision = -1;
+  lastPublishedVoiceStatus = null;
+  voiceStatusSequence += 1;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${proto}://${location.host}/ws`);
   ws = socket;
@@ -283,12 +299,34 @@ function connect() {
 
 function handleMessage(msg) {
   if (msg.type === "workspace") {
-    workspaceId = msg.workspace_id || null;
+    const nextWorkspaceId = msg.workspace_id || null;
+    const workspaceChanged = Boolean(
+      workspaceId && nextWorkspaceId && workspaceId !== nextWorkspaceId,
+    );
+    workspaceId = nextWorkspaceId;
     try {
       if (workspaceId) sessionStorage.setItem(WORKSPACE_KEY, workspaceId);
       else sessionStorage.removeItem(WORKSPACE_KEY);
     } catch { /* storage unavailable — this socket remains usable */ }
     state.context = { session_id: msg.session_id, project_id: msg.project_id };
+    // Local phase revisions are owned by this workspace. Global mic revisions are process-wide:
+    // a frame can arrive before this handshake, so reset them only when the server epoch changes.
+    const handshakeRecordingEpoch = wireEpoch(msg.meeting_recording_epoch);
+    if (handshakeRecordingEpoch && handshakeRecordingEpoch !== meetingRecordingEpoch) {
+      meetingRecordingEpoch = handshakeRecordingEpoch;
+      meetingRecordingRevision = -1;
+    }
+    lastPublishedVoiceStatus = null;
+    voiceStatusSequence += 1;
+    if (workspaceChanged) {
+      // Meeting workflow is workspace-local. Never carry an old tab/session's recording phase
+      // into a replacement workspace while its own status is still loading or unavailable.
+      state.voice.meeting = "idle";
+      state.voice.meeting_revision = -1;
+      meetingStateRevision = -1;
+      meetingEventGeneration += 1;
+      busEmit("meeting_state", { state: "idle", revision: null, workspace_reset: true });
+    }
     workspaceGeneration += 1;
     for (const waiter of [...workspaceWaiters]) waiter();
     pollStatus();
@@ -347,6 +385,14 @@ function handleMessage(msg) {
   if (msg.kind === "notice") { onNotice(msg.notice); return; }
   if (msg.kind === "voice") { onVoice(msg); return; }
   if (msg.kind === "voice_state") { onVoiceState(msg.state); return; }
+  if (msg.kind === "meeting_state") {
+    onMeetingState(msg.state, msg.revision);
+    return;
+  }
+  if (msg.kind === "meeting_recording") {
+    onMeetingRecording(msg.active, msg.revision, msg.epoch);
+    return;
+  }
   if (msg.kind === "turn_cancelled" || msg.kind === "turn_error") {
     if (state.runner) state.runner.turn_busy = false;  // settle: the turn ended
     // Live drafts from an interrupted or failed provider request are not durable protocol
@@ -397,9 +443,11 @@ function onVoice(msg) {
   if (msg.role !== "heard") playCaption(msg.text, workspaceHeaders(), onVoiceState);
 }
 
-// Read-only voice state pill (idle/listening/transcribing/thinking/speaking/error) — content-free.
+// Read-only conversation/dictation voice-state pill — content-free. Meeting workflow and the
+// process-wide physical-microphone signal use their own channels below.
 const VOICE_LABELS = {
-  listening: "⏹ Stop", capturing: "🎤 Capturing…", transcribing: "🎤 Transcribing…",
+  listening: "⏹ Stop", capturing: "🎤 Capturing…", recording: "🎤 Meeting note…",
+  transcribing: "🎤 Transcribing…", saving: "🎤 Saving…",
   thinking: "🎤 Thinking…", speaking: "🎤 Speaking…", error: "🎤 Talk",
 };
 function onVoiceState(s, reason = "") {
@@ -410,6 +458,52 @@ function onVoiceState(s, reason = "") {
   const mic = document.getElementById("st-mic");
   if (mic) mic.textContent = VOICE_LABELS[s] || (recording() ? "⏹ Stop" : "🎤 Talk");
   refreshConversation();
+}
+
+function wireRevision(value) {
+  const revision = Number(value);
+  return Number.isInteger(revision) && revision >= 0 ? revision : null;
+}
+
+function wireEpoch(value) {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function onMeetingState(s, revision) {
+  const nextRevision = wireRevision(revision);
+  if (nextRevision !== null && nextRevision < meetingStateRevision) return;
+  if (nextRevision !== null) meetingStateRevision = nextRevision;
+  meetingEventGeneration += 1;
+  state.voice.meeting = s;
+  busEmit("meeting_state", { state: s, revision: nextRevision });
+}
+
+function onMeetingRecording(active, revision, epoch) {
+  const nextEpoch = wireEpoch(epoch);
+  if (nextEpoch && meetingRecordingEpoch && nextEpoch !== meetingRecordingEpoch) return;
+  if (nextEpoch && !meetingRecordingEpoch) meetingRecordingEpoch = nextEpoch;
+  const nextRevision = wireRevision(revision);
+  if (nextRevision !== null && nextRevision < meetingRecordingRevision) return;
+  if (nextRevision !== null) meetingRecordingRevision = nextRevision;
+  meetingRecordingEventGeneration += 1;
+  state.voice.meeting_recording = Boolean(active);
+  showMeetingRecording(state.voice.meeting_recording);
+}
+
+function showMeetingRecording(active) {
+  const recordingNow = Boolean(active);
+  document.querySelectorAll("[data-meeting-rec-dot]").forEach((dot) => {
+    dot.classList.toggle("show", recordingNow);
+  });
+  const accessibleStatus = document.getElementById("meeting-recording-status");
+  const next = recordingNow ? "true" : "false";
+  if (accessibleStatus && accessibleStatus.dataset.active !== next) {
+    const wasRecording = accessibleStatus.dataset.active === "true";
+    accessibleStatus.dataset.active = next;
+    accessibleStatus.textContent = recordingNow
+      ? "Workstation microphone is recording a meeting note."
+      : (wasRecording ? "Workstation microphone closed." : "");
+  }
 }
 
 // The Talk button: browser push-to-talk. First press captures (mic permission prompt); second
@@ -900,6 +994,98 @@ async function rehydrateConversation() {
   }
 }
 
+async function refreshVoiceStatus() {
+  // Every consumer goes through this sequencer. A later-started screen read wins over an older
+  // shell poll, while monotonic server revisions reject delayed WebSocket/HTTP observations.
+  const statusSequence = ++voiceStatusSequence;
+  const eventGeneration = meetingEventGeneration;
+  const recordingEventGeneration = meetingRecordingEventGeneration;
+  const voiceStatus = await api.get("/api/voice/status");
+  if (statusSequence !== voiceStatusSequence) return lastPublishedVoiceStatus;
+  const v = voiceStatus || { enabled: false, reason: "" };
+  const previousVoice = state.voice;
+  const currentVoiceState = state.voice.listening || "idle";
+  const statusMeetingRevision = wireRevision(v.meeting_revision);
+  const meetingStatusIsFresh = voiceStatus
+    && eventGeneration === meetingEventGeneration
+    && (statusMeetingRevision === null || statusMeetingRevision >= meetingStateRevision);
+  const meetingState = meetingStatusIsFresh
+    ? (v.meeting || "idle")
+    : (previousVoice.meeting || "idle");
+  if (meetingStatusIsFresh && statusMeetingRevision !== null) {
+    meetingStateRevision = statusMeetingRevision;
+  }
+  const statusRecordingEpoch = wireEpoch(v.meeting_recording_epoch);
+  if (statusRecordingEpoch && statusRecordingEpoch !== meetingRecordingEpoch) {
+    meetingRecordingEpoch = statusRecordingEpoch;
+    meetingRecordingRevision = -1;
+  }
+  const statusRecordingRevision = wireRevision(v.meeting_recording_revision);
+  const meetingRecordingStatusIsFresh = voiceStatus
+    && recordingEventGeneration === meetingRecordingEventGeneration
+    && (statusRecordingRevision === null
+      || statusRecordingRevision >= meetingRecordingRevision);
+  const meetingRecording = meetingRecordingStatusIsFresh
+    ? Boolean(v.meeting_recording)
+    : Boolean(previousVoice.meeting_recording);
+  if (meetingRecordingStatusIsFresh && statusRecordingRevision !== null) {
+    meetingRecordingRevision = statusRecordingRevision;
+  }
+  const unavailableReason = !v.enabled ? (v.reason || "Voice is unavailable.")
+    : (!canCapture() ? "This browser can't record audio." : "");
+  state.voice = {
+    ...state.voice, ...v,
+    listening: (!v.enabled || currentVoiceState === "idle" || currentVoiceState === "error")
+      ? (v.listening || "idle") : currentVoiceState,
+    reason: unavailableReason || (currentVoiceState === "error" ? state.voice.reason : ""),
+    browserCapture: canCapture(),
+    meeting: meetingState,
+    meeting_revision: meetingStateRevision,
+    meeting_recording: meetingRecording,
+    meeting_recording_epoch: meetingRecordingEpoch,
+    meeting_recording_revision: meetingRecordingRevision,
+  };
+  showMeetingRecording(meetingRecording);
+  // Consumers need provider/capability fields too, but must never receive raw local/global
+  // meeting fields that were just rejected as stale against newer lifecycle observations.
+  const publishedVoiceStatus = voiceStatus
+    ? {
+      ...voiceStatus,
+      meeting: meetingState,
+      meeting_revision: meetingStateRevision,
+      meeting_recording: meetingRecording,
+      meeting_recording_epoch: meetingRecordingEpoch,
+      meeting_recording_revision: meetingRecordingRevision,
+    }
+    : null;
+  lastPublishedVoiceStatus = publishedVoiceStatus;
+  busEmit("voice_status", { status: publishedVoiceStatus });
+  if (meetingStatusIsFresh && previousVoice.meeting !== meetingState) {
+    busEmit("meeting_state", { state: meetingState, revision: meetingStateRevision });
+  }
+  const voiceEl = document.getElementById("st-voice");
+  if (voiceEl) {
+    voiceEl.textContent = v.enabled ? (v.listening || "ready") : "off";
+    voiceEl.title = v.enabled ? "" : (v.reason || "");
+    if (v.enabled && !canCapture()) voiceEl.title = "This browser can't record audio.";
+  }
+  const mic = document.getElementById("st-mic");
+  if (mic) {
+    mic.classList.toggle("is-hidden", !(v.enabled && canCapture()));
+    if (mic.dataset.busy !== "1" && !recording()) mic.textContent = "🎤 Talk";
+  }
+  const play = document.getElementById("st-play");
+  if (play) {
+    play.classList.toggle("is-hidden", !(v.enabled && v.playback));
+    play.classList.toggle("active", playbackOn());
+    play.title = playbackOn() ? "Spoken replies: on" : "Spoken replies: off";
+  }
+  if (previousVoice.enabled !== state.voice.enabled
+      || previousVoice.reason !== state.voice.reason
+      || previousVoice.browserCapture !== state.voice.browserCapture) refreshConversation();
+  return publishedVoiceStatus;
+}
+
 async function pollStatus() {
   const runnerWasUnavailable = state.runnerStatusError;
   const s = await api.runnerStatus({ refresh: true });
@@ -916,42 +1102,7 @@ async function pollStatus() {
     // Keep last-known status-bar data, but stop presenting it as writable header state.
     refreshHeader();
   }
-  // Default to OFF when the status can't be read (v null), so the mic is ALWAYS gated — never left
-  // at the CSP-blocked HTML default (which would leave Talk visible while voice is off, blocker 4).
-  const v = (await api.get("/api/voice/status")) || { enabled: false, reason: "" };
-  const previousVoice = state.voice;
-  const currentVoiceState = state.voice.listening || "idle";
-  const unavailableReason = !v.enabled ? (v.reason || "Voice is unavailable.")
-    : (!canCapture() ? "This browser can't record audio." : "");
-  state.voice = {
-    ...state.voice, ...v,
-    listening: (!v.enabled || currentVoiceState === "idle" || currentVoiceState === "error")
-      ? (v.listening || "idle") : currentVoiceState,
-    reason: unavailableReason || (currentVoiceState === "error" ? state.voice.reason : ""),
-    browserCapture: canCapture(),
-  };
-  const voiceEl = document.getElementById("st-voice");
-  if (voiceEl) {
-    voiceEl.textContent = v.enabled ? (v.listening || "ready") : "off";
-    voiceEl.title = v.enabled ? "" : (v.reason || "");
-    if (v.enabled && !canCapture()) voiceEl.title = "This browser can't record audio.";
-  }
-  const mic = document.getElementById("st-mic");
-  if (mic) {
-    // Talk shows ONLY when voice is enabled AND the browser can capture audio (class toggle, so
-    // the strict CSP can't leave it stuck visible).
-    mic.classList.toggle("is-hidden", !(v.enabled && canCapture()));
-    if (mic.dataset.busy !== "1" && !recording()) mic.textContent = "🎤 Talk";
-  }
-  const play = document.getElementById("st-play");
-  if (play) {  // playback toggle appears only when a cloud TTS can actually produce audio
-    play.classList.toggle("is-hidden", !(v.enabled && v.playback));
-    play.classList.toggle("active", playbackOn());
-    play.title = playbackOn() ? "Spoken replies: on" : "Spoken replies: off";
-  }
-  if (previousVoice.enabled !== state.voice.enabled
-      || previousVoice.reason !== state.voice.reason
-      || previousVoice.browserCapture !== state.voice.browserCapture) refreshConversation();
+  await refreshVoiceStatus();
 }
 
 // --- wire up ---

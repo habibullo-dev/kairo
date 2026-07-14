@@ -2208,11 +2208,24 @@ def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None, workspac
         build_tts,
     )
 
+    async def _publish_meeting_state(context, state: str, revision: int) -> None:
+        # A durable session may be mounted in more than one browser workspace. Meeting phases
+        # belong only to the workspace that initiated the capture, and retain the immutable
+        # context in which the hook fired even though delivery is scheduled asynchronously.
+        if workspace is None or context is None or app.state.workspaces is None:
+            return
+        await app.state.workspaces.publish_workspace(
+            workspace,
+            {"kind": "meeting_state", "state": state, "revision": revision},
+            context=context,
+        )
+
     # UiVoice first, so its read-only note_state hook can wire the state machines below.
     voice = UiVoice(
         connections=app.state.connections,
         stt_name=config.voice.stt_provider,
         tts_name=config.voice.tts_provider,
+        meeting_state_publish=_publish_meeting_state if workspace is not None else None,
     )
     tts = build_tts(
         config.voice,
@@ -2266,7 +2279,7 @@ def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None, workspac
     voice.capture = capture
     if repl.knowledge is not None:
         voice.meeting = MeetingCapture(
-            repl.knowledge, stt, artifacts=artifacts, on_state=voice.note_state
+            repl.knowledge, stt, artifacts=artifacts, on_state=voice.note_meeting_state
         )
     return voice
 

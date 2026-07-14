@@ -212,3 +212,78 @@ async def test_voice_state_broadcast_is_state_only() -> None:
         assert set(m) == {"kind", "state", "session_id", "project_id"}
         assert m["session_id"] == _CONTEXT.session_id and m["project_id"] is None
         assert m["state"] in _VOICE_STATES
+
+
+async def test_meeting_state_is_separate_scoped_and_content_free() -> None:
+    from jarvis.ui.voice import UiVoice
+
+    conns = _Conns()
+    voice = UiVoice(connections=conns)
+    with bind_execution_context(_CONTEXT):
+        for state in ("recording", "transcribing", "saving", "idle"):
+            voice.note_meeting_state(state)
+    await voice._meeting_push_tail
+    messages = [message for message in conns.sent if message.get("kind") == "meeting_state"]
+    assert [message["state"] for message in messages] == [
+        "recording",
+        "transcribing",
+        "saving",
+        "idle",
+    ]
+    for revision, message in enumerate(messages, start=1):
+        assert set(message) == {
+            "kind",
+            "state",
+            "revision",
+            "session_id",
+            "project_id",
+        }
+        assert message["session_id"] == _CONTEXT.session_id
+        assert message["revision"] == revision
+
+
+async def test_meeting_state_uses_the_workspace_publisher_when_composed() -> None:
+    from jarvis.ui.voice import UiVoice
+
+    delivered: list[tuple[object, str, int]] = []
+
+    async def publish(context, state: str, revision: int) -> None:
+        delivered.append((context, state, revision))
+
+    conns = _Conns()
+    voice = UiVoice(connections=conns, meeting_state_publish=publish)
+    with bind_execution_context(_CONTEXT):
+        voice.note_meeting_state("recording")
+    await voice._meeting_push_tail
+
+    assert delivered == [(_CONTEXT, "recording", 1)]
+    assert not any(message.get("kind") == "meeting_state" for message in conns.sent)
+
+
+async def test_meeting_state_delivery_preserves_revision_order_when_first_send_is_slow() -> None:
+    import asyncio
+
+    from jarvis.ui.voice import UiVoice
+
+    release_first = asyncio.Event()
+    delivered: list[tuple[str, int]] = []
+
+    async def publish(_context, state: str, revision: int) -> None:
+        if state == "recording":
+            await release_first.wait()
+        delivered.append((state, revision))
+
+    voice = UiVoice(meeting_state_publish=publish)
+    for state in ("recording", "transcribing", "saving", "idle"):
+        voice.note_meeting_state(state)
+    await asyncio.sleep(0)
+    assert delivered == []
+
+    release_first.set()
+    await asyncio.wait_for(voice._meeting_push_tail, timeout=1)
+    assert delivered == [
+        ("recording", 1),
+        ("transcribing", 2),
+        ("saving", 3),
+        ("idle", 4),
+    ]

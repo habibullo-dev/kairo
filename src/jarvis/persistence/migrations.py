@@ -1491,6 +1491,31 @@ CREATE INDEX IF NOT EXISTS idx_project_reset_events_successor
 """
 
 
+# A meeting capture receipt is generated before the workstation microphone opens and survives a
+# lost browser response. The origin encodes its server-owned project-or-global scope, so this
+# partial unique index is the durable at-most-once backstop without changing ordinary note/file
+# identity or legacy meeting origins.
+_SCHEMA_V33 = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_sources_meeting_capture_origin
+    ON kb_sources(origin)
+    WHERE kind='note' AND origin GLOB 'meeting-capture:*';
+"""
+
+
+async def _migrate_v33(db: aiosqlite.Connection) -> None:
+    """Add the receipt index when the knowledge schema exists.
+
+    Backup/doctor contract tests intentionally use sparse databases that carry only a historical
+    ``user_version`` and a canary table. Older additive migrations already tolerate that fixture
+    shape; keep v33 compatible without manufacturing a partial knowledge schema.
+    """
+    table = await (
+        await db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='kb_sources'")
+    ).fetchone()
+    if table is not None:
+        await db.executescript(_SCHEMA_V33)
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1529,6 +1554,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (30, _SCHEMA_V30),
     (31, _SCHEMA_V31),
     (32, _SCHEMA_V32),
+    (33, _migrate_v33),
 ]
 
 

@@ -8,14 +8,18 @@ the endpoints, the safety framing, and the client structure with fakes."""
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from jarvis.config import load_config
+from jarvis.core.execution import ExecutionContext
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.server import STATIC_DIR, create_app
+from jarvis.ui.server import STATIC_DIR, WORKSPACE_HEADER, create_app
 from jarvis.ui.voice import UiVoice
+from jarvis.voice import FakeCapture, MeetingCapture
 from jarvis.voice.protocols import FakeTranscriber
 
 
@@ -69,6 +73,9 @@ def test_status_off_reports_a_reason(tmp_path: Path) -> None:
     client, auth = _client(tmp_path, voice=None)
     s = client.get("/api/voice/status", headers=_hdr(auth)).json()
     assert s["enabled"] is False and s["reason"] and s["playback"] is False
+    assert s["meeting_recording"] is False
+    assert s["meeting_recording_epoch"] is None
+    assert s["meeting_revision"] == 0 and s["meeting_recording_revision"] == 0
 
 
 def test_status_on_reports_providers_and_playback(tmp_path: Path) -> None:
@@ -77,6 +84,161 @@ def test_status_on_reports_providers_and_playback(tmp_path: Path) -> None:
     s = client.get("/api/voice/status", headers=_hdr(auth)).json()
     assert s["enabled"] is True and s["stt"] == "openai" and s["tts"] == "openai"
     assert s["playback"] is True and s["reason"] == ""
+    assert s["meeting_available"] is False and s["meeting_reason"]
+    assert s["meeting_recording"] is False
+    assert s["meeting_recording_epoch"] is None
+    assert s["meeting_revision"] == 0 and s["meeting_recording_revision"] == 0
+
+
+def test_workspace_status_keeps_local_phase_and_global_mic_signal_separate(
+    tmp_path: Path,
+) -> None:
+    voice, _session, _tts = _wired()
+    voice.meeting = SimpleNamespace(state="transcribing")
+    voice.capture = object()
+    client, auth = _client(tmp_path, voice=None)
+    workspace = SimpleNamespace(voice=voice)
+    client.app.state.workspaces = SimpleNamespace(
+        resolve=lambda **_kw: workspace,
+        meeting_recording_active=True,
+        meeting_recording_epoch="test-process",
+        meeting_recording_revision=9,
+    )
+    response = client.get(
+        "/api/voice/status",
+        headers={**_hdr(auth), WORKSPACE_HEADER: "w" * 24},
+    )
+    assert response.status_code == 200
+    assert response.json()["meeting"] == "transcribing"
+    assert response.json()["meeting_recording"] is True
+    assert response.json()["meeting_recording_epoch"] == "test-process"
+    assert response.json()["meeting_recording_revision"] == 9
+
+
+class _MeetingKnowledge:
+    def __init__(self) -> None:
+        self.bound_unattended = False
+        self.ingested: list[dict] = []
+
+    async def ingest(self, **kw):
+        self.ingested.append(kw)
+        return SimpleNamespace(
+            action="ingested",
+            source_id=73,
+            chunks=1,
+            review_status="unreviewed" if kw.get("quarantine") else "reviewed",
+            title=kw.get("title"),
+        )
+
+
+def test_meeting_note_route_preserves_workspace_scope_and_returns_source(tmp_path: Path) -> None:
+    knowledge = _MeetingKnowledge()
+    meeting = MeetingCapture(knowledge, FakeTranscriber(scripted=["Project standup notes"]))
+    voice = UiVoice(meeting=meeting, capture=FakeCapture(scripted=[b"wav-audio"]))
+    client, auth = _client(tmp_path, voice=None)
+    owner = auth.mint_session()
+    workspace = SimpleNamespace(
+        voice=voice,
+        context=ExecutionContext(session_id=42, project_id=7),
+    )
+
+    @asynccontextmanager
+    async def voice_activity(_workspace):
+        yield
+
+    @asynccontextmanager
+    async def meeting_receipt_activity(_receipt_key):
+        yield
+
+    class _Lease:
+        def __init__(self, source):
+            self.source = source
+
+        async def capture_utterance(self):
+            return await self.source.capture_utterance()
+
+        async def release(self):
+            return None
+
+    async def reserve_server_capture(source, *, meeting=False):
+        assert meeting is True
+        return _Lease(source)
+
+    client.app.state.workspaces = SimpleNamespace(
+        resolve=lambda **_kw: workspace,
+        voice_activity=voice_activity,
+        meeting_receipt_activity=meeting_receipt_activity,
+        reserve_server_capture=reserve_server_capture,
+    )
+    response = client.post(
+        "/api/voice/meeting",
+        json={
+            "title": "  Standup  ",
+            "consent": True,
+            "capture_id": "123e4567-e89b-42d3-a456-426614174000",
+        },
+        headers={
+            **_hdr(auth, post=True),
+            "cookie": f"{SESSION_COOKIE}={owner}",
+            WORKSPACE_HEADER: "w" * 24,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "review_status": "unreviewed",
+        "source_id": 73,
+        "title": "Standup",
+        "index_state": "ready",
+        "source_status": "live",
+    }
+    assert knowledge.ingested[0]["project_id"] == 7
+    assert knowledge.ingested[0]["source_session_id"] == 42
+    assert knowledge.ingested[0]["quarantine"] is True
+
+
+def test_meeting_route_is_unavailable_when_only_generic_voice_is_wired(tmp_path: Path) -> None:
+    voice, _session, _tts = _wired()
+    client, auth = _client(tmp_path, voice=voice)
+    response = client.post(
+        "/api/voice/meeting", json={"title": "No backend"}, headers=_hdr(auth, post=True)
+    )
+    assert response.status_code == 503
+
+
+def test_meeting_route_requires_consent_before_opening_microphone(tmp_path: Path) -> None:
+    knowledge = _MeetingKnowledge()
+    capture = FakeCapture(scripted=[b"must-not-be-read"])
+    voice = UiVoice(
+        meeting=MeetingCapture(knowledge, FakeTranscriber(scripted=["must not run"])),
+        capture=capture,
+    )
+    client, auth = _client(tmp_path, voice=voice)
+    response = client.post(
+        "/api/voice/meeting", json={"title": "No consent"}, headers=_hdr(auth, post=True)
+    )
+    assert response.status_code == 422
+    assert capture.calls == 0
+    assert knowledge.ingested == []
+
+
+def test_meeting_route_rejects_invalid_capture_receipt_before_microphone(tmp_path: Path) -> None:
+    knowledge = _MeetingKnowledge()
+    capture = FakeCapture(scripted=[b"must-not-be-read"])
+    voice = UiVoice(
+        meeting=MeetingCapture(knowledge, FakeTranscriber(scripted=["must not run"])),
+        capture=capture,
+    )
+    client, auth = _client(tmp_path, voice=voice)
+    response = client.post(
+        "/api/voice/meeting",
+        json={"title": "Bad receipt", "consent": True, "capture_id": "not-a-uuid"},
+        headers=_hdr(auth, post=True),
+    )
+    assert response.status_code == 422
+    assert capture.calls == 0
+    assert knowledge.ingested == []
 
 
 # --- browser utterance routes through the same session (screen-only approval) ---

@@ -393,6 +393,307 @@ async def test_voice_activity_blocks_context_replacement(tmp_path: Path) -> None
     assert workspace.context.project_id == project_id
 
 
+async def test_server_capture_lease_is_exclusive_only_while_microphone_is_open(
+    tmp_path: Path,
+) -> None:
+    registry, connections, _projects = await _registry(tmp_path)
+    workspace_a = await registry.attach(
+        connections.register(_Socket(), owner_session="same-browser"),
+        owner_session="same-browser",
+    )
+    workspace_b = await registry.attach(
+        connections.register(_Socket(), owner_session="same-browser"),
+        owner_session="same-browser",
+    )
+
+    class _Capture:
+        async def capture_utterance(self) -> bytes:
+            return b"audio"
+
+    async with registry.voice_activity(workspace_a):
+        assert workspace_a.attended_busy
+        lease_a = await registry.reserve_server_capture(_Capture())
+        with pytest.raises(RuntimeError, match="busy"):
+            await registry.reserve_server_capture(_Capture())
+        # Uploaded browser audio does not contend for the workstation's physical microphone.
+        async with registry.voice_activity(workspace_b):
+            assert workspace_b.attended_busy
+        assert await lease_a.capture_utterance() == b"audio"
+
+        # Transcription/model work remains admitted in A, but the physical device is already
+        # free for another tab as soon as capture_utterance returns.
+        assert workspace_a.attended_busy
+        lease_b = await registry.reserve_server_capture(_Capture())
+        await lease_b.release()
+
+    assert not workspace_a.attended_busy
+
+
+async def test_meeting_capture_broadcasts_one_global_physical_mic_interval(
+    tmp_path: Path,
+) -> None:
+    registry, connections, _projects = await _registry(tmp_path)
+    socket_a, socket_b = _Socket(), _Socket()
+    await registry.attach(
+        connections.register(socket_a, owner_session="browser-a"),
+        owner_session="browser-a",
+    )
+    await registry.attach(
+        connections.register(socket_b, owner_session="browser-b"),
+        owner_session="browser-b",
+    )
+    opened = asyncio.Event()
+    close = asyncio.Event()
+
+    class _Capture:
+        async def capture_utterance(self) -> bytes:
+            opened.set()
+            await close.wait()
+            return b"audio"
+
+    lease = await registry.reserve_server_capture(_Capture(), meeting=True)
+    assert registry.server_capture_active is False
+    assert registry.meeting_recording_active is False
+    capture = asyncio.create_task(lease.capture_utterance())
+    await opened.wait()
+    await asyncio.sleep(0)
+    assert registry.server_capture_active is True
+    assert registry.meeting_recording_active is True
+    assert registry.meeting_recording_revision == 1
+    assert socket_a.sent[-1] == {
+        "kind": "meeting_recording",
+        "active": True,
+        "epoch": registry.meeting_recording_epoch,
+        "revision": 1,
+    }
+    assert socket_b.sent[-1] == {
+        "kind": "meeting_recording",
+        "active": True,
+        "epoch": registry.meeting_recording_epoch,
+        "revision": 1,
+    }
+
+    close.set()
+    assert await capture == b"audio"
+    await asyncio.sleep(0)
+    assert registry.server_capture_active is False
+    assert registry.meeting_recording_active is False
+    assert registry.meeting_recording_revision == 2
+    assert socket_a.sent[-1] == {
+        "kind": "meeting_recording",
+        "active": False,
+        "epoch": registry.meeting_recording_epoch,
+        "revision": 2,
+    }
+    assert socket_b.sent[-1] == {
+        "kind": "meeting_recording",
+        "active": False,
+        "epoch": registry.meeting_recording_epoch,
+        "revision": 2,
+    }
+
+
+async def test_stalled_socket_cannot_block_meeting_source_or_registry_transitions(
+    tmp_path: Path,
+) -> None:
+    registry, connections, _projects = await _registry(tmp_path)
+    stalled_send = asyncio.Event()
+    source_opened = asyncio.Event()
+    source_close = asyncio.Event()
+
+    class _StalledSocket:
+        async def send_json(self, _message: dict) -> None:
+            await stalled_send.wait()
+
+    class _Capture:
+        async def capture_utterance(self) -> bytes:
+            source_opened.set()
+            await source_close.wait()
+            return b"audio"
+
+    await registry.attach(
+        connections.register(_StalledSocket(), owner_session="slow-browser"),
+        owner_session="slow-browser",
+    )
+    lease = await registry.reserve_server_capture(_Capture(), meeting=True)
+    capture = asyncio.create_task(lease.capture_utterance())
+    await asyncio.wait_for(source_opened.wait(), timeout=0.2)
+    assert registry.server_capture_active is True
+    assert registry.transition_lock.locked() is False
+    with pytest.raises(RuntimeError, match="busy"):
+        await asyncio.wait_for(
+            registry.reserve_server_capture(_Capture(), meeting=True), timeout=0.2
+        )
+
+    source_close.set()
+    assert await asyncio.wait_for(capture, timeout=0.2) == b"audio"
+    assert registry.server_capture_active is False
+    assert registry.transition_lock.locked() is False
+    stalled_send.set()
+    await asyncio.sleep(0)
+
+
+async def test_server_capture_lease_is_single_use_and_cannot_release_while_open(
+    tmp_path: Path,
+) -> None:
+    registry, _connections, _projects = await _registry(tmp_path)
+    opened = asyncio.Event()
+    close = asyncio.Event()
+    calls = 0
+
+    class _Capture:
+        async def capture_utterance(self) -> bytes:
+            nonlocal calls
+            calls += 1
+            opened.set()
+            await close.wait()
+            return b"audio"
+
+    lease = await registry.reserve_server_capture(_Capture(), meeting=True)
+    first = asyncio.create_task(lease.capture_utterance())
+    await opened.wait()
+    with pytest.raises(RuntimeError, match="already used"):
+        await lease.capture_utterance()
+    await lease.release()
+    assert registry.server_capture_active is True
+    with pytest.raises(RuntimeError, match="busy"):
+        await registry.reserve_server_capture(_Capture())
+    assert calls == 1
+
+    close.set()
+    assert await first == b"audio"
+    replacement = await registry.reserve_server_capture(_Capture())
+    await replacement.release()
+
+
+async def test_cancelled_capture_wins_over_late_source_error(tmp_path: Path) -> None:
+    registry, _connections, _projects = await _registry(tmp_path)
+    opened = asyncio.Event()
+    fail = asyncio.Event()
+
+    class _FailingCapture:
+        async def capture_utterance(self) -> bytes:
+            opened.set()
+            await fail.wait()
+            raise RuntimeError("late device failure")
+
+    lease = await registry.reserve_server_capture(_FailingCapture(), meeting=True)
+    capture = asyncio.create_task(lease.capture_utterance())
+    await opened.wait()
+    capture.cancel()
+    await asyncio.sleep(0)
+    fail.set()
+    with pytest.raises(asyncio.CancelledError):
+        await capture
+    assert registry.server_capture_active is False
+
+
+async def test_cancelled_activation_releases_its_reserved_lease(tmp_path: Path) -> None:
+    registry, _connections, _projects = await _registry(tmp_path)
+
+    class _Capture:
+        async def capture_utterance(self) -> bytes:
+            return b"audio"
+
+    lease = await registry.reserve_server_capture(_Capture(), meeting=True)
+    await registry.transition_lock.acquire()
+    capture = asyncio.create_task(lease.capture_utterance())
+    await asyncio.sleep(0)
+    capture.cancel()
+    registry.transition_lock.release()
+    with pytest.raises(asyncio.CancelledError):
+        await capture
+
+    replacement = await registry.reserve_server_capture(_Capture())
+    await replacement.release()
+
+
+async def test_meeting_workflow_event_targets_one_workspace_even_for_same_session(
+    tmp_path: Path,
+) -> None:
+    registry, connections, _projects = await _registry(tmp_path)
+    socket_a, socket_b = _Socket(), _Socket()
+    workspace_a = await registry.attach(
+        connections.register(socket_a, owner_session="same-browser"),
+        owner_session="same-browser",
+    )
+    workspace_b = await registry.attach(
+        connections.register(socket_b, owner_session="same-browser"),
+        owner_session="same-browser",
+    )
+    await workspace_a.session.sessions.save_messages(
+        workspace_a.context.session_id,
+        [{"role": "user", "content": "shared transcript"}],
+    )
+    assert await workspace_b.resume(workspace_a.context.session_id)
+    registry.refresh_context(workspace_b)
+    assert workspace_b.context == workspace_a.context
+
+    await registry.publish_workspace(
+        workspace_a, {"kind": "meeting_state", "state": "saving"}
+    )
+    assert socket_a.sent[-1] == {
+        "kind": "meeting_state",
+        "state": "saving",
+        **workspace_a.context.to_wire(),
+        "workspace_id": workspace_a.workspace_id,
+    }
+    assert not any(message.get("kind") == "meeting_state" for message in socket_b.sent)
+
+
+async def test_cancelled_capture_keeps_lease_until_physical_source_closes(tmp_path: Path) -> None:
+    registry, _connections, _projects = await _registry(tmp_path)
+    started = asyncio.Event()
+    physical_closed = asyncio.Event()
+
+    class _ThreadBackedLikeCapture:
+        async def capture_utterance(self) -> bytes:
+            started.set()
+            await physical_closed.wait()
+            return b"audio"
+
+    lease = await registry.reserve_server_capture(_ThreadBackedLikeCapture(), meeting=True)
+    capture = asyncio.create_task(lease.capture_utterance())
+    await started.wait()
+    assert registry.server_capture_active is True
+    assert registry.meeting_recording_active is True
+    capture.cancel()
+    await asyncio.sleep(0)
+
+    # Cancellation of an asyncio.to_thread await cannot stop its microphone worker. The lease
+    # therefore remains occupied until that bounded worker really returns and closes the device.
+    assert not capture.done()
+    with pytest.raises(RuntimeError, match="busy"):
+        await registry.reserve_server_capture(_ThreadBackedLikeCapture())
+
+    physical_closed.set()
+    with pytest.raises(asyncio.CancelledError):
+        await capture
+    assert registry.server_capture_active is False
+    assert registry.meeting_recording_active is False
+    replacement = await registry.reserve_server_capture(_ThreadBackedLikeCapture())
+    await replacement.release()
+
+
+async def test_meeting_receipt_is_single_flight_beyond_physical_capture(tmp_path: Path) -> None:
+    registry, _connections, _projects = await _registry(tmp_path)
+    receipt = "project:7:123e4567-e89b-42d3-a456-426614174000"
+
+    async with registry.meeting_receipt_activity(receipt):
+        with pytest.raises(RuntimeError, match="busy"):
+            async with registry.meeting_receipt_activity(receipt):
+                pass
+
+        # A different logical note is not blocked merely because this receipt is transcribing.
+        async with registry.meeting_receipt_activity(
+            "project:7:123e4567-e89b-42d3-a456-426614174001"
+        ):
+            pass
+
+    async with registry.meeting_receipt_activity(receipt):
+        pass
+
+
 async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path) -> None:
     """Workspace-only reads cannot be selected by a guessed project or task id.
 
@@ -859,11 +1160,13 @@ async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
         socket_a.send_json({"type": "hello", "surfaces": []})
         hello_a = socket_a.receive_json()
         assert hello_a["type"] == "workspace"
+        assert hello_a["meeting_recording_epoch"] == registry.meeting_recording_epoch
         with client.websocket_connect("/ws", headers=headers) as socket_b:
             assert socket_b.receive_json()["type"] == "hello"
             socket_b.send_json({"type": "hello", "surfaces": []})
             hello_b = socket_b.receive_json()
             assert hello_b["type"] == "workspace"
+            assert hello_b["meeting_recording_epoch"] == registry.meeting_recording_epoch
             assert hello_a["workspace_id"] != hello_b["workspace_id"]
             response_a = client.get(
                 "/api/runner", headers={"cookie": cookie, WORKSPACE_HEADER: hello_a["workspace_id"]}

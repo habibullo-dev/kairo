@@ -17,6 +17,7 @@ Two invariants write_page upholds:
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import hashlib
 import re
@@ -64,6 +65,8 @@ class IngestResult:
     title: str | None = None
     suspected_secret_hits: int = 0
     suspected_secret_rules: tuple[str, ...] = ()
+    index_state: str = "ready"  # 'ready' | 'pending' (primary source saved; derived index pending)
+    source_status: str = "live"  # durable source lifecycle; receipt replays may find terminal rows
 
 
 @dataclass(frozen=True)
@@ -193,6 +196,7 @@ class KnowledgeService:
         self.bound_unattended = False
         self.log = get_logger("jarvis.knowledge")
         self.artifacts = artifacts  # Phase 11: optional ArtifactStore (None ⇒ no indexing)
+        self._source_review_locks: dict[int, asyncio.Lock] = {}
 
     def ensure_dirs(self) -> None:
         for d in (self.wiki_dir, self.raw_dir, self.markdown_dir):
@@ -288,6 +292,7 @@ class KnowledgeService:
         source_session_id: int | None = None,
         project_id: int | None = None,
         origin_override: str | None = None,
+        quarantine: bool = False,
     ) -> IngestResult:
         """Ingest exactly one of a file ``path``, a ``url``, or freeform ``text`` into
         an immutable raw artifact + deterministic markdown + a chunk index.
@@ -296,7 +301,9 @@ class KnowledgeService:
         DB row, so a crash leaves a harmless orphan file (swept by ``kb rebuild``),
         never a row pointing at nothing. An unattended run (``bound_unattended``)
         stages the source ``unreviewed`` — quarantined from search until a human runs
-        ``kb review`` (ADR-0004)."""
+        ``kb review`` (ADR-0004). ``quarantine=True`` provides the same fail-closed treatment
+        for an explicit untrusted source such as a meeting transcript without mutating the
+        service-wide unattended-run state."""
         given = [("path", path), ("url", url), ("text", text)]
         provided = [name for name, value in given if value is not None]
         if len(provided) != 1:
@@ -326,7 +333,7 @@ class KnowledgeService:
         markdown_rel = f"markdown/{content_hash[:16]}.md"
         (self.knowledge_dir / markdown_rel).write_text(conversion.markdown, encoding="utf-8")
 
-        review_status = "unreviewed" if self.bound_unattended else "reviewed"
+        review_status = "unreviewed" if self.bound_unattended or quarantine else "reviewed"
         # A changed file/url supersedes its prior live version — but only when the new
         # source is itself reviewed (an unattended re-ingest must not silently replace
         # trusted content; it stages for review instead).
@@ -360,9 +367,14 @@ class KnowledgeService:
             await self.store.supersede_source(prior.id, source_id)
 
         new_chunks, secret_scan = await self._chunk_and_embed_with_scan(conversion.markdown)
-        await self.store.replace_chunks(
+        index_written = await self.store.replace_chunks(
             source_id=source_id, chunks=new_chunks, embedding_model=self.embedder.model
         )
+        stored_source = await self.store.get_source(source_id)
+        if stored_source is None:
+            raise KnowledgeError("source disappeared during indexing")
+        source_status = stored_source.status
+        stored_chunks = len(new_chunks) if index_written and source_status == "live" else 0
         self.log.info(
             "kb_ingested",
             source_id=source_id,
@@ -370,19 +382,21 @@ class KnowledgeService:
             origin=origin,
             content_hash=content_hash[:16],
             converter=conversion.converter,
-            chunks=len(new_chunks),
-            review_status=review_status,
+            chunks=stored_chunks,
+            review_status=stored_source.review_status,
+            source_status=source_status,
             superseded=prior.id if prior else None,
         )
         action = "superseded" if prior is not None else "ingested"
         return IngestResult(
             action,
             source_id,
-            len(new_chunks),
-            review_status,
+            stored_chunks,
+            stored_source.review_status,
             title or conversion.title,
             suspected_secret_hits=secret_scan.total_hits,
             suspected_secret_rules=tuple(sorted({hit.rule for hit in secret_scan.hits})),
+            source_status=source_status,
         )
 
     async def ingest_uploaded(
@@ -697,15 +711,49 @@ class KnowledgeService:
         )
 
     async def approve_source(self, source_id: int) -> None:
-        """Promote a quarantined source to reviewed (now visible to search/citation)."""
-        await self.store.set_review_status(source_id, "reviewed")
-        self.log.info("kb_source_reviewed", source_id=source_id, decision="approved")
+        """Promote a quarantined source only after its derived search index is ready."""
+        lock = self._source_review_locks.setdefault(source_id, asyncio.Lock())
+        async with lock:
+            await self.ensure_source_index(source_id)
+            await self.store.set_review_status(source_id, "reviewed")
+            self.log.info("kb_source_reviewed", source_id=source_id, decision="approved")
+
+    async def ensure_source_index(self, source_id: int) -> int:
+        """Best-effort repair of a live source's rebuildable chunk index.
+
+        ``kb_sources`` is the durable primary/audit record. A provider outage can occur after
+        that row commits but before its derived chunks land. Existing chunks prove readiness;
+        otherwise rebuild from the immutable markdown artifact. Any failure propagates so review
+        remains unreviewed rather than falsely promoting an unindexed source.
+        """
+        source = await self.store.get_source(source_id)
+        if source is None or source.status != "live":
+            raise KnowledgeError("source is not available for indexing")
+        existing = await self.store.chunks_for_source(source_id)
+        if existing and all(chunk.embedding_model == self.embedder.model for chunk in existing):
+            return len(existing)
+        markdown_path = self.knowledge_dir / source.markdown_path
+        if not markdown_path.exists():
+            raise KnowledgeError("source markdown is unavailable for indexing")
+        markdown = markdown_path.read_text(encoding="utf-8", errors="replace")
+        chunks = await self._chunk_and_embed(markdown)
+        index_written = await self.store.replace_chunks(
+            source_id=source_id,
+            chunks=chunks,
+            embedding_model=self.embedder.model,
+        )
+        if not index_written:
+            raise KnowledgeError("source is no longer available for indexing")
+        self.log.info("kb_source_index_repaired", source_id=source_id, chunks=len(chunks))
+        return len(chunks)
 
     async def reject_source(self, source_id: int) -> bool:
         """Reject a quarantined source (kept for audit, invisible to search)."""
-        rejected = await self.store.reject_source(source_id)
-        self.log.info("kb_source_reviewed", source_id=source_id, decision="rejected")
-        return rejected
+        lock = self._source_review_locks.setdefault(source_id, asyncio.Lock())
+        async with lock:
+            rejected = await self.store.reject_source(source_id)
+            self.log.info("kb_source_reviewed", source_id=source_id, decision="rejected")
+            return rejected
 
     async def source_markdown(self, source_id: int, *, max_chars: int = 2000) -> str | None:
         """A capped markdown excerpt of a source — the content preview shown before a human
@@ -776,10 +824,11 @@ class KnowledgeService:
                 continue
             md = md_path.read_text(encoding="utf-8", errors="replace")
             chunks = await self._chunk_and_embed(md)
-            await self.store.replace_chunks(
+            index_written = await self.store.replace_chunks(
                 source_id=source.id, chunks=chunks, embedding_model=self.embedder.model
             )
-            sources += 1
+            if index_written:
+                sources += 1
         pages = 0
         if self.wiki_dir.exists():
             wiki_root = self.wiki_dir.resolve()

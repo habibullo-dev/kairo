@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 from collections.abc import Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -147,6 +147,70 @@ class UiWorkspace:
         return True
 
 
+class ServerCaptureLease:
+    """One exclusive lease over the workstation microphone's physical capture interval."""
+
+    def __init__(
+        self, registry: UiWorkspaceRegistry, source: object, *, meeting: bool = False
+    ) -> None:
+        self._registry = registry
+        self._source = source
+        self._meeting = meeting
+        self._released = False
+        self._capture_claimed = False
+        self._capture_started = False
+        self._capture_finished = False
+
+    async def capture_utterance(self) -> bytes:
+        # ``SoundDeviceCapture`` records in ``asyncio.to_thread``. Cancelling its await does not
+        # stop that worker or close the InputStream, so never let request cancellation advertise
+        # the physical microphone as free while the worker is still recording. Shield and drain
+        # the bounded capture (silence or 30 seconds), then propagate cancellation after release.
+        if self._capture_claimed:
+            raise RuntimeError("capture lease already used")
+        self._capture_claimed = True
+        capture = None
+        cancelled = False
+        activated = False
+        try:
+            # Admission and the privacy state change are synchronous with starting this one
+            # bounded source call; WebSocket delivery happens independently and cannot delay it.
+            await self._registry._activate_server_capture(self)
+            activated = True
+            capture = asyncio.create_task(
+                self._source.capture_utterance()  # type: ignore[attr-defined]
+            )
+            while True:
+                try:
+                    audio = await asyncio.shield(capture)
+                    break
+                except asyncio.CancelledError:
+                    if capture.cancelled():
+                        raise
+                    cancelled = True
+                except Exception:
+                    # Once the caller cancels, drain only to keep the physical lease honest.
+                    # A later device/provider error must not replace that cancellation outcome.
+                    if cancelled:
+                        raise asyncio.CancelledError from None
+                    raise
+            if cancelled:
+                raise asyncio.CancelledError
+            return audio
+        finally:
+            if activated:
+                self._capture_finished = True
+                await asyncio.shield(self.release())
+            else:
+                # Cancellation while waiting to activate still owns the reservation. A second
+                # caller is rejected above and can never release the first caller's lease.
+                await asyncio.shield(self.release())
+
+    async def release(self) -> None:
+        """Release once; route-level finally blocks may safely call this again."""
+        await self._registry._release_server_capture(self)
+
+
 class UiWorkspaceRegistry:
     """Attach live authenticated sockets to isolated :class:`UiWorkspace` instances."""
 
@@ -167,6 +231,18 @@ class UiWorkspaceRegistry:
         self.on_context_replaced = on_context_replaced
         self.context_busy = context_busy
         self.transition_lock = asyncio.Lock()
+        # The workstation has one physical default microphone even though every browser tab owns
+        # an isolated UiVoice/CaptureSource. Admission must therefore be process-wide, not merely
+        # per workspace, or two tabs can both try to open the same device.
+        self._server_capture_lease: ServerCaptureLease | None = None
+        self._server_capture_active = False
+        self._meeting_recording_epoch = secrets.token_urlsafe(12)
+        self._meeting_recording_revision = 0
+        self._meeting_recording_pushes: set[asyncio.Task] = set()
+        # The physical microphone may become free while a prior note is still transcribing. Keep
+        # the same durable receipt single-flight through persistence so a cross-tab retry cannot
+        # record the same logical note twice during that pre-row window.
+        self._active_meeting_receipts: set[str] = set()
         self._workspaces: dict[tuple[str, str], UiWorkspace] = {}
 
     @staticmethod
@@ -263,12 +339,23 @@ class UiWorkspaceRegistry:
         owner_sessions = {owner_session for owner_session, _workspace_id in self._workspaces}
         return sum(self.drop_owner_session(owner_session) for owner_session in owner_sessions)
 
-    async def publish_workspace(self, workspace: UiWorkspace, message: dict) -> None:
-        """Emit a lifecycle event that introduces the workspace's replacement context."""
+    async def publish_workspace(
+        self,
+        workspace: UiWorkspace,
+        message: dict,
+        *,
+        context: ExecutionContext | None = None,
+    ) -> None:
+        """Emit a lifecycle event only to one workspace.
+
+        Callers that schedule delivery after a state hook may provide the immutable context
+        captured by that hook. This prevents a queued terminal event from being relabelled if
+        the workspace starts a new session before the delivery task runs.
+        """
         await self.connections.publish_workspace(
             owner_session=workspace.owner_session,
             workspace_id=workspace.workspace_id,
-            context=workspace.context,
+            context=context or workspace.context,
             message=message,
         )
 
@@ -284,3 +371,125 @@ class UiWorkspaceRegistry:
         finally:
             async with self.transition_lock:
                 workspace.voice_active -= 1
+
+    @property
+    def server_capture_active(self) -> bool:
+        """Whether any server-side source currently owns the physical microphone interval."""
+        return self._server_capture_active
+
+    @property
+    def meeting_recording_active(self) -> bool:
+        """Whether that physical interval belongs to a meeting-note capture."""
+        lease = self._server_capture_lease
+        return bool(self._server_capture_active and lease is not None and lease._meeting)
+
+    @property
+    def meeting_recording_revision(self) -> int:
+        return self._meeting_recording_revision
+
+    @property
+    def meeting_recording_epoch(self) -> str:
+        return self._meeting_recording_epoch
+
+    async def _deliver_meeting_recording(self, active: bool, revision: int) -> None:
+        """Best-effort global delivery without letting one stalled socket block the device."""
+        sends = {
+            asyncio.create_task(
+                self.connections.send(
+                    connection,
+                    {
+                        "kind": "meeting_recording",
+                        "active": active,
+                        "epoch": self._meeting_recording_epoch,
+                        "revision": revision,
+                    },
+                )
+            )
+            for connection in self.connections.live()
+        }
+        if not sends:
+            return
+        done, pending = await asyncio.wait(sends, timeout=0.5)
+        for task in pending:
+            task.cancel()
+            task.add_done_callback(self._consume_push_result)
+        for task in done:
+            with suppress(BaseException):
+                task.result()
+
+    @staticmethod
+    def _consume_push_result(task: asyncio.Task) -> None:
+        with suppress(BaseException):
+            task.result()
+
+    def _queue_meeting_recording(self, active: bool, revision: int) -> None:
+        task = asyncio.create_task(self._deliver_meeting_recording(active, revision))
+        self._meeting_recording_pushes.add(task)
+        task.add_done_callback(self._meeting_recording_pushes.discard)
+
+    async def _activate_server_capture(self, lease: ServerCaptureLease) -> None:
+        notification = None
+        async with self.transition_lock:
+            if self._server_capture_lease is not lease or lease._released:
+                raise RuntimeError("busy")
+            if lease._capture_started or self._server_capture_active:
+                raise RuntimeError("capture lease already used")
+            lease._capture_started = True
+            self._server_capture_active = True
+            if lease._meeting:
+                self._meeting_recording_revision += 1
+                notification = (True, self._meeting_recording_revision)
+        if notification is not None:
+            self._queue_meeting_recording(*notification)
+
+    async def _release_server_capture(self, lease: ServerCaptureLease) -> None:
+        notification = None
+        async with self.transition_lock:
+            if lease._released:
+                return
+            # An eager route-level cleanup must not advertise the device as free while the
+            # single admitted source call is still draining. Its own finally block releases it.
+            if lease._capture_started and not lease._capture_finished:
+                return
+            lease._released = True
+            if self._server_capture_lease is not lease:
+                return
+            was_meeting = self._server_capture_active and lease._meeting
+            self._server_capture_active = False
+            self._server_capture_lease = None
+            if was_meeting:
+                self._meeting_recording_revision += 1
+                notification = (False, self._meeting_recording_revision)
+        if notification is not None:
+            self._queue_meeting_recording(*notification)
+
+    async def reserve_server_capture(
+        self, source: object, *, meeting: bool = False
+    ) -> ServerCaptureLease:
+        """Reserve the physical microphone and return a self-releasing capture wrapper.
+
+        The surrounding request still uses :meth:`voice_activity` to pin its workspace context.
+        This separate lease ends as soon as ``capture_utterance`` returns, so transcription,
+        embedding, receipt repair, and the subsequent model turn do not block another tab's mic.
+        ``meeting`` controls only the global meeting-note privacy indicator; every lease remains
+        exclusive over the same physical device.
+        """
+        async with self.transition_lock:
+            if self._server_capture_lease is not None:
+                raise RuntimeError("busy")
+            lease = ServerCaptureLease(self, source, meeting=meeting)
+            self._server_capture_lease = lease
+            return lease
+
+    @asynccontextmanager
+    async def meeting_receipt_activity(self, receipt_key: str):
+        """Keep one scoped meeting receipt single-flight through durable persistence."""
+        async with self.transition_lock:
+            if receipt_key in self._active_meeting_receipts:
+                raise RuntimeError("busy")
+            self._active_meeting_receipts.add(receipt_key)
+        try:
+            yield
+        finally:
+            async with self.transition_lock:
+                self._active_meeting_receipts.discard(receipt_key)

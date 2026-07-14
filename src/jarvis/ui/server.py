@@ -17,6 +17,7 @@ import contextlib
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from fastapi import FastAPI, Request, WebSocket, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -96,6 +97,7 @@ from jarvis.ui.readmodels import (
     workflows_catalog,
     workspace_overview,
 )
+from jarvis.voice.meeting import NoSpeechDetectedError
 
 if TYPE_CHECKING:
     from jarvis.config import Config
@@ -1807,7 +1809,17 @@ def create_app(
         svc = app.state.services.knowledge
         if svc is None:
             return _unavailable("knowledge")
-        await svc.approve_source(source_id)  # = `kb review` approve
+        try:
+            await svc.approve_source(source_id)  # = `kb review` approve
+        except Exception:  # noqa: BLE001 - provider details stay server-side; review fails closed
+            log.warning("kb_source_approval_index_failed", source_id=source_id)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "message": "Indexing is unavailable; the source remains unreviewed.",
+                },
+                status_code=503,
+            )
         return JSONResponse({"ok": True})
 
     @app.post("/api/vault/sources/{source_id}/reject")
@@ -3229,13 +3241,36 @@ def create_app(
             return _workspace_required()
         v = workspace.voice if workspace is not None else app.state.voice
         if v is not None:
-            return JSONResponse(v.status())
+            payload = v.status()
+            registry = app.state.workspaces
+            payload["meeting_recording"] = (
+                bool(getattr(registry, "meeting_recording_active", False))
+                if registry is not None
+                else payload.get("meeting") == "recording"
+            )
+            payload["meeting_recording_revision"] = (
+                int(getattr(registry, "meeting_recording_revision", 0))
+                if registry is not None
+                else int(payload.get("meeting_revision", 0))
+            )
+            payload["meeting_recording_epoch"] = (
+                str(getattr(registry, "meeting_recording_epoch", "")) or None
+                if registry is not None
+                else None
+            )
+            return JSONResponse(payload)
         # Off: report WHY in plain language (the Talk button hides + shows this reason).
         return JSONResponse(
             {
                 "enabled": False,
                 "listening": "idle",
                 "meeting": "idle",
+                "meeting_recording": False,
+                "meeting_revision": 0,
+                "meeting_recording_revision": 0,
+                "meeting_recording_epoch": None,
+                "meeting_available": False,
+                "meeting_reason": "Voice and Knowledge are off.",
                 "playback": False,
                 "stt": config.voice.stt_provider,
                 "tts": config.voice.tts_provider,
@@ -3260,7 +3295,13 @@ def create_app(
             try:
                 async with app.state.workspaces.voice_activity(workspace):
                     with bind_execution_context(workspace.context):
-                        heard = await v.listen_once()
+                        lease = await app.state.workspaces.reserve_server_capture(
+                            v.listener.capture, meeting=False
+                        )
+                        try:
+                            heard = await v.listen_once(capture=lease)
+                        finally:
+                            await lease.release()
             except RuntimeError:
                 return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
         # server-mic fallback: one push-to-talk utterance → one turn
@@ -3330,21 +3371,95 @@ def create_app(
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
         v = workspace.voice if workspace is not None else app.state.voice
-        if v is None or v.meeting is None:
+        if v is None or not v.status().get("meeting_available", False):
             return _unavailable("voice")
         body = await request.json()
-        if workspace is None:
-            result = await v.capture_meeting(title=body.get("title"))
-        else:
-            try:
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "message": "invalid meeting note"}, status_code=400)
+        if body.get("consent") is not True:
+            return JSONResponse(
+                {"ok": False, "message": "Explicit consent is required before capture."},
+                status_code=422,
+            )
+        raw_capture_id = body.get("capture_id")
+        try:
+            capture_uuid = UUID(raw_capture_id) if isinstance(raw_capture_id, str) else None
+        except (ValueError, AttributeError):
+            capture_uuid = None
+        if (
+            capture_uuid is None
+            or capture_uuid.version != 4
+            or str(capture_uuid) != raw_capture_id
+        ):
+            return JSONResponse(
+                {"ok": False, "message": "A valid capture receipt is required."},
+                status_code=422,
+            )
+        capture_id = str(capture_uuid)
+        raw_title = body.get("title")
+        if raw_title is not None and not isinstance(raw_title, str):
+            return JSONResponse({"ok": False, "message": "invalid title"}, status_code=422)
+        title = (raw_title or "").strip()[:120] or "Meeting note"
+        try:
+            if workspace is None:
+                result = await v.capture_meeting(title=title, capture_id=capture_id)
+            else:
                 async with app.state.workspaces.voice_activity(workspace):
                     with bind_execution_context(workspace.context):
-                        result = await v.capture_meeting(title=body.get("title"))
-            except RuntimeError:
+                        receipt_scope = (
+                            f"project:{workspace.context.project_id}"
+                            if workspace.context.project_id is not None
+                            else "global"
+                        )
+                        receipt_key = f"{receipt_scope}:{capture_id}"
+                        async with app.state.workspaces.meeting_receipt_activity(receipt_key):
+                            result = await v.reconcile_meeting(
+                                capture_id=capture_id,
+                                source_session_id=workspace.context.session_id,
+                                project_id=workspace.context.project_id,
+                            )
+                            if result is None:
+                                lease = await app.state.workspaces.reserve_server_capture(
+                                    v.capture, meeting=True
+                                )
+                                try:
+                                    result = await v.capture_meeting(
+                                        title=title,
+                                        capture_id=capture_id,
+                                        capture=lease,
+                                        source_session_id=workspace.context.session_id,
+                                        project_id=workspace.context.project_id,
+                                    )
+                                finally:
+                                    await lease.release()
+        except NoSpeechDetectedError:
+            return JSONResponse(
+                {"ok": False, "message": "No speech was detected; nothing was saved."},
+                status_code=422,
+            )
+        except RuntimeError as exc:
+            if str(exc) == "busy":
                 return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
+            return JSONResponse(
+                {"ok": False, "message": "Meeting-note capture is unavailable."},
+                status_code=503,
+            )
+        except Exception:  # noqa: BLE001 - provider/device details never cross the UI boundary
+            return JSONResponse(
+                {"ok": False, "message": "Meeting-note capture is unavailable."},
+                status_code=503,
+            )
         # A meeting is untrusted content: it lands UNREVIEWED, never an auto-action.
-        status = getattr(result, "review_status", None) if result is not None else None
-        return JSONResponse({"ok": result is not None, "review_status": status})
+        return JSONResponse(
+            {
+                "ok": result is not None,
+                "review_status": getattr(result, "review_status", None),
+                "source_id": getattr(result, "source_id", None),
+                "title": getattr(result, "title", title),
+                "index_state": getattr(result, "index_state", "ready"),
+                "source_status": getattr(result, "source_status", "live"),
+            }
+        )
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
@@ -3400,6 +3515,7 @@ def create_app(
                             {
                                 "type": "workspace",
                                 "workspace_id": workspace.workspace_id,
+                                "meeting_recording_epoch": registry.meeting_recording_epoch,
                                 **workspace.context.to_wire(),
                             }
                         )

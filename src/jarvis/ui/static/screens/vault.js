@@ -65,13 +65,21 @@ export async function render(container, api) {
         <span class="mono dim">${esc(s.origin)}</span>`;
       const actions = document.createElement("div");
       actions.className = "review-actions";
-      actions.append(btn("Approve", async () => { await api.post(`/api/vault/sources/${s.id}/approve`); render(container, api); }));
+      const feedback = document.createElement("div");
+      feedback.className = "dim";
+      feedback.setAttribute("role", "status");
+      feedback.setAttribute("aria-live", "polite");
+      actions.append(btn("Approve", async () => {
+        const result = await api.post(`/api/vault/sources/${s.id}/approve`);
+        if (result.ok) render(container, api);
+        else feedback.textContent = result.data.message || "This source could not be approved.";
+      }));
       actions.append(btn("Reject", async () => { await api.post(`/api/vault/sources/${s.id}/reject`); render(container, api); }));
       head.appendChild(actions);
       const preview = document.createElement("pre");
       preview.className = "block review-preview";
       preview.textContent = s.preview || "(no preview available)";  // textContent — untrusted content is never HTML
-      card.append(head, preview);
+      card.append(head, preview, feedback);
       q.appendChild(card);
     }
   }

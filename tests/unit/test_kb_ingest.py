@@ -235,6 +235,18 @@ async def test_unattended_ingest_is_unreviewed(tmp_path: Path) -> None:
     assert (await svc.store.get_source(result.source_id)).review_status == "unreviewed"
 
 
+async def test_explicit_quarantine_is_per_ingest_not_shared_service_state(tmp_path: Path) -> None:
+    svc = await _service(tmp_path)
+    result = await svc.ingest(
+        text="Untrusted meeting transcript",
+        title="Meeting note",
+        quarantine=True,
+    )
+    assert result.review_status == "unreviewed"
+    assert svc.bound_unattended is False
+    assert (await svc.store.get_source(result.source_id)).review_status == "unreviewed"
+
+
 async def test_unattended_reingest_does_not_supersede_reviewed(tmp_path: Path) -> None:
     f = tmp_path / "doc.md"
     f.write_text("trusted v1", encoding="utf-8")
