@@ -70,6 +70,15 @@ async def _store(tmp_path: Path) -> OrchestrationStore:
     return OrchestrationStore(db, lock)
 
 
+class _RecordingArtifacts:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def register(self, **kwargs) -> int:
+        self.calls.append(kwargs)
+        return len(self.calls)
+
+
 _CTX = ContextBundle(
     items=(ContextItem(kind="repo_file", ref="a.py", provenance=Provenance.REPO_CODE, text="x"),)
 )
@@ -319,6 +328,7 @@ async def test_resume_requires_exact_context_and_never_replays_council(tmp_path:
 async def test_readonly_workflow_council_then_head_verdict(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     calls: list[dict] = []
+    artifacts = _RecordingArtifacts()
 
     async def fake_spawn(**kw) -> ToolResult:
         calls.append(kw)
@@ -334,6 +344,7 @@ async def test_readonly_workflow_council_then_head_verdict(tmp_path: Path) -> No
         head_client=head,
         head_model="claude-fable-5",
         turn_lock=asyncio.Lock(),
+        artifacts=artifacts,
     )
     rid = await engine.run(
         project_id=1,
@@ -360,6 +371,7 @@ async def test_readonly_workflow_council_then_head_verdict(tmp_path: Path) -> No
         assert c["fresh_trace"] is True and c["orchestration_run_id"] == rid
         assert set(c["tools"]) <= READ_ONLY_SPAWNABLE  # read-only floor holds
     assert len(head.calls) == 2  # synthesis + verdict, both on the head route
+    assert artifacts.calls[0]["external_uri"] == f"kira://run/{rid}"
 
 
 async def test_project_assessment_runs_five_scoped_readers_and_fable_head(

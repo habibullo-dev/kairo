@@ -36,9 +36,10 @@ async def _close():
 class _FakeClient:
     """Records every call; returns canned responses. Raises on demand to test the failure path."""
 
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, event_link: str = "https://cal/evt-1") -> None:
         self.calls: list[tuple] = []
         self.fail = fail
+        self.event_link = event_link
 
     async def post_json(self, url: str, *, json_body: dict, params: dict | None = None) -> dict:
         self.calls.append(("POST", url, json_body, params))
@@ -48,7 +49,7 @@ class _FakeClient:
             return {"documentId": "d1", "replies": []}
         if url.endswith("/documents"):
             return {"documentId": "d1", "title": "Spec"}
-        return {"id": "evt-1", "htmlLink": "https://cal/evt-1", "hangoutLink": "https://meet/x"}
+        return {"id": "evt-1", "htmlLink": self.event_link, "hangoutLink": "https://meet/x"}
 
     async def get_json(self, url: str, *, params: dict | None = None) -> dict:
         self.calls.append(("GET", url, None, params))
@@ -60,6 +61,15 @@ class _FakeClient:
 
     async def delete(self, url: str, *, params: dict | None = None) -> None:
         self.calls.append(("DELETE", url, None, params))
+
+
+class _RecordingArtifacts:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def register(self, **kwargs) -> int:
+        self.calls.append(kwargs)
+        return len(self.calls)
 
 
 async def _setup(tmp_path: Path) -> tuple[IntentStore, ConnectorWriteJournal]:
@@ -87,8 +97,9 @@ async def _approved_calendar_create(store: IntentStore, *, summary: str = "Stand
 async def test_execute_runs_the_stored_request_and_journals(tmp_path: Path) -> None:
     store, journal = await _setup(tmp_path)
     client = _FakeClient()
+    artifacts = _RecordingArtifacts()
     iid = await _approved_calendar_create(store)
-    result = await WriteExecutor(client, store, journal).execute(iid)
+    result = await WriteExecutor(client, store, journal, artifacts=artifacts).execute(iid)
 
     assert result.state is IntentState.EXECUTED
     posts = [c for c in client.calls if c[0] == "POST"]
@@ -100,6 +111,19 @@ async def test_execute_runs_the_stored_request_and_journals(tmp_path: Path) -> N
     assert len(rows) == 1
     assert rows[0].status == "executed" and rows[0].verb == "calendar_create"
     assert rows[0].remote_id == "evt-1" and rows[0].rollback_kind == "cancel_event"
+    assert artifacts.calls[0]["external_uri"] == "https://cal/evt-1"
+
+
+async def test_artifact_without_provider_link_uses_kira_handle(tmp_path: Path) -> None:
+    store, journal = await _setup(tmp_path)
+    artifacts = _RecordingArtifacts()
+    iid = await _approved_calendar_create(store)
+
+    await WriteExecutor(
+        _FakeClient(event_link=""), store, journal, artifacts=artifacts
+    ).execute(iid)
+
+    assert artifacts.calls[0]["external_uri"] == f"kira://write/{iid}"
 
 
 async def test_execute_uses_request_not_a_tampered_preview(tmp_path: Path) -> None:

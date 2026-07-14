@@ -894,7 +894,7 @@ class OrchestrationEngine:
                         kind="orchestration",
                         title=run.title,
                         created_by="system",
-                        external_uri=f"kairo://run/{run_id}",
+                        external_uri=f"kira://run/{run_id}",
                         project_id=run.project_id,
                         team=run.config.get("team"),
                         model=self.head_model,

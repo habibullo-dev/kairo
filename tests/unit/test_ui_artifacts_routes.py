@@ -92,6 +92,9 @@ async def test_content_refuses_external_uri_artifact(tmp_path: Path) -> None:
         external_uri="kairo://digest/1",
         created_by="system",
     )
+    detail = client.get(f"/api/artifacts/{aid}", headers=_get(auth))
+    assert detail.status_code == 200
+    assert detail.json()["external_uri"] == "kairo://digest/1"  # legacy rows remain readable
     assert client.get(f"/api/artifacts/{aid}/content", headers=_get(auth)).status_code == 404
 
 

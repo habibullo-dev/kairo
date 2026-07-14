@@ -329,7 +329,7 @@ class DigestBuilder:
                     kind="digest",
                     title=f"Daily digest — {date_local}",
                     created_by="system",
-                    external_uri=f"kairo://digest/{digest_id}",
+                    external_uri=f"kira://digest/{digest_id}",
                     model=self.config.models.utility,
                 )
             except Exception:  # noqa: BLE001 - artifact bookkeeping must never fail a digest

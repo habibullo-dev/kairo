@@ -526,7 +526,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
     kind             TEXT NOT NULL,                      -- digest|eval_report|wiki|meeting|design
     title            TEXT NOT NULL,
     local_path       TEXT,                               -- rel. to data dir; XOR external_uri
-    external_uri     TEXT,                               -- web URL or app-internal handle (kairo://…)
+    -- web URL or internal handle (kira://…); legacy kairo:// rows stay opaque
+    external_uri     TEXT,
     content_hash     TEXT,                               -- sha256 version fp (non-unique)
     origin_type      TEXT NOT NULL,                      -- producer system
     origin_id        TEXT,                               -- stable handle within that system

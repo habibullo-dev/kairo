@@ -46,16 +46,27 @@ class _RecordingRouter:
         self.calls.append(kwargs)
 
 
+class _RecordingArtifacts:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def register(self, **kwargs) -> int:
+        self.calls.append(kwargs)
+        return 41
+
+
 async def test_job_produces_one_untrusted_proposal_via_toolless_summary(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     client = FakeClient([text_message("You closed 3 tasks; consider planning tomorrow.")])
     budget = DreamingBudget(cap_usd=1.5)
+    artifacts = _RecordingArtifacts()
     res = await run_dreaming_job(
         JOBS["nightly_review"],
         collected=["Closed task: ship Phase 16", "Spent $0.42 today"],
         summarizer=client,
         budget=budget,
         attention=store,
+        artifacts=artifacts,
         window="2026-07-10",
     )
     # exactly one attention proposal, untrusted + model_generated, from dreaming
@@ -72,6 +83,10 @@ async def test_job_produces_one_untrusted_proposal_via_toolless_summary(tmp_path
     # collected material was framed untrusted
     assert "untrusted" in call["messages"][-1]["content"]
     assert res.proposal_id == p.id and res.cost_usd is not None and not res.halted
+    assert res.artifact_id == 41
+    assert artifacts.calls[0]["external_uri"] == (
+        "kira://dreaming/nightly_review/2026-07-10"
+    )
 
 
 async def test_self_improvement_escalates_to_sonnet(tmp_path: Path) -> None:

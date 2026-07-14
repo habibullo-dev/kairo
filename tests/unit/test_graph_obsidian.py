@@ -63,6 +63,8 @@ async def test_export_is_deterministic_and_idempotent(tmp_path: Path) -> None:
     assert r1.applied and all(a.status == "write" for a in r1.actions)
     assert first == second  # byte-identical re-export
     assert all(a.status == "unchanged" for a in r2.actions)  # idempotent
+    assert b"generated_by: kira-graph" in first["_graph/person-1-ada-lovelace.md"]
+    assert b"generated_by: kira-graph" in first["_memory/project-1.md"]
 
 
 async def test_dry_run_writes_nothing(tmp_path: Path) -> None:
@@ -102,6 +104,55 @@ async def test_overwrites_our_own_marked_file(tmp_path: Path) -> None:
     assert act.status == "write"  # a marked file is ours to regenerate
     assert MARKER in (wiki / "_graph" / "person-1-ada.md").read_text(encoding="utf-8")
     assert "a revised summary" in (wiki / "_graph" / "person-1-ada.md").read_text(encoding="utf-8")
+
+
+async def test_rewrites_exact_legacy_marker_and_canonicalizes_it(tmp_path: Path) -> None:
+    store, mem = await _stores(tmp_path)
+    await _node(store, "person", "Ada")
+    wiki = tmp_path / "wiki"
+    await export(store, mem, wiki, write=True)
+    target = wiki / "_graph" / "person-1-ada.md"
+    target.write_text(
+        target.read_text(encoding="utf-8").replace("kira-graph", "kairo-graph"),
+        encoding="utf-8",
+    )
+
+    report = await export(store, mem, wiki, write=True)
+
+    action = next(a for a in report.actions if a.path == "_graph/person-1-ada.md")
+    rewritten = target.read_text(encoding="utf-8")
+    assert action.status == "write"
+    assert "generated_by: kira-graph" in rewritten
+    assert "kairo-graph" not in rewritten
+    second = await export(store, mem, wiki, write=True)
+    second_action = next(a for a in second.actions if a.path == "_graph/person-1-ada.md")
+    assert second_action.status == "unchanged"
+
+
+@pytest.mark.parametrize(
+    "marker_yaml",
+    (
+        "generated_by: Kairo-graph",
+        "generated_by: kairo-graph-extra",
+        "generated_by:\n  - kairo-graph",
+    ),
+)
+async def test_near_miss_or_non_string_marker_is_never_owned(
+    tmp_path: Path, marker_yaml: str
+) -> None:
+    store, mem = await _stores(tmp_path)
+    await _node(store, "person", "Ada")
+    wiki = tmp_path / "wiki"
+    target = wiki / "_graph" / "person-1-ada.md"
+    target.parent.mkdir(parents=True)
+    original = f"---\n{marker_yaml}\n---\n\nuser-authored\n"
+    target.write_text(original, encoding="utf-8")
+
+    report = await export(store, mem, wiki, write=True)
+
+    action = next(a for a in report.actions if a.path == "_graph/person-1-ada.md")
+    assert action.status == "skip-user-file"
+    assert target.read_text(encoding="utf-8") == original
 
 
 # --- containment + private exclusion + redaction ---------------------------

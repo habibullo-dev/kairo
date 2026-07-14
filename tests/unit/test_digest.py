@@ -58,6 +58,15 @@ class FakeDigestStore:
         self.delivered.append((digest_id, delivered_to))
 
 
+class _RecordingArtifacts:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def register(self, **kwargs) -> int:
+        self.calls.append(kwargs)
+        return len(self.calls)
+
+
 def _summary_client() -> FakeClient:
     return FakeClient([text_message("SUMMARY: All calm today.\nACTIONS:\n- Reply to Bob")])
 
@@ -298,14 +307,17 @@ async def test_tasks_today_uses_local_timezone(tmp_path: Path) -> None:
 
 async def test_demo_digest_is_badged(tmp_path: Path) -> None:
     store = FakeDigestStore()
+    artifacts = _RecordingArtifacts()
     builder = DigestBuilder(
         config=_cfg(tmp_path),
         utility=_summary_client(),
         store=store,
         connectors=ConnectorRegistry(google=DemoGoogleClient(), demo=True),
+        artifacts=artifacts,
     )
     await builder.build_and_deliver()
     assert store.rows[0]["summary"].startswith("[DEMO]")
+    assert artifacts.calls[0]["external_uri"] == "kira://digest/1"
 
 
 async def test_delivery_is_ui_first_then_notifier_with_egress(tmp_path: Path, monkeypatch) -> None:

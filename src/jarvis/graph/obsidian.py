@@ -9,9 +9,9 @@ per asserted node, front-matter = metadata, body = summary + ``[[wikilinks]]``) 
   page comes from the SOURCE row (never the wall clock — the Phase-14 lesson), so a re-export is a
   no-op diff.
 * **Non-destructive:** we write ONLY inside ``_graph/``/``_memory``, ONLY over files that carry our
-  ``generated_by: kairo-graph`` front-matter marker. A user-authored or unmarked file at a target
-  path is SKIPPED and reported, never overwritten. Containment is :func:`safe_wiki_path` (which also
-  refuses the sensitive-path floor).
+  ``generated_by: kira-graph`` front-matter marker or the exact legacy ``kairo-graph`` marker. A
+  user-authored or unmarked file at a target path is SKIPPED and reported, never overwritten.
+  Containment is :func:`safe_wiki_path` (which also refuses the sensitive-path floor).
 * **No secrets / no private:** nodes marked ``sensitivity=private`` are excluded; every rendered
   page is passed through a secret-shape redaction belt before it is written.
 * **Dry-run by default:** :func:`export` plans every action; only ``write=True`` touches disk.
@@ -30,7 +30,9 @@ from jarvis.graph.store import ANY_PROJECT, GraphStore
 from jarvis.knowledge.wiki import render_page, safe_wiki_path, slugify, split_front_matter
 from jarvis.memory.store import MemoryStore
 
-MARKER = "kairo-graph"  # front-matter generated_by value — our overwrite permission slip
+MARKER = "kira-graph"  # canonical front-matter generated_by value — our overwrite permission slip
+_LEGACY_MARKER = "kairo-graph"
+_OWNED_MARKERS = (MARKER, _LEGACY_MARKER)
 _NS = ("_graph/", "_memory/")  # the ONLY namespaces this exporter may write into
 
 # Secret-shape backstop, mirroring jarvis.voice.render._SECRET_RE (kept local so the graph package
@@ -148,7 +150,8 @@ async def export(
         text, redacted = _mask(pages[rel])
         if target.exists():
             existing = target.read_text(encoding="utf-8")
-            if split_front_matter(existing)[0].get("generated_by") != MARKER:
+            existing_marker = split_front_matter(existing)[0].get("generated_by")
+            if not isinstance(existing_marker, str) or existing_marker not in _OWNED_MARKERS:
                 report.actions.append(ExportAction(rel, "skip-user-file"))
                 continue  # a user-authored / unmarked file — never clobber
             if existing == text:

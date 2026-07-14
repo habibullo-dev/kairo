@@ -240,7 +240,7 @@ class WriteExecutor:
         kinds = {"calendar_create": "calendar_event", "calendar_update": "calendar_event",
                  "calendar_cancel": "calendar_event", "doc_create": "doc", "doc_update": "doc"}
         title = (intent.preview or {}).get("title") or intent.summary
-        link = result.get("link") or f"kairo://write/{intent.id}"
+        link = result.get("link") or f"kira://write/{intent.id}"
         try:
             await self.artifacts.register(
                 origin_type="connector_write",

@@ -139,7 +139,7 @@ async def run_dreaming_job(
                 kind="dreaming",
                 title=f"{job.title}{(' — ' + window) if window else ''}",
                 created_by="system",
-                external_uri=f"kairo://dreaming/{job.name}/{window}",
+                external_uri=f"kira://dreaming/{job.name}/{window}",
                 model=model,
             )
         except Exception:  # noqa: BLE001
