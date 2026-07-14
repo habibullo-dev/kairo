@@ -89,3 +89,5 @@ def test_workstation_shell_handles_session_expiry_and_explicit_lock() -> None:
     assert 'api.post("/auth/logout"' in script
     assert 'fetch("/auth/session"' in script
     assert "else if (response.ok) connect()" in script
+    assert "waitForWorkspaceAfter(generation)" in script
+    assert 'api.post("/auth/step-up", { password })' in script

@@ -19,7 +19,10 @@ def test_grid_over_the_overview_read_model() -> None:
 
 def test_writes_are_the_enumerated_project_mutations_only() -> None:
     # create / select / update / archive / pin / label — the metadata set. No turn/executor.
-    for ep in ("/api/projects", "/api/projects/select", "/update", "/pin", "/label", "/archive"):
+    for ep in (
+        "/api/projects", "/api/projects/select", "/update", "/pin", "/label", "/archive",
+        "/reset",
+    ):
         assert ep in PROJECTS_JS, ep
     assert "/api/turn" not in PROJECTS_JS
     assert "/api/orchestration" not in PROJECTS_JS
@@ -50,6 +53,17 @@ def test_attended_project_details_edit_uses_existing_metadata_route() -> None:
 def test_health_chips_present() -> None:
     for token in ("open_tasks", "sessions_week", "last_run", "month_spend_usd"):
         assert token in PROJECTS_JS, token
+
+
+def test_project_reset_requires_attended_confirmation_and_password_step_up() -> None:
+    for token in (
+        "Start fresh",
+        "confirmation.value !== project.name",
+        "api.stepUp(password.value)",
+        "retain_repositories: retain.checked",
+        "/reset",
+    ):
+        assert token in PROJECTS_JS
 
 
 def test_collections_row_navigates_only() -> None:

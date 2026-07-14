@@ -113,6 +113,15 @@ export const api = {
     if (!sessionAlive(r)) return { ok: false, status: r.status, data: {} };
     return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
   },
+  async stepUp(password) {
+    const generation = workspaceGeneration;
+    const result = await api.post("/auth/step-up", { password });
+    if (!result.ok) return result;
+    if (!await waitForWorkspaceAfter(generation)) {
+      return { ok: false, status: 409, data: { message: "secure workspace reconnect timed out" } };
+    }
+    return result;
+  },
   async upload(path, body) {
     // FormData lets the browser set its own multipart boundary. The server still receives the
     // same authenticated, server-owned workspace handle as every other attended UI action.
@@ -197,6 +206,17 @@ export const api = {
 let ws = null;
 let heartbeatTimer = null;
 let mounted = new Set();
+let workspaceGeneration = 0;
+const workspaceWaiters = new Set();
+
+function waitForWorkspaceAfter(generation, timeoutMs = 7000) {
+  if (workspaceGeneration > generation) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const waiter = () => { clearTimeout(timer); workspaceWaiters.delete(waiter); resolve(true); };
+    const timer = setTimeout(() => { workspaceWaiters.delete(waiter); resolve(false); }, timeoutMs);
+    workspaceWaiters.add(waiter);
+  });
+}
 
 function wsSend(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 
@@ -269,6 +289,8 @@ function handleMessage(msg) {
       else sessionStorage.removeItem(WORKSPACE_KEY);
     } catch { /* storage unavailable — this socket remains usable */ }
     state.context = { session_id: msg.session_id, project_id: msg.project_id };
+    workspaceGeneration += 1;
+    for (const waiter of [...workspaceWaiters]) waiter();
     pollStatus();
     renderRoute();
     return;

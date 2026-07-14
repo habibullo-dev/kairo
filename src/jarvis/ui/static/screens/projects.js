@@ -25,6 +25,90 @@ const BUILTIN_VIEWS = [
 // stable slug, or touch repositories, agents, schedules, or any run state.
 let activeProjectEdit = null;
 let projectEditSequence = 0;
+let activeProjectReset = null;
+
+function closeProjectReset(value) {
+  if (!activeProjectReset) return;
+  const current = activeProjectReset;
+  activeProjectReset = null;
+  document.removeEventListener("keydown", current.onKeydown);
+  current.password.value = "";
+  current.overlay.remove();
+  current.restoreFocus?.focus?.();
+  current.resolve(value);
+}
+
+function openProjectReset(project, api) {
+  return new Promise((resolve) => {
+    if (activeProjectReset) closeProjectReset(false);
+    const overlay = el("div", { class: "dialog-overlay", role: "presentation" });
+    const card = el("section", {
+      class: "dialog-card danger", role: "dialog", "aria-modal": "true",
+      "aria-label": `Start ${project.name || "project"} fresh`,
+    });
+    const confirmation = el("input", {
+      class: "dialog-input", type: "text", maxlength: "120", autocomplete: "off",
+      "aria-label": "Type the exact project name",
+    });
+    const password = el("input", {
+      class: "dialog-input", type: "password", maxlength: "1024",
+      autocomplete: "current-password", "aria-label": "Owner password",
+    });
+    const retain = el("input", { type: "checkbox", checked: true });
+    const error = el("div", { class: "project-edit-error", role: "alert", hidden: true });
+    const cancel = el("button", { class: "dialog-button secondary", type: "button", text: "Cancel" });
+    const submit = el("button", { class: "dialog-button primary danger", type: "submit", text: "Archive & start fresh" });
+    const form = el("form", { class: "project-edit-form" }, [
+      el("h2", { class: "dialog-title", text: "Start this project fresh" }),
+      el("p", {
+        class: "dialog-message",
+        text: "Kairo will archive the current workspace and keep its history for audit. The new workspace starts without its chats, memory, tasks, reports, or pending actions.",
+      }),
+      projectField("Type the exact project name", confirmation, project.name),
+      projectField("Owner password", password, "Required again for this destructive action."),
+      el("label", { class: "project-edit-field" }, [
+        el("span", { class: "project-edit-label" }, [retain, " Keep repository links so Kairo can relearn the project"]),
+      ]),
+      error,
+      el("div", { class: "dialog-actions" }, [cancel, submit]),
+    ]);
+    card.append(form);
+    overlay.append(card);
+    const setBusy = (busy) => {
+      submit.disabled = busy; cancel.disabled = busy; confirmation.disabled = busy;
+      password.disabled = busy; retain.disabled = busy;
+    };
+    const showError = (message) => {
+      error.hidden = false;
+      error.textContent = message || "Project reset failed. Stop active work and try again.";
+    };
+    cancel.addEventListener("click", () => closeProjectReset(false));
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (confirmation.value !== project.name) { showError("The project name does not match."); return; }
+      if (!password.value) { showError("Enter the owner password."); return; }
+      setBusy(true); error.hidden = true;
+      const steppedUp = await api.stepUp(password.value);
+      password.value = "";
+      if (!steppedUp.ok) {
+        setBusy(false); showError(steppedUp.data?.message || "Password verification failed."); return;
+      }
+      const result = await api.post(`/api/projects/${encodeURIComponent(project.id)}/reset`, {
+        confirmation: confirmation.value,
+        retain_repositories: retain.checked,
+      });
+      if (!result.ok) { setBusy(false); showError(result.data?.message); return; }
+      closeProjectReset(result.data);
+    });
+    overlay.addEventListener("click", (event) => { if (event.target === overlay) closeProjectReset(false); });
+    const restoreFocus = document.activeElement;
+    const onKeydown = (event) => { if (event.key === "Escape") closeProjectReset(false); };
+    document.addEventListener("keydown", onKeydown);
+    activeProjectReset = { overlay, password, resolve, onKeydown, restoreFocus };
+    document.body.append(overlay);
+    confirmation.focus();
+  });
+}
 
 function closeProjectEdit(value, owner = null) {
   const current = activeProjectEdit;
@@ -260,6 +344,12 @@ function projectCard(p, activeId, api, refresh) {
     plainButton("Archive", async () => {
       await api.post(`/api/projects/${p.id}/archive`, {});
       refresh();
+    }, "ghost"),
+    plainButton("Start fresh", async () => {
+      const result = await openProjectReset(p, api);
+      if (!result) return;
+      showToast("Fresh project workspace created.");
+      location.hash = `workspace/${result.successor_project_id}`;
     }, "ghost"),
   ]);
 

@@ -35,6 +35,7 @@ from jarvis.observability.cost import load_pricing
 from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.modes import Mode
 from jarvis.persistence.artifacts import ArtifactPathError
+from jarvis.projects import ProjectResetBusyError, ProjectResetError
 from jarvis.routing import RoutingMode
 from jarvis.scheduler.verification import VerificationContract
 from jarvis.search import search as _federated_search
@@ -465,6 +466,16 @@ def create_app(
                     registry.drop_all()
                 else:
                     registry.drop_owner_session(owner_session)
+
+    def _invalidate_workspace_approvals(workspace) -> None:
+        """Revoke live confirmation capabilities before replacing a project context."""
+        for conn in connections.all():
+            if (
+                conn.owner_session == workspace.owner_session
+                and conn.workspace_id == workspace.workspace_id
+            ):
+                approvals.invalidate_connection(conn)
+                app.state.parked_task_approvals.invalidate_connection(conn)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):  # noqa: ANN001,ANN202 - framework signature
@@ -2457,6 +2468,113 @@ def create_app(
             if app.state.workspaces is None and app.state.session is not None:
                 app.state.session.start_new_session(None)
         return JSONResponse({"ok": archived})
+
+    @app.post("/api/projects/{project_id}/reset")
+    async def projects_reset(project_id: int, request: Request) -> JSONResponse:
+        """Archive one project and move its live workspaces to a clean successor.
+
+        This is deliberately not erasure: historical records stay on the archived predecessor.
+        Password step-up, exact-name confirmation, live-workspace binding, and the store's
+        in-flight-work blocker are all independent server-side preconditions.
+        """
+        svc = app.state.projects
+        if svc is None:
+            return _unavailable("projects")
+        owner_state = getattr(request.state, "owner_session_state", None)
+        if owner_auth is None or owner_state is None:
+            return JSONResponse(
+                {"ok": False, "message": "owner authentication required"}, status_code=403
+            )
+        if not owner_state.fresh:
+            return JSONResponse(
+                {"ok": False, "message": "password step-up required"}, status_code=403
+            )
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        if not _workspace_can_access_project(project_id, workspace):
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"ok": False, "message": "project reset must be an object"}, status_code=400
+            )
+        confirmation = body.get("confirmation")
+        retain_repositories = body.get("retain_repositories")
+        if not isinstance(confirmation, str) or not isinstance(retain_repositories, bool):
+            return JSONResponse(
+                {"ok": False, "message": "confirmation and repository choice required"},
+                status_code=400,
+            )
+        project = await svc.store.get(project_id)
+        if project is None or project.status == "archived":
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        if confirmation != project.name:
+            return JSONResponse(
+                {"ok": False, "message": "project name does not match"}, status_code=400
+            )
+
+        async def _reset() -> tuple[object, list]:
+            affected = (
+                app.state.workspaces.for_project(project_id)
+                if app.state.workspaces is not None
+                else []
+            )
+            # Step-up rotates the owner cookie and therefore creates a fresh (initially global)
+            # caller workspace. Move that initiating workspace to the successor too; otherwise
+            # the response would navigate a global context to a project-scoped screen.
+            if workspace is not None and workspace not in affected:
+                affected.append(workspace)
+            orchestrator = app.state.orchestrator
+            if any(item.attended_busy for item in affected) or (
+                orchestrator is not None and orchestrator.busy_project(project_id)
+            ):
+                raise ProjectResetBusyError("project has in-flight work")
+            result = await svc.store.reset(
+                project_id, retain_repositories=retain_repositories
+            )
+            if result is None:
+                raise ProjectResetError("project not found")
+            return result, affected
+
+        try:
+            if app.state.workspaces is None:
+                result, affected = await _reset()
+            else:
+                async with app.state.workspaces.transition_lock:
+                    result, affected = await _reset()
+                    for item in affected:
+                        _invalidate_workspace_approvals(item)
+                        await item.start_new_session(result.successor_id)
+                        app.state.workspaces.refresh_context(item)
+                        await app.state.workspaces.publish_workspace(
+                            item,
+                            {
+                                "kind": "project_changed",
+                                "name": item.project.name,
+                                "reset_from_project_id": project_id,
+                            },
+                        )
+        except ProjectResetBusyError:
+            return JSONResponse(
+                {"ok": False, "message": "project is busy; stop active work and retry"},
+                status_code=409,
+            )
+        except ProjectResetError:
+            return _deny(status.HTTP_409_CONFLICT, "project reset unavailable")
+
+        if svc.current().project_id == project_id:
+            await svc.activate(result.successor_id)
+            if app.state.workspaces is None and app.state.session is not None:
+                app.state.session.start_new_session(result.successor_id)
+        return JSONResponse(
+            {
+                "ok": True,
+                "predecessor_project_id": result.predecessor_id,
+                "successor_project_id": result.successor_id,
+                "retained_repositories": result.retained_repositories,
+            }
+        )
 
     @app.post("/api/projects/select")
     async def projects_select(request: Request) -> JSONResponse:
