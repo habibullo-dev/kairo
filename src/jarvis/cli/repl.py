@@ -398,11 +398,13 @@ class Repl:
         # Phase 13: the artifact store a producing tool (e.g. generate_image) registers into.
         # Threaded in from the UI build (where the Library renders it); None in bare/terminal Repls.
         self.artifacts = artifacts
+        self.graph: GraphStore | None = None
         if store is not None:
             self.budgets = BudgetService(store.db, store.lock, config.budgets)
             self.service_ledger = ServiceLedger(store.db, store.lock)
             self.intents = IntentStore(store.db, store.lock)
             self.write_journal = ConnectorWriteJournal(store.db, store.lock)
+            self.graph = GraphStore(store.db, store.lock)
 
         self.registry = ToolRegistry()
         tool_ctx = ToolContext(
@@ -410,6 +412,7 @@ class Repl:
             memory=memory,
             tasks=tasks,
             knowledge=knowledge,
+            graph=self.graph,
             agents=self.agents,
             connectors=self.connectors,
             project=self.projects.current if self.projects is not None else None,
@@ -2053,7 +2056,7 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
         artifacts=artifacts,  # Phase 11: Artifacts Library + global search + content route
         intents=repl.intents,  # Phase 12: the outward-write approval queue
         write_journal=repl.write_journal,  # Phase 12: the metadata-only write journal
-        graph=GraphStore(repl.store.db, repl.store.lock) if repl.store is not None else None,
+        graph=repl.graph,
         embedder=repl.memory.embedder if repl.memory is not None else None,  # Phase 15 search
         attention=(  # Phase 16: the ONE attention queue (proposals/alerts/reviews)
             AttentionStore(repl.store.db, repl.store.lock) if repl.store is not None else None

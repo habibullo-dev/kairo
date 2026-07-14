@@ -26,6 +26,7 @@ READ_ONLY_SPAWNABLE: frozenset[str] = frozenset(
         "list_dir",
         "glob_search",
         "query_knowledge_base",
+        "query_project_graph",
         "semgrep_scan",
         "gitleaks_scan",
     }

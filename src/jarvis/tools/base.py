@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from jarvis.agents.service import SubAgentService
     from jarvis.config import Config
     from jarvis.connectors.base import ConnectorRegistry
+    from jarvis.graph.store import GraphStore
     from jarvis.knowledge.service import KnowledgeService
     from jarvis.memory.service import MemoryService
     from jarvis.scheduler.service import TaskService
@@ -41,6 +42,7 @@ class ToolContext:
     memory: MemoryService | Any = None  # None when long-term memory is disabled/unavailable
     tasks: TaskService | Any = None  # None when the scheduler is disabled
     knowledge: KnowledgeService | Any = None  # None when the knowledge base is disabled
+    graph: GraphStore | Any = None  # None when the project graph is unavailable
     # Multi-agent delegation (Phase 6). None when disabled.
     agents: SubAgentService | Any = None
     # External connectors (Phase 9): Google client + notifiers. None when nothing configured;

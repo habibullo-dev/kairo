@@ -30,14 +30,16 @@ from jarvis.services.catalog import ContextPolicy
 
 def test_read_only_floor_is_exactly_local_reads() -> None:
     # Pinned: no shell, no write, no egress web tools in the council/review floor. Task 16 grows
-    # it by EXACTLY the two hardened read-only scanners — and NOTHING else (playwright_inspect is
-    # execution-stage, deliberately kept out). This test guards that exact boundary.
+    # it by EXACTLY the two hardened read-only scanners plus the bodies-free, active-project-only
+    # graph reader — and NOTHING else (playwright_inspect is execution-stage, deliberately kept
+    # out). This test guards that exact boundary.
     assert frozenset(
         {
             "read_file",
             "list_dir",
             "glob_search",
             "query_knowledge_base",
+            "query_project_graph",
             "semgrep_scan",
             "gitleaks_scan",
         }
