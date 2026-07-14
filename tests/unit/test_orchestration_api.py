@@ -181,6 +181,48 @@ async def test_started_event_is_broadcast() -> None:
     await ctrl._task
 
 
+async def test_automatic_assessment_waits_for_manual_run_and_uses_fixed_team() -> None:
+    ctrl, engine, _conn = _controller(1, estimate=_estimate("ok"))
+    await ctrl.start(team_id="backend", workflow_id="implement", task="manual")
+    automatic = asyncio.create_task(
+        ctrl.run_automatic_project_assessment(
+            project_id=1,
+            context=ctrl._build_context("sealed graph-first assessment"),
+            budget_usd=5.0,
+        )
+    )
+    await asyncio.sleep(0.01)
+    assert len(engine.calls) == 1
+    assert ctrl.busy_project(1) is True
+    engine.gate.set()
+    await ctrl._task
+    assert await automatic == engine._run_id
+    assert len(engine.calls) == 2
+    assert engine.calls[1]["team"].id == "project_intelligence"
+    assert engine.calls[1]["workflow"].id == "project_assessment"
+    assert engine.calls[1]["budget_usd"] == 5.0
+
+
+async def test_manual_start_is_busy_while_automatic_assessment_runs() -> None:
+    ctrl, engine, _conn = _controller(1, estimate=_estimate("ok"))
+    automatic = asyncio.create_task(
+        ctrl.run_automatic_project_assessment(
+            project_id=1,
+            context=ctrl._build_context("automatic"),
+            budget_usd=5.0,
+        )
+    )
+    await asyncio.sleep(0.01)
+    body, status = await ctrl.start(
+        team_id="backend", workflow_id="implement", task="must not overlap"
+    )
+    assert status == 409 and "already in flight" in body["message"]
+    assert ctrl.cancel(engine._run_id) is False  # automatic read-only work is not UI-cancellable
+    engine.gate.set()
+    await automatic
+    assert ctrl.busy is False
+
+
 def test_serialize_estimate_is_metadata_only() -> None:
     est = estimate_run(
         team=resolve_team("backend"),

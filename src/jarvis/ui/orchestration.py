@@ -18,6 +18,7 @@ user's free-text brief — that brief only ever enters the framed, untrusted con
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from jarvis.core.execution import ExecutionContext, bind_execution_context
@@ -84,26 +85,49 @@ class OrchestrationController:
         self.engine = engine
         self.connections = connections
         self.projects = projects
+        self._operation_lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._current_run_id: int | None = None
         self._current_context: ExecutionContext | None = None
+        self._current_project_id: int | None = None
         self.log = get_logger("jarvis.ui.orchestration")
 
     @property
     def busy(self) -> bool:
-        return self._task is not None and not self._task.done()
+        return self._operation_lock.locked()
 
     def busy_for(self, context: ExecutionContext | None) -> bool:
         """Expose in-flight state only to the workspace that launched the run."""
-        return self.busy and (context is None or context == self._current_context)
+        if not self.busy:
+            return False
+        if context is None:
+            return True
+        if self._current_context is not None:
+            return context == self._current_context
+        return context.project_id == self._current_project_id
 
     def busy_project(self, project_id: int) -> bool:
         """Whether the one in-flight run belongs to ``project_id``."""
-        return (
-            self.busy
-            and self._current_context is not None
-            and self._current_context.project_id == project_id
-        )
+        return self.busy and self._current_project_id == project_id
+
+    async def _reserve(
+        self, project_id: int, execution_context: ExecutionContext | None
+    ) -> bool:
+        """Atomically reserve the one shared engine for an attended launch."""
+        if self._operation_lock.locked():
+            return False
+        await self._operation_lock.acquire()
+        self._current_run_id = None
+        self._current_context = execution_context
+        self._current_project_id = project_id
+        return True
+
+    def _release(self) -> None:
+        self._current_run_id = None
+        self._current_context = None
+        self._current_project_id = None
+        if self._operation_lock.locked():
+            self._operation_lock.release()
 
     async def _active_project_id(self) -> int | None:
         return self.projects.current().project_id if self.projects is not None else None
@@ -226,11 +250,15 @@ class OrchestrationController:
             return body, 200
 
         title = f"{team.name} · {workflow.title}"  # code constants only — never the raw brief
-        self._current_run_id = None
-        self._current_context = execution_context
-        self._task = asyncio.create_task(
-            self._run(pid, team, workflow, context, title, budget_usd, execution_context)
-        )
+        if not await self._reserve(pid, execution_context):
+            return {"ok": False, "message": "an orchestration run is already in flight"}, 409
+        try:
+            self._task = asyncio.create_task(
+                self._run(pid, team, workflow, context, title, budget_usd, execution_context)
+            )
+        except BaseException:
+            self._release()
+            raise
         return {"ok": True, "started": True, "estimate": serialize_estimate(est)}, 202
 
     async def _run(
@@ -276,8 +304,49 @@ class OrchestrationController:
         except Exception:  # noqa: BLE001 - a background run must not crash the server
             self.log.exception("orchestration_run_failed")
         finally:
-            self._current_run_id = None
-            self._current_context = None
+            self._release()
+
+    async def run_automatic_project_assessment(
+        self,
+        *,
+        project_id: int,
+        context: ContextBundle,
+        budget_usd: float,
+        on_event: Callable[[dict], Awaitable[None]] | None = None,
+    ) -> int:
+        """Wait for the shared engine, then run the fixed read-only assessment roster.
+
+        The caller chooses neither team nor workflow.  Feature enablement is standing consent
+        for this read-only fan-out; ``budget_usd`` remains a hard reservation ceiling.
+        """
+        if project_id <= 0 or budget_usd <= 0:
+            raise ValueError("automatic assessment requires a project and positive budget")
+        await self._operation_lock.acquire()
+        self._current_run_id = None
+        self._current_context = None
+        self._current_project_id = project_id
+        team = resolve_team("project_intelligence")  # fixed code roster; no project overrides
+        workflow = WORKFLOWS["project_assessment"]
+
+        async def sink(payload: dict) -> None:
+            if payload.get("kind") == "orchestration_started":
+                self._current_run_id = payload.get("run_id")
+            if on_event is not None:
+                await on_event(payload)
+
+        try:
+            return await self.engine.run(
+                project_id=project_id,
+                team=team,
+                workflow=workflow,
+                context=context,
+                title=f"{team.name} · {workflow.title}",
+                budget_usd=budget_usd,
+                confirmed=True,
+                on_event=sink,
+            )
+        finally:
+            self._release()
 
     async def resume(
         self,
@@ -330,18 +399,23 @@ class OrchestrationController:
             TeamWorkflowError,
         ) as exc:
             return {"ok": False, "message": str(exc)}, 400
+        if not await self._reserve(pid, execution_context):
+            return {"ok": False, "message": "an orchestration run is already in flight"}, 409
         self._current_run_id = run_id
-        self._current_context = execution_context
-        self._task = asyncio.create_task(
-            self._resume_run(
-                run_id,
-                pid,
-                team,
-                WORKFLOWS[run.workflow],
-                context,
-                execution_context,
+        try:
+            self._task = asyncio.create_task(
+                self._resume_run(
+                    run_id,
+                    pid,
+                    team,
+                    WORKFLOWS[run.workflow],
+                    context,
+                    execution_context,
+                )
             )
-        )
+        except BaseException:
+            self._release()
+            raise
         return {"ok": True, "resumed": True, "run_id": run_id}, 202
 
     async def _resume_run(
@@ -382,8 +456,7 @@ class OrchestrationController:
         except Exception:  # noqa: BLE001 - a background recovery must not crash the server
             self.log.exception("orchestration_resume_failed")
         finally:
-            self._current_run_id = None
-            self._current_context = None
+            self._release()
 
     async def _sink(self, payload: dict, execution_context: ExecutionContext | None) -> None:
         """Capture the run id from the start event (so cancel can target it), then broadcast."""
@@ -397,6 +470,8 @@ class OrchestrationController:
         shielded handler records 'cancelled'; the orphan sweep is the backstop."""
         if (
             self.busy
+            and self._task is not None
+            and not self._task.done()
             and (self._current_run_id is None or run_id == self._current_run_id)
             and (execution_context is None or execution_context == self._current_context)
         ):
