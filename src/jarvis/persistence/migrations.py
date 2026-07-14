@@ -1473,6 +1473,24 @@ CREATE INDEX IF NOT EXISTS idx_owner_auth_grants_active
 """
 
 
+# A project reset never erases history.  It archives the predecessor, creates a clean successor,
+# and records the lineage here in the same transaction.  Factory reset is intentionally absent:
+# that offline operation quarantines the entire database, so its durable manifest must live
+# outside the reset data root.
+_SCHEMA_V32 = """
+CREATE TABLE IF NOT EXISTS project_reset_events (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    predecessor_project_id INTEGER NOT NULL UNIQUE REFERENCES projects(id),
+    successor_project_id   INTEGER NOT NULL UNIQUE REFERENCES projects(id),
+    retained_repositories  INTEGER NOT NULL CHECK (retained_repositories IN (0, 1)),
+    created_at             TEXT NOT NULL,
+    CHECK (predecessor_project_id <> successor_project_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_reset_events_successor
+    ON project_reset_events(successor_project_id);
+"""
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1510,6 +1528,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (29, _SCHEMA_V29),
     (30, _SCHEMA_V30),
     (31, _SCHEMA_V31),
+    (32, _SCHEMA_V32),
 ]
 
 
