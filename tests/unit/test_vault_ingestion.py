@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from jarvis.attention import AttentionStore
 from jarvis.config import KnowledgeConfig, load_config
 from jarvis.graph import GraphStore
 from jarvis.graph.builder import rebuild as rebuild_graph
@@ -291,6 +292,39 @@ async def test_chat_attachment_route_ingests_a_browser_selected_document(tmp_pat
     source = await svc.store.get_source(r.json()["source_id"])
     assert source is not None and source.origin == "chat-upload:global:brief.md"
     assert "upload canary" in (svc.knowledge_dir / source.markdown_path).read_text(encoding="utf-8")
+
+
+async def test_chat_attachment_secret_scan_creates_value_free_attention_alert(
+    tmp_path: Path,
+) -> None:
+    svc = await _service(tmp_path)
+    attention = AttentionStore(svc.store.db, svc.store.lock)
+    client, auth = _app(tmp_path, svc)
+    client.app.state.services = UiServices(knowledge=svc, attention=attention)
+    secret = "realvalue123456789"
+    response = client.post(
+        "/api/chat/attachments",
+        files={
+            "file": (
+                "config.yaml",
+                f"api_key: {secret}\nservice: local\n".encode(),
+                "text/yaml",
+            )
+        },
+        headers=_cookie(auth),
+    )
+    body = response.json()
+    assert response.status_code == 200 and body["suspected_secret_hits"] == 1
+    item = await attention.get(body["secret_alert_id"])
+    assert item is not None
+    assert item.source == "knowledge_secret_scan" and item.category == "security"
+    assert item.payload == {
+        "source_id": body["source_id"],
+        "file": "config.yaml",
+        "hit_count": 1,
+        "rules": ["credential_assignment"],
+    }
+    assert secret not in repr(item)
 
 
 async def test_folder_upload_finalize_rebuilds_the_project_graph(tmp_path: Path) -> None:

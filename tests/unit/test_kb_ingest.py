@@ -27,18 +27,28 @@ async def _close_dbs():
         await _OPEN_DBS.pop().close()
 
 
-async def _service(tmp_path: Path, **cfg) -> KnowledgeService:
+async def _service(tmp_path: Path, *, embedder=None, **cfg) -> KnowledgeService:
     store = KnowledgeStore(await connect(tmp_path / "kb.db"))
     _OPEN_DBS.append(store.db)
     svc = KnowledgeService(
         store,
-        FakeEmbedder(),
+        embedder or FakeEmbedder(),
         KnowledgeConfig(**cfg),
         knowledge_dir=tmp_path / "knowledge",
         root=tmp_path,
     )
     svc.ensure_dirs()
     return svc
+
+
+class _RecordingEmbedder(FakeEmbedder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.documents: list[str] = []
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.documents.extend(texts)
+        return await super().embed_documents(texts)
 
 
 # --- file ingest -----------------------------------------------------------
@@ -122,6 +132,26 @@ async def test_browser_upload_refuses_unknown_type_before_any_converter(tmp_path
     svc = await _service(tmp_path)
     with pytest.raises(KnowledgeError, match="unsupported upload type"):
         await svc.ingest_uploaded("payload.exe", b"not a document")
+
+
+async def test_suspected_secret_is_redacted_before_chunks_and_embedding(tmp_path: Path) -> None:
+    embedder = _RecordingEmbedder()
+    svc = await _service(tmp_path, embedder=embedder)
+    secret = "realvalue123456789"
+    result = await svc.ingest_uploaded(
+        "config.yaml",
+        f"api_key: {secret}\nservice: local\n".encode(),
+    )
+    assert result.suspected_secret_hits == 1
+    assert result.suspected_secret_rules == ("credential_assignment",)
+    assert embedder.documents and all(secret not in text for text in embedder.documents)
+    chunks = await svc.store.chunks_for_source(result.source_id)
+    assert chunks and all(secret not in chunk.text for chunk in chunks)
+    assert "[REDACTED_SECRET:credential_assignment]" in chunks[0].text
+    source = await svc.store.get_source(result.source_id)
+    assert source is not None
+    # The immutable local artifact remains faithful; only derived/cloud-bound text is redacted.
+    assert secret in (svc.knowledge_dir / source.markdown_path).read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("name", ["src/main.py", "pyproject.toml", "web/site.css", "ops/run.ps1"])

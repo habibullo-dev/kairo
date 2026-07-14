@@ -278,6 +278,7 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
   }
   if (projectFolder) api.state.projectImport = {
     stage: "files", done: 0, total: selected.length, added: 0, duplicates: 0, failed: 0,
+    secretFiles: 0,
   };
   renderImportControls(container, api);
   renderProjectImportProgress(container, api);
@@ -294,6 +295,14 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
     try {
       const result = await api.upload("/api/chat/attachments", form);
       if (result.ok) {
+        const secretHits = Number(result.data.suspected_secret_hits) || 0;
+        if (secretHits > 0) {
+          if (projectFolder) api.state.projectImport.secretFiles += 1;
+          else showToast(
+            "Kairo redacted suspected credentials from AI indexing. Review Notifications.",
+            "error",
+          );
+        }
         if (projectFolder) {
           if (result.data.action === "duplicate") api.state.projectImport.duplicates += 1;
           else api.state.projectImport.added += 1;
@@ -357,11 +366,14 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
     renderImportControls(container, api);
     renderProjectImportProgress(container, api);
     const indexed = (summary.added + summary.duplicates).toLocaleString();
+    const secretNote = summary.secretFiles
+      ? ` ${summary.secretFiles.toLocaleString()} file${summary.secretFiles === 1 ? "" : "s"} need credential review.`
+      : "";
     showToast(
       failures
-        ? `Project import finished: ${indexed}/${summary.total.toLocaleString()} files indexed; ${summary.failed.toLocaleString()} couldn't be added.`
-        : `Project import complete: ${indexed} files indexed. Open Knowledge to explore the tree.`,
-      failures ? "error" : "success",
+        ? `Project import finished: ${indexed}/${summary.total.toLocaleString()} files indexed; ${summary.failed.toLocaleString()} couldn't be added.${secretNote}`
+        : `Project import complete: ${indexed} files indexed.${secretNote} Open Knowledge to explore the tree.`,
+      failures || summary.secretFiles ? "error" : "success",
     );
   }
 }

@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 from jarvis.knowledge import converters
 from jarvis.knowledge import links as _links
 from jarvis.knowledge.chunking import chunk_markdown, embed_text
+from jarvis.knowledge.secrets import SecretScanResult, scan_text
 from jarvis.knowledge.store import ANY_PROJECT as _ANY_PROJECT
 from jarvis.knowledge.store import KnowledgeStore, NewChunk, Source, WikiLink
 from jarvis.knowledge.wiki import (
@@ -61,6 +62,8 @@ class IngestResult:
     chunks: int
     review_status: str  # 'reviewed' | 'unreviewed'
     title: str | None = None
+    suspected_secret_hits: int = 0
+    suspected_secret_rules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -356,7 +359,7 @@ class KnowledgeService:
         if prior is not None:
             await self.store.supersede_source(prior.id, source_id)
 
-        new_chunks = await self._chunk_and_embed(conversion.markdown)
+        new_chunks, secret_scan = await self._chunk_and_embed_with_scan(conversion.markdown)
         await self.store.replace_chunks(
             source_id=source_id, chunks=new_chunks, embedding_model=self.embedder.model
         )
@@ -373,7 +376,13 @@ class KnowledgeService:
         )
         action = "superseded" if prior is not None else "ingested"
         return IngestResult(
-            action, source_id, len(new_chunks), review_status, title or conversion.title
+            action,
+            source_id,
+            len(new_chunks),
+            review_status,
+            title or conversion.title,
+            suspected_secret_hits=secret_scan.total_hits,
+            suspected_secret_rules=tuple(sorted({hit.rule for hit in secret_scan.hits})),
         )
 
     async def ingest_uploaded(
@@ -806,16 +815,34 @@ class KnowledgeService:
     async def _chunk_and_embed(self, markdown: str) -> list[NewChunk]:
         """Chunk markdown and embed each chunk (with its heading path prefixed).
         Shared by wiki-page reindex and source ingest."""
+        chunks, _scan = await self._chunk_and_embed_with_scan(markdown)
+        return chunks
+
+    async def _chunk_and_embed_with_scan(
+        self, markdown: str
+    ) -> tuple[list[NewChunk], SecretScanResult]:
+        """Redact suspected secrets before derived chunks or cloud embeddings see text.
+
+        Immutable raw/markdown artifacts remain local and unchanged.  Retrieval chunks contain
+        only the redacted form, and the returned metadata contains rule names/counts but never a
+        matched value.  This is high-confidence risk reduction, not a full DLP claim.
+        """
+        secret_scan = scan_text(markdown)
         chunks = chunk_markdown(
-            markdown, max_chars=self.config.chunk_chars, min_chars=self.config.min_chunk_chars
+            secret_scan.redacted_text,
+            max_chars=self.config.chunk_chars,
+            min_chars=self.config.min_chunk_chars,
         )
         if not chunks:
-            return []
+            return [], secret_scan
         vectors = await self.embedder.embed_documents([embed_text(c) for c in chunks])
-        return [
-            NewChunk(heading_path=c.heading_path, seq=c.seq, text=c.text, embedding=v)
-            for c, v in zip(chunks, vectors, strict=True)
-        ]
+        return (
+            [
+                NewChunk(heading_path=c.heading_path, seq=c.seq, text=c.text, embedding=v)
+                for c, v in zip(chunks, vectors, strict=True)
+            ],
+            secret_scan,
+        )
 
     def _page_index(self) -> list[_links.PageRef]:
         """Scan the wiki dir into PageRefs (path/stem/title/aliases) for link resolution."""

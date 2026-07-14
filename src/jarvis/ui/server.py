@@ -1513,6 +1513,47 @@ def create_app(
                 },
                 status_code=400,
             )
+        secret_alert_id = None
+        if result.suspected_secret_hits:
+            # The detector returns only closed-set rule names + a count; the matched value never
+            # crosses this seam.  Persist before the best-effort count-only Telegram/Kakao nudge.
+            attention = app.state.services.attention
+            if attention is not None:
+                try:
+                    from jarvis.attention import (
+                        AttentionKind,
+                        AttentionPriority,
+                        notify_open_attention_item,
+                    )
+
+                    secret_alert_id, created = await attention.create_if_new(
+                        kind=AttentionKind.ALERT,
+                        source="knowledge_secret_scan",
+                        source_ref=str(result.source_id),
+                        title="Review suspected credentials in an uploaded project file",
+                        category="security",
+                        priority=AttentionPriority.NORMAL,
+                        trust_class=(
+                            "reviewed"
+                            if result.review_status == "reviewed"
+                            else "untrusted_external"
+                        ),
+                        project_id=project_id,
+                        payload={
+                            "source_id": result.source_id,
+                            "file": result.title or filename,
+                            "hit_count": result.suspected_secret_hits,
+                            "rules": list(result.suspected_secret_rules),
+                        },
+                        evidence=[{"source_id": result.source_id}],
+                        dedupe_key=f"knowledge-secret-scan:{result.source_id}",
+                    )
+                    if created:
+                        tasks = app.state.services.tasks
+                        router = getattr(tasks, "notification_router", None)
+                        await notify_open_attention_item(router, attention, secret_alert_id)
+                except Exception:  # warning delivery must never turn a safe ingest into a failure
+                    log.warning("knowledge_secret_alert_failed", exc_info=True)
         return JSONResponse(
             {
                 "ok": True,
@@ -1521,6 +1562,8 @@ def create_app(
                 "title": result.title or filename,
                 "chunks": result.chunks,
                 "review_status": result.review_status,
+                "suspected_secret_hits": result.suspected_secret_hits,
+                "secret_alert_id": secret_alert_id,
             }
         )
 
