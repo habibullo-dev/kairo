@@ -159,3 +159,26 @@ async def test_store_rejects_invalid_identity_and_nonterminal_finish(tmp_path: P
     await jobs.claim(queued.id)
     with pytest.raises(ValueError):
         await jobs.finish(queued.id, AnalysisJobState.QUEUED)
+
+
+async def test_corrupt_report_json_types_fail_closed(tmp_path: Path) -> None:
+    db, _jobs, reports, project_id = await _stores(tmp_path)
+    report, _ = await reports.create(
+        project_id=project_id,
+        snapshot_hash="typed",
+        profile_version="v1",
+        summary="Typed report",
+        coverage={"files_total": 1},
+        strengths=[{"title": "Good"}],
+    )
+    await db.execute(
+        "UPDATE project_reports SET coverage_json='[]', strengths_json='{}', "
+        "weaknesses_json='\"not-a-list\"' WHERE id=?",
+        (report.id,),
+    )
+    await db.commit()
+    loaded = await reports.get(report.id)
+    assert loaded is not None
+    assert loaded.coverage == {}
+    assert loaded.strengths == []
+    assert loaded.weaknesses == []

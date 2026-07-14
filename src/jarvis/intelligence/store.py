@@ -48,6 +48,16 @@ def _load(text: str | None, default: Any) -> Any:
         return default
 
 
+def _load_dict(text: str | None) -> dict:
+    value = _load(text, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _load_list(text: str | None) -> list:
+    value = _load(text, [])
+    return value if isinstance(value, list) else []
+
+
 def _identity(snapshot_hash: str, profile_version: str) -> tuple[str, str]:
     snapshot = snapshot_hash.strip().lower()
     profile = profile_version.strip()
@@ -91,7 +101,7 @@ def _job(row: tuple) -> AnalysisJob:
         attempts=row[6],
         last_error=row[7],
         graph_watermark=row[8],
-        coverage=_load(row[9], {}),
+        coverage=_load_dict(row[9]),
         created_at=row[10],
         updated_at=row[11],
     )
@@ -284,14 +294,14 @@ def _report(row: tuple) -> ProjectReport:
         status=row[5],
         trust_class=row[6],
         summary=row[7],
-        coverage=_load(row[8], {}),
-        strengths=_load(row[9], []),
-        weaknesses=_load(row[10], []),
-        security_candidates=_load(row[11], []),
-        fe_be_gaps=_load(row[12], []),
-        test_gaps=_load(row[13], []),
-        recommendations=_load(row[14], []),
-        evidence=_load(row[15], []),
+        coverage=_load_dict(row[8]),
+        strengths=_load_list(row[9]),
+        weaknesses=_load_list(row[10]),
+        security_candidates=_load_list(row[11]),
+        fe_be_gaps=_load_list(row[12]),
+        test_gaps=_load_list(row[13]),
+        recommendations=_load_list(row[14]),
+        evidence=_load_list(row[15]),
         created_at=row[16],
     )
 

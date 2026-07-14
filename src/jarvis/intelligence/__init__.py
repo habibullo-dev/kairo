@@ -1,9 +1,6 @@
-"""Durable project-intelligence state.
+"""Durable, snapshot-validated project-intelligence state and report projection."""
 
-The package starts with persistence only.  Later layers seal project snapshots, run the fixed
-read-only council, and publish one quarantined report/attention item against this state.
-"""
-
+from jarvis.intelligence.report import ProjectReportDraft, build_report_draft
 from jarvis.intelligence.store import (
     AnalysisJob,
     AnalysisJobState,
@@ -17,5 +14,7 @@ __all__ = [
     "AnalysisJobState",
     "AnalysisJobStore",
     "ProjectReport",
+    "ProjectReportDraft",
     "ProjectReportStore",
+    "build_report_draft",
 ]

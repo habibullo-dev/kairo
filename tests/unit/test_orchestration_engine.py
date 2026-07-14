@@ -404,6 +404,7 @@ async def test_project_assessment_runs_five_scoped_readers_and_fable_head(
                         "finding": "One module has disproportionate dependency degree.",
                         "severity": "medium",
                         "confidence": "medium",
+                        "evidence_ref": "repo/core.py",
                     },
                     {
                         "member": "security_risk",

@@ -219,7 +219,14 @@ _PROJECT_RECORD_SYNTHESIS = {
                             "description": "Optional project path/source id reference; no excerpt.",
                         },
                     },
-                    "required": ["member", "category", "title", "finding", "confidence"],
+                    "required": [
+                        "member",
+                        "category",
+                        "title",
+                        "finding",
+                        "confidence",
+                        "evidence_ref",
+                    ],
                 },
             },
         },
@@ -356,6 +363,8 @@ def _project_synthesis_findings(
         if confidence not in _PROJECT_CONFIDENCES:
             confidence = "medium"
         evidence_ref = _bounded_text(item.get("evidence_ref"), limit=240)
+        if not evidence_ref:
+            continue
         identity = "\x00".join(
             (member, category, finding_title.casefold(), finding, evidence_ref)
         ).encode("utf-8")
