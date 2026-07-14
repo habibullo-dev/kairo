@@ -587,14 +587,15 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 .is-hidden { display: none !important; }
 
 /* --- approval modal (priority attention surface) --- */
-.overlay { position: fixed; inset: 0; background: rgba(4,7,10,0.74); backdrop-filter: blur(3px); display: none; align-items: center; justify-content: center; z-index: 100; }
+.overlay { position: fixed; inset: 0; padding: 20px; box-sizing: border-box; overflow-y: auto; background: rgba(4,7,10,0.74); backdrop-filter: blur(3px); display: none; align-items: center; justify-content: center; z-index: 120; }
 .overlay.show { display: flex; animation: kairoRise .2s ease both; }
-.approve-card { width: 580px; max-width: 92vw; background: var(--panel); border: 1px solid rgba(255,176,32,0.5); border-radius: 18px; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,0.6); }
-.approve-card .head { background: rgba(255,176,32,0.08); padding: 17px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 13px; }
+.approve-card { width: 580px; max-width: 92vw; max-height: calc(100vh - 40px); max-height: calc(100dvh - 40px); display: flex; flex-direction: column; background: var(--panel); border: 1px solid rgba(255,176,32,0.5); border-radius: 18px; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,0.6); }
+.approve-card:focus { outline: 2px solid rgba(var(--attention-rgb), .72); outline-offset: 3px; }
+.approve-card .head { flex: none; background: rgba(255,176,32,0.08); padding: 17px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 13px; }
 .approve-card .head .ico { width: 34px; height: 34px; border-radius: 10px; background: rgba(255,176,32,0.14); display: flex; align-items: center; justify-content: center; flex: none; color: var(--amber); font-size: 18px; }
 .approve-card .head .k { color: var(--amber); font-size: 10.5px; letter-spacing: 2px; text-transform: uppercase; font-weight: 600; }
 .approve-card .head .tool { font-size: 16px; font-weight: 600; margin-top: 2px; }
-.approve-card .bd { padding: 18px 22px; }
+.approve-card .bd { min-height: 0; overflow-y: auto; padding: 18px 22px; }
 .approval-request { margin: 0; color: var(--ink); font-size: 16px; font-weight: 650; line-height: 1.45; }
 .approval-details { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
 .approval-details > summary { color: var(--muted); font-size: 12px; cursor: pointer; }
@@ -603,19 +604,20 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 .approve-card .label:first-child { margin-top: 0; }
 .approve-card pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; padding: 13px 15px; font-family: var(--mono); font-size: 12px; line-height: 1.6; color: var(--cyan-soft); overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
 .approve-card .reason { color: var(--muted); font-size: 13.5px; line-height: 1.6; }
-.approve-card .waiting { padding: 0 22px 12px; display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 11.5px; }
+.approve-card .waiting { flex: none; padding: 0 22px 12px; display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 11.5px; }
+.approve-card .waiting.error { color: var(--attention); }
+.approval-retry { margin-left: auto; border: 1px solid currentColor; border-radius: 7px; padding: 4px 8px; background: transparent; color: inherit; font: 650 11px var(--font); cursor: pointer; }
 .approve-card .spin { width: 12px; height: 12px; border: 2px solid var(--line-2); border-top-color: var(--cyan); border-radius: 50%; display: none; animation: kairoSpin .7s linear infinite; }
 .approve-card .spin.show { display: inline-block; }
-.approve-card .actions { display: flex; gap: 10px; padding: 15px 22px; border-top: 1px solid var(--line); }
+.approve-card .actions { flex: none; display: flex; gap: 10px; padding: 15px 22px; border-top: 1px solid var(--line); }
 .approve-card .actions button { flex: 1; cursor: pointer; padding: 10px 6px; border-radius: 10px; font-weight: 600; font-size: 12px; white-space: nowrap; }
+.approve-card .actions button:disabled { opacity: 0.45; cursor: default; }
 /* Approve once = PRIMARY (filled). Always allow + Deny = SECONDARY (outline) — a wider grant
    must never look as casual as a one-time approval (constraint: de-emphasize "always"). */
 .btn-approve { border: none; background: var(--cyan); color: #06121A; }
-.btn-approve:disabled { opacity: 0.45; cursor: default; }
 .btn-always { border: 1px solid var(--line-2); background: var(--user-bubble); color: var(--cyan-soft); font-weight: 500 !important; }
-.btn-always:disabled { opacity: 0.45; cursor: default; }
 .btn-deny { border: 1px solid var(--line-2); background: var(--user-bubble); color: var(--amber-soft); }
-.btn-deny:hover { background: var(--line); }
+.btn-deny:not(:disabled):hover { background: var(--line); }
 
 /* Custom attended-action dialogs + quiet success/error feedback.  They intentionally replace
    browser confirm/prompt chrome only; approval authority remains in the Gate overlay above. */

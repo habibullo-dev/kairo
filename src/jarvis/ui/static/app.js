@@ -231,8 +231,11 @@ function connect() {
     if (ws !== socket) return;
     wsSend({ type: "hello", surfaces: [...mounted], workspace_id: workspaceId });
     startHeartbeat(socket);
+    resetApprovalNoncesForSocket();
   };
-  socket.onmessage = (e) => handleMessage(JSON.parse(e.data));
+  socket.onmessage = (e) => {
+    if (ws === socket) handleMessage(JSON.parse(e.data));
+  };
   socket.onclose = (event) => {
     // A late close from a superseded socket cannot tear down the new connection's heartbeat.
     if (ws !== socket) return;
@@ -420,6 +423,11 @@ function onEvent(evt) {
 
 // --- approvals: the priority attention surface ---
 let _approvalEsc = null; // unregister fn for the Escape-closes-modal binding (keys.js)
+let _approvalRestoreFocus = null;
+let _approvalNonceTimer = null;
+let _approvalInerted = [];
+const _approvalResolving = new Set();
+const _approvalRecovering = new Set();
 let _parkedTaskDialog = null;
 function onApproval(msg) {
   state.pending.set(msg.decision_id, { ...msg, nonce: null });
@@ -452,12 +460,125 @@ function approvalCopy(next) {
   return [label, `Kairo wants to use ${label}.`];
 }
 
+function setApprovalControlsEnabled(enabled) {
+  const always = document.getElementById("ap-always");
+  for (const id of ["ap-approve", "ap-always", "ap-deny"]) {
+    document.getElementById(id).disabled = !enabled || (id === "ap-always" && always.hidden);
+  }
+}
+
+function setApprovalBackgroundInert(inert) {
+  const overlay = document.getElementById("overlay");
+  if (inert) {
+    if (_approvalInerted.length) return;
+    for (const child of document.body.children) {
+      if (child === overlay || child.tagName === "SCRIPT" || child.inert) continue;
+      child.inert = true;
+      _approvalInerted.push(child);
+    }
+    return;
+  }
+  for (const child of _approvalInerted) child.inert = false;
+  _approvalInerted = [];
+}
+
+function clearApprovalNonceTimer() {
+  if (_approvalNonceTimer !== null) {
+    clearTimeout(_approvalNonceTimer);
+    _approvalNonceTimer = null;
+  }
+}
+
+function setApprovalStatus(message, { busy = false, error = false, retry = false } = {}) {
+  document.getElementById("ap-waiting").textContent = message;
+  document.getElementById("ap-spin").classList.toggle("show", busy);
+  document.getElementById("ap-status").classList.toggle("error", error);
+  document.getElementById("ap-retry").hidden = !retry;
+  document.getElementById("approval-dialog").setAttribute("aria-busy", String(busy));
+}
+
+function requestApprovalNonce(p, waitingMessage = "") {
+  const overlay = document.getElementById("overlay");
+  if (!overlay.classList.contains("show") || overlay.dataset.decision !== p.decision_id) {
+    return false;
+  }
+  clearApprovalNonceTimer();
+  p.nonce = null;
+  setApprovalControlsEnabled(false);
+  const prefix = p.error ? `${p.error} ` : "";
+  const progress = waitingMessage
+    || (p.error ? "Preparing a fresh secure confirmation…" : "Preparing secure confirmation…");
+  setApprovalStatus(`${prefix}${progress}`, {
+    busy: true,
+    error: !!p.error,
+  });
+  wsSend({ type: "approval_shown", decision_id: p.decision_id });
+  _approvalNonceTimer = setTimeout(() => {
+    _approvalNonceTimer = null;
+    if (state.pending.get(p.decision_id) !== p || p.nonce
+        || _approvalResolving.has(p.decision_id)) return;
+    const delayed = p.error
+      ? `${p.error} A fresh confirmation could not be prepared yet.`
+      : "Secure confirmation is taking longer than expected.";
+    setApprovalStatus(`${delayed} Retry when the connection is ready.`, {
+      error: true,
+      retry: true,
+    });
+  }, 7000);
+  return true;
+}
+
+function resetApprovalNoncesForSocket() {
+  for (const pending of state.pending.values()) pending.nonce = null;
+  const overlay = document.getElementById("overlay");
+  if (!overlay?.classList.contains("show")) return;
+  const pending = state.pending.get(overlay.dataset.decision);
+  if (pending && !_approvalResolving.has(pending.decision_id)
+      && !_approvalRecovering.has(pending.decision_id)) {
+    requestApprovalNonce(pending, "Connection changed. Preparing a fresh confirmation…");
+  }
+}
+
+async function recoverApproval(p, message) {
+  if (_approvalRecovering.has(p.decision_id)) return;
+  _approvalRecovering.add(p.decision_id);
+  clearApprovalNonceTimer();
+  try {
+    p.error = message;
+    const overlay = document.getElementById("overlay");
+    if (overlay.dataset.decision === p.decision_id) {
+      setApprovalStatus(`${message} Checking the current approval state…`, {
+        busy: true,
+        error: true,
+      });
+    }
+    const snapshot = await api.get("/api/approvals");
+    if (state.pending.get(p.decision_id) !== p) return;
+    if (Array.isArray(snapshot?.pending)
+        && !snapshot.pending.some((item) => item.decision_id === p.decision_id)) {
+      state.pending.delete(p.decision_id);
+      if (overlay.dataset.decision === p.decision_id) hideApproval();
+      updateGateBadge();
+      refreshIfActive("gate");
+      showTopApproval();
+      return;
+    }
+    if (!requestApprovalNonce(p)) {
+      p._shown = false;
+      showTopApproval();
+    }
+  } finally {
+    _approvalRecovering.delete(p.decision_id);
+  }
+}
+
 function showTopApproval() {
   const next = [...state.pending.values()].find((p) => !p._shown);
   if (!next) return;
   const overlay = document.getElementById("overlay");
   if (overlay.classList.contains("show")) return; // one attention surface at a time
   next._shown = true;
+  next.nonce = null;
   const [label, request] = approvalCopy(next);
   document.getElementById("ap-kind").textContent =
     next.kind === "voice" ? "Confirm on screen (voice)" : "Kairo needs your approval";
@@ -466,32 +587,36 @@ function showTopApproval() {
   document.getElementById("ap-details").open = false;
   document.getElementById("ap-payload").textContent = JSON.stringify(next.input, null, 2);
   document.getElementById("ap-reason").textContent = next.reason || "";
-  document.getElementById("ap-waiting").textContent = "Preparing secure confirmation…";
-  document.getElementById("ap-spin").classList.add("show");
-  for (const id of ["ap-approve", "ap-always"]) document.getElementById(id).disabled = true;
   // No "always" for voice (per-instance only) OR a non-persistable decision (tainted egress:
   // a private read happened this turn, so sending off-box must not become a standing grant).
   const noAlways = next.kind === "voice" || next.persistable === false;
-  document.getElementById("ap-always").style.display = noAlways ? "none" : "";
+  document.getElementById("ap-always").hidden = noAlways;
+  setApprovalControlsEnabled(false);
   overlay.dataset.decision = next.decision_id;
+  _approvalRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   overlay.classList.add("show");
+  setApprovalBackgroundInert(true);
+  const dialog = document.getElementById("approval-dialog");
   if (_approvalEsc) _approvalEsc();
-  _approvalEsc = pushEscape(hideApproval);           // Escape dismisses (leaves the item pending)
+  _approvalEsc = pushEscape(hideApproval, dialog);   // Escape dismisses (leaves the item pending)
+  dialog.focus();
   setSurface("gate", true);                          // the screen is now watching
-  wsSend({ type: "approval_shown", decision_id: next.decision_id }); // prove visibility ⇒ mint nonce
+  requestApprovalNonce(next);                        // prove visibility ⇒ mint a bound nonce
 }
 
 function onNonce(msg) {
   const p = state.pending.get(msg.decision_id);
-  if (!p) return;
-  p.nonce = msg.nonce;
   const overlay = document.getElementById("overlay");
-  if (overlay.dataset.decision === msg.decision_id) {
-    document.getElementById("ap-spin").classList.remove("show");
-    document.getElementById("ap-waiting").textContent = "Confirm below to commit this action.";
-    document.getElementById("ap-approve").disabled = false;
-    document.getElementById("ap-always").disabled = false;
-  }
+  const visible = overlay.classList.contains("show")
+    && overlay.dataset.decision === msg.decision_id;
+  if (!p || !visible || _approvalResolving.has(msg.decision_id)
+      || _approvalRecovering.has(msg.decision_id)
+      || typeof msg.nonce !== "string" || !msg.nonce) return;
+  clearApprovalNonceTimer();
+  p.nonce = msg.nonce;
+  const retry = p.error ? `${p.error} A fresh confirmation is ready; choose again.` : "";
+  setApprovalStatus(retry || "Confirm below to commit this action.", { error: !!p.error });
+  setApprovalControlsEnabled(true);
 }
 
 function onParkedTaskNonce(msg) {
@@ -509,25 +634,60 @@ async function resolveApproval(action) {
   const did = overlay.dataset.decision;
   const p = state.pending.get(did);
   if (!p) { hideApproval(); return; }
-  if (action !== "deny" && !p.nonce) return; // can't approve without the minted nonce
-  await api.post(`/api/approvals/${did}/resolve`, { nonce: p.nonce || "", action });
+  if (!p.nonce || _approvalResolving.has(did)) return;
+  const nonce = p.nonce;
+  p.nonce = null; // never reuse a credential whose delivery outcome could become uncertain
+  p.error = "";
+  _approvalResolving.add(did);
+  setApprovalControlsEnabled(false);
+  setApprovalStatus(action === "deny" ? "Rejecting this action…" : "Submitting approval…", {
+    busy: true,
+  });
+  let result;
+  try {
+    result = await api.post(`/api/approvals/${did}/resolve`, { nonce, action });
+  } catch {
+    _approvalResolving.delete(did);
+    if (state.pending.get(did) !== p) return;
+    await recoverApproval(p, "Not confirmed because Kairo could not reach the approval service.");
+    return;
+  }
+  _approvalResolving.delete(did);
+  if (state.pending.get(did) !== p) return;
+  if (!result.ok || result.data?.ok !== true) {
+    const detail = String(result.data?.message || "The secure confirmation was rejected.");
+    await recoverApproval(p, `Not confirmed: ${detail.replace(/[.\s]+$/, "")}.`);
+    return;
+  }
   state.pending.delete(did);
-  hideApproval();
+  if (overlay.dataset.decision === did) hideApproval();
   updateGateBadge();
   refreshIfActive("gate");
   showTopApproval(); // surface the next pending approval, if any
 }
 
 function hideApproval() {
+  clearApprovalNonceTimer();
   if (_approvalEsc) { _approvalEsc(); _approvalEsc = null; }
   const overlay = document.getElementById("overlay");
+  const wasShown = overlay.classList.contains("show");
+  const pending = state.pending.get(overlay.dataset.decision);
+  if (pending) pending.nonce = null;
   overlay.classList.remove("show");
   overlay.dataset.decision = "";
+  setApprovalBackgroundInert(false);
+  setApprovalControlsEnabled(false);
+  document.getElementById("approval-dialog").setAttribute("aria-busy", "false");
   if (state.route !== "gate") setSurface("gate", false); // stop advertising the screen
+  const restore = _approvalRestoreFocus;
+  _approvalRestoreFocus = null;
+  if (wasShown && restore instanceof HTMLElement && restore.isConnected) restore.focus();
 }
 
 function clearPendingApprovals() {
   state.pending.clear();
+  _approvalResolving.clear();
+  _approvalRecovering.clear();
   hideApproval();
   updateGateBadge();
   refreshIfActive("gate");
@@ -777,6 +937,16 @@ function init() {
   document.getElementById("ap-approve").addEventListener("click", () => resolveApproval("approve"));
   document.getElementById("ap-always").addEventListener("click", () => resolveApproval("always"));
   document.getElementById("ap-deny").addEventListener("click", () => resolveApproval("deny"));
+  document.getElementById("ap-retry").addEventListener("click", () => {
+    const did = document.getElementById("overlay").dataset.decision;
+    const pending = state.pending.get(did);
+    if (pending && !_approvalResolving.has(did) && !_approvalRecovering.has(did)) {
+      void recoverApproval(
+        pending,
+        pending.error || "A secure confirmation was not received.",
+      );
+    }
+  });
   document.getElementById("st-stop").addEventListener("click", async () => { await api.post("/api/runner/pause"); pollStatus(); });
   document.getElementById("st-resume").addEventListener("click", async () => { await api.post("/api/runner/resume"); pollStatus(); });
   document.getElementById("st-logout").addEventListener("click", async (event) => {

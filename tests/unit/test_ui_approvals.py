@@ -12,6 +12,7 @@ import asyncio
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from httpx import ASGITransport
 
@@ -173,15 +174,17 @@ async def test_always_on_non_persistable_does_not_persist() -> None:
 # --- the nonce / replay matrix (the load-bearing safety property) ----------
 
 
-async def test_resolve_without_nonce_refused() -> None:
+@pytest.mark.parametrize("action", ["approve", "always", "deny"])
+async def test_resolve_without_nonce_refused(action: str) -> None:
     cm = _cm()
     _conn(cm)
     approvals = ApprovalManager(cm)
     task = await _start(approvals, _call())
     (pending,) = approvals.pending()
-    ok, msg = approvals.resolve(pending.decision_id, "not-a-nonce", "approve")
+    ok, msg = approvals.resolve(pending.decision_id, "", action)
     assert not ok and "nonce" in msg
     assert not task.done()  # the turn is still paused
+    assert approvals.pending() == [pending]
     task.cancel()
 
 
@@ -197,6 +200,36 @@ async def test_nonce_is_single_use() -> None:
     # a replay of the consumed nonce cannot resolve anything
     ok, _ = approvals.resolve(pending.decision_id, nonce, "approve")
     assert not ok
+
+
+async def test_fresh_nonce_retires_prior_nonce_on_same_connection() -> None:
+    cm = _cm()
+    conn = _conn(cm)
+    approvals = ApprovalManager(cm)
+    task = await _start(approvals, _call())
+    (pending,) = approvals.pending()
+    first = await approvals.mint_nonce(pending.decision_id, conn)
+    second = await approvals.mint_nonce(pending.decision_id, conn)
+
+    assert first is not None and second is not None and first != second
+    assert not approvals.resolve(pending.decision_id, first, "approve")[0]
+    assert approvals.resolve(pending.decision_id, second, "approve")[0]
+    assert await task is Permission.ALLOW
+
+
+async def test_nonce_refresh_preserves_other_live_connection() -> None:
+    cm = _cm()
+    first_conn = _conn(cm)
+    second_conn = _conn(cm)
+    approvals = ApprovalManager(cm)
+    task = await _start(approvals, _call())
+    (pending,) = approvals.pending()
+    first = await approvals.mint_nonce(pending.decision_id, first_conn)
+    second = await approvals.mint_nonce(pending.decision_id, second_conn)
+
+    assert first is not None and second is not None
+    assert approvals.resolve(pending.decision_id, first, "approve")[0]
+    assert await task is Permission.ALLOW
 
 
 async def test_nonce_from_dead_connection_refused() -> None:
@@ -351,11 +384,12 @@ def test_resolve_requires_session_and_origin(tmp_path: Path) -> None:
     assert r.status_code == 403
 
 
-def test_resolve_bad_nonce_returns_409(tmp_path: Path) -> None:
+@pytest.mark.parametrize("action", ["approve", "always", "deny"])
+def test_resolve_bad_nonce_returns_409(tmp_path: Path, action: str) -> None:
     client, _app_, auth = _client(tmp_path)
     r = client.post(
         "/api/approvals/nope/resolve",
-        json={"nonce": "bogus", "action": "approve"},
+        json={"nonce": "bogus", "action": action},
         headers={**_auth(auth), "origin": "http://127.0.0.1"},
     )
     assert r.status_code == 409 and r.json()["ok"] is False

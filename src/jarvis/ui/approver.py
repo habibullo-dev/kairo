@@ -322,6 +322,13 @@ class ApprovalManager:
             or conn.context != pending.context
         ):
             return None
+        # A retry on this same watching connection supersedes its previous credential. Other
+        # live tabs retain their independently connection-bound nonce, avoiding cross-tab churn.
+        self._nonces = {
+            nonce: bound
+            for nonce, bound in self._nonces.items()
+            if bound != (decision_id, conn.id)
+        }
         nonce = secrets.token_urlsafe(24)
         self._nonces[nonce] = (decision_id, conn.id)
         return nonce

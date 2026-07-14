@@ -83,8 +83,10 @@
   </main>
 
   <!-- The approval overlay: the single priority attention surface (amber). -->
-  <div class="overlay" id="overlay">
-    <div class="approve-card">
+  <div class="overlay" id="overlay" role="presentation">
+    <section class="approve-card" id="approval-dialog" role="dialog" aria-modal="true"
+             aria-labelledby="ap-kind ap-tool" aria-describedby="ap-request ap-waiting"
+             aria-busy="false" tabindex="-1">
       <div class="head">
         <div class="ico">⚠</div>
         <div>
@@ -102,13 +104,17 @@
           <div class="reason" id="ap-reason"></div>
         </details>
       </div>
-      <div class="waiting"><span class="spin" id="ap-spin"></span><span id="ap-waiting">Preparing secure confirmation…</span></div>
+      <div class="waiting" id="ap-status" role="status" aria-live="polite" aria-atomic="true">
+        <span class="spin" id="ap-spin"></span>
+        <span id="ap-waiting">Preparing secure confirmation…</span>
+        <button type="button" class="approval-retry" id="ap-retry" hidden>Retry</button>
+      </div>
       <div class="actions">
         <button class="btn-approve" id="ap-approve" disabled>Allow once</button>
         <button class="btn-always" id="ap-always" disabled>Always allow</button>
-        <button class="btn-deny" id="ap-deny">Don't allow</button>
+        <button class="btn-deny" id="ap-deny" disabled>Don't allow</button>
       </div>
-    </div>
+    </section>
   </div>
 
   <script type="module" src="/static/app.js"></script>

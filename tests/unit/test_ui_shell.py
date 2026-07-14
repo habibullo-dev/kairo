@@ -79,7 +79,7 @@ def test_keys_module_is_the_single_dispatcher() -> None:
 def test_escape_dismisses_the_approval_modal() -> None:
     # The approval modal registers itself on the Escape stack when shown, and unregisters when
     # hidden — Escape dismisses it (leaving the decision pending), never auto-approves/denies.
-    assert "pushEscape(hideApproval)" in APP_JS
+    assert "pushEscape(hideApproval, dialog)" in APP_JS
     assert 'resolveApproval("approve")' not in KEYS_JS  # keys.js holds no approval authority
 
 
