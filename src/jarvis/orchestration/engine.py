@@ -818,6 +818,43 @@ class OrchestrationEngine:
         action_items: list[dict[str, str]] | None = None,
         ledger_failure_generation: int | None = None,
     ) -> int:
+        """Let the first terminal outcome finish atomically despite late cancellation.
+
+        Every normal/error/budget/cancel path passes this choke point. Once terminal settlement
+        begins, its status wins: cancellation may no longer interrupt persistence, rewrite a
+        committed outcome, or produce competing completion events.
+        """
+        settlement = asyncio.create_task(
+            self._finish_once(
+                run_id,
+                status=status,
+                verdict=verdict,
+                synthesis_summary=synthesis_summary,
+                verdict_rationale=verdict_rationale,
+                synthesis_findings=synthesis_findings,
+                action_items=action_items,
+                ledger_failure_generation=ledger_failure_generation,
+            )
+        )
+        while not settlement.done():
+            try:
+                await asyncio.shield(settlement)
+            except asyncio.CancelledError:
+                continue
+        return await settlement
+
+    async def _finish_once(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        verdict: str | None = None,
+        synthesis_summary: str | None = None,
+        verdict_rationale: str | None = None,
+        synthesis_findings: list[dict[str, str]] | None = None,
+        action_items: list[dict[str, str]] | None = None,
+        ledger_failure_generation: int | None = None,
+    ) -> int:
         actual_cost_usd: float | None = None
         if self.budget is not None and self.cost_ledger is not None:
             try:
@@ -1079,15 +1116,15 @@ class OrchestrationEngine:
             claimed.get("findings"), self._members(team, "council")
         )
         ledger_failure_generation = self._ledger_failure_generation()
-        await self._emit(
-            "orchestration_resumed",
-            run_id=run_id,
-            team=team.id,
-            workflow=workflow.id,
-            title=run.title,
-            stage="execution",
-        )
         try:
+            await self._emit(
+                "orchestration_resumed",
+                run_id=run_id,
+                team=team.id,
+                workflow=workflow.id,
+                title=run.title,
+                stage="execution",
+            )
             return await self._continue_from_synthesis(
                 run_id=run_id,
                 project_id=project_id,
@@ -1100,7 +1137,9 @@ class OrchestrationEngine:
             )
         except asyncio.CancelledError:
             await self._finish(
-                run_id, status="cancelled", ledger_failure_generation=ledger_failure_generation
+                run_id,
+                status="cancelled",
+                ledger_failure_generation=ledger_failure_generation,
             )
             raise
         except Exception as exc:  # noqa: BLE001 - a resumed run must close its audit record
@@ -1167,15 +1206,18 @@ class OrchestrationEngine:
             on_created_in_transaction=on_created_in_transaction,
         )
         ledger_failure_generation = self._ledger_failure_generation()
-        await self._emit(
-            "orchestration_started",
-            run_id=run_id,
-            team=team.id,
-            workflow=workflow.id,
-            title=title,
-            estimated_cost_usd=estimated_cost_usd,
-        )
         try:
+            # The run id becomes browser-cancellable while this event is delivered. Keep that
+            # await inside the cancellation handler so even a blocked/disconnected sink cannot
+            # strand the just-created row as ``running``.
+            await self._emit(
+                "orchestration_started",
+                run_id=run_id,
+                team=team.id,
+                workflow=workflow.id,
+                title=title,
+                estimated_cost_usd=estimated_cost_usd,
+            )
             # Pre-fan-out RESERVATION: a worst-case estimate over the caps refuses the run
             # before any child spawns (auditable budget_stopped row, with the reason).
             if estimate is not None and estimate.decision == "block":
@@ -1331,7 +1373,9 @@ class OrchestrationEngine:
             )
         except asyncio.CancelledError:
             await self._finish(
-                run_id, status="cancelled", ledger_failure_generation=ledger_failure_generation
+                run_id,
+                status="cancelled",
+                ledger_failure_generation=ledger_failure_generation,
             )
             raise
         except Exception as exc:  # noqa: BLE001 - a run crash is a recorded terminal state

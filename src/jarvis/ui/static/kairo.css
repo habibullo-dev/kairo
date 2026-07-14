@@ -818,6 +818,9 @@ body.debug .debug-banner { display: flex; }
 .studio-task-label { margin-top: .6rem; }
 .studio-table, .studio-context { margin-top: .4rem; }
 .studio-agent-list { margin-top: .5rem; }
+.studio-live-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.studio-live-actions .run-actions-note { flex: 1 1 240px; }
 .studio-breakdown { margin-top: .3rem; }
 .studio-context-note { margin-top: .2rem; }
 .card.warn { border-color: #7f1d1d; }

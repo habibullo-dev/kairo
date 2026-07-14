@@ -7,7 +7,7 @@ import { esc } from "../ui/dom.js";
 import { openTaskDraft } from "../ui/task-draft.js";
 
 const S = {
-  catalog: null,     // { teams, workflows, services, model_routes, active_project_id, busy }
+  catalog: null,     // { teams, workflows, ..., busy, cancellable_run_id }
   runs: [],          // recent orchestration runs (summaries)
   team: null,        // selected team id
   workflow: null,    // selected workflow id
@@ -22,14 +22,22 @@ const S = {
   confirmation: null, // exact params + authority for one visible cost-confirmation response
   authorityToken: null,
   resumeNotice: null,
+  cancelNotice: null,
+  cancelUnavailableRunId: null,
 };
 let _renderGeneration = 0;
 let _estimateGeneration = 0;
 let _runSequence = 0;
 let _runOperation = null;
 let _resumeOperation = null;
+let _cancelOperation = null;
 let _activeContainer = null;
 let _activeApi = null;
+const TERMINAL_RUN_STATUSES = new Set([
+  "ok", "rejected", "revise", "error", "cancelled", "aborted", "budget_stopped",
+]);
+const CANCEL_RECONCILE_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
+const CANCEL_RECONCILE_READ_TIMEOUT_MS = 4000;
 
 // The head reviewer/synthesizer is an ENGINE STAGE (Fable on the planner route), not a team
 // member — badged visibly on the roster, the live verdict, and a run's synthesis.
@@ -74,6 +82,7 @@ export async function render(container, api, args = []) {
   }
   S.catalog = cat;
   S.runs = (hist && hist.runs) || [];
+  reconcileLiveSnapshot(cat.cancellable_run_id, S.runs);
   S.team = S.team || (cat.teams[0] && cat.teams[0].id);
   S.workflow = S.workflow || defaultWorkflow(cat, S.team);
   const prefill = validateReportPrefill(reportSuggestion, reportRoute, cat);
@@ -134,7 +143,7 @@ export async function render(container, api, args = []) {
     </div>`;
 
   renderEstimatePanel(container);
-  renderLive(container);
+  renderLive(container, api);
   const taskInput = container.querySelector("#st-task");
   const budgetInput = container.querySelector("#st-budget");
   if (taskInput) taskInput.value = S.task;
@@ -156,11 +165,21 @@ export function onEvent(state, evt) {
   const ctx = state && state.context;
   if (!ctx || evt.session_id !== ctx.session_id || evt.project_id !== ctx.project_id) return false;
   if (k === "orchestration_started") {
+    if (_cancelOperation && _cancelOperation.runId !== evt.run_id) {
+      retireCancelOperation(_cancelOperation);
+    }
     S.live = { run_id: evt.run_id, team: evt.team, workflow: evt.workflow, title: evt.title,
                stage: "starting", agents: [], status: "running", est: evt.estimated_cost_usd };
+    S.cancelNotice = null;
+    S.cancelUnavailableRunId = null;
   } else if (k === "orchestration_resumed") {
+    if (_cancelOperation && _cancelOperation.runId !== evt.run_id) {
+      retireCancelOperation(_cancelOperation);
+    }
     S.live = { run_id: evt.run_id, team: evt.team, workflow: evt.workflow, title: evt.title,
                stage: evt.stage || "execution", agents: [], status: "running" };
+    S.cancelNotice = null;
+    S.cancelUnavailableRunId = null;
   } else if (S.live && evt.run_id === S.live.run_id) {
     if (k === "orchestration_stage") S.live.stage = evt.stage;
     else if (k === "orchestration_agent")
@@ -168,6 +187,18 @@ export function onEvent(state, evt) {
     else if (k === "orchestration_round") S.live.stage = `verdict (round ${evt.round}: ${evt.verdict})`;
     else if (k === "orchestration_completed") {
       S.live.stage = "done"; S.live.status = evt.status; S.live.verdict = evt.verdict;
+      if (S.catalog?.cancellable_run_id === evt.run_id) S.catalog.cancellable_run_id = null;
+      const requestedHere = _cancelOperation
+        && _cancelOperation.runId === evt.run_id
+        && _cancelOperation.authorityToken === S.authorityToken;
+      const hadCancelNotice = Boolean(S.cancelNotice);
+      if (requestedHere) retireCancelOperation(_cancelOperation);
+      S.cancelUnavailableRunId = null;
+      if (evt.status === "cancelled") {
+        S.cancelNotice = "Run stopped. Completed work remains in this run record.";
+      } else if (requestedHere || hadCancelNotice) {
+        S.cancelNotice = `Run finished as ${humanStatus(evt.status)} before the stop request settled.`;
+      }
     }
   }
   return true; // signal app.js to refresh the studio screen if active
@@ -234,9 +265,81 @@ function resetForProject(projectId, authorityToken = null) {
   S.prefillKey = null;
   S.confirmation = null;
   S.resumeNotice = null;
+  S.cancelNotice = null;
+  S.cancelUnavailableRunId = null;
   _runOperation = null;
   _resumeOperation = null;
+  retireCancelOperation(_cancelOperation);
   _estimateGeneration += 1;
+}
+
+function retireCancelOperation(operation) {
+  if (!operation) return;
+  if (operation.reconcileTimer !== null && operation.reconcileTimer !== undefined) {
+    clearTimeout(operation.reconcileTimer);
+    operation.reconcileTimer = null;
+  }
+  operation.reconcileAbort?.abort();
+  operation.reconcileAbort = null;
+  if (_cancelOperation === operation) _cancelOperation = null;
+}
+
+function runId(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function terminalRunStatus(value) {
+  return typeof value === "string" && TERMINAL_RUN_STATUSES.has(value) ? value : null;
+}
+
+function reconcileLiveSnapshot(cancellableRunId, runs) {
+  const activeRunId = runId(cancellableRunId);
+  const summaries = Array.isArray(runs) ? runs : [];
+  if (activeRunId !== null) {
+    const previousLiveRunId = runId(S.live?.run_id);
+    if (
+      (previousLiveRunId !== null && previousLiveRunId !== activeRunId)
+      || (_cancelOperation && _cancelOperation.runId !== activeRunId)
+    ) {
+      retireCancelOperation(_cancelOperation);
+      S.cancelNotice = null;
+      S.cancelUnavailableRunId = null;
+    }
+    if (S.cancelUnavailableRunId !== activeRunId) S.cancelUnavailableRunId = null;
+    if (!S.live || runId(S.live.run_id) !== activeRunId) {
+      const summary = summaries.find((item) => runId(item.id) === activeRunId) || {};
+      S.live = {
+        run_id: activeRunId,
+        team: summary.team,
+        workflow: summary.workflow,
+        title: summary.title || `Run #${activeRunId}`,
+        stage: summary.stage || "active",
+        agents: [],
+        status: "running",
+        verdict: summary.verdict,
+        est: summary.estimated_cost_usd,
+      };
+    }
+    return;
+  }
+  if (!S.live || S.live.status !== "running") return;
+  const summary = summaries.find((item) => runId(item.id) === runId(S.live.run_id));
+  const summaryStatus = terminalRunStatus(summary?.status);
+  if (!summaryStatus) return;
+  S.live.stage = "done";
+  S.live.status = summaryStatus;
+  S.live.verdict = summary.verdict;
+  const requestedHere = _cancelOperation
+    && _cancelOperation.runId === runId(S.live.run_id)
+    && _cancelOperation.authorityToken === S.authorityToken;
+  const hadCancelNotice = Boolean(S.cancelNotice);
+  if (requestedHere) retireCancelOperation(_cancelOperation);
+  S.cancelUnavailableRunId = null;
+  if (summaryStatus === "cancelled") {
+    S.cancelNotice = "Run stopped. Completed work remains in this run record.";
+  } else if (requestedHere || hadCancelNotice) {
+    S.cancelNotice = `Run finished as ${humanStatus(summaryStatus)} before the stop request settled.`;
+  }
 }
 
 function invalidateEstimate(container) {
@@ -440,10 +543,18 @@ function renderEstimatePanel(container) {
   renderRunControls(container);
 }
 
-function renderLive(container) {
+function renderLive(container, api) {
   const el = container.querySelector("#st-live");
   if (!el || !S.live) { if (el) el.innerHTML = ""; return; }
   const L = S.live;
+  const liveRunId = runId(L.run_id);
+  const stopping = Boolean(_cancelOperation
+    && _cancelOperation.authorityToken === S.authorityToken
+    && _cancelOperation.runId === liveRunId);
+  const canCancel = L.status === "running"
+    && liveRunId !== null
+    && runId(S.catalog?.cancellable_run_id) === liveRunId
+    && S.cancelUnavailableRunId !== liveRunId;
   const stages = ["council", "synthesis", "execution", "review", "verdict", "done"];
   const timeline = stages.map((s) => {
     const active = String(L.stage).startsWith(s);
@@ -453,11 +564,217 @@ function renderLive(container) {
   const agents = (L.agents || []).map((a) =>
     `<span class="chip ${a.ok ? "" : "warn"}">${esc(a.role)}·${esc(a.stage)}${a.ok ? "" : " ✗"}</span>`).join(" ");
   const atHead = ["synthesis", "verdict", "done"].some((s) => String(L.stage).startsWith(s));
+  const cancelControl = canCancel || stopping
+    ? `<button type="button" class="plain-button warning studio-cancel-run"
+         data-studio-cancel-run="${liveRunId}" ${stopping ? "disabled" : ""}
+         aria-label="Stop Studio run ${liveRunId}"
+         title="Stops only this Studio run. Chat and schedules are unchanged.">${stopping ? "Stopping…" : "Stop this run"}</button>`
+    : "";
+  const cancelCopy = S.cancelNotice || (canCancel
+    ? "Stops only this Studio run. Chat and schedules keep running."
+    : "");
+  const cancelActions = cancelControl || cancelCopy
+    ? `<div class="studio-live-actions">${cancelControl}
+         <div class="run-actions-note dim" role="status" aria-live="polite">${esc(cancelCopy)}</div></div>`
+    : "";
   el.innerHTML = `<div class="card rise live">
     <div class="card-label">Live · ${esc(L.title || "run")} ${statusPill(L.status, L.verdict)}</div>
     <div class="timeline">${timeline}</div>
     ${atHead ? `<div class="head-line">Head reviewer ${headBadge(S.head)}</div>` : ""}
-    <div class="studio-agent-list">${agents}</div></div>`;
+    <div class="studio-agent-list">${agents}</div>${cancelActions}</div>`;
+  const cancelButton = el.querySelector("[data-studio-cancel-run]");
+  cancelButton?.addEventListener("click", () => {
+    void cancelLiveRun(container, api, cancelButton, liveRunId, S.authorityToken);
+  });
+}
+
+function cancelOperationIsCurrent(operation, api) {
+  const authorityCurrent = operation.authorityToken === null
+    || typeof api.authorityIsCurrent !== "function"
+    || api.authorityIsCurrent(operation.authorityToken);
+  return _cancelOperation === operation
+    && authorityCurrent
+    && S.authorityToken === operation.authorityToken
+    && S.projectId === operation.projectId
+    && runId(S.live?.run_id) === operation.runId
+    && S.live?.status === "running";
+}
+
+function renderCurrentLive(fallbackApi) {
+  const container = _activeContainer?.isConnected ? _activeContainer : null;
+  if (container?.querySelector("#st-live")) renderLive(container, _activeApi || fallbackApi);
+}
+
+function settleLiveRun(runIdValue, status, verdict = null) {
+  const exactRunId = runId(runIdValue);
+  const terminalStatus = terminalRunStatus(status);
+  if (exactRunId === null || runId(S.live?.run_id) !== exactRunId || terminalStatus === null) {
+    return false;
+  }
+  S.live.stage = "done";
+  S.live.status = terminalStatus;
+  S.live.verdict = verdict;
+  if (
+    _cancelOperation
+    && _cancelOperation.runId === exactRunId
+    && _cancelOperation.authorityToken === S.authorityToken
+  ) {
+    retireCancelOperation(_cancelOperation);
+  }
+  if (runId(S.catalog?.cancellable_run_id) === exactRunId) {
+    S.catalog.cancellable_run_id = null;
+  }
+  S.cancelUnavailableRunId = null;
+  S.cancelNotice = terminalStatus === "cancelled"
+    ? "Run stopped. Completed work remains in this run record."
+    : `Run finished as ${humanStatus(terminalStatus)} before the stop request settled.`;
+  return true;
+}
+
+async function cancelLiveRun(container, api, button, liveRunId, authorityToken) {
+  if (
+    _cancelOperation
+    || liveRunId === null
+    || !button.isConnected
+    || _activeContainer !== container
+    || S.authorityToken !== authorityToken
+    || runId(S.live?.run_id) !== liveRunId
+    || S.live?.status !== "running"
+    || runId(S.catalog?.cancellable_run_id) !== liveRunId
+    || (authorityToken !== null && typeof api.authorityIsCurrent === "function"
+      && !api.authorityIsCurrent(authorityToken))
+    || (typeof api.renderIsCurrent === "function" && !api.renderIsCurrent())
+  ) return;
+  const operation = {
+    authorityToken,
+    projectId: S.projectId,
+    runId: liveRunId,
+    reconcileTimer: null,
+    reconcileAbort: null,
+  };
+  _cancelOperation = operation;
+  S.cancelNotice = null;
+  renderCurrentLive(api);
+
+  let response;
+  try {
+    response = await api.post(`/api/orchestration/${liveRunId}/cancel`, {});
+  } catch {
+    response = { ok: false, status: 0, data: { message: "stop request failed" } };
+  }
+  if (!cancelOperationIsCurrent(operation, api)) return;
+
+  const responseRunId = runId(response.data?.run_id);
+  const responseStatus = terminalRunStatus(response.data?.status);
+  if (
+    response.ok
+    && response.data?.state === "settled"
+    && responseRunId === liveRunId
+    && responseStatus
+    && response.data.cancelled === (responseStatus === "cancelled")
+  ) {
+    settleLiveRun(liveRunId, responseStatus);
+    renderCurrentLive(api);
+    return;
+  }
+  if (
+    response.ok
+    && response.status === 202
+    && response.data?.state === "stop_requested"
+    && responseRunId === liveRunId
+    && response.data.status === "running"
+    && response.data.cancelled === false
+    && response.data.stop_requested === true
+  ) {
+    S.cancelNotice = "Stop requested. Waiting for the run to finish safely; refresh if this takes a while.";
+    renderCurrentLive(api);
+    scheduleCancelReconciliation(operation, api, 0);
+    return;
+  }
+
+  let detail = null;
+  try {
+    detail = await readCancelDetail(operation, api);
+  } catch { /* an ambiguous write remains ambiguous until another read succeeds */ }
+  if (!cancelOperationIsCurrent(operation, api)) return;
+  const detailStatus = runId(detail?.run?.id) === liveRunId
+    ? terminalRunStatus(detail.run.status)
+    : null;
+  retireCancelOperation(operation);
+  if (detailStatus) {
+    settleLiveRun(liveRunId, detailStatus, detail.run.verdict);
+    renderCurrentLive(api);
+    return;
+  }
+  const definitivelyRejected = response.data?.state === "not_cancellable";
+  if (definitivelyRejected) {
+    S.cancelUnavailableRunId = liveRunId;
+    if (runId(S.catalog?.cancellable_run_id) === liveRunId) {
+      S.catalog.cancellable_run_id = null;
+    }
+    S.cancelNotice = "Kairo did not accept this stop request. The run may already be finishing; refresh to confirm.";
+  } else {
+    S.cancelNotice = "Could not confirm the stop request. The run may still be active; try again.";
+  }
+  renderCurrentLive(api);
+}
+
+function scheduleCancelReconciliation(operation, api, attempt) {
+  if (!cancelOperationIsCurrent(operation, api)) return;
+  const delay = CANCEL_RECONCILE_DELAYS_MS[attempt];
+  if (delay === undefined || operation.reconcileTimer !== null) return;
+  operation.reconcileTimer = setTimeout(() => {
+    operation.reconcileTimer = null;
+    void reconcileCancelOperation(operation, api, attempt);
+  }, delay);
+}
+
+async function reconcileCancelOperation(operation, api, attempt) {
+  if (!cancelOperationIsCurrent(operation, api)) return;
+  let detail = null;
+  try {
+    detail = await readCancelDetail(operation, api);
+  } catch { /* retry bounded exact reads; a terminal event may still settle the operation */ }
+  if (!cancelOperationIsCurrent(operation, api)) return;
+
+  const exactDetail = runId(detail?.run?.id) === operation.runId;
+  const detailStatus = exactDetail ? terminalRunStatus(detail.run.status) : null;
+  if (detailStatus) {
+    settleLiveRun(operation.runId, detailStatus, detail.run.verdict);
+    renderCurrentLive(api);
+    return;
+  }
+
+  const nextAttempt = attempt + 1;
+  if (nextAttempt < CANCEL_RECONCILE_DELAYS_MS.length) {
+    scheduleCancelReconciliation(operation, api, nextAttempt);
+    return;
+  }
+
+  retireCancelOperation(operation);
+  S.cancelNotice = exactDetail && detail.run.status === "running"
+    ? "Stop was requested, but final status is still pending. You can retry or refresh."
+    : "Could not confirm the final run status. Refresh or try the stop request again.";
+  renderCurrentLive(api);
+}
+
+async function readCancelDetail(operation, api) {
+  if (!cancelOperationIsCurrent(operation, api)) return null;
+  const controller = new AbortController();
+  operation.reconcileAbort = controller;
+  const timeout = setTimeout(() => controller.abort(), CANCEL_RECONCILE_READ_TIMEOUT_MS);
+  try {
+    return await api.get(`/api/orchestration/${operation.runId}`, {
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+    if (operation.reconcileAbort === controller) operation.reconcileAbort = null;
+  }
+}
+
+function humanStatus(status) {
+  return String(status || "unknown").replace(/_/g, " ");
 }
 
 function renderDetail(container, api, authorityToken) {

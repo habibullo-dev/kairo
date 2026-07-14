@@ -26,10 +26,23 @@ def test_roster_shows_model_and_provider() -> None:
     assert "routeLabel" in STUDIO and "provider" in STUDIO
 
 
-def test_studio_adds_no_new_authority() -> None:
-    # Studio's only mutation is the existing gated orchestration run; no turn / no other route.
+def test_studio_uses_only_existing_scoped_orchestration_authority() -> None:
+    # Studio starts and stops only its own exact orchestration run; chat/global controls remain
+    # separate authority surfaces.
     assert "/api/orchestration/run" in STUDIO
+    assert "`/api/orchestration/${liveRunId}/cancel`" in STUDIO
+    assert "cancellable_run_id" in STUDIO
     assert "/api/turn" not in STUDIO
+
+
+def test_studio_cancel_is_single_flight_and_terminal_truth_is_authoritative() -> None:
+    assert "if (\n    _cancelOperation" in STUDIO
+    assert 'response.data?.state === "settled"' in STUDIO
+    assert 'response.data?.state === "stop_requested"' in STUDIO
+    assert 'response.data?.state === "not_cancellable"' in STUDIO
+    assert 'evt.status === "cancelled"' in STUDIO
+    assert "Run stopped. Completed work remains in this run record." in STUDIO
+    assert 'role="status" aria-live="polite"' in STUDIO
 
 
 def test_studio_does_not_claim_roi_before_review_acceptance() -> None:

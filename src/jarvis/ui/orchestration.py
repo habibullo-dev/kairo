@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from jarvis.core.execution import ExecutionContext, bind_execution_context
@@ -74,6 +75,15 @@ def serialize_estimate(est: RunEstimate | None) -> dict | None:
     }
 
 
+@dataclass(frozen=True, slots=True)
+class OrchestrationCancellation:
+    """One immutable ticket for an exact attended run's cancellation settlement."""
+
+    run_id: int
+    task: asyncio.Task[None]
+    context: ExecutionContext | None
+
+
 class OrchestrationController:
     def __init__(
         self,
@@ -86,10 +96,11 @@ class OrchestrationController:
         self.connections = connections
         self.projects = projects
         self._operation_lock = asyncio.Lock()
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self._current_run_id: int | None = None
         self._current_context: ExecutionContext | None = None
         self._current_project_id: int | None = None
+        self._cancel_ticket: OrchestrationCancellation | None = None
         self.log = get_logger("jarvis.ui.orchestration")
 
     @property
@@ -110,6 +121,28 @@ class OrchestrationController:
         """Whether the one in-flight run belongs to ``project_id``."""
         return self.busy and self._current_project_id == project_id
 
+    def cancellable_run_id(self, context: ExecutionContext | None) -> int | None:
+        """Return the exact attended run this workspace may cancel, if one exists.
+
+        Automatic project assessments also reserve the shared engine, but they are not launched
+        through ``self._task`` and deliberately remain outside attended Studio authority.  The
+        browser therefore receives an exact run id instead of inferring cancellability from the
+        broader ``busy`` flag or a persisted ``running`` row.
+        """
+        task = self._task
+        run_id = self._current_run_id
+        if (
+            not self.busy
+            or task is None
+            or task.done()
+            or not isinstance(run_id, int)
+            or isinstance(run_id, bool)
+            or run_id <= 0
+            or (context is not None and context != self._current_context)
+        ):
+            return None
+        return run_id
+
     async def _reserve(
         self, project_id: int, execution_context: ExecutionContext | None
     ) -> bool:
@@ -120,12 +153,14 @@ class OrchestrationController:
         self._current_run_id = None
         self._current_context = execution_context
         self._current_project_id = project_id
+        self._cancel_ticket = None
         return True
 
     def _release(self) -> None:
         self._current_run_id = None
         self._current_context = None
         self._current_project_id = None
+        self._cancel_ticket = None
         if self._operation_lock.locked():
             self._operation_lock.release()
 
@@ -403,7 +438,6 @@ class OrchestrationController:
             return {"ok": False, "message": str(exc)}, 400
         if not await self._reserve(pid, execution_context):
             return {"ok": False, "message": "an orchestration run is already in flight"}, 409
-        self._current_run_id = run_id
         try:
             self._task = asyncio.create_task(
                 self._resume_run(
@@ -462,21 +496,49 @@ class OrchestrationController:
 
     async def _sink(self, payload: dict, execution_context: ExecutionContext | None) -> None:
         """Capture the run id from the start event (so cancel can target it), then broadcast."""
-        if payload.get("kind") == "orchestration_started":
-            self._current_run_id = payload.get("run_id")
+        if payload.get("kind") in {"orchestration_started", "orchestration_resumed"}:
+            run_id = payload.get("run_id")
+            self._current_run_id = (
+                run_id
+                if isinstance(run_id, int) and not isinstance(run_id, bool) and run_id > 0
+                else None
+            )
             self._current_context = execution_context
         await self.connections.publish(execution_context, payload)
 
-    def cancel(self, run_id: int, *, execution_context: ExecutionContext | None = None) -> bool:
-        """Cancel the in-flight run if it matches ``run_id`` (one run at a time). The engine's
-        shielded handler records 'cancelled'; the orphan sweep is the backstop."""
+    def request_cancel(
+        self,
+        run_id: int,
+        *,
+        execution_context: ExecutionContext | None = None,
+    ) -> OrchestrationCancellation | None:
+        """Signal one exact attended run once and return its immutable settlement ticket.
+
+        The run id is bound only by the engine's started/resumed event. Before that point no
+        arbitrary id can cancel the shared task. Repeated requests reuse the same ticket and never
+        inject a second ``CancelledError`` into the engine's terminal persistence.
+        """
+        task = self._task
         if (
-            self.busy
-            and self._task is not None
-            and not self._task.done()
-            and (self._current_run_id is None or run_id == self._current_run_id)
-            and (execution_context is None or execution_context == self._current_context)
+            not self.busy
+            or task is None
+            or task.done()
+            or self._current_run_id != run_id
+            or (execution_context is not None and execution_context != self._current_context)
         ):
-            self._task.cancel()  # type: ignore[union-attr]
-            return True
-        return False
+            return None
+        ticket = self._cancel_ticket
+        if ticket is not None:
+            return ticket if ticket.task is task and ticket.run_id == run_id else None
+        ticket = OrchestrationCancellation(
+            run_id=run_id,
+            task=task,
+            context=self._current_context,
+        )
+        self._cancel_ticket = ticket
+        task.cancel()
+        return ticket
+
+    def cancel(self, run_id: int, *, execution_context: ExecutionContext | None = None) -> bool:
+        """Compatibility wrapper for non-HTTP callers; prefer :meth:`request_cancel`."""
+        return self.request_cancel(run_id, execution_context=execution_context) is not None

@@ -9,14 +9,17 @@ routes are wired and presence/metadata-only. Keyless: a fake engine + temp SQLit
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.agents import AgentRunStore
 from jarvis.config import BudgetsConfig, load_config
+from jarvis.core.execution import ExecutionContext
 from jarvis.orchestration import WORKFLOWS, OrchestrationStore, estimate_run, resolve_team
 from jarvis.orchestration.estimate import RunEstimate
 from jarvis.persistence.db import connect
@@ -31,7 +34,13 @@ from jarvis.ui.readmodels import (
     teams_catalog,
     workflows_catalog,
 )
-from jarvis.ui.server import create_app
+from jarvis.ui.server import (
+    EXPECTED_CONTEXT_REVISION_HEADER,
+    EXPECTED_PROJECT_HEADER,
+    EXPECTED_SESSION_HEADER,
+    WORKSPACE_HEADER,
+    create_app,
+)
 
 _OPEN: list = []
 
@@ -175,6 +184,75 @@ async def test_cancel_targets_the_in_flight_run() -> None:
     assert ctrl.cancel(engine._run_id) is False  # nothing in flight now
 
 
+async def test_cancel_rejects_every_run_id_until_started_event_binds_exact_run() -> None:
+    ctrl, engine, _c = _controller(1, estimate=_estimate("ok"))
+    await ctrl.start(team_id="backend", workflow_id="implement", task="a")
+    task = ctrl._task
+    assert task is not None and ctrl._current_run_id is None
+
+    assert ctrl.request_cancel(engine._run_id) is None
+    assert ctrl.request_cancel(999_999) is None
+    assert task.cancelling() == 0
+
+    engine.gate.set()
+    await task
+
+
+async def test_duplicate_cancel_requests_reuse_ticket_and_signal_once() -> None:
+    ctrl, engine, _c = _controller(1, estimate=_estimate("ok"))
+    await ctrl.start(team_id="backend", workflow_id="implement", task="a")
+    await asyncio.sleep(0.01)
+    task = ctrl._task
+    assert task is not None
+
+    first = ctrl.request_cancel(engine._run_id)
+    second = ctrl.request_cancel(engine._run_id)
+
+    assert first is not None and second is first
+    assert first.task is task and task.cancelling() == 1
+    await task
+
+
+async def test_resumed_event_is_the_only_resume_cancel_binding() -> None:
+    ctrl, _engine, _conn = _controller(1)
+    owner = ExecutionContext(session_id=11, project_id=1)
+    blocker = asyncio.Event()
+    await ctrl._operation_lock.acquire()
+    ctrl._current_context = owner
+    ctrl._current_project_id = 1
+    ctrl._task = asyncio.create_task(blocker.wait())
+
+    assert ctrl.cancellable_run_id(owner) is None
+    await ctrl._sink({"kind": "orchestration_resumed", "run_id": 73}, owner)
+    assert ctrl.cancellable_run_id(owner) == 73
+
+    ticket = ctrl.request_cancel(73, execution_context=owner)
+    assert ticket is not None
+    with pytest.raises(asyncio.CancelledError):
+        await ticket.task
+    ctrl._release()
+
+
+async def test_cancellable_run_id_is_exact_attended_workspace_authority() -> None:
+    ctrl, engine, _c = _controller(1, estimate=_estimate("ok"))
+    owner = ExecutionContext(session_id=11, project_id=1)
+    foreign = ExecutionContext(session_id=22, project_id=1)
+
+    await ctrl.start(
+        team_id="backend",
+        workflow_id="implement",
+        task="a",
+        execution_context=owner,
+    )
+    await asyncio.sleep(0.01)  # the started event binds the durable run id
+
+    assert ctrl.cancellable_run_id(owner) == engine._run_id
+    assert ctrl.cancellable_run_id(foreign) is None
+    assert ctrl.cancel(engine._run_id, execution_context=owner) is True
+    await ctrl._task
+    assert ctrl.cancellable_run_id(owner) is None
+
+
 async def test_started_event_is_broadcast() -> None:
     ctrl, engine, conn = _controller(1, estimate=_estimate("ok"))
     await ctrl.start(team_id="backend", workflow_id="implement", task="a")
@@ -211,6 +289,24 @@ async def test_automatic_assessment_waits_for_manual_run_and_uses_fixed_team() -
     assert engine.calls[1]["workflow"].id == "project_assessment"
     assert engine.calls[1]["budget_usd"] == 5.0
     assert attached == [engine._run_id]
+
+
+async def test_automatic_assessment_is_busy_but_never_studio_cancellable() -> None:
+    ctrl, engine, _conn = _controller(1, estimate=_estimate("ok"))
+    automatic = asyncio.create_task(
+        ctrl.run_automatic_project_assessment(
+            project_id=1,
+            context=ctrl._build_context("automatic"),
+            budget_usd=5.0,
+        )
+    )
+    await asyncio.sleep(0.01)
+
+    assert ctrl.busy_project(1) is True
+    assert ctrl.cancellable_run_id(ExecutionContext(session_id=11, project_id=1)) is None
+
+    engine.gate.set()
+    await automatic
 
 
 async def test_manual_start_is_busy_while_automatic_assessment_runs() -> None:
@@ -458,6 +554,97 @@ def _cookie(auth: AuthManager) -> dict[str, str]:
     return {"cookie": f"{SESSION_COOKIE}={auth.mint_session()}"}
 
 
+class _CancelRouteStore:
+    def __init__(self, run_id: int, *, status: str = "running", project_id: int = 1) -> None:
+        self.run = SimpleNamespace(id=run_id, status=status, project_id=project_id)
+
+    async def get(self, run_id: int):
+        return self.run if run_id == self.run.id else None
+
+
+class _CancelRouteOrchestrator:
+    def __init__(self, store: _CancelRouteStore) -> None:
+        self.store = store
+        self.cancel_signals = 0
+        self.request_calls = 0
+        self.requested = asyncio.Event()
+        self.allow_settlement = asyncio.Event()
+        self.ticket = None
+        self.task = asyncio.create_task(self._owned_run())
+
+    async def _owned_run(self) -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancel_signals += 1
+            self.requested.set()
+            await self.allow_settlement.wait()
+            self.store.run.status = "cancelled"
+
+    def request_cancel(self, run_id: int, *, execution_context=None):
+        self.request_calls += 1
+        if run_id != self.store.run.id or self.store.run.status != "running":
+            return None
+        if self.ticket is None:
+            self.ticket = SimpleNamespace(task=self.task, run_id=run_id)
+            self.task.cancel()
+        return self.ticket
+
+
+class _CancelRouteWorkspaceRegistry:
+    def __init__(self, *, context: ExecutionContext, revision: int = 3) -> None:
+        self.transition_lock = asyncio.Lock()
+        self.workspace = SimpleNamespace(
+            workspace_id="w" * 24,
+            context=context,
+            context_revision=revision,
+        )
+
+    def resolve(self, *, owner_session, workspace_id):
+        return (
+            self.workspace
+            if owner_session and workspace_id == self.workspace.workspace_id
+            else None
+        )
+
+    def claim_matches(self, workspace, context: ExecutionContext, revision: int) -> bool:
+        return (
+            workspace is self.workspace
+            and context == self.workspace.context
+            and revision == self.workspace.context_revision
+        )
+
+
+def _cancel_route_app(tmp_path: Path, store, orchestrator):
+    cfg = load_config(root=tmp_path, env_file=None)
+    auth = AuthManager(token="tok")
+    app = create_app(cfg, auth=auth, services=UiServices(orchestration=store))
+    app.state.orchestrator = orchestrator
+    return app, auth
+
+
+def _cancel_route_workspace_headers(
+    auth: AuthManager,
+    registry: _CancelRouteWorkspaceRegistry,
+    *,
+    context: ExecutionContext | None = None,
+    revision: int | None = None,
+) -> dict[str, str]:
+    claim = context or registry.workspace.context
+    return {
+        **_cookie(auth),
+        "origin": "http://127.0.0.1",
+        WORKSPACE_HEADER: registry.workspace.workspace_id,
+        EXPECTED_SESSION_HEADER: str(claim.session_id),
+        EXPECTED_PROJECT_HEADER: (
+            str(claim.project_id) if claim.project_id is not None else "global"
+        ),
+        EXPECTED_CONTEXT_REVISION_HEADER: str(
+            registry.workspace.context_revision if revision is None else revision
+        ),
+    }
+
+
 def test_studio_bootstrap_route(tmp_path: Path) -> None:
     client, auth = _client(tmp_path)
     r = client.get("/api/studio", headers=_cookie(auth))
@@ -465,8 +652,295 @@ def test_studio_bootstrap_route(tmp_path: Path) -> None:
     data = r.json()
     assert len(data["teams"]) == 9 and len(data["workflows"]) >= 11
     assert isinstance(data["services"], list) and isinstance(data["model_routes"], list)
+    assert data["cancellable_run_id"] is None
     # presence-only: a service row names its credential envs but never a value
     assert all("credentials_present" in s for s in data["services"])
+
+
+def test_studio_bootstrap_exposes_only_controller_cancellable_run(tmp_path: Path) -> None:
+    class _Orchestrator:
+        def busy_for(self, context) -> bool:
+            assert context is None
+            return True
+
+        def cancellable_run_id(self, context) -> int:
+            assert context is None
+            return 47
+
+    client, auth = _client(tmp_path, orchestrator=_Orchestrator())
+    data = client.get("/api/studio", headers=_cookie(auth)).json()
+
+    assert data["busy"] is True
+    assert data["cancellable_run_id"] == 47
+
+
+async def test_cancel_route_waits_for_canonical_durable_status(tmp_path: Path) -> None:
+    store = _CancelRouteStore(47)
+    orchestrator = _CancelRouteOrchestrator(store)
+    await asyncio.sleep(0)  # enter the owned task before the route signals cancellation
+    app, auth = _cancel_route_app(tmp_path, store, orchestrator)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        request = asyncio.create_task(
+            client.post(
+                "/api/orchestration/47/cancel",
+                headers={**_cookie(auth), "origin": "http://127.0.0.1"},
+                json={},
+            )
+        )
+        requested = asyncio.create_task(orchestrator.requested.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {request, requested}, timeout=2.0, return_when=asyncio.FIRST_COMPLETED
+            )
+            if request in done:
+                early = await request
+                pytest.fail(
+                    f"cancel route returned before signalling the owned task: "
+                    f"{early.status_code} {early.text}"
+                )
+            assert requested in done
+            assert not request.done() and store.run.status == "running"
+            orchestrator.allow_settlement.set()
+            response = await request
+        finally:
+            requested.cancel()
+            orchestrator.allow_settlement.set()
+            if not orchestrator.task.done():
+                orchestrator.task.cancel()
+            if not request.done():
+                request.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await orchestrator.task
+            with contextlib.suppress(asyncio.CancelledError):
+                await request
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "run_id": 47,
+        "state": "settled",
+        "status": "cancelled",
+        "cancelled": True,
+    }
+    assert orchestrator.cancel_signals == 1 and store.run.status == "cancelled"
+
+
+async def test_cancel_route_timeout_reports_request_without_claiming_terminal_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "jarvis.ui.server.ORCHESTRATION_CANCEL_SETTLE_TIMEOUT_SECONDS",
+        0.01,
+    )
+    store = _CancelRouteStore(50)
+    orchestrator = _CancelRouteOrchestrator(store)
+    await asyncio.sleep(0)
+    app, auth = _cancel_route_app(tmp_path, store, orchestrator)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.post(
+            "/api/orchestration/50/cancel",
+            headers={**_cookie(auth), "origin": "http://127.0.0.1"},
+            json={},
+        )
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "ok": True,
+        "run_id": 50,
+        "state": "stop_requested",
+        "status": "running",
+        "cancelled": False,
+        "stop_requested": True,
+        "message": "stop requested; final status is still settling",
+    }
+    assert not orchestrator.task.done() and store.run.status == "running"
+    assert orchestrator.cancel_signals == 1 and orchestrator.task.cancelling() == 1
+
+    orchestrator.allow_settlement.set()
+    await orchestrator.task
+    assert store.run.status == "cancelled"
+
+
+async def test_cancel_route_waiter_cancellation_never_recancels_owned_run(tmp_path: Path) -> None:
+    store = _CancelRouteStore(48)
+    orchestrator = _CancelRouteOrchestrator(store)
+    await asyncio.sleep(0)
+    app, auth = _cancel_route_app(tmp_path, store, orchestrator)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        request = asyncio.create_task(
+            client.post(
+                "/api/orchestration/48/cancel",
+                headers={**_cookie(auth), "origin": "http://127.0.0.1"},
+                json={},
+            )
+        )
+        await asyncio.wait_for(orchestrator.requested.wait(), timeout=2.0)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert orchestrator.task.cancelling() == 1
+        orchestrator.allow_settlement.set()
+        await orchestrator.task
+
+    assert orchestrator.cancel_signals == 1 and store.run.status == "cancelled"
+
+
+async def test_cancel_route_returns_existing_terminal_status_without_signalling(
+    tmp_path: Path,
+) -> None:
+    store = _CancelRouteStore(49, status="ok")
+
+    class _TerminalOrchestrator:
+        request_calls = 0
+
+        def request_cancel(self, run_id: int, *, execution_context=None):
+            self.request_calls += 1
+            return None
+
+    orchestrator = _TerminalOrchestrator()
+    app, auth = _cancel_route_app(tmp_path, store, orchestrator)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.post(
+            "/api/orchestration/49/cancel",
+            headers={**_cookie(auth), "origin": "http://127.0.0.1"},
+            json={},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "settled"
+    assert response.json()["status"] == "ok"
+    assert response.json()["cancelled"] is False
+    assert orchestrator.request_calls == 0
+
+
+async def test_cancel_route_workspace_claim_and_project_scope_fail_closed(tmp_path: Path) -> None:
+    store = _CancelRouteStore(51, project_id=1)
+
+    class _NeverSignalledOrchestrator:
+        request_calls = 0
+
+        def request_cancel(self, run_id: int, *, execution_context=None):
+            self.request_calls += 1
+            return None
+
+    orchestrator = _NeverSignalledOrchestrator()
+    app, auth = _cancel_route_app(tmp_path, store, orchestrator)
+    registry = _CancelRouteWorkspaceRegistry(context=ExecutionContext(session_id=11, project_id=1))
+    app.state.workspaces = registry
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        stale = await client.post(
+            "/api/orchestration/51/cancel",
+            headers=_cancel_route_workspace_headers(auth, registry, revision=2),
+            json={},
+        )
+        foreign_claim = await client.post(
+            "/api/orchestration/51/cancel",
+            headers=_cancel_route_workspace_headers(
+                auth,
+                registry,
+                context=ExecutionContext(session_id=11, project_id=2),
+            ),
+            json={},
+        )
+        store.run.project_id = 2
+        cross_project = await client.post(
+            "/api/orchestration/51/cancel",
+            headers=_cancel_route_workspace_headers(auth, registry),
+            json={},
+        )
+
+    assert stale.status_code == 409 and stale.json() == {
+        "ok": False,
+        "message": "workspace context changed; retry from the current screen",
+    }
+    assert foreign_claim.status_code == 409 and foreign_claim.json() == stale.json()
+    assert cross_project.status_code == 404 and cross_project.json() == {
+        "ok": False,
+        "message": "no such orchestration run",
+    }
+    assert orchestrator.request_calls == 0
+
+
+async def test_cancel_route_running_but_unowned_run_is_not_cancellable(tmp_path: Path) -> None:
+    store = _CancelRouteStore(52, project_id=1)
+
+    class _UnownedOrchestrator:
+        request_calls = 0
+
+        def request_cancel(self, run_id: int, *, execution_context=None):
+            self.request_calls += 1
+            assert run_id == 52
+            assert execution_context == ExecutionContext(session_id=11, project_id=1)
+            return None
+
+    orchestrator = _UnownedOrchestrator()
+    app, auth = _cancel_route_app(tmp_path, store, orchestrator)
+    registry = _CancelRouteWorkspaceRegistry(context=ExecutionContext(session_id=11, project_id=1))
+    app.state.workspaces = registry
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.post(
+            "/api/orchestration/52/cancel",
+            headers=_cancel_route_workspace_headers(auth, registry),
+            json={},
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "ok": False,
+        "run_id": 52,
+        "state": "not_cancellable",
+        "status": "running",
+        "cancelled": False,
+        "message": "this run is not cancellable from the current Studio workspace",
+    }
+    assert orchestrator.request_calls == 1
+
+
+async def test_cancel_route_reconciles_terminal_race_before_not_cancellable(tmp_path: Path) -> None:
+    class _SettlingStore(_CancelRouteStore):
+        reads = 0
+
+        async def get(self, run_id: int):
+            run = await super().get(run_id)
+            self.reads += 1
+            if self.reads == 2 and run is not None:
+                run.status = "ok"
+            return run
+
+    class _SettlingOrchestrator:
+        request_calls = 0
+
+        def request_cancel(self, run_id: int, *, execution_context=None):
+            self.request_calls += 1
+            return None
+
+    store = _SettlingStore(53, project_id=1)
+    orchestrator = _SettlingOrchestrator()
+    app, auth = _cancel_route_app(tmp_path, store, orchestrator)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.post(
+            "/api/orchestration/53/cancel",
+            headers={**_cookie(auth), "origin": "http://127.0.0.1"},
+            json={},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "run_id": 53,
+        "state": "settled",
+        "status": "ok",
+        "cancelled": False,
+    }
+    assert store.reads == 2 and orchestrator.request_calls == 1
 
 
 def test_orchestration_list_503_without_store(tmp_path: Path) -> None:

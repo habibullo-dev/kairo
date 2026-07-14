@@ -1980,6 +1980,479 @@ async def _assert_studio_detail_actions_use_the_owned_route_api(browser: object,
         await context.close()
 
 
+async def _assert_studio_cancel_settlement_survives_remount_and_is_single_flight(
+    browser: object, base: str
+) -> None:
+    context, page, errors = await _open_page(browser, base)
+    try:
+        await _handshake(page)
+        await page.evaluate(
+            """async () => {
+              Object.assign(window.__SEED__['/api/studio'], {
+                active_project_id: 1, busy: true, cancellable_run_id: 88
+              });
+              window.__SEED__['/api/orchestration'] = { runs: [{
+                id: 88, title: 'REMOUNT CANCELLATION', workflow: 'security_review',
+                team: 'security', status: 'running', stage: 'execution',
+                estimated_cost_usd: 0.55, actual_cost_usd: 0
+              }] };
+              window.__SEED__['/api/orchestration/88'] = {
+                run: { id: 88, title: 'REMOUNT CANCELLATION', status: 'running',
+                  project_id: 1, context_manifest: [] }, members: []
+              };
+              const { api } = await import('/static/app.js');
+              const originalGet = api.get.bind(api);
+              const originalPost = api.post.bind(api);
+              window.__studioCancelPosts = [];
+              window.__studioCancelDetailRequests = [];
+              api.get = (path, options) => {
+                if (!['/api/orchestration/88', '/api/orchestration/90'].includes(path)) {
+                  return originalGet(path, options);
+                }
+                return new Promise(resolve => {
+                  window.__studioCancelDetailRequests.push({ path, resolve });
+                });
+              };
+              api.post = (path, body) => {
+                if (!['/api/orchestration/88/cancel',
+                      '/api/orchestration/89/cancel',
+                      '/api/orchestration/90/cancel'].includes(path)) {
+                  return originalPost(path, body);
+                }
+                return new Promise((resolve, reject) => {
+                  window.__studioCancelPosts.push({ path, body, resolve, reject });
+                });
+              };
+              location.hash = 'studio';
+            }"""
+        )
+        cancel = page.get_by_role("button", name="Stop Studio run 88", exact=True)
+        await cancel.wait_for()
+        await page.evaluate(
+            """() => {
+              window.__oldStudioCancel = document.querySelector('[data-studio-cancel-run="88"]');
+              window.__oldStudioCancel.click();
+              window.__oldStudioCancel.click();
+            }"""
+        )
+        await page.wait_for_function("window.__studioCancelPosts.length === 1")
+        assert await page.evaluate(
+            """() => ({
+              path: window.__studioCancelPosts[0].path,
+              body: window.__studioCancelPosts[0].body
+            })"""
+        ) == {"path": "/api/orchestration/88/cancel", "body": {}}
+        await page.wait_for_function(
+            """() => {
+              const button = document.querySelector('[data-studio-cancel-run="88"]');
+              return button?.disabled && button.textContent.trim() === 'Stopping…';
+            }"""
+        )
+
+        # A passive same-authority render rewrites Studio's inner DOM. Neither the detached old
+        # control nor the fresh disabled copy may admit a second exact-run request.
+        await _handshake(page)
+        await page.wait_for_function(
+            """() => {
+              const button = document.querySelector('[data-studio-cancel-run="88"]');
+              return button?.disabled && button.textContent.trim() === 'Stopping…';
+            }"""
+        )
+        await page.evaluate(
+            """() => {
+              window.__oldStudioCancel.click();
+              document.querySelector('[data-studio-cancel-run="88"]').click();
+            }"""
+        )
+        await page.wait_for_timeout(50)
+        assert await page.evaluate("window.__studioCancelPosts.length") == 1
+
+        # A valid 202 is an accepted request, not terminal truth. No websocket completion follows:
+        # bounded exact-run reads must discover the terminal state after a real route remount.
+        await page.evaluate(
+            """() => window.__studioCancelPosts[0].resolve({
+              ok: true, status: 202, data: {
+                ok: true, run_id: 88, state: 'stop_requested', status: 'running',
+                cancelled: false, stop_requested: true
+              }
+            })"""
+        )
+        await page.get_by_text(
+            "Stop requested. Waiting for the run to finish safely; refresh if this takes a while.",
+            exact=True,
+        ).wait_for()
+        assert await cancel.is_disabled()
+        assert await page.evaluate("window.__studioCancelPosts.length") == 1
+
+        await page.evaluate("location.hash = 'chat'")
+        await page.wait_for_selector("#chat-input")
+        await page.evaluate("location.hash = 'studio'")
+        await page.wait_for_function(
+            """() => {
+              const button = document.querySelector('[data-studio-cancel-run="88"]');
+              return button?.disabled && button.textContent.trim() === 'Stopping…';
+            }"""
+        )
+        await page.wait_for_function("window.__studioCancelDetailRequests.length === 1")
+        await page.evaluate(
+            """() => window.__studioCancelDetailRequests[0].resolve({
+              run: { id: 88, status: 'running' }, members: []
+            })"""
+        )
+        await page.wait_for_function("window.__studioCancelDetailRequests.length === 2")
+        await page.evaluate(
+            """() => {
+              Object.assign(window.__SEED__['/api/studio'], {
+                busy: false, cancellable_run_id: null
+              });
+              window.__SEED__['/api/orchestration'].runs[0].status = 'cancelled';
+              window.__SEED__['/api/orchestration/88'].run.status = 'cancelled';
+              window.__studioCancelDetailRequests[1].resolve({
+                run: { id: 88, status: 'cancelled' }, members: []
+              });
+            }"""
+        )
+        await page.get_by_text(
+            "Run stopped. Completed work remains in this run record.", exact=True
+        ).wait_for()
+        assert await page.get_by_role("button", name="Stop Studio run 88", exact=True).count() == 0
+        assert "cancelled" in (await page.locator("#st-live").text_content() or "")
+
+        # Terminal websocket truth can also beat the HTTP waiter. A late accepted response must
+        # not overwrite the actual non-cancel terminal outcome or resurrect the control.
+        await page.evaluate(
+            """() => {
+              Object.assign(window.__SEED__['/api/studio'], {
+                busy: true, cancellable_run_id: 89
+              });
+              window.__SEED__['/api/orchestration'] = { runs: [{
+                id: 89, title: 'EVENT WINS', workflow: 'security_review', team: 'security',
+                status: 'running', stage: 'review', estimated_cost_usd: 0.4,
+                actual_cost_usd: 0.2
+              }] };
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                kind: 'orchestration_started', workspace_id: 'router-workspace',
+                session_id: 5, project_id: 1, context_revision: 1, run_id: 89,
+                team: 'security', workflow: 'security_review', title: 'EVENT WINS'
+              }) });
+            }"""
+        )
+        cancel_89 = page.get_by_role("button", name="Stop Studio run 89", exact=True)
+        await cancel_89.wait_for()
+        await cancel_89.click()
+        await page.wait_for_function("window.__studioCancelPosts.length === 2")
+        await page.evaluate(
+            """() => {
+              Object.assign(window.__SEED__['/api/studio'], {
+                busy: false, cancellable_run_id: null
+              });
+              window.__SEED__['/api/orchestration'].runs[0].status = 'error';
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                kind: 'orchestration_completed', workspace_id: 'router-workspace',
+                session_id: 5, project_id: 1, context_revision: 1,
+                run_id: 89, status: 'error'
+              }) });
+            }"""
+        )
+        await page.get_by_text(
+            "Run finished as error before the stop request settled.", exact=True
+        ).wait_for()
+        await page.evaluate(
+            """() => window.__studioCancelPosts[1].resolve({
+              ok: true, status: 202, data: {
+                ok: true, run_id: 89, state: 'stop_requested', status: 'running',
+                cancelled: false, stop_requested: true
+              }
+            })"""
+        )
+        await page.wait_for_timeout(100)
+        live = await page.locator("#st-live").text_content() or ""
+        assert "Run finished as error before the stop request settled." in live
+        assert "Stop requested. Waiting" not in live
+        assert await page.get_by_role("button", name="Stop Studio run 89", exact=True).count() == 0
+
+        # An authority replacement retires an accepted operation even when its exact read is
+        # already in flight. The old result cannot populate the replacement or schedule a retry.
+        await page.evaluate(
+            """() => {
+              Object.assign(window.__SEED__['/api/studio'], {
+                busy: true, cancellable_run_id: 90
+              });
+              window.__SEED__['/api/orchestration'] = { runs: [{
+                id: 90, title: 'OLD AUTHORITY POLL', workflow: 'security_review',
+                team: 'security', status: 'running', stage: 'execution',
+                estimated_cost_usd: 0.3, actual_cost_usd: 0.1
+              }] };
+            }"""
+        )
+        await _handshake(page)
+        cancel_90 = page.get_by_role("button", name="Stop Studio run 90", exact=True)
+        await cancel_90.wait_for()
+        await cancel_90.click()
+        await page.wait_for_function("window.__studioCancelPosts.length === 3")
+        await page.evaluate(
+            """() => window.__studioCancelPosts[2].resolve({
+              ok: true, status: 202, data: {
+                ok: true, run_id: 90, state: 'stop_requested', status: 'running',
+                cancelled: false, stop_requested: true
+              }
+            })"""
+        )
+        await page.wait_for_function("window.__studioCancelDetailRequests.length === 3")
+        await page.evaluate(
+            """() => {
+              Object.assign(window.__SEED__['/api/studio'], {
+                busy: false, cancellable_run_id: null
+              });
+              window.__SEED__['/api/orchestration'] = { runs: [] };
+            }"""
+        )
+        await _handshake(
+            page,
+            workspace_id="studio-cancel-poll-replacement",
+            session_id=5,
+            project_id=1,
+            context_revision=1,
+        )
+        await page.wait_for_function(
+            "!document.getElementById('screen').textContent.includes('OLD AUTHORITY POLL')"
+        )
+        await page.evaluate(
+            """() => window.__studioCancelDetailRequests[2].resolve({
+              run: { id: 90, status: 'cancelled' }, members: []
+            })"""
+        )
+        await page.wait_for_timeout(1100)
+        replacement = await page.locator("#screen").text_content() or ""
+        assert "OLD AUTHORITY POLL" not in replacement
+        assert "Run stopped" not in replacement
+        assert await page.evaluate("window.__studioCancelDetailRequests.length") == 3
+        assert errors == []
+    finally:
+        await context.close()
+
+
+async def _assert_studio_cancel_is_authority_owned_and_recovers_ambiguity(
+    browser: object, base: str
+) -> None:
+    context, page, errors = await _open_page(browser, base)
+    try:
+        await _handshake(page)
+        await page.evaluate(
+            """async () => {
+              Object.assign(window.__SEED__['/api/studio'], {
+                active_project_id: 1, busy: true, cancellable_run_id: 91
+              });
+              window.__SEED__['/api/orchestration'] = { runs: [{
+                id: 91, title: 'SNAPSHOT RUN A', workflow: 'security_review',
+                team: 'security', status: 'running', stage: 'execution',
+                estimated_cost_usd: 0.6, actual_cost_usd: 0.1
+              }] };
+              const { api } = await import('/static/app.js');
+              const originalGet = api.get.bind(api);
+              const originalPost = api.post.bind(api);
+              window.__studioCancelPosts = [];
+              window.__studioCancelDetailReads = {};
+              window.__studioCancelDetails = {
+                '/api/orchestration/92': {
+                  run: { id: 92, title: 'SNAPSHOT RUN B', status: 'running',
+                    project_id: 1, context_manifest: [] }, members: []
+                },
+                '/api/orchestration/93': {
+                  run: { id: 93, title: 'SNAPSHOT RUN C', status: 'running',
+                    project_id: 1, context_manifest: [] }, members: []
+                }
+              };
+              api.get = (path, options) => {
+                if (!['/api/orchestration/92', '/api/orchestration/93'].includes(path)) {
+                  return originalGet(path, options);
+                }
+                window.__studioCancelDetailReads[path] =
+                  (window.__studioCancelDetailReads[path] || 0) + 1;
+                return Promise.resolve(structuredClone(window.__studioCancelDetails[path]));
+              };
+              api.post = (path, body) => {
+                if (!['/api/orchestration/91/cancel', '/api/orchestration/92/cancel',
+                      '/api/orchestration/93/cancel'].includes(path)) {
+                  return originalPost(path, body);
+                }
+                return new Promise((resolve, reject) => {
+                  window.__studioCancelPosts.push({ path, body, resolve, reject });
+                });
+              };
+              location.hash = 'studio';
+            }"""
+        )
+        cancel = page.get_by_role("button", name="Stop Studio run 91", exact=True)
+        await cancel.wait_for()
+        await page.evaluate(
+            """() => {
+              window.__authorityAStudioCancel = document.querySelector(
+                '[data-studio-cancel-run="91"]'
+              );
+              window.__authorityAStudioCancel.click();
+            }"""
+        )
+        await page.wait_for_function("window.__studioCancelPosts.length === 1")
+
+        # A same-authority server snapshot supersedes pending run A with active run B. The stale
+        # A control/copy retire immediately, and B admits exactly one new request.
+        await page.evaluate(
+            """() => {
+              Object.assign(window.__SEED__['/api/studio'], {
+                busy: true, cancellable_run_id: 92
+              });
+              window.__SEED__['/api/orchestration'] = { runs: [{
+                id: 92, title: 'SNAPSHOT RUN B', workflow: 'security_review',
+                team: 'security', status: 'running', stage: 'review',
+                estimated_cost_usd: 0.5, actual_cost_usd: 0.2
+              }] };
+            }"""
+        )
+        await _handshake(page)
+        cancel_b = page.get_by_role("button", name="Stop Studio run 92", exact=True)
+        await cancel_b.wait_for()
+        assert not await cancel_b.is_disabled()
+        snapshot_b = await page.locator("#st-live").text_content() or ""
+        assert "SNAPSHOT RUN B" in snapshot_b and "SNAPSHOT RUN A" not in snapshot_b
+        assert "Stopping" not in snapshot_b
+        await page.evaluate("window.__authorityAStudioCancel.click()")
+        await page.wait_for_timeout(50)
+        assert await page.evaluate("window.__studioCancelPosts.length") == 1
+        await page.evaluate(
+            """() => {
+              const button = document.querySelector('[data-studio-cancel-run="92"]');
+              button.click();
+              button.click();
+            }"""
+        )
+        await page.wait_for_function("window.__studioCancelPosts.length === 2")
+        assert await cancel_b.is_disabled()
+        assert (
+            await page.evaluate(
+                "window.__studioCancelPosts.filter(item => item.path === "
+                "'/api/orchestration/92/cancel').length"
+            )
+            == 1
+        )
+
+        # A's late terminal envelope cannot clear or settle B despite unchanged workspace authority.
+        await page.evaluate(
+            """() => window.__studioCancelPosts[0].resolve({
+              ok: true, status: 200, data: {
+                ok: true, run_id: 91, state: 'settled', status: 'cancelled', cancelled: true
+              }
+            })"""
+        )
+        await page.wait_for_timeout(100)
+        assert await cancel_b.is_disabled()
+        assert await cancel_b.text_content() == "Stopping…"
+        assert "Run stopped" not in (await page.locator("#st-live").text_content() or "")
+
+        # Once B is accepted, another same-authority snapshot advances to C. It retires B's accepted
+        # copy and reconciliation timer; C becomes independently cancellable exactly once.
+        await page.evaluate(
+            """() => window.__studioCancelPosts[1].resolve({
+              ok: true, status: 202, data: {
+                ok: true, run_id: 92, state: 'stop_requested', status: 'running',
+                cancelled: false, stop_requested: true
+              }
+            })"""
+        )
+        await page.get_by_text(
+            "Stop requested. Waiting for the run to finish safely; refresh if this takes a while.",
+            exact=True,
+        ).wait_for()
+        await page.evaluate(
+            """() => {
+              Object.assign(window.__SEED__['/api/studio'], {
+                busy: true, cancellable_run_id: 93
+              });
+              window.__SEED__['/api/orchestration'] = { runs: [{
+                id: 93, title: 'SNAPSHOT RUN C', workflow: 'security_review',
+                team: 'security', status: 'running', stage: 'execution',
+                estimated_cost_usd: 0.4, actual_cost_usd: 0.2
+              }] };
+            }"""
+        )
+        await _handshake(page)
+        cancel_c = page.get_by_role("button", name="Stop Studio run 93", exact=True)
+        await cancel_c.wait_for()
+        assert not await cancel_c.is_disabled()
+        snapshot_c = await page.locator("#st-live").text_content() or ""
+        assert "SNAPSHOT RUN C" in snapshot_c and "SNAPSHOT RUN B" not in snapshot_c
+        assert "Stop requested. Waiting" not in snapshot_c
+        await page.wait_for_timeout(650)
+        assert (
+            await page.evaluate("window.__studioCancelDetailReads['/api/orchestration/92'] || 0")
+            == 0
+        )
+        await page.evaluate(
+            """() => {
+              const button = document.querySelector('[data-studio-cancel-run="93"]');
+              button.click();
+              button.click();
+            }"""
+        )
+        await page.wait_for_function("window.__studioCancelPosts.length === 3")
+        assert (
+            await page.evaluate(
+                "window.__studioCancelPosts.filter(item => item.path === "
+                "'/api/orchestration/93/cancel').length"
+            )
+            == 1
+        )
+
+        # Retain the ambiguity contract on C: a transport loss plus running detail permits retry;
+        # a malformed nominal success then adopts exact terminal detail.
+        await page.evaluate(
+            "window.__studioCancelPosts[2].reject(new TypeError('offline after commit'))"
+        )
+        await page.get_by_text(
+            "Could not confirm the stop request. The run may still be active; try again.",
+            exact=True,
+        ).wait_for()
+        assert (
+            await page.evaluate("window.__studioCancelDetailReads['/api/orchestration/93'] || 0")
+            == 1
+        )
+        assert not await cancel_c.is_disabled()
+        await page.evaluate(
+            """() => {
+              const button = document.querySelector('[data-studio-cancel-run="93"]');
+              button.click();
+              button.click();
+            }"""
+        )
+        await page.wait_for_function("window.__studioCancelPosts.length === 4")
+        await page.evaluate(
+            """() => {
+              window.__studioCancelDetails['/api/orchestration/93'].run.status = 'cancelled';
+              window.__studioCancelPosts[3].resolve({ ok: true, status: 200, data: {} });
+            }"""
+        )
+        await page.get_by_text(
+            "Run stopped. Completed work remains in this run record.", exact=True
+        ).wait_for()
+        assert (
+            await page.evaluate("window.__studioCancelDetailReads['/api/orchestration/93'] || 0")
+            == 2
+        )
+        assert await page.get_by_role("button", name="Stop Studio run 93", exact=True).count() == 0
+        assert await page.evaluate("window.__studioCancelPosts.map(item => item.path)") == [
+            "/api/orchestration/91/cancel",
+            "/api/orchestration/92/cancel",
+            "/api/orchestration/93/cancel",
+            "/api/orchestration/93/cancel",
+        ]
+        assert await page.evaluate(
+            "window.__studioCancelPosts.every(item => Object.keys(item.body).length === 0)"
+        )
+        assert errors == []
+    finally:
+        await context.close()
+
+
 async def _assert_project_lifecycle_rerenders_gate_and_redirects_workspace(
     browser: object, base: str
 ) -> None:
@@ -3164,6 +3637,14 @@ async def main() -> int:
                         ("daily authority", _assert_daily_refresh_is_authority_owned),
                         ("task history", _assert_task_history_is_route_and_authority_owned),
                         ("studio reads", _assert_studio_state_and_runs_are_authority_owned),
+                        (
+                            "studio cancel settlement",
+                            _assert_studio_cancel_settlement_survives_remount_and_is_single_flight,
+                        ),
+                        (
+                            "studio cancel ownership",
+                            _assert_studio_cancel_is_authority_owned_and_recovers_ambiguity,
+                        ),
                         ("studio route API", _assert_studio_detail_actions_use_the_owned_route_api),
                         ("artifact state", _assert_artifact_refresh_preserves_owned_ui_state),
                         (

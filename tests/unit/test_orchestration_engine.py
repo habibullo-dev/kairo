@@ -931,6 +931,98 @@ async def test_cancellation_records_cancelled_and_reraises(tmp_path: Path) -> No
     assert runs[0].status == "cancelled" and runs[0].finished_at is not None
 
 
+async def test_cancel_during_started_delivery_closes_row_before_completed_event(
+    tmp_path: Path,
+) -> None:
+    store = await _store(tmp_path)
+    started = asyncio.Event()
+    completed: list[dict] = []
+
+    async def should_not_spawn(**kw) -> ToolResult:
+        raise AssertionError("cancellation must win before fan-out")
+
+    async def sink(event: dict) -> None:
+        if event["kind"] == "orchestration_started":
+            started.set()
+            await asyncio.Event().wait()
+        if event["kind"] == "orchestration_completed":
+            persisted = await store.get(event["run_id"])
+            assert persisted is not None
+            assert persisted.status == "cancelled" and persisted.finished_at is not None
+            completed.append(event)
+
+    engine = OrchestrationEngine(
+        spawn=should_not_spawn,
+        store=store,
+        head_client=FakeClient([]),
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+    )
+    task = asyncio.create_task(
+        engine.run(
+            project_id=1,
+            team=resolve_team("research"),
+            workflow=WORKFLOWS["research"],
+            context=_CTX,
+            title="cancel during started event",
+            on_event=sink,
+        )
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    run = (await store.list(project_id=1))[0]
+    assert run.status == "cancelled" and run.finished_at is not None
+    assert [event["status"] for event in completed] == ["cancelled"]
+
+
+async def test_late_cancel_cannot_rewrite_a_terminal_outcome(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    completion_started = asyncio.Event()
+    release_completion = asyncio.Event()
+    completed: list[dict] = []
+
+    async def fake_spawn(**kw) -> ToolResult:
+        return ToolResult(content="done", is_error=False)
+
+    async def sink(event: dict) -> None:
+        if event["kind"] != "orchestration_completed":
+            return
+        persisted = await store.get(event["run_id"])
+        assert persisted is not None and persisted.status == "ok"
+        completed.append(event)
+        completion_started.set()
+        await release_completion.wait()
+
+    engine = OrchestrationEngine(
+        spawn=fake_spawn,
+        store=store,
+        head_client=FakeClient([_synth(), _verdict("accept")]),
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+    )
+    task = asyncio.create_task(
+        engine.run(
+            project_id=1,
+            team=resolve_team("research"),
+            workflow=WORKFLOWS["research"],
+            context=_CTX,
+            title="terminal outcome wins",
+            on_event=sink,
+        )
+    )
+    await completion_started.wait()
+    task.cancel()
+    release_completion.set()
+
+    run_id = await task
+    run = await store.get(run_id)
+    assert run is not None and run.status == "ok" and run.finished_at is not None
+    assert [event["status"] for event in completed] == ["ok"]
+
+
 async def test_budget_hard_stop_halts_before_execution(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     calls: list[dict] = []

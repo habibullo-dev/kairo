@@ -141,6 +141,7 @@ _AUTH_BODY_MAX_BYTES = 4096
 
 #: Hand-written frontend assets (no build step, no CDN) served from here.
 STATIC_DIR = Path(__file__).parent / "static"
+ORCHESTRATION_CANCEL_SETTLE_TIMEOUT_SECONDS = 5.0
 
 #: Browser-provided only as an opaque routing handle.  The server resolves it against the
 #: authenticated cookie and a currently-live WebSocket before it can select a UI workspace.
@@ -1948,6 +1949,15 @@ def create_app(
                     and app.state.orchestrator.busy_for(
                         workspace.context if workspace is not None else None
                     )
+                ),
+                # Exact attended authority only. Automatic assessments may make ``busy`` true,
+                # but the controller deliberately returns no cancellable id for them.
+                "cancellable_run_id": (
+                    app.state.orchestrator.cancellable_run_id(
+                        workspace.context if workspace is not None else None
+                    )
+                    if app.state.orchestrator is not None
+                    else None
                 ),
             }
         )
@@ -3867,20 +3877,92 @@ def create_app(
     @app.post("/api/orchestration/{run_id}/cancel")
     async def orchestration_cancel(run_id: int, request: Request) -> JSONResponse:
         orch = app.state.orchestrator
-        if orch is None:
+        store = app.state.services.orchestration
+        if orch is None or store is None:
             return _unavailable("orchestration")
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
+
+        def settled(run_status: str) -> JSONResponse:
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "run_id": run_id,
+                    "state": "settled",
+                    "status": run_status,
+                    "cancelled": run_status == "cancelled",
+                }
+            )
+
+        async def request_ticket(context: ExecutionContext | None):
+            run = await store.get(run_id)
+            if run is None or (context is not None and run.project_id != context.project_id):
+                return JSONResponse(
+                    {"ok": False, "message": "no such orchestration run"}, status_code=404
+                )
+            if run.status != "running":
+                return settled(run.status)
+            ticket = orch.request_cancel(run_id, execution_context=context)
+            if ticket is not None:
+                return ticket
+            # The task may have settled between the first read and the exact controller check.
+            # Re-read once before reporting a conflict so a late click receives canonical truth.
+            latest = await store.get(run_id)
+            if latest is not None and latest.status != "running":
+                return settled(latest.status)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "run_id": run_id,
+                    "state": "not_cancellable",
+                    "status": latest.status if latest is not None else run.status,
+                    "cancelled": False,
+                    "message": "this run is not cancellable from the current Studio workspace",
+                },
+                status_code=409,
+            )
+
         if workspace is not None:
             claim = _expected_header_claim(request)
             async with app.state.workspaces.transition_lock:
                 if not _claim_matches(workspace, claim):
                     return _context_changed()
-                cancelled = orch.cancel(run_id, execution_context=claim.context)
+                outcome = await request_ticket(claim.context)
         else:
-            cancelled = orch.cancel(run_id, execution_context=None)
-        return JSONResponse({"cancelled": cancelled})
+            outcome = await request_ticket(None)
+        if isinstance(outcome, JSONResponse):
+            return outcome
+
+        timed_out = False
+        try:
+            # A disconnected HTTP waiter never becomes a second cancellation source. The exact
+            # engine task owns terminal persistence and remains alive behind this shield.
+            await asyncio.wait_for(
+                asyncio.shield(outcome.task),
+                timeout=ORCHESTRATION_CANCEL_SETTLE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            timed_out = True
+        latest = await store.get(run_id)
+        if latest is not None and latest.status != "running":
+            return settled(latest.status)
+        return JSONResponse(
+            {
+                "ok": True,
+                "run_id": run_id,
+                "state": "stop_requested",
+                "status": latest.status if latest is not None else "running",
+                "cancelled": False,
+                "stop_requested": True,
+                "message": (
+                    "stop requested; final status is still settling"
+                    if timed_out
+                    else "stop requested; refresh for final status"
+                ),
+            },
+            status_code=202,
+        )
 
     @app.post("/api/orchestration/{run_id}/resume")
     async def orchestration_resume(run_id: int, request: Request) -> JSONResponse:

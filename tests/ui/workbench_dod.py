@@ -293,6 +293,8 @@ _WORKSPACE = {
 }
 _STUDIO = {
     "active_project_id": 1,
+    "busy": False,
+    "cancellable_run_id": None,
     "teams": [
         {
             "id": "security",
