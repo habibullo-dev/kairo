@@ -10,14 +10,28 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
 from rich.console import Console
 
-from jarvis.cli.repl import Repl, build_ui_app, run_ui
+from jarvis.attention import AttentionStore
+from jarvis.cli.repl import (
+    Repl,
+    _build_project_intelligence_coordinator,
+    build_ui_app,
+    run_ui,
+)
 from jarvis.config import load_config
 from jarvis.core import FakeClient
 from jarvis.core.prompts import VOICE_GUIDANCE
+from jarvis.graph import GraphStore
+from jarvis.intelligence import AnalysisJobStore, ProjectReportStore
+from jarvis.knowledge.store import KnowledgeStore
+from jarvis.orchestration import OrchestrationStore
+from jarvis.persistence import SessionStore
+from jarvis.persistence.db import connect
 from jarvis.ui.approver import UIApprover
+from jarvis.ui.readmodels import UiServices
 from jarvis.ui.session import UiSession
 
 
@@ -54,6 +68,61 @@ def test_services_bundle_wired(tmp_path: Path) -> None:
     assert svc.memory is repl.memory
     assert svc.tasks is repl.tasks
     assert svc.knowledge is repl.knowledge
+
+
+async def test_project_intelligence_stores_share_the_host_database(tmp_path: Path) -> None:
+    config = load_config(root=tmp_path, env_file=None)
+    db = await connect(tmp_path / "ui.db")
+    try:
+        store = SessionStore(db)
+        repl = Repl(config, client=FakeClient([]), console=_console(), store=store)
+        app = build_ui_app(config, repl=repl)
+        assert isinstance(app.state.services.analysis_jobs, AnalysisJobStore)
+        assert isinstance(app.state.services.project_reports, ProjectReportStore)
+        assert app.state.services.analysis_jobs.db is db
+        assert app.state.services.project_reports.lock is store.lock
+        assert app.state.project_intelligence is None  # explicit feature gate remains off
+    finally:
+        await db.close()
+
+
+async def test_project_intelligence_coordinator_requires_all_safe_dependencies(
+    tmp_path: Path,
+) -> None:
+    config = load_config(root=tmp_path, env_file=None)
+    config.project_intelligence.enabled = True
+    db = await connect(tmp_path / "coordinator.db")
+    try:
+        store = SessionStore(db)
+        knowledge = SimpleNamespace(store=KnowledgeStore(db, store.lock))
+        repl = SimpleNamespace(
+            knowledge=knowledge,
+            graph=GraphStore(db, store.lock),
+            tasks=None,
+        )
+        services = UiServices(
+            analysis_jobs=AnalysisJobStore(db, store.lock),
+            project_reports=ProjectReportStore(db, store.lock),
+            attention=AttentionStore(db, store.lock),
+            orchestration=OrchestrationStore(db, store.lock),
+        )
+        runner = object()
+        coordinator = _build_project_intelligence_coordinator(
+            config, repl=repl, services=services, runner=runner
+        )
+        assert coordinator is not None
+        assert coordinator.knowledge is knowledge.store
+        assert coordinator.runner is runner
+
+        services.attention = None
+        assert (
+            _build_project_intelligence_coordinator(
+                config, repl=repl, services=services, runner=runner
+            )
+            is None
+        )
+    finally:
+        await db.close()
 
 
 def test_ui_loop_is_not_voice_framed(tmp_path: Path) -> None:

@@ -226,6 +226,9 @@ def create_app(
     # path; production UI routes use only a live, server-owned workspace from this registry.
     app.state.workspaces = None
     app.state.orchestrator = None  # an OrchestrationController, set by build_ui_app; None ⇒ 503
+    # Durable automatic assessment coordinator, composed only by the real UI host when the
+    # explicit policy and every read-only dependency are available.
+    app.state.project_intelligence = None
     # The UI is voice's fail-closed "screen": a VoiceApprover wired to this UIScreenApprover
     # resolves risky voice actions on the authenticated, live, watching Gate surface — or
     # denies. Composed here so the CLI host (Task 9) injects it into the voice VoiceApprover.

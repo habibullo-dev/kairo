@@ -33,6 +33,11 @@ from jarvis.core.events import SubAgentCompleted
 from jarvis.core.prompts import build_system
 from jarvis.digest import DigestBuilder, DigestStore, ensure_digest_task
 from jarvis.graph import GraphStore
+from jarvis.intelligence import (
+    AnalysisJobStore,
+    ProjectIntelligenceCoordinator,
+    ProjectReportStore,
+)
 from jarvis.knowledge.service import KnowledgeService
 from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder, reflect
@@ -2042,6 +2047,15 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
     orch_store = (
         OrchestrationStore(repl.store.db, repl.store.lock) if repl.store is not None else None
     )
+    analysis_jobs = (
+        AnalysisJobStore(repl.store.db, repl.store.lock) if repl.store is not None else None
+    )
+    project_reports = (
+        ProjectReportStore(repl.store.db, repl.store.lock) if repl.store is not None else None
+    )
+    attention = (
+        AttentionStore(repl.store.db, repl.store.lock) if repl.store is not None else None
+    )
     app.state.services = UiServices(
         memory=repl.memory,
         tasks=repl.tasks,
@@ -2053,19 +2067,25 @@ def build_ui_app(config: Config, *, repl: Repl, auth=None, artifacts=None):
         ledger=repl.cost_ledger,  # Phase 10: Costs + A5 ledger-degraded status
         budgets=repl.budgets,  # Phase 10: Costs screen rollups + limits
         orchestration=orch_store,  # Phase 10B: Studio runs
+        analysis_jobs=analysis_jobs,
+        project_reports=project_reports,
         artifacts=artifacts,  # Phase 11: Artifacts Library + global search + content route
         intents=repl.intents,  # Phase 12: the outward-write approval queue
         write_journal=repl.write_journal,  # Phase 12: the metadata-only write journal
         graph=repl.graph,
         embedder=repl.memory.embedder if repl.memory is not None else None,  # Phase 15 search
-        attention=(  # Phase 16: the ONE attention queue (proposals/alerts/reviews)
-            AttentionStore(repl.store.db, repl.store.lock) if repl.store is not None else None
-        ),
+        attention=attention,  # Phase 16: the ONE attention queue (proposals/alerts/reviews)
     )
     if repl.agents is not None and orch_store is not None:
         app.state.orchestrator = _build_orchestrator(
             config, repl=repl, app=app, store=orch_store, artifacts=artifacts
         )
+    app.state.project_intelligence = _build_project_intelligence_coordinator(
+        config,
+        repl=repl,
+        services=app.state.services,
+        runner=app.state.orchestrator,
+    )
     if config.voice.enabled:
         # Voice carries mutable transcript/state just like chat, so create it per browser
         # workspace.  The legacy ``app.state.voice`` remains unset in production; server routes
@@ -2114,6 +2134,44 @@ def _build_orchestrator(config: Config, *, repl: Repl, app, store, artifacts=Non
     )
     return OrchestrationController(
         engine=engine, connections=app.state.connections, projects=repl.projects
+    )
+
+
+def _build_project_intelligence_coordinator(
+    config: Config,
+    *,
+    repl: Repl,
+    services,
+    runner,
+) -> ProjectIntelligenceCoordinator | None:
+    """Compose automatic analysis only when standing consent and every safe seam exist."""
+    if (
+        not config.project_intelligence.enabled
+        or not config.project_intelligence.analyze_after_import
+    ):
+        return None
+    if (
+        repl.knowledge is None
+        or repl.graph is None
+        or services.analysis_jobs is None
+        or services.project_reports is None
+        or services.attention is None
+        or services.orchestration is None
+        or runner is None
+    ):
+        return None
+    router = getattr(repl.tasks, "notification_router", None)
+    return ProjectIntelligenceCoordinator(
+        policy=config.project_intelligence,
+        budgets=config.budgets,
+        knowledge=repl.knowledge.store,
+        graph=repl.graph,
+        jobs=services.analysis_jobs,
+        reports=services.project_reports,
+        attention=services.attention,
+        orchestration=services.orchestration,
+        runner=runner,
+        notification_router=router,
     )
 
 
@@ -2231,6 +2289,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
     store = SessionStore(db)
     runner: BackgroundRunner | None = None
     remote_control: TelegramRemoteControl | None = None
+    project_intelligence: ProjectIntelligenceCoordinator | None = None
     session_id: int | None = None
     utility = memory = None
     try:
@@ -2276,6 +2335,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
 
         auth = AuthManager()
         app = build_ui_app(config, repl=repl, auth=auth, artifacts=artifacts)
+        project_intelligence = app.state.project_intelligence
 
         # Wire the real Playwright driver for the inspect-only browser-QA tool + the screenshot
         # harness, if the `browser` extra is installed. Absent ⇒ the tool keeps its degrading
@@ -2349,6 +2409,23 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
             remote_control=remote_control,
             console=console,
         )
+        if project_intelligence is not None:
+            # The orchestration orphan sweep above is the one process-start recovery boundary.
+            # Ordinary scheduler/operator catch-up starts first; this worker then reconciles its
+            # attached jobs and accepts new read-only analysis work.
+            try:
+                await project_intelligence.start()
+            except Exception as exc:  # optional analysis must not take down the workstation
+                get_logger("jarvis.intelligence.coordinator").warning(
+                    "project_intelligence_start_failed",
+                    error_type=type(exc).__name__,
+                )
+                console.print(
+                    "[yellow]Automatic project assessment is unavailable; "
+                    "the workstation will continue without it.[/]"
+                )
+                app.state.project_intelligence = None
+                project_intelligence = None
 
         url = f"http://{config.ui.host}:{config.ui.port}/?token={auth.launch_token}"
         console.print(
@@ -2366,6 +2443,8 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
             if runner.in_flight:
                 console.print(f'finishing task "{runner.in_flight}" before exit…', markup=False)
             await runner.stop()
+        if project_intelligence is not None:
+            await project_intelligence.stop()
         if (
             memory is not None
             and utility is not None

@@ -60,6 +60,10 @@ class UiServices:
     budgets: Any = None  # a BudgetService; None when cost tracking isn't composed
     # Phase 10B: the orchestration run store backs the Studio history + run detail read models.
     orchestration: Any = None  # an OrchestrationStore; None when orchestration isn't composed
+    # Snapshot-bound project assessment state remains host-owned and append-only.  These stores
+    # are read surfaces only; the coordinator itself lives separately on app.state.
+    analysis_jobs: Any = None  # an AnalysisJobStore
+    project_reports: Any = None  # a ProjectReportStore
     # Phase 11: the artifact store backs the Artifacts Library + global search + content route.
     artifacts: Any = None  # an ArtifactStore; None when artifacts aren't composed
     # Phase 12: the intent store backs the approval queue; the write journal backs the outbox
