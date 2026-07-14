@@ -352,11 +352,13 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
     api.state.projectImport.stage = "graph";
     renderAttachments(container, api);
     renderProjectImportProgress(container, api);
+    let assessmentState = "unavailable";
     try {
       const finalize = new FormData();
       finalize.append("finalize", "true");
       const graph = await api.upload("/api/chat/attachments", finalize);
       if (!graph.ok) failures += 1;
+      else assessmentState = graph.data?.assessment?.state || "unavailable";
     } catch {
       failures += 1;
     }
@@ -369,10 +371,18 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
     const secretNote = summary.secretFiles
       ? ` ${summary.secretFiles.toLocaleString()} file${summary.secretFiles === 1 ? "" : "s"} need credential review.`
       : "";
+    const assessmentNote = {
+      queued: " Kairo's read-only assessment is queued; you'll get a notification when it's ready.",
+      in_progress: " Kairo is already analyzing this project read-only.",
+      ready: " The latest read-only assessment is ready in Notifications.",
+      failed: " The project is indexed, but its assessment needs another attempt.",
+      disabled: " Automatic project assessment is off.",
+      unavailable: " The project is indexed, but automatic assessment is unavailable.",
+    }[assessmentState] || "";
     showToast(
       failures
-        ? `Project import finished: ${indexed}/${summary.total.toLocaleString()} files indexed; ${summary.failed.toLocaleString()} couldn't be added.${secretNote}`
-        : `Project import complete: ${indexed} files indexed.${secretNote} Open Knowledge to explore the tree.`,
+        ? `Project import finished: ${indexed}/${summary.total.toLocaleString()} files indexed; ${summary.failed.toLocaleString()} couldn't be added.${secretNote}${assessmentNote}`
+        : `Project import complete: ${indexed} files indexed.${secretNote}${assessmentNote} Open Knowledge to explore the tree.`,
       failures || summary.secretFiles ? "error" : "success",
     );
   }

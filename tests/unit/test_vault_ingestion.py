@@ -349,12 +349,97 @@ async def test_folder_upload_finalize_rebuilds_the_project_graph(tmp_path: Path)
 
     finalized = client.post(
         "/api/chat/attachments", data={"finalize": "true"}, headers=_cookie(auth))
-    assert finalized.status_code == 200 and finalized.json() == {"ok": True, "graph_rebuilt": True}
+    assert finalized.status_code == 200 and finalized.json() == {
+        "ok": True,
+        "graph_rebuilt": True,
+        "assessment": {"state": "disabled"},
+    }
     edges = await client.app.state.services.graph.list_edges(
         project_id=project_id, include_global=False
     )
     assert any(edge.src_kind == "project" and edge.dst_kind == "folder" for edge in edges)
     assert any(edge.src_kind == "folder" and edge.dst_kind == "source" for edge in edges)
+
+
+@pytest.mark.parametrize(
+    ("job_state", "wire_state"),
+    [
+        ("queued", "queued"),
+        ("running", "in_progress"),
+        ("published", "ready"),
+        ("failed", "failed"),
+    ],
+)
+async def test_folder_finalize_returns_only_closed_assessment_state(
+    tmp_path: Path,
+    job_state: str,
+    wire_state: str,
+) -> None:
+    svc = await _service(tmp_path)
+    projects = ProjectStore(svc.store.db, svc.store.lock)
+    project_id = await projects.create(name="Folder project")
+    project_service = ProjectService(projects)
+    await project_service.activate(project_id)
+    client, auth = _app(tmp_path, svc)
+    client.app.state.projects = project_service
+    client.app.state.services = UiServices(
+        knowledge=svc, graph=GraphStore(svc.store.db, svc.store.lock),
+    )
+    client.app.state.config.project_intelligence.enabled = True
+
+    class Coordinator:
+        async def enqueue_project(self, received_project_id: int):
+            assert received_project_id == project_id
+            return SimpleNamespace(enabled=True, state=job_state, secret="must-not-ship")
+
+    client.app.state.project_intelligence = Coordinator()
+    await svc.ingest_uploaded(
+        "main.py", b"print('folder import')", project_id=project_id, relative_path="repo/main.py"
+    )
+    finalized = client.post(
+        "/api/chat/attachments", data={"finalize": "true"}, headers=_cookie(auth)
+    )
+    assert finalized.status_code == 200
+    assert finalized.json() == {
+        "ok": True,
+        "graph_rebuilt": True,
+        "assessment": {"state": wire_state},
+    }
+
+
+async def test_folder_finalize_keeps_graph_success_when_assessment_enqueue_fails(
+    tmp_path: Path,
+) -> None:
+    svc = await _service(tmp_path)
+    projects = ProjectStore(svc.store.db, svc.store.lock)
+    project_id = await projects.create(name="Folder project")
+    project_service = ProjectService(projects)
+    await project_service.activate(project_id)
+    client, auth = _app(tmp_path, svc)
+    client.app.state.projects = project_service
+    client.app.state.services = UiServices(
+        knowledge=svc, graph=GraphStore(svc.store.db, svc.store.lock),
+    )
+    client.app.state.config.project_intelligence.enabled = True
+
+    class Coordinator:
+        async def enqueue_project(self, _project_id: int):
+            raise RuntimeError("provider body must not ship")
+
+    client.app.state.project_intelligence = Coordinator()
+    await svc.ingest_uploaded(
+        "main.py", b"print('folder import')", project_id=project_id, relative_path="repo/main.py"
+    )
+    finalized = client.post(
+        "/api/chat/attachments", data={"finalize": "true"}, headers=_cookie(auth)
+    )
+    assert finalized.status_code == 200
+    assert finalized.json() == {
+        "ok": True,
+        "graph_rebuilt": True,
+        "assessment": {"state": "unavailable"},
+    }
+    assert "provider body" not in finalized.text
 
 
 async def test_project_folder_detach_rejects_only_that_folder_and_rebuilds_graph(

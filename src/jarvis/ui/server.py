@@ -155,6 +155,19 @@ def _unavailable(service: str) -> JSONResponse:
     return JSONResponse({"ok": False, "message": f"{service} unavailable"}, status_code=503)
 
 
+def _assessment_enqueue_state(outcome: object) -> str:
+    """Project one durable enqueue outcome to the upload route's closed status vocabulary."""
+    if not bool(getattr(outcome, "enabled", False)):
+        return "disabled"
+    return {
+        "queued": "queued",
+        "running": "in_progress",
+        "published": "ready",
+        "failed": "failed",
+        "discarded": "failed",
+    }.get(str(getattr(outcome, "state", "") or ""), "unavailable")
+
+
 def _workspace_required() -> JSONResponse:
     """Refuse a context-sensitive request before its authenticated socket is bound."""
     return JSONResponse(
@@ -1462,10 +1475,39 @@ def create_app(
             # The folder UI finalizes separately, so one rejected last file cannot leave the
             # already-indexed project without its derived source edges.
             if form.get("finalize") == "true" and upload is None:
+                disabled = not (
+                    config.project_intelligence.enabled
+                    and config.project_intelligence.analyze_after_import
+                )
                 if project_id is None or app.state.services.graph is None:
-                    return JSONResponse({"ok": True, "graph_rebuilt": False})
+                    return JSONResponse(
+                        {
+                            "ok": True,
+                            "graph_rebuilt": False,
+                            "assessment": {"state": "disabled" if disabled else "unavailable"},
+                        }
+                    )
                 await rebuild_graph(app.state.services.graph)
-                return JSONResponse({"ok": True, "graph_rebuilt": True})
+                coordinator = app.state.project_intelligence
+                if coordinator is None:
+                    assessment_state = "disabled" if disabled else "unavailable"
+                else:
+                    try:
+                        outcome = await coordinator.enqueue_project(project_id)
+                        assessment_state = _assessment_enqueue_state(outcome)
+                    except Exception as exc:  # graph/import success is independent of analysis
+                        log.warning(
+                            "project_assessment_enqueue_failed",
+                            error_type=type(exc).__name__,
+                        )
+                        assessment_state = "unavailable"
+                return JSONResponse(
+                    {
+                        "ok": True,
+                        "graph_rebuilt": True,
+                        "assessment": {"state": assessment_state},
+                    }
+                )
             filename = getattr(upload, "filename", None)
             reader = getattr(upload, "read", None)
             if not filename or not callable(reader):
