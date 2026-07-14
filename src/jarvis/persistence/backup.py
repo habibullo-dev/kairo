@@ -1,9 +1,11 @@
 """Local, secret-excluding backup and verification primitives.
 
-Backups deliberately cover only recoverable Kairo state under ``data/``. OAuth material,
-environment files, configuration, logs, and unknown data roots are never copied. SQLite is
-captured with its online backup API, so a running Kairo process cannot produce a torn database
-file. Restore is intentionally out of scope for this MVP: verification never overwrites live data.
+Backups deliberately cover only recoverable Kairo state under ``data/``. OAuth bearer material,
+environment files, configuration, logs, and unknown data roots are never copied. The database does
+contain a non-replayable Argon2 owner verifier and digest-only session records, so a backup remains
+private user data and must be protected accordingly. SQLite is captured with its online backup API,
+so a running Kairo process cannot produce a torn database file. Restore is intentionally out of
+scope for this MVP: verification never overwrites live data.
 """
 
 from __future__ import annotations

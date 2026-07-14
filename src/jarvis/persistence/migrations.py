@@ -1405,6 +1405,74 @@ CREATE INDEX IF NOT EXISTS idx_project_reports_current
 """
 
 
+# A Kairo workstation has exactly one human owner.  Credentials and browser sessions live in the
+# main transactional database so enrollment cannot race, reset can revoke atomically, and ordinary
+# process restarts preserve identity.  Session bearer values and bootstrap grants are never stored
+# — only SHA-256 digests.  Passkeys are schema-ready but deliberately not claimed as supported
+# until Kairo has a canonical RP host/origin and a maintained WebAuthn verifier.
+_SCHEMA_V31 = """
+CREATE TABLE IF NOT EXISTS owner_accounts (
+    id                  INTEGER PRIMARY KEY CHECK (id = 1),
+    username            TEXT NOT NULL COLLATE NOCASE
+                        CHECK (length(username) BETWEEN 3 AND 64),
+    credential_epoch    INTEGER NOT NULL DEFAULT 1 CHECK (credential_epoch >= 1),
+    failed_attempts     INTEGER NOT NULL DEFAULT 0 CHECK (failed_attempts >= 0),
+    locked_until        TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS owner_password_credentials (
+    owner_id             INTEGER PRIMARY KEY CHECK (owner_id = 1)
+                         REFERENCES owner_accounts(id) ON DELETE CASCADE,
+    password_hash        TEXT NOT NULL,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS owner_passkey_credentials (
+    credential_id   BLOB PRIMARY KEY,
+    owner_id        INTEGER NOT NULL DEFAULT 1
+                    REFERENCES owner_accounts(id) ON DELETE CASCADE,
+    public_key      BLOB NOT NULL,
+    sign_count      INTEGER NOT NULL DEFAULT 0 CHECK (sign_count >= 0),
+    transports_json TEXT NOT NULL DEFAULT '[]',
+    user_verified   INTEGER NOT NULL DEFAULT 0 CHECK (user_verified IN (0, 1)),
+    backup_eligible INTEGER NOT NULL DEFAULT 0 CHECK (backup_eligible IN (0, 1)),
+    backup_state    INTEGER NOT NULL DEFAULT 0 CHECK (backup_state IN (0, 1)),
+    created_at      TEXT NOT NULL,
+    last_used_at    TEXT,
+    revoked_at      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS owner_sessions (
+    token_hash          TEXT PRIMARY KEY CHECK (length(token_hash) = 64),
+    owner_id            INTEGER NOT NULL DEFAULT 1
+                        REFERENCES owner_accounts(id) ON DELETE CASCADE,
+    credential_epoch    INTEGER NOT NULL CHECK (credential_epoch >= 1),
+    auth_method         TEXT NOT NULL CHECK (auth_method IN ('password', 'passkey')),
+    created_at          TEXT NOT NULL,
+    last_seen_at        TEXT NOT NULL,
+    idle_expires_at     TEXT NOT NULL,
+    absolute_expires_at TEXT NOT NULL,
+    step_up_until       TEXT NOT NULL,
+    revoked_at          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_owner_sessions_active
+    ON owner_sessions(owner_id, revoked_at, idle_expires_at, absolute_expires_at);
+
+CREATE TABLE IF NOT EXISTS owner_auth_grants (
+    grant_hash   TEXT PRIMARY KEY CHECK (length(grant_hash) = 64),
+    scope        TEXT NOT NULL CHECK (scope IN ('enroll', 'recover')),
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL,
+    consumed_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_owner_auth_grants_active
+    ON owner_auth_grants(scope, consumed_at, expires_at);
+"""
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1441,6 +1509,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (28, _migrate_v28),
     (29, _SCHEMA_V29),
     (30, _SCHEMA_V30),
+    (31, _SCHEMA_V31),
 ]
 
 

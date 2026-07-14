@@ -10,6 +10,7 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "anthropic>=0.116.0",
     "apscheduler>=3.11,<4",
+    "argon2-cffi>=25.1.0",
     "httpx>=0.27",  # connectors REST (Phase 9); also a transitive dep of trafilatura/voyageai
     "markitdown[docx,pdf,pptx,xlsx]>=0.1.6,<0.2",
     "numpy>=2.5.1",
