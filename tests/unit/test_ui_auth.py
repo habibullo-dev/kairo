@@ -73,6 +73,13 @@ def test_token_check_constant_time_and_correct() -> None:
     assert not auth.check_token(None)
 
 
+def test_launch_token_consumes_exactly_once() -> None:
+    auth = AuthManager(token="tok-GOOD")
+    assert not auth.consume_token("tok-BAD")
+    assert auth.consume_token("tok-GOOD")
+    assert not auth.consume_token("tok-GOOD")
+
+
 def test_session_mint_and_validate() -> None:
     auth = AuthManager(token="t")
     sid = auth.mint_session()

@@ -262,6 +262,46 @@ async def test_emergency_cancel_covers_every_live_workspace(tmp_path: Path) -> N
     assert not workspace_a.session.busy and not workspace_b.session.busy
 
 
+async def test_revoked_owner_drop_cancels_and_forgets_only_owned_workspaces(
+    tmp_path: Path,
+) -> None:
+    replaced: list[ExecutionContext] = []
+    registry, connections, _projects = await _registry(
+        tmp_path, on_context_replaced=replaced.append
+    )
+    conn_a1 = connections.register(_Socket(), owner_session="owner-a")
+    conn_a2 = connections.register(_Socket(), owner_session="owner-a")
+    conn_b = connections.register(_Socket(), owner_session="owner-b")
+    workspace_a1 = await registry.attach(conn_a1, owner_session="owner-a")
+    workspace_a2 = await registry.attach(conn_a2, owner_session="owner-a")
+    workspace_b = await registry.attach(conn_b, owner_session="owner-b")
+    workspace_a1.session._current = asyncio.create_task(asyncio.Event().wait())
+    workspace_a2.session._current = asyncio.create_task(asyncio.Event().wait())
+
+    assert registry.drop_owner_session("owner-a") == 2
+    await asyncio.gather(
+        workspace_a1.session._current,
+        workspace_a2.session._current,
+        return_exceptions=True,
+    )
+    assert registry.resolve(
+        owner_session="owner-a", workspace_id=workspace_a1.workspace_id
+    ) is None
+    assert (
+        registry.resolve(owner_session="owner-b", workspace_id=workspace_b.workspace_id)
+        is workspace_b
+    )
+    assert {context.session_id for context in replaced} == {
+        workspace_a1.context.session_id,
+        workspace_a2.context.session_id,
+    }
+
+    assert registry.drop_all() == 1
+    assert registry.resolve(
+        owner_session="owner-b", workspace_id=workspace_b.workspace_id
+    ) is None
+
+
 async def test_project_switch_fails_old_context_gate_approval(tmp_path: Path) -> None:
     registry, connections, projects = await _registry(tmp_path)
     project_id = await projects.store.create(name="Replacement")

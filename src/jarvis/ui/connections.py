@@ -63,6 +63,14 @@ class ConnectionManager:
     def get(self, conn_id: str) -> Connection | None:
         return self._conns.get(conn_id)
 
+    def for_owner_session(self, owner_session: str) -> list[Connection]:
+        """Snapshot every socket authenticated by one exact browser bearer."""
+        return [conn for conn in self._conns.values() if conn.owner_session == owner_session]
+
+    def all(self) -> list[Connection]:
+        """Snapshot all registered sockets for owner-wide recovery invalidation."""
+        return list(self._conns.values())
+
     def touch(self, conn: Connection) -> None:
         """Record a heartbeat (resets the liveness window)."""
         conn.last_beat = self._clock()

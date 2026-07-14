@@ -175,6 +175,7 @@ class AuthManager:
         self._session_store_path = session_store_path
         self._clock = clock
         self._sessions: dict[str, float] = self._load_sessions()
+        self._launch_token_consumed = False
 
     @staticmethod
     def _digest(sid: str) -> str:
@@ -243,6 +244,18 @@ class AuthManager:
         if not token:
             return False
         return secrets.compare_digest(token, self.launch_token)
+
+    def consume_token(self, token: str | None) -> bool:
+        """Consume the per-process launch token exactly once.
+
+        Owner-mode HTTP uses this only to mint a short-lived enrollment/recovery grant.  Legacy
+        callers retain ``check_token`` until the owner UI handoff is activated.
+        """
+        valid = self.check_token(token)
+        if self._launch_token_consumed or not valid:
+            return False
+        self._launch_token_consumed = True
+        return True
 
     def mint_session(self) -> str:
         """Create and record a new opaque session id (returned only as an HttpOnly cookie)."""

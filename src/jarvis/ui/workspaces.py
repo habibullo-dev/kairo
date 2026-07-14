@@ -248,6 +248,21 @@ class UiWorkspaceRegistry:
         """Cancel every attended turn for the workstation emergency-stop route."""
         return sum(1 for workspace in self._workspaces.values() if workspace.session.cancel())
 
+    def drop_owner_session(self, owner_session: str) -> int:
+        """Cancel and forget every workspace owned by one revoked browser session."""
+        keys = [key for key in self._workspaces if key[0] == owner_session]
+        for key in keys:
+            workspace = self._workspaces.pop(key)
+            workspace.session.cancel()
+            if self.on_context_replaced is not None:
+                self.on_context_replaced(workspace.context)
+        return len(keys)
+
+    def drop_all(self) -> int:
+        """Cancel and forget all workspaces after owner-wide credential recovery."""
+        owner_sessions = {owner_session for owner_session, _workspace_id in self._workspaces}
+        return sum(self.drop_owner_session(owner_session) for owner_session in owner_sessions)
+
     async def publish_workspace(self, workspace: UiWorkspace, message: dict) -> None:
         """Emit a lifecycle event that introduces the workspace's replacement context."""
         await self.connections.publish_workspace(

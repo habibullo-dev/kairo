@@ -1,9 +1,10 @@
 """FastAPI app for the workstation UI (Phase 8) — the safety core.
 
-Every response carries hardening headers; the token-exchange route mints a session and
-redirects to a CLEAN url (no token in history); the WebSocket authenticates in-endpoint
-(HTTP middleware does not run for WS). There is deliberately **no CORS middleware** — no
-route ever emits an ``Access-Control-Allow-*`` header (ADR-0008 §2).
+Every response carries hardening headers. In owner mode, token exchange mints only a scoped,
+one-use enrollment/recovery grant and redirects to a CLEAN url (no token in history); normal
+login creates the application session. The WebSocket authenticates in-endpoint (HTTP middleware
+does not run for WS). There is deliberately **no CORS middleware** — no route ever emits an
+``Access-Control-Allow-*`` header (ADR-0008 §2).
 
 Task 2 ships the auth/transport core: token exchange, session enforcement, Host/Origin
 guards, headers, ``/api/health``, and the WS hello/heartbeat/surface lifecycle. Turns,
@@ -13,6 +14,7 @@ approvals, read models, and the frontend land in later tasks against this floor.
 from __future__ import annotations
 
 import contextlib
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,6 +48,15 @@ from jarvis.ui.approver import (
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager, host_allowed, origin_allowed
 from jarvis.ui.connections import Connection, ConnectionManager
 from jarvis.ui.gate_api import policy_snapshot, read_today_audit
+from jarvis.ui.owner_auth import (
+    AUTH_GRANT_MINUTES,
+    IssuedOwnerSession,
+    OwnerAlreadyEnrolledError,
+    OwnerAuthError,
+    OwnerAuthService,
+    OwnerGrantError,
+    OwnerLoginThrottledError,
+)
 from jarvis.ui.readmodels import (
     UiServices,
     activity_feed,
@@ -98,6 +109,26 @@ _MEMORY_TYPES = frozenset({"fact", "preference", "project", "episode"})
 #: Everything else — including static app assets and data GETs — requires the session cookie
 #: (the authenticated browser has it after the exchange; an anonymous fetch gets 401).
 _OPEN_PATHS = frozenset({"/api/health"})
+
+#: Owner-mode routes that are reachable before an application session exists.  This is an exact
+#: allowlist: the workstation SPA, its assets, APIs, and WebSocket remain private.
+_OWNER_OPEN_PATHS = frozenset(
+    {
+        "/api/health",
+        "/setup",
+        "/login",
+        "/recover",
+        "/auth/enroll",
+        "/auth/login",
+        "/auth/recover",
+    }
+)
+
+#: Short-lived, HttpOnly bootstrap credential.  It can enroll/recover but never enter the app.
+AUTH_GRANT_COOKIE = "kairo_auth_grant"
+
+#: Bound authentication payloads before JSON decoding or Argon2 work.
+_AUTH_BODY_MAX_BYTES = 4096
 
 #: Hand-written frontend assets (no build step, no CDN) served from here.
 STATIC_DIR = Path(__file__).parent / "static"
@@ -195,6 +226,7 @@ def create_app(
     config: Config,
     *,
     auth: AuthManager | None = None,
+    owner_auth: OwnerAuthService | None = None,
     connections: ConnectionManager | None = None,
     gate: PermissionGate | None = None,
     session: object | None = None,
@@ -217,6 +249,7 @@ def create_app(
     log = get_logger("jarvis.ui")
     app = FastAPI(title="Kairo Workstation", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.auth = auth
+    app.state.owner_auth = owner_auth
     app.state.connections = connections
     app.state.approvals = approvals
     # Durable parked runs are still resumed only by a host-composed callback.  This manager
@@ -365,6 +398,65 @@ def create_app(
             safe_name = f"{artifact.title}{suffix}"
         return FileResponse(path, media_type=media_type, filename=safe_name)
 
+    async def _auth_json(request: Request) -> tuple[dict[str, object] | None, Response | None]:
+        """Read one deliberately tiny JSON object without buffering an attacker-sized body."""
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                if int(content_length) > _AUTH_BODY_MAX_BYTES:
+                    return None, _deny(status.HTTP_413_CONTENT_TOO_LARGE, "body too large")
+            except ValueError:
+                return None, _deny(status.HTTP_400_BAD_REQUEST, "invalid request")
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > _AUTH_BODY_MAX_BYTES:
+                return None, _deny(status.HTTP_413_CONTENT_TOO_LARGE, "body too large")
+        try:
+            body = json.loads(raw or b"{}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None, _deny(status.HTTP_400_BAD_REQUEST, "invalid request")
+        if not isinstance(body, dict):
+            return None, _deny(status.HTTP_400_BAD_REQUEST, "invalid request")
+        return body, None
+
+    def _body_text(body: dict[str, object], key: str) -> str:
+        value = body.get(key)
+        return value if isinstance(value, str) else ""
+
+    def _set_owner_session_cookie(resp: Response, issued: IssuedOwnerSession) -> None:
+        # Loopback is plain HTTP, so Secure would make the browser silently discard the cookie.
+        resp.set_cookie(
+            SESSION_COOKIE,
+            issued.token,
+            httponly=True,
+            samesite="strict",
+            secure=False,
+            path="/",
+            max_age=issued.cookie_max_age,
+        )
+
+    async def _invalidate_owner_runtime(owner_session: str | None = None) -> None:
+        """Remove revoked browser authority from every in-memory safety surface immediately."""
+        targets = (
+            connections.for_owner_session(owner_session)
+            if owner_session is not None
+            else connections.all()
+        )
+        for conn in targets:
+            approvals.invalidate_connection(conn)
+            app.state.parked_task_approvals.invalidate_connection(conn)
+            connections.drop(conn)
+            with contextlib.suppress(Exception):
+                await conn.ws.close(code=status.WS_1008_POLICY_VIOLATION)
+        registry = app.state.workspaces
+        if registry is not None:
+            async with registry.transition_lock:
+                if owner_session is None:
+                    registry.drop_all()
+                else:
+                    registry.drop_owner_session(owner_session)
+
     @app.middleware("http")
     async def guard(request: Request, call_next):  # noqa: ANN001,ANN202 - framework signature
         # 1. Host allowlist FIRST — anti DNS-rebinding (a rebound name still sends its Host).
@@ -377,15 +469,32 @@ def create_app(
             scheme=request.url.scheme,
         ):
             return _deny(status.HTTP_403_FORBIDDEN, "bad origin")
-        # 3. Token exchange at `/?token=…`: mint a session, redirect CLEAN (no token in the
-        #    served url / history), no-store. The token is never echoed back.
+        # 3. Token exchange at `/?token=…`. Owner mode creates only a short-lived, one-use
+        #    enrollment/recovery grant. It never creates an application session.
         token = request.query_params.get("token")
         if token is not None and request.url.path == "/":
+            if owner_auth is not None:
+                if not auth.consume_token(token):
+                    return _deny(status.HTTP_401_UNAUTHORIZED, "bad token")
+                scope = "recover" if await owner_auth.is_enrolled() else "enroll"
+                grant = await owner_auth.issue_auth_grant(scope)
+                destination = "/recover" if scope == "recover" else "/setup"
+                resp = RedirectResponse(url=destination, status_code=status.HTTP_303_SEE_OTHER)
+                resp.set_cookie(
+                    AUTH_GRANT_COOKIE,
+                    grant.token,
+                    httponly=True,
+                    samesite="strict",
+                    secure=False,
+                    path="/",
+                    max_age=AUTH_GRANT_MINUTES * 60,
+                )
+                log.info("ui_auth_grant_minted", scope=scope)
+                return _secure(resp, no_store=True)
             if not auth.check_token(token):
                 return _deny(status.HTTP_401_UNAUTHORIZED, "bad token")
             sid = auth.mint_session()
             resp = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-            # secure=False: loopback is http, so a Secure cookie would never be sent back.
             resp.set_cookie(
                 SESSION_COOKIE,
                 sid,
@@ -396,17 +505,214 @@ def create_app(
             )
             log.info("ui_session_minted")  # note: the token is NOT logged
             return _secure(resp, no_store=True)
-        # 4. Session required everywhere except the open paths.
-        if request.url.path not in _OPEN_PATHS and not auth.is_valid_session(
+
+        # 4. Owner sessions are durable, sliding, credential-epoch-bound records. The exact open
+        #    surface is only health plus setup/login/recovery. Legacy mode remains byte-compatible.
+        if owner_auth is not None:
+            bearer = request.cookies.get(SESSION_COOKIE)
+            owner_state = await owner_auth.validate_session(bearer)
+            request.state.owner_session_state = owner_state
+            request.state.skip_session_renewal = False
+            if request.url.path == "/" and owner_state is None:
+                destination = "/login" if await owner_auth.is_enrolled() else "/setup"
+                return _secure(
+                    RedirectResponse(url=destination, status_code=status.HTTP_303_SEE_OTHER),
+                    no_store=True,
+                )
+            if request.url.path not in _OWNER_OPEN_PATHS and owner_state is None:
+                return _deny(status.HTTP_401_UNAUTHORIZED, "authentication required")
+        elif request.url.path not in _OPEN_PATHS and not auth.is_valid_session(
             request.cookies.get(SESSION_COOKIE)
         ):
             return _deny(status.HTTP_401_UNAUTHORIZED, "authentication required")
         resp = await call_next(request)
-        return _secure(resp, no_store=request.url.path.startswith("/api"))
+        if (
+            owner_auth is not None
+            and (owner_state := getattr(request.state, "owner_session_state", None)) is not None
+            and owner_state.renew_cookie
+            and not request.state.skip_session_renewal
+            and (bearer := request.cookies.get(SESSION_COOKIE)) is not None
+        ):
+            _set_owner_session_cookie(
+                resp,
+                IssuedOwnerSession(
+                    bearer,
+                    owner_state.idle_expires_at,
+                    owner_state.absolute_expires_at,
+                    owner_state.cookie_max_age,
+                ),
+            )
+        return _secure(
+            resp,
+            no_store=(
+                request.url.path.startswith(("/api", "/auth"))
+                or request.url.path in {"/setup", "/login", "/recover"}
+            ),
+        )
 
     @app.get("/api/health")
     async def health() -> dict:
         return {"status": "ok", "app": "kairo"}
+
+    # --- Single-owner authentication -----------------------------------------------
+
+    @app.get("/setup")
+    async def owner_setup(request: Request) -> Response:
+        if owner_auth is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        if await owner_auth.is_enrolled():
+            destination = "/" if request.state.owner_session_state is not None else "/login"
+            return RedirectResponse(url=destination, status_code=status.HTTP_303_SEE_OTHER)
+        if not await owner_auth.auth_grant_valid(request.cookies.get(AUTH_GRANT_COOKIE), "enroll"):
+            return _deny(status.HTTP_401_UNAUTHORIZED, "setup link required")
+        return JSONResponse({"page": "setup", "ready": True})
+
+    @app.get("/login")
+    async def owner_login_page(request: Request) -> Response:
+        if owner_auth is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        if not await owner_auth.is_enrolled():
+            return RedirectResponse(url="/setup", status_code=status.HTTP_303_SEE_OTHER)
+        if request.state.owner_session_state is not None:
+            return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+        return JSONResponse({"page": "login", "ready": True})
+
+    @app.get("/recover")
+    async def owner_recovery_page(request: Request) -> Response:
+        if owner_auth is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        if not await owner_auth.is_enrolled():
+            return RedirectResponse(url="/setup", status_code=status.HTTP_303_SEE_OTHER)
+        if not await owner_auth.auth_grant_valid(request.cookies.get(AUTH_GRANT_COOKIE), "recover"):
+            return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return JSONResponse({"page": "recover", "ready": True})
+
+    @app.post("/auth/enroll")
+    async def owner_enroll(request: Request) -> Response:
+        if owner_auth is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        body, error = await _auth_json(request)
+        if error is not None:
+            return error
+        assert body is not None
+        try:
+            outcome = await owner_auth.enroll(
+                request.cookies.get(AUTH_GRANT_COOKIE) or "",
+                _body_text(body, "username"),
+                _body_text(body, "password"),
+            )
+        except OwnerAlreadyEnrolledError:
+            return _deny(status.HTTP_409_CONFLICT, "owner enrollment is closed")
+        except OwnerGrantError:
+            return _deny(status.HTTP_401_UNAUTHORIZED, "setup link required")
+        except OwnerAuthError as exc:
+            return _deny(status.HTTP_400_BAD_REQUEST, str(exc))
+        request.state.skip_session_renewal = True
+        resp = JSONResponse({"ok": True, "username": outcome.profile.username})
+        _set_owner_session_cookie(resp, outcome.session)
+        resp.delete_cookie(AUTH_GRANT_COOKIE, path="/", samesite="strict")
+        return resp
+
+    @app.post("/auth/login")
+    async def owner_login(request: Request) -> Response:
+        if owner_auth is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        body, error = await _auth_json(request)
+        if error is not None:
+            return error
+        assert body is not None
+        try:
+            outcome = await owner_auth.login(
+                _body_text(body, "username"), _body_text(body, "password")
+            )
+        except OwnerLoginThrottledError as exc:
+            resp = _deny(status.HTTP_429_TOO_MANY_REQUESTS, "login temporarily unavailable")
+            resp.headers["Retry-After"] = str(exc.retry_after_seconds)
+            return resp
+        if outcome is None:
+            return _deny(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
+        request.state.skip_session_renewal = True
+        resp = JSONResponse({"ok": True, "username": outcome.profile.username})
+        _set_owner_session_cookie(resp, outcome.session)
+        return resp
+
+    @app.post("/auth/recover")
+    async def owner_recover(request: Request) -> Response:
+        if owner_auth is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        body, error = await _auth_json(request)
+        if error is not None:
+            return error
+        assert body is not None
+        try:
+            outcome = await owner_auth.recover(
+                request.cookies.get(AUTH_GRANT_COOKIE) or "",
+                _body_text(body, "password"),
+            )
+        except OwnerGrantError:
+            return _deny(status.HTTP_401_UNAUTHORIZED, "recovery link required")
+        except OwnerAuthError as exc:
+            return _deny(status.HTTP_400_BAD_REQUEST, str(exc))
+        request.state.skip_session_renewal = True
+        await _invalidate_owner_runtime()
+        resp = JSONResponse({"ok": True, "username": outcome.profile.username})
+        _set_owner_session_cookie(resp, outcome.session)
+        resp.delete_cookie(AUTH_GRANT_COOKIE, path="/", samesite="strict")
+        return resp
+
+    @app.post("/auth/logout")
+    async def owner_logout(request: Request) -> Response:
+        if owner_auth is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        bearer = request.cookies.get(SESSION_COOKIE)
+        if bearer is not None:
+            await owner_auth.revoke_session(bearer)
+            await _invalidate_owner_runtime(bearer)
+        request.state.skip_session_renewal = True
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie(SESSION_COOKIE, path="/", samesite="strict")
+        return resp
+
+    @app.post("/auth/step-up")
+    async def owner_step_up(request: Request) -> Response:
+        if owner_auth is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        body, error = await _auth_json(request)
+        if error is not None:
+            return error
+        assert body is not None
+        bearer = request.cookies.get(SESSION_COOKIE) or ""
+        try:
+            replacement = await owner_auth.step_up(bearer, _body_text(body, "password"))
+        except OwnerLoginThrottledError as exc:
+            resp = _deny(status.HTTP_429_TOO_MANY_REQUESTS, "login temporarily unavailable")
+            resp.headers["Retry-After"] = str(exc.retry_after_seconds)
+            return resp
+        if replacement is None:
+            return _deny(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
+        request.state.skip_session_renewal = True
+        await _invalidate_owner_runtime(bearer)
+        resp = JSONResponse({"ok": True, "fresh": True})
+        _set_owner_session_cookie(resp, replacement)
+        return resp
+
+    @app.get("/auth/session")
+    async def owner_session(request: Request) -> Response:
+        if owner_auth is None:
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        profile = await owner_auth.profile()
+        state = request.state.owner_session_state
+        if profile is None or state is None:
+            return _deny(status.HTTP_401_UNAUTHORIZED, "authentication required")
+        return JSONResponse(
+            {
+                "ok": True,
+                "username": profile.username,
+                "fresh": state.fresh,
+                "idle_expires_at": state.idle_expires_at,
+                "absolute_expires_at": state.absolute_expires_at,
+            }
+        )
 
     @app.get("/")
     async def root() -> Response:
@@ -2915,6 +3221,12 @@ def create_app(
     async def ws(websocket: WebSocket) -> None:
         # HTTP middleware does not run for WS, so authenticate the handshake here: Host
         # (anti-rebinding), Origin (anti-CSRF), and a valid session cookie — else refuse.
+        owner_session = websocket.cookies.get(SESSION_COOKIE)
+        session_valid = (
+            await owner_auth.validate_session(owner_session)
+            if owner_auth is not None
+            else auth.is_valid_session(owner_session)
+        )
         if (
             not host_allowed(websocket.headers.get("host", ""))
             or not origin_allowed(
@@ -2922,11 +3234,10 @@ def create_app(
                 host_header=websocket.headers.get("host", ""),
                 scheme=websocket.url.scheme,
             )
-            or not auth.is_valid_session(websocket.cookies.get(SESSION_COOKIE))
+            or not session_valid
         ):
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
-        owner_session = websocket.cookies.get(SESSION_COOKIE)
         await websocket.accept()
         conn = connections.register(websocket, owner_session=owner_session)
         try:
@@ -2934,6 +3245,15 @@ def create_app(
                 {"type": "hello", "heartbeat_seconds": connections.heartbeat_seconds}
             )
             while True:
+                # A WebSocket is long-lived authority. Revalidate the durable session before every
+                # frame so logout, recovery, credential epochs, idle expiry, and absolute expiry
+                # cannot leave an authenticated-looking zombie socket behind.
+                if (
+                    owner_auth is not None
+                    and await owner_auth.validate_session(owner_session) is None
+                ):
+                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                    break
                 try:
                     msg = await websocket.receive_json()
                 except ValueError:

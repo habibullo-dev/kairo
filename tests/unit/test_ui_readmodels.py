@@ -144,6 +144,13 @@ def test_mutation_route_closed_set(tmp_path: Path) -> None:
         if method in {"POST", "PUT", "PATCH", "DELETE"}
     }
     assert mutating == {
+        # Single-owner identity lifecycle. These endpoints only establish/revoke browser
+        # authority; they never reach a tool, connector, executor, or project mutation.
+        ("POST", "/auth/enroll"),
+        ("POST", "/auth/login"),
+        ("POST", "/auth/recover"),
+        ("POST", "/auth/logout"),
+        ("POST", "/auth/step-up"),
         ("POST", "/api/approvals/{decision_id}/resolve"),
         # A live local Workspace may review one hash-pinned parked task continuation. The route
         # only delegates to the host-owned resume seam after workspace + nonce revalidation.
