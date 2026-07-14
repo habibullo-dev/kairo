@@ -9,6 +9,13 @@ from __future__ import annotations
 
 from jarvis.projects.context import GLOBAL, ProjectContext, build_project_context
 from jarvis.projects.service import ProjectService
+from jarvis.projects.snapshot import (
+    MAX_SNAPSHOT_SOURCES,
+    ProjectSnapshot,
+    SnapshotError,
+    SnapshotSource,
+    seal_snapshot,
+)
 from jarvis.projects.store import Project, ProjectStore, slugify
 
 __all__ = [
@@ -16,7 +23,12 @@ __all__ = [
     "Project",
     "ProjectContext",
     "ProjectService",
+    "ProjectSnapshot",
     "ProjectStore",
+    "SnapshotError",
+    "SnapshotSource",
     "build_project_context",
+    "MAX_SNAPSHOT_SOURCES",
+    "seal_snapshot",
     "slugify",
 ]
