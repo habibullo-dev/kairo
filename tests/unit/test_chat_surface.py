@@ -132,14 +132,52 @@ def test_chat_rehydrates_recorded_delegation_summaries_without_child_bodies() ->
 
 
 def test_idle_global_chrome_collapses_without_removing_active_controls() -> None:
-    active_when_needed = (
-        'status.classList.toggle("status-active", !!busy || !!paused || attentionElsewhere)'
-    )
-    assert active_when_needed in APP
-    assert 'status.classList.toggle("is-working", !!busy)' in APP
+    assert "facts.workActive || facts.paused" in APP
+    assert 'status.classList.toggle("is-working", facts.workActive || controlling)' in APP
+    assert 'status.classList.toggle("has-global-work", facts.workActive' in APP
     assert ".status { grid-area: status; display: none; }" in CSS
     assert ".status.status-active" in CSS
     assert ".status.is-paused #st-resume" in CSS
+
+
+def test_global_runner_control_is_truthful_shared_and_reconciled() -> None:
+    assert ">Stop all</button>" in HTML
+    assert "Stop all chats and pause schedules" in HTML
+    assert ">Resume schedules</button>" in HTML
+    assert "Stopped chats stay stopped." in HTML
+    assert 'id="ap-stop-all"' in HTML
+    assert 'id="runner-control-feedback" role="status" aria-live="polite"' in HTML
+    for token in (
+        "runner_available",
+        "global_turn_busy",
+        "background_busy",
+        "runnerControlOperation",
+        'document.querySelectorAll("[data-runner-control]")',
+        "RUNNER_CONTROL_RECONCILE_TIMEOUT_MS",
+        "timeoutMs: RUNNER_CONTROL_RECONCILE_TIMEOUT_MS",
+        'msg.kind === "runner_state"',
+        "refreshRunnerStatus({ refreshChatHeader: true })",
+        "clearTurnPendingApprovals();",
+    ):
+        assert token in APP
+    # A missing scheduler cannot produce Resume, but process-wide live chat work remains stoppable.
+    assert (
+        "pauseAvailable: workActive || turnApprovalPending || "
+        "(statusCurrent && runnerAvailable)" in APP
+    )
+    assert "resumeVisible = operation ? resuming : (facts.resumeAvailable && facts.paused)" in APP
+    assert 'const TURN_APPROVAL_KIND = "turn"' in APP
+    assert 'const SUBAGENT_APPROVAL_KIND = "subagent"' in APP
+    assert "turnDecisionIds: turnPendingDecisionIds()" in APP
+    assert "subagentDecisionIds: subagentPendingDecisionIds()" in APP
+    assert 'snapshot = await api.get("/api/approvals", { signal: controller.signal })' in APP
+    assert 'else if (!facts.statusCurrent) runnerText = "Runner status is unavailable"' in APP
+    assert 'status.classList.toggle("is-stopping", stopping)' in APP
+    assert 'status.classList.toggle("is-resuming", resuming)' in APP
+    assert "mergeRunnerControlResponse" not in APP
+    assert ".status.has-global-work #st-stop" in CSS
+    assert "Schedules are paused" in DAILY
+    assert "Kairo is working in another chat" in DAILY
 
 
 def test_chat_voice_is_review_first_and_uses_the_existing_safe_controller() -> None:

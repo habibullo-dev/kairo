@@ -529,6 +529,28 @@ class UiWorkspaceRegistry:
         """Cancel every attended turn for the workstation emergency-stop route."""
         return sum(1 for workspace in self._workspaces.values() if workspace.session.cancel())
 
+    async def cancel_all_and_wait(self) -> int:
+        """Cancel every exact live turn first, then drain their durable settlement together."""
+        targets: list[tuple[UiSession, asyncio.Task]] = []
+        for workspace in self._workspaces.values():
+            task = workspace.session.current_task
+            if task is not None:
+                targets.append((workspace.session, task))
+        cancelled_turns = sum(1 for session, _task in targets if session.cancel())
+        if targets:
+            # A disconnected HTTP waiter must not become a second cancellation source for the
+            # exact turn tasks whose durable cleanup this drain owns. Await every snapshot,
+            # including a turn whose non-cancellable terminal save had already begun.
+            await asyncio.shield(
+                asyncio.gather(*(task for _session, task in targets), return_exceptions=True)
+            )
+        return cancelled_turns
+
+    @property
+    def global_turn_busy(self) -> bool:
+        """Whether any registered browser workspace still owns an attended turn task."""
+        return any(workspace.session.busy for workspace in self._workspaces.values())
+
     def drop_owner_session(self, owner_session: str) -> int:
         """Cancel and forget every workspace owned by one revoked browser session."""
         keys = [key for key in self._workspaces if key[0] == owner_session]

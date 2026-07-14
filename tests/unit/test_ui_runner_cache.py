@@ -11,7 +11,10 @@ SETTINGS = (STATIC_DIR / "screens" / "settings.js").read_text(encoding="utf-8")
 
 def test_app_owns_one_deduplicated_runner_status_cache() -> None:
     assert "let runnerStatusRequest = null;" in APP
-    assert "async runnerStatus({ refresh = false } = {})" in APP
+    assert (
+        "async runnerStatus({ refresh = false, timeoutMs = null, "
+        "adoptSuperseding = true } = {})" in APP
+    )
     assert 'api.get("/api/runner", { signal: controller.signal })' in APP
     assert "runnerStatusRequestGeneration === generation" in APP
     assert "runnerStatusAbort?.abort()" in APP

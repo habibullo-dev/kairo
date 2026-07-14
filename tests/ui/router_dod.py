@@ -2481,6 +2481,588 @@ async def _assert_inactive_workspace_deep_link_is_not_a_phantom(browser: object,
         await context.close()
 
 
+async def _assert_global_runner_control_is_truthful_and_single_flight(
+    browser: object, base: str
+) -> None:
+    context, page, errors = await _open_page(browser, base)
+    try:
+        await page.evaluate(
+            """async () => {
+              const { api } = await import('/static/app.js');
+              window.__globalRunnerApi = api;
+              window.__globalRunnerOriginalPost = api.post.bind(api);
+              window.__globalRunnerOriginalStatus = api.runnerStatus.bind(api);
+              window.__globalRunnerPostCalls = 0;
+              window.__globalRunnerPostMode = 'http';
+              window.__globalRunnerStatusMode = 'normal';
+              window.__globalRunnerResolve = null;
+              window.__globalRunnerStatusResolve = null;
+              window.__globalApprovalSnapshot = null;
+              window.__globalRunnerOriginalGet = api.get.bind(api);
+              api.get = (path, options) => {
+                if (path === '/api/approvals' && window.__globalApprovalSnapshot !== null) {
+                  return Promise.resolve({
+                    pending: [...window.__globalApprovalSnapshot]
+                      .map(decision_id => ({ decision_id }))
+                  });
+                }
+                return window.__globalRunnerOriginalGet(path, options);
+              };
+              api.runnerStatus = options => {
+                if (window.__globalRunnerStatusMode === 'null') {
+                  api.state.runnerStatusError = true;
+                  return Promise.resolve(null);
+                }
+                if (window.__globalRunnerStatusMode === 'delay') {
+                  return new Promise(resolve => { window.__globalRunnerStatusResolve = resolve; });
+                }
+                return window.__globalRunnerOriginalStatus(options);
+              };
+              api.post = (path, body) => {
+                if (path !== '/api/runner/pause' && path !== '/api/runner/resume') {
+                  return window.__globalRunnerOriginalPost(path, body);
+                }
+                window.__globalRunnerPostCalls += 1;
+                if (window.__globalRunnerPostMode === 'throw') {
+                  return Promise.reject(new TypeError('offline'));
+                }
+                if (window.__globalRunnerPostMode === 'delay') {
+                  return new Promise(resolve => { window.__globalRunnerResolve = resolve; });
+                }
+                return Promise.resolve({
+                  ok: false, status: 503, data: { message: 'runner unavailable' }
+                });
+              };
+              window.__setGlobalRunner = patch => {
+                Object.assign(window.__SEED__['/api/runner'], patch);
+                window.__WB_SOCKET__._onmessage({
+                  data: JSON.stringify({ kind: 'runner_state' })
+                });
+              };
+            }"""
+        )
+
+        # A turn in another workspace and a background-only run both keep the global action in
+        # shell chrome even though this chat's exact per-turn composer control remains absent.
+        await page.evaluate(
+            """() => window.__setGlobalRunner({
+              runner_available: true, runner_running: true, turn_busy: false,
+              global_turn_busy: true, background_busy: false
+            })"""
+        )
+        await page.wait_for_function(
+            "document.getElementById('st-runner').textContent.includes('another chat')"
+        )
+        assert await page.locator("#st-stop").is_visible()
+        assert not await page.locator("#chat-turn-cancel").is_visible()
+        assert await page.locator("#st-stop").get_attribute("aria-label") == (
+            "Stop all chats and pause schedules"
+        )
+        await page.evaluate(
+            """() => window.__setGlobalRunner({
+              global_turn_busy: false, background_busy: true
+            })"""
+        )
+        await page.wait_for_function(
+            "document.getElementById('st-runner').textContent === 'Scheduled work is running'"
+        )
+        assert await page.locator("#st-stop").is_visible()
+
+        # HTTP rejection and a thrown fetch both reconcile to the still-running snapshot without
+        # inventing a paused state or leaving the single-flight lock/button stuck.
+        await page.locator("#st-stop").click()
+        await page.wait_for_function(
+            """() => window.__globalRunnerPostCalls === 1
+              && document.getElementById('runner-control-feedback').textContent
+                .includes('Could not confirm Stop all')
+              && !document.getElementById('st-stop').disabled"""
+        )
+        assert await page.locator("#st-stop").is_visible()
+        assert not await page.locator("#st-resume").is_visible()
+        await page.evaluate("window.__globalRunnerPostMode = 'throw'")
+        await page.locator("#st-stop").click()
+        await page.wait_for_function(
+            """() => window.__globalRunnerPostCalls === 2
+              && document.getElementById('runner-control-feedback').textContent
+                .includes('Could not confirm Stop all')
+              && !document.getElementById('st-stop').disabled"""
+        )
+
+        # The approval overlay owns focus/inertness, so it carries an accessible emergency copy.
+        # Both copies feed one shell-level operation, which survives a route remount.
+        await page.evaluate(
+            """() => {
+              window.__setGlobalRunner({
+                runner_available: true, runner_running: true, turn_busy: true,
+                global_turn_busy: true, background_busy: false, turn_id: 'global-stop-turn'
+              });
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                type: 'approval', workspace_id: 'router-workspace', session_id: 5,
+                project_id: 1, context_revision: 1, decision_id: 'global-stop-approval',
+                kind: 'turn', tool: 'run_shell', input: { command: 'safe command' },
+                reason: 'Needs confirmation', persistable: true
+              }) });
+            }"""
+        )
+        emergency = page.get_by_role(
+            "button", name="Stop all chats and pause schedules", exact=True
+        ).last
+        await page.locator("#overlay.show").wait_for()
+        assert await emergency.is_visible()
+        inert_snapshot = await page.evaluate(
+            """() => ({
+              main: document.querySelector('main').inert,
+              header: document.querySelector('header.status').inert,
+              emergency: document.getElementById('ap-stop-all').inert,
+              feedback: document.getElementById('runner-control-feedback').inert
+            })"""
+        )
+        assert inert_snapshot == {
+            "main": True,
+            "header": True,
+            "emergency": False,
+            "feedback": False,
+        }
+        await page.evaluate("window.__globalRunnerPostMode = 'delay'")
+        await emergency.click()
+        await page.evaluate(
+            """() => document.getElementById('st-stop').dispatchEvent(
+              new MouseEvent('click', { bubbles: true }))"""
+        )
+        await page.wait_for_function("window.__globalRunnerPostCalls === 3")
+        await page.wait_for_function(
+            """() => document.getElementById('st-stop').disabled
+              && document.getElementById('ap-stop-all').disabled
+              && document.getElementById('st-stop').textContent === 'Stopping…'
+              && document.getElementById('ap-stop-all').textContent === 'Stopping…'"""
+        )
+        await page.evaluate("location.hash = 'daily'")
+        await page.wait_for_function("location.hash === '#daily'")
+        assert await page.locator("#st-stop").text_content() == "Stopping…"
+        assert await page.locator("#st-stop").is_disabled()
+
+        await page.evaluate(
+            """() => {
+              Object.assign(window.__SEED__['/api/runner'], {
+                runner_available: true, runner_running: false, turn_busy: false,
+                turn_id: null, global_turn_busy: false, background_busy: false
+              });
+              window.__globalRunnerResolve({
+                ok: true, status: 200, data: {
+                  runner_available: true, runner_running: false, turn_busy: false,
+                  turn_id: null, global_turn_busy: false, background_busy: false,
+                  cancelled_turns: 2
+                }
+              });
+            }"""
+        )
+        await page.wait_for_function(
+            """() => !document.getElementById('overlay').classList.contains('show')
+              && document.getElementById('st-resume').textContent === 'Resume schedules'
+              && !document.getElementById('st-resume').classList.contains('is-hidden')
+              && document.getElementById('daily-now-lead')?.textContent
+                === 'Schedules are paused'"""
+        )
+        assert await page.locator("#runner-control-feedback").text_content() == (
+            "Stopped 2 live chats. Schedules are paused."
+        )
+        assert await page.locator("#st-resume").get_attribute("title") == (
+            "Resume schedules. Stopped chats stay stopped."
+        )
+        assert await page.evaluate("window.__globalRunnerPostCalls") == 3
+
+        # Resume is a separate action with its own stable progress copy. While a new chat works
+        # under paused schedules, starting Resume hides the opposite Stop action on desktop and
+        # mobile for the entire reconciliation wait.
+        await page.evaluate(
+            """() => window.__setGlobalRunner({
+              runner_available: true, runner_running: false, turn_busy: true,
+              turn_id: 'resume-live-turn', global_turn_busy: true, background_busy: false
+            })"""
+        )
+        await page.wait_for_function(
+            """() => !document.getElementById('st-stop').classList.contains('is-hidden')
+              && !document.getElementById('st-resume').classList.contains('is-hidden')"""
+        )
+        await page.evaluate(
+            """() => {
+              window.__globalRunnerPostMode = 'delay';
+              window.__globalRunnerStatusMode = 'delay';
+              document.getElementById('st-resume').click();
+            }"""
+        )
+        await page.wait_for_function("window.__globalRunnerPostCalls === 4")
+        await page.evaluate(
+            """() => {
+              Object.assign(window.__SEED__['/api/runner'], {
+                runner_available: true, runner_running: true, turn_busy: true,
+                turn_id: 'resume-live-turn', global_turn_busy: true, background_busy: false
+              });
+              window.__globalRunnerResolve({
+                ok: true, status: 200, data: {
+                  runner_available: true, runner_running: true, turn_busy: true,
+                  turn_id: 'resume-live-turn', global_turn_busy: true, background_busy: false
+                }
+              });
+            }"""
+        )
+        await page.wait_for_function(
+            """() => window.__globalRunnerStatusResolve
+              && document.getElementById('st-resume').textContent === 'Resuming…'"""
+        )
+        assert await page.locator("#st-resume").is_visible()
+        assert await page.locator("#st-resume").is_disabled()
+        assert not await page.locator("#st-stop").is_visible()
+        await page.set_viewport_size({"width": 390, "height": 844})
+        assert await page.locator("#st-resume").is_visible()
+        assert not await page.locator("#st-stop").is_visible()
+        assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        await page.evaluate(
+            """() => window.__globalRunnerStatusResolve({
+              ...window.__SEED__['/api/runner']
+            })"""
+        )
+        await page.wait_for_function(
+            """() => document.getElementById('runner-control-feedback').textContent
+              === 'Schedules resumed. Stopped chats stay stopped.'"""
+        )
+        await page.set_viewport_size({"width": 1280, "height": 900})
+        await page.evaluate(
+            """() => {
+              window.__globalRunnerStatusMode = 'normal';
+              window.__globalRunnerPostMode = 'http';
+            }"""
+        )
+
+        # Pausing schedules does not disable attended chat. If a new live turn starts, its work
+        # copy wins and the independent Stop all and Resume schedules actions coexist.
+        await page.evaluate(
+            """() => window.__setGlobalRunner({
+              runner_available: true, runner_running: false, turn_busy: true,
+              turn_id: 'paused-live-turn', global_turn_busy: true, background_busy: false
+            })"""
+        )
+        await page.wait_for_function(
+            """() => document.getElementById('st-runner').textContent
+                === 'Kairo is working in this chat'
+              && document.getElementById('daily-now-lead')?.textContent === 'Kairo is working'
+              && !document.getElementById('st-stop').classList.contains('is-hidden')
+              && !document.getElementById('st-resume').classList.contains('is-hidden')"""
+        )
+        assert await page.locator("#st-stop").is_visible()
+        assert await page.locator("#st-resume").is_visible()
+
+        # No scheduler means no no-op Resume. A live chat is still stoppable process-wide, and its
+        # busy copy outranks the scheduler-unavailable copy.
+        await page.evaluate(
+            """() => window.__setGlobalRunner({
+              runner_available: false, runner_running: false, turn_busy: false,
+              global_turn_busy: true, background_busy: false
+            })"""
+        )
+        await page.wait_for_function(
+            """() => document.getElementById('st-runner').textContent.includes('another chat')
+              && document.getElementById('daily-now-lead')?.textContent
+                .includes('another chat')"""
+        )
+        assert await page.locator("#st-stop").is_visible()
+        assert not await page.locator("#st-resume").is_visible()
+
+        # A terminal event for this exact context removes a scoped stale approval and releases
+        # every background surface from inertness without touching other product subsystems.
+        await page.evaluate(
+            """() => {
+              window.__setGlobalRunner({ turn_busy: true, turn_id: 'terminal-turn' });
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                type: 'approval', workspace_id: 'router-workspace', session_id: 5,
+                project_id: 1, context_revision: 1, decision_id: 'terminal-approval',
+                kind: 'turn', tool: 'write_file', input: {}, reason: 'confirm'
+              }) });
+            }"""
+        )
+        await page.locator("#overlay.show").wait_for()
+        await page.evaluate(
+            """() => window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+              kind: 'turn_cancelled', workspace_id: 'router-workspace', session_id: 5,
+              project_id: 1, context_revision: 1
+            }) })"""
+        )
+        await page.wait_for_function(
+            """() => !document.getElementById('overlay').classList.contains('show')
+              && !document.querySelector('main').inert
+              && !document.querySelector('header.status').inert"""
+        )
+
+        # A new turn can start in the same workspace after cancelled chats settle while Stop all
+        # is still draining scheduled work. Its newer busy state and approval survive the older
+        # POST response even when reconciliation fails.
+        await page.evaluate(
+            """() => {
+              window.__globalRunnerPostMode = 'delay';
+              window.__setGlobalRunner({
+                runner_available: true, runner_running: true, turn_busy: true,
+                turn_id: 'same-authority-old', global_turn_busy: true, background_busy: true
+              });
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                type: 'approval', workspace_id: 'router-workspace', session_id: 5,
+                project_id: 1, context_revision: 1, decision_id: 'same-authority-old-approval',
+                kind: 'turn', tool: 'run_shell', input: {}, reason: 'old turn'
+              }) });
+            }"""
+        )
+        await page.locator("#overlay.show").wait_for()
+        await page.locator("#ap-stop-all").click()
+        await page.wait_for_function("window.__globalRunnerPostCalls === 5")
+        await page.evaluate(
+            """() => {
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                kind: 'turn_cancelled', workspace_id: 'router-workspace', session_id: 5,
+                project_id: 1, context_revision: 1
+              }) });
+              window.__setGlobalRunner({
+                runner_available: true, runner_running: true, turn_busy: true,
+                turn_id: 'same-authority-new', global_turn_busy: true, background_busy: false
+              });
+            }"""
+        )
+        await page.wait_for_function(
+            "window.__globalRunnerApi.state.runner?.turn_id === 'same-authority-new'"
+        )
+        await page.evaluate(
+            """() => {
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                type: 'approval', workspace_id: 'router-workspace', session_id: 5,
+                project_id: 1, context_revision: 1, decision_id: 'same-authority-new-approval',
+                kind: 'turn', tool: 'write_file', input: {}, reason: 'new turn'
+              }) });
+              window.__globalRunnerStatusMode = 'null';
+              window.__globalRunnerResolve({
+                ok: true, status: 200, data: {
+                  runner_available: true, runner_running: false, turn_busy: false,
+                  turn_id: null, global_turn_busy: false, background_busy: false,
+                  cancelled_turns: 1
+                }
+              });
+            }"""
+        )
+        await page.wait_for_function(
+            """() => document.getElementById('runner-control-feedback').textContent
+                .includes('Current schedule status will refresh automatically')
+              && !document.getElementById('ap-stop-all').disabled"""
+        )
+        same_authority = await page.evaluate(
+            """() => ({
+              statusError: window.__globalRunnerApi.state.runnerStatusError,
+              turnBusy: window.__globalRunnerApi.state.runner?.turn_busy,
+              turnId: window.__globalRunnerApi.state.runner?.turn_id,
+              decision: document.getElementById('overlay').dataset.decision,
+              runnerCopy: document.getElementById('st-runner').textContent,
+              stopVisible: !document.getElementById('ap-stop-all').classList.contains('is-hidden')
+            })"""
+        )
+        assert same_authority == {
+            "statusError": True,
+            "turnBusy": True,
+            "turnId": "same-authority-new",
+            "decision": "same-authority-new-approval",
+            "runnerCopy": "Runner status is unavailable",
+            "stopVisible": True,
+        }
+        await page.evaluate(
+            """() => {
+              window.__globalRunnerStatusMode = 'normal';
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                kind: 'turn_cancelled', workspace_id: 'router-workspace', session_id: 5,
+                project_id: 1, context_revision: 1
+              }) });
+              window.__setGlobalRunner({
+                runner_available: true, runner_running: true, turn_busy: false,
+                turn_id: null, global_turn_busy: false, background_busy: false
+              });
+            }"""
+        )
+        await page.wait_for_function(
+            """() => !window.__globalRunnerApi.state.runnerStatusError
+              && !document.getElementById('overlay').classList.contains('show')"""
+        )
+
+        # A shell operation survives a real workspace authority replacement, but its old scoped
+        # response must not overwrite the replacement turn or clear a newly arrived approval when
+        # the follow-up status read is unavailable.
+        await page.evaluate(
+            """() => {
+              window.__globalRunnerPostMode = 'delay';
+              window.__setGlobalRunner({
+                runner_available: true, runner_running: true, turn_busy: true,
+                turn_id: 'old-authority-turn', global_turn_busy: true, background_busy: false
+              });
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                type: 'approval', workspace_id: 'router-workspace', session_id: 5,
+                project_id: 1, context_revision: 1, decision_id: 'old-authority-approval',
+                kind: 'turn', tool: 'run_shell', input: {}, reason: 'old authority'
+              }) });
+            }"""
+        )
+        await page.locator("#overlay.show").wait_for()
+        await page.locator("#ap-stop-all").click()
+        await page.wait_for_function("window.__globalRunnerPostCalls === 6")
+        await page.evaluate(
+            """() => {
+              Object.assign(window.__SEED__['/api/runner'], {
+                session_id: 9, context_revision: 2, project: { id: 1, name: 'Project 1' },
+                runner_available: true, runner_running: true, turn_busy: true,
+                turn_id: 'replacement-authority-turn', global_turn_busy: true,
+                background_busy: false
+              });
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                kind: 'session_new', workspace_id: 'router-workspace', session_id: 9,
+                project_id: 1, context_revision: 2
+              }) });
+            }"""
+        )
+        await page.wait_for_function(
+            """() => window.__globalRunnerApi.state.context?.session_id === 9
+              && window.__globalRunnerApi.state.runner?.turn_id
+                === 'replacement-authority-turn'"""
+        )
+        await page.evaluate(
+            """() => {
+              window.__globalRunnerStatusMode = 'null';
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                type: 'approval', workspace_id: 'router-workspace', session_id: 9,
+                project_id: 1, context_revision: 2, decision_id: 'replacement-approval',
+                kind: 'turn', tool: 'write_file', input: {}, reason: 'replacement authority'
+              }) });
+              window.__globalRunnerResolve({
+                ok: true, status: 200, data: {
+                  runner_available: true, runner_running: false, turn_busy: false,
+                  turn_id: null, global_turn_busy: false, background_busy: false,
+                  cancelled_turns: 1
+                }
+              });
+            }"""
+        )
+        await page.wait_for_function(
+            """() => document.getElementById('runner-control-feedback').textContent
+                .includes('Current schedule status will refresh automatically')
+              && !document.getElementById('ap-stop-all').disabled"""
+        )
+        replacement = await page.evaluate(
+            """() => ({
+              turnBusy: window.__globalRunnerApi.state.runner?.turn_busy,
+              turnId: window.__globalRunnerApi.state.runner?.turn_id,
+              decision: document.getElementById('overlay').dataset.decision,
+              overlay: document.getElementById('overlay').classList.contains('show'),
+              mainInert: document.querySelector('main').inert
+            })"""
+        )
+        assert replacement == {
+            "turnBusy": True,
+            "turnId": "replacement-authority-turn",
+            "decision": "replacement-approval",
+            "overlay": True,
+            "mainInert": True,
+        }
+        await page.evaluate(
+            """() => {
+              window.__globalRunnerStatusMode = 'normal';
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                kind: 'turn_cancelled', workspace_id: 'router-workspace', session_id: 9,
+                project_id: 1, context_revision: 2
+              }) });
+            }"""
+        )
+        await page.wait_for_function(
+            "!document.getElementById('overlay').classList.contains('show')"
+        )
+
+        # The same shell action remains reachable at the narrow supported viewport for scheduled
+        # background work, with no horizontal spill.
+        await page.evaluate(
+            """() => window.__setGlobalRunner({
+              runner_available: true, runner_running: true, turn_busy: false, turn_id: null,
+              global_turn_busy: false, background_busy: true
+            })"""
+        )
+        await page.set_viewport_size({"width": 390, "height": 844})
+        await page.wait_for_function(
+            "document.getElementById('st-runner').textContent === 'Scheduled work is running'"
+        )
+        assert await page.locator("#st-stop").is_visible()
+        stop_box = await page.locator("#st-stop").bounding_box()
+        assert stop_box is not None and stop_box["x"] + stop_box["width"] <= 390
+        assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+        # Chat terminal cleanup and the successful pause fallback are scoped away from voice and
+        # provenance-ambiguous Studio subagents. The server read model confirms the Studio ASK is
+        # still live; neither confirmation is hidden or silently denied by stopping Chat work.
+        await page.evaluate(
+            """() => {
+              window.__globalApprovalSnapshot = new Set(['studio-subagent-approval']);
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                type: 'approval', workspace_id: 'router-workspace', session_id: 9,
+                project_id: 1, context_revision: 2, decision_id: 'voice-scope-approval',
+                kind: 'voice', tool: 'send_notification', input: {}, reason: 'voice confirm'
+              }) });
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                type: 'approval', workspace_id: 'router-workspace', session_id: 9,
+                project_id: 1, context_revision: 2, decision_id: 'studio-subagent-approval',
+                kind: 'subagent', tool: 'write_file', input: {}, reason: 'Studio member confirm'
+              }) });
+              window.__WB_SOCKET__._onmessage({ data: JSON.stringify({
+                kind: 'turn_cancelled', workspace_id: 'router-workspace', session_id: 9,
+                project_id: 1, context_revision: 2
+              }) });
+            }"""
+        )
+        await page.wait_for_function(
+            "document.getElementById('overlay').dataset.decision === 'voice-scope-approval'"
+        )
+        await page.evaluate("window.__globalRunnerPostMode = 'delay'")
+        await page.locator("#ap-stop-all").click()
+        await page.wait_for_function("window.__globalRunnerPostCalls === 7")
+        await page.evaluate(
+            """() => {
+              Object.assign(window.__SEED__['/api/runner'], {
+                runner_available: true, runner_running: false, turn_busy: false,
+                turn_id: null, global_turn_busy: false, background_busy: false
+              });
+              window.__globalRunnerResolve({
+                ok: true, status: 200, data: {
+                  runner_available: true, runner_running: false, turn_busy: false,
+                  turn_id: null, global_turn_busy: false, background_busy: false,
+                  cancelled_turns: 0
+                }
+              });
+            }"""
+        )
+        await page.wait_for_function(
+            """() => document.getElementById('runner-control-feedback').textContent
+                === 'No live chats needed stopping. Schedules are paused.'
+              && !document.getElementById('ap-stop-all').disabled"""
+        )
+        voice_scope = await page.evaluate(
+            """() => ({
+              voicePending: window.__globalRunnerApi.state.pending.has('voice-scope-approval'),
+              studioPending: window.__globalRunnerApi.state.pending
+                .has('studio-subagent-approval'),
+              decision: document.getElementById('overlay').dataset.decision,
+              overlay: document.getElementById('overlay').classList.contains('show'),
+              mainInert: document.querySelector('main').inert
+            })"""
+        )
+        assert voice_scope == {
+            "voicePending": True,
+            "studioPending": True,
+            "decision": "voice-scope-approval",
+            "overlay": True,
+            "mainInert": True,
+        }
+        assert errors == []
+    finally:
+        await context.close()
+
+
 async def main() -> int:
     from playwright.async_api import async_playwright
 
@@ -2607,6 +3189,10 @@ async def main() -> int:
                         (
                             "inactive workspace",
                             _assert_inactive_workspace_deep_link_is_not_a_phantom,
+                        ),
+                        (
+                            "global runner control",
+                            _assert_global_runner_control_is_truthful_and_single_flight,
                         ),
                     ]
                     case_filter = os.environ.get("ROUTER_DOD_CASE", "").strip().lower()

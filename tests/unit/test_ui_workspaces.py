@@ -78,9 +78,13 @@ class _Loop:
     def __init__(self, label: str) -> None:
         self.label = label
         self.contexts: list[ExecutionContext | None] = []
+        self.cancelled_messages: list[dict] | None = None
         # The real AgentLoop exposes the registered tool names to capability_truth. Keep the
         # workspace double structurally compatible so route tests can prove per-workspace truth.
         self.registry = SimpleNamespace(names=lambda: [])
+
+    def reset_cancellation_snapshot(self) -> None:
+        self.cancelled_messages = None
 
     async def run_turn(self, messages: list[dict], *, on_event) -> object:
         self.contexts.append(current_execution_context())
@@ -403,6 +407,205 @@ async def test_emergency_cancel_covers_every_live_workspace(tmp_path: Path) -> N
         return_exceptions=True,
     )
     assert not workspace_a.session.busy and not workspace_b.session.busy
+
+
+async def test_emergency_cancel_snapshots_all_before_draining(tmp_path: Path) -> None:
+    registry, connections, _projects = await _registry(tmp_path)
+    workspaces = [
+        await registry.attach(
+            connections.register(_Socket(), owner_session=f"owner-{index}"),
+            owner_session=f"owner-{index}",
+        )
+        for index in range(2)
+    ]
+    started = [asyncio.Event(), asyncio.Event()]
+    cancel_seen = [asyncio.Event(), asyncio.Event()]
+    release = [asyncio.Event(), asyncio.Event()]
+
+    async def held_turn(index: int) -> None:
+        started[index].set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancel_seen[index].set()
+            await release[index].wait()
+            raise
+
+    for index, workspace in enumerate(workspaces):
+        workspace.session._current = asyncio.create_task(held_turn(index))
+    await asyncio.gather(*(event.wait() for event in started))
+
+    draining = asyncio.create_task(registry.cancel_all_and_wait())
+    # A sequential cancel-and-await implementation would deadlock on the first cleanup and
+    # never signal the second event. Both cancellation requests must be issued up front.
+    await asyncio.gather(*(event.wait() for event in cancel_seen))
+    assert registry.global_turn_busy and not draining.done()
+    for event in release:
+        event.set()
+
+    assert await draining == 2
+    assert not registry.global_turn_busy
+
+
+async def test_emergency_drain_waits_non_cancellable_snapshot_and_shields_targets(
+    tmp_path: Path,
+) -> None:
+    registry, connections, _projects = await _registry(tmp_path)
+    workspace = await registry.attach(
+        connections.register(_Socket(), owner_session="owner"), owner_session="owner"
+    )
+    started = asyncio.Event()
+    cancel_seen = asyncio.Event()
+    release = asyncio.Event()
+
+    async def settling_turn() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancel_seen.set()
+            await release.wait()
+            raise
+
+    target = asyncio.create_task(settling_turn())
+    workspace.session._current = target
+    await started.wait()
+    draining = asyncio.create_task(registry.cancel_all_and_wait())
+    await cancel_seen.wait()
+
+    # Cancelling the HTTP-style waiter must not become a second Task.cancel() source for the
+    # target's terminal cleanup.
+    draining.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await draining
+    assert target.cancelling() == 1 and not target.done()
+    release.set()
+    await asyncio.gather(target, return_exceptions=True)
+
+    # A task already in the non-cancellable save phase is counted as zero cancellations, but
+    # the exact live snapshot is still drained before a successful response may settle.
+    save_release = asyncio.Event()
+    save_started = asyncio.Event()
+
+    async def normal_save() -> None:
+        save_started.set()
+        await save_release.wait()
+
+    target = asyncio.create_task(normal_save())
+    workspace.session._current = target
+    workspace.session._cancellable_task = None
+    workspace.session._settling_task = target
+    await save_started.wait()
+    cancel_observed = asyncio.Event()
+    original_cancel = workspace.session.cancel
+
+    def observed_cancel() -> bool:
+        result = original_cancel()
+        cancel_observed.set()
+        return result
+
+    workspace.session.cancel = observed_cancel  # type: ignore[method-assign]
+    draining = asyncio.create_task(registry.cancel_all_and_wait())
+    await cancel_observed.wait()
+    assert not target.done() and not draining.done()
+    save_release.set()
+    assert await draining == 0
+
+
+async def test_pause_establishes_runner_stop_then_drains_exact_turn_and_generation(
+    tmp_path: Path,
+) -> None:
+    registry, connections, _projects = await _registry(tmp_path)
+    auth = AuthManager(token="tok")
+    owner = auth.mint_session()
+    socket = _Socket()
+    workspace = await registry.attach(
+        connections.register(socket, owner_session=owner), owner_session=owner
+    )
+    turn_started = asyncio.Event()
+    turn_cancelled = asyncio.Event()
+    turn_release = asyncio.Event()
+    stop_requested = asyncio.Event()
+    runner_drain_started = asyncio.Event()
+    runner_release = asyncio.Event()
+
+    async def held_turn() -> None:
+        turn_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            assert stop_requested.is_set()
+            turn_cancelled.set()
+            await turn_release.wait()
+            raise
+
+    class ExactRunner:
+        def __init__(self) -> None:
+            self.desired = True
+            self.in_flight = None
+            self.request_calls = 0
+            self.stop_calls = 0
+            self.snapshot: asyncio.Task | None = None
+
+        @property
+        def is_running(self) -> bool:
+            return self.desired
+
+        async def _drain(self) -> None:
+            runner_drain_started.set()
+            await runner_release.wait()
+
+        def request_stop(self) -> asyncio.Task:
+            self.request_calls += 1
+            self.desired = False
+            stop_requested.set()
+            self.snapshot = asyncio.create_task(self._drain())
+            return self.snapshot
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+            raise AssertionError("pause must not issue a second stop command")
+
+        def start(self) -> None:
+            self.desired = True
+
+    runner = ExactRunner()
+    target = asyncio.create_task(held_turn())
+    workspace.session._current = target
+    await turn_started.wait()
+    app = create_app(
+        load_config(root=tmp_path, env_file=None),
+        auth=auth,
+        connections=connections,
+        runner=runner,
+    )
+    app.state.workspaces = registry
+    headers = _workspace_post_headers(owner, workspace)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+    ) as client:
+        request = asyncio.create_task(client.post("/api/runner/pause", headers=headers))
+        await asyncio.gather(turn_cancelled.wait(), runner_drain_started.wait())
+        assert not request.done()
+        turn_release.set()
+        assert runner.snapshot is not None and not runner.snapshot.done()
+        runner_release.set()
+        response = await request
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "runner_available": True,
+        "runner_running": False,
+        "background_busy": False,
+        "global_turn_busy": False,
+        "in_flight": None,
+        "turn_busy": False,
+        "turn_id": None,
+        "cancelled_turns": 1,
+    }
+    assert runner.request_calls == 1 and runner.stop_calls == 0
+    assert socket.sent[-1] == {"kind": "runner_state"}
 
 
 async def test_turn_cancel_requires_the_exact_context_and_turn_generation(
@@ -1787,6 +1990,9 @@ async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
             assert response_a.json()["session_id"] != response_b.json()["session_id"]
             assert response_a.json()["in_flight"] is None
             assert response_b.json()["in_flight"] is None
+            assert response_a.json()["runner_available"] is True
+            assert response_a.json()["background_busy"] is True
+            assert response_a.json()["global_turn_busy"] is False
 
             project_a = await projects.store.create(name="Socket A only")
             switched = client.post(

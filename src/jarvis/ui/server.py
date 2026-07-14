@@ -230,16 +230,24 @@ def _workspace_required() -> JSONResponse:
 
 
 def _runner_status(
-    runner: object | None, session: object | None, *, reveal_in_flight: bool = True
+    runner: object | None,
+    session: object | None,
+    *,
+    reveal_in_flight: bool = True,
+    global_turn_busy: bool | None = None,
 ) -> dict:
     """The status-bar view: is the background runner firing, what job is in flight, and is
     an interactive turn running. Read-only; the emergency stop toggles the first two."""
+    turn_busy = bool(session is not None and getattr(session, "busy", False))
     return {
-        "runner_running": bool(runner is not None and runner.is_running),
+        "runner_available": runner is not None,
+        "runner_running": bool(runner is not None and getattr(runner, "is_running", False)),
+        "background_busy": bool(runner is not None and getattr(runner, "in_flight", None)),
+        "global_turn_busy": turn_busy if global_turn_busy is None else bool(global_turn_busy),
         "in_flight": (
             getattr(runner, "in_flight", None) if runner is not None and reveal_in_flight else None
         ),
-        "turn_busy": bool(session is not None and session.busy),
+        "turn_busy": turn_busy,
         "turn_id": getattr(session, "current_turn_id", None),
     }
 
@@ -1114,7 +1122,12 @@ def create_app(
                 context = workspace.context
                 context_revision = workspace.context_revision
                 cur = workspace.project
-                status = _runner_status(app.state.runner, sess, reveal_in_flight=False)
+                status = _runner_status(
+                    app.state.runner,
+                    sess,
+                    reveal_in_flight=False,
+                    global_turn_busy=app.state.workspaces.global_turn_busy,
+                )
                 pending_approvals = len(app.state.approvals.pending_for(context))
                 session_snapshot = {
                     "session_id": context.session_id,
@@ -1282,28 +1295,67 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
+        runner = app.state.runner
+        runner_stop: asyncio.Task | None = None
+        request_stop = getattr(runner, "request_stop", None)
+        if callable(request_stop):
+            # Establish process-wide stop intent before a cancelled turn can release turn_lock.
+            runner_stop = request_stop()
+        elif runner is not None and callable(stop := getattr(runner, "stop", None)):
+            # Compatibility for injected test/legacy runners without the synchronous intent API.
+            # Give this one stop coroutine its first step before draining chats, then never issue
+            # a second command. The production runner uses request_stop() above with no yield.
+            runner_stop = asyncio.create_task(stop())
+            await asyncio.sleep(0)
         if app.state.workspaces is not None:
-            app.state.workspaces.cancel_all()
+            cancelled_turns = await app.state.workspaces.cancel_all_and_wait()
         elif app.state.session is not None:
-            app.state.session.cancel()
-        if app.state.runner is not None and app.state.runner.is_running:
-            await app.state.runner.stop()
+            target = getattr(app.state.session, "current_task", None)
+            cancelled_turns = int(app.state.session.cancel())
+            if target is not None:
+                await asyncio.shield(asyncio.gather(target, return_exceptions=True))
+        else:
+            cancelled_turns = 0
+        if runner_stop is not None:
+            # Retain the exact generation captured before chat cleanup. A concurrent Resume is
+            # the newer command and must not be overwritten by calling stop() again here.
+            await asyncio.shield(runner_stop)
         sess = workspace.session if workspace is not None else app.state.session
-        return JSONResponse(
-            _runner_status(app.state.runner, sess, reveal_in_flight=workspace is None)
+        body = _runner_status(
+            runner,
+            sess,
+            reveal_in_flight=workspace is None,
+            global_turn_busy=(
+                app.state.workspaces.global_turn_busy
+                if app.state.workspaces is not None
+                else bool(sess is not None and sess.busy)
+            ),
         )
+        body["cancelled_turns"] = cancelled_turns
+        await app.state.connections.broadcast({"kind": "runner_state"})
+        return JSONResponse(body)
 
     @app.post("/api/runner/resume")
     async def runner_resume(request: Request) -> JSONResponse:
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        if app.state.runner is not None and not app.state.runner.is_running:
+        if app.state.runner is not None:
+            # ``start`` is idempotent and records resume intent while an older stop drains.
             app.state.runner.start()
         sess = workspace.session if workspace is not None else app.state.session
-        return JSONResponse(
-            _runner_status(app.state.runner, sess, reveal_in_flight=workspace is None)
+        body = _runner_status(
+            app.state.runner,
+            sess,
+            reveal_in_flight=workspace is None,
+            global_turn_busy=(
+                app.state.workspaces.global_turn_busy
+                if app.state.workspaces is not None
+                else bool(sess is not None and sess.busy)
+            ),
         )
+        await app.state.connections.broadcast({"kind": "runner_state"})
+        return JSONResponse(body)
 
     @app.get("/api/notices")
     async def notices(request: Request) -> JSONResponse:

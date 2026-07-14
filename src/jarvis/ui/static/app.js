@@ -29,7 +29,7 @@ import { canCapture, cancelCapture, playCaption, playbackOn, recording, setPlayb
 import { money } from "./ui/format.js";
 import { dismissTaskDialogs, openParkedTaskApproval } from "./ui/task-draft.js";
 import { dismissMemoryDraft } from "./ui/memory-draft.js";
-import { dismissFeedbackDialogs } from "./ui/feedback.js";
+import { dismissFeedbackDialogs, showToast } from "./ui/feedback.js";
 import { dismissProjectReport } from "./ui/project-report.js";
 
 const state = {
@@ -106,9 +106,12 @@ let runnerStatusAbort = null;
 let runnerStatusGeneration = -1;
 let runnerStatusRequestRevision = 0;
 let turnSettlementRevision = 0;
+let runnerControlOperation = null;
+let runnerControlSequence = 0;
 const API_READ_OUTCOME = Symbol("api-read-outcome");
 const EXPECTED_UNAVAILABLE_READ_STATUSES = new Set([404, 503]);
 const INITIAL_ROUTE_READ_TIMEOUT_MS = 15000;
+const RUNNER_CONTROL_RECONCILE_TIMEOUT_MS = 7000;
 export const api = {
   state,
   authorityToken() { return authorityGeneration; },
@@ -157,7 +160,7 @@ export const api = {
   async voiceStatus() {
     return refreshVoiceStatus();
   },
-  async runnerStatus({ refresh = false } = {}) {
+  async runnerStatus({ refresh = false, timeoutMs = null, adoptSuperseding = true } = {}) {
     const generation = contextGeneration;
     if (!refresh && runnerStatusRequest && runnerStatusRequestGeneration === generation) {
       return runnerStatusRequest;
@@ -169,6 +172,8 @@ export const api = {
     if (!refresh && runnerStatusGeneration === generation && state.runnerStatusError) return null;
     if (!refresh && runnerStatusGeneration === generation && state.runner) return state.runner;
     const controller = new AbortController();
+    const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? setTimeout(() => controller.abort(), timeoutMs) : null;
     const revision = ++runnerStatusRequestRevision;
     const settlementRevision = turnSettlementRevision;
     const request = api.get("/api/runner", { signal: controller.signal }).then((runner) => {
@@ -177,6 +182,7 @@ export const api = {
         // A forced refresh superseded this read in the same authority. Its original callers
         // adopt the newest request instead of observing an AbortError-shaped null and falsely
         // reporting that runner state is unavailable.
+        if (!adoptSuperseding) return null;
         return runnerStatusRequestGeneration === generation
           && runnerStatusRequest !== request ? runnerStatusRequest : null;
       }
@@ -195,6 +201,7 @@ export const api = {
       if (runner) reconcileRunnerContext(runner);
       return runner;
     }).finally(() => {
+      if (timeout !== null) clearTimeout(timeout);
       if (runnerStatusRequest === request) {
         runnerStatusRequest = null;
         runnerStatusAbort = null;
@@ -552,6 +559,12 @@ function handleMessage(msg) {
   }
   const lifecycle = ["project_changed", "session_new", "session_resumed"].includes(msg.kind);
   if (msg.workspace_id && msg.workspace_id !== workspaceId) return;
+  if (msg.kind === "runner_state") {
+    // Global runner broadcasts intentionally carry no workspace authority. Each tab refreshes
+    // only its own scoped runner snapshot instead of trusting process-wide state on the wire.
+    void refreshRunnerStatus({ refreshChatHeader: true });
+    return;
+  }
   if (lifecycle && msg.workspace_id === workspaceId) {
     const revision = validContextRevision(msg.context_revision);
     const current = state.context;
@@ -644,6 +657,12 @@ function handleMessage(msg) {
       state.runner.turn_busy = false;  // settle: the turn ended
       state.runner.turn_id = null;
     }
+    // A top-level turn approval is owned by this Chat frame and can retire immediately. A
+    // subagent approval is provenance-ambiguous (Studio uses the same subagent manager), so
+    // remove it only after the exact workspace's approval read model says it is gone.
+    const ambiguousSubagents = subagentPendingDecisionIds();
+    clearTurnPendingApprovals();
+    void reconcilePendingApprovalIds(ambiguousSubagents, authorityGeneration);
     // Live drafts from an interrupted or failed provider request are not durable protocol
     // messages. Drop only those drafts; completed tool-round text was settled earlier.
     state.chat = state.chat.filter((item) => item.role !== "assistant" || !item.live);
@@ -814,6 +833,8 @@ let _approvalNonceTimer = null;
 let _approvalInerted = [];
 const _approvalResolving = new Set();
 const _approvalRecovering = new Set();
+const TURN_APPROVAL_KIND = "turn";
+const SUBAGENT_APPROVAL_KIND = "subagent";
 let _parkedTaskDialog = null;
 function onApproval(msg) {
   state.pending.set(msg.decision_id, { ...msg, nonce: null });
@@ -858,7 +879,8 @@ function setApprovalBackgroundInert(inert) {
   if (inert) {
     if (_approvalInerted.length) return;
     for (const child of document.body.children) {
-      if (child === overlay || child.tagName === "SCRIPT" || child.inert) continue;
+      if (child === overlay || child.id === "runner-control-feedback"
+          || child.tagName === "SCRIPT" || child.inert) continue;
       child.inert = true;
       _approvalInerted.push(child);
     }
@@ -1079,6 +1101,61 @@ function clearPendingApprovals({ refresh = true } = {}) {
   if (refresh) refreshIfActive("gate");
 }
 
+function clearPendingApprovalIds(decisionIds, { refresh = true } = {}) {
+  let changed = false;
+  for (const decisionId of decisionIds) {
+    changed = state.pending.delete(decisionId) || changed;
+    _approvalResolving.delete(decisionId);
+    _approvalRecovering.delete(decisionId);
+  }
+  if (!changed) return;
+  const overlay = document.getElementById("overlay");
+  if (decisionIds.has(overlay.dataset.decision)) hideApproval();
+  updateGateBadge();
+  if (refresh) refreshIfActive("gate");
+  showTopApproval();
+}
+
+function pendingDecisionIdsOfKind(kind) {
+  return new Set(
+    [...state.pending.entries()]
+      .filter(([, pending]) => pending.kind === kind)
+      .map(([decisionId]) => decisionId),
+  );
+}
+
+function turnPendingDecisionIds() {
+  return pendingDecisionIdsOfKind(TURN_APPROVAL_KIND);
+}
+
+function subagentPendingDecisionIds() {
+  return pendingDecisionIdsOfKind(SUBAGENT_APPROVAL_KIND);
+}
+
+function clearTurnPendingApprovals({ refresh = true } = {}) {
+  clearPendingApprovalIds(turnPendingDecisionIds(), { refresh });
+}
+
+async function reconcilePendingApprovalIds(
+  decisionIds,
+  authorityToken,
+  timeoutMs = RUNNER_CONTROL_RECONCILE_TIMEOUT_MS,
+) {
+  if (!decisionIds.size) return true;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let snapshot = null;
+  try {
+    snapshot = await api.get("/api/approvals", { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (authorityToken !== authorityGeneration || !Array.isArray(snapshot?.pending)) return false;
+  const live = new Set(snapshot.pending.map((pending) => pending.decision_id));
+  clearPendingApprovalIds(new Set([...decisionIds].filter((decisionId) => !live.has(decisionId))));
+  return true;
+}
+
 function clearAuthorityLocalState({ clearRunner = false } = {}) {
   api.cancelVoiceCapture();
   closePalette();
@@ -1122,18 +1199,216 @@ function updateGateBadge() {
     attention.classList.toggle("is-hidden", n === 0);
   }
   const runner = state.runner || {};
-  syncStatusChrome(!!runner.turn_busy, runner.runner_running === false);
+  syncRunnerControlCopies(runnerFacts(runner));
+  syncStatusChrome(runner);
 }
 
-function syncStatusChrome(busy, paused = false) {
+function runnerFacts(runner = state.runner || {}) {
+  const statusCurrent = !state.runnerStatusError;
+  const runnerAvailable = runner.runner_available === true;
+  const currentTurnBusy = !!runner.turn_busy;
+  const globalTurnBusy = currentTurnBusy || !!runner.global_turn_busy;
+  const backgroundBusy = !!runner.background_busy;
+  const workActive = globalTurnBusy || backgroundBusy;
+  const turnApprovalPending = [...state.pending.values()]
+    .some((pending) => pending.kind === TURN_APPROVAL_KIND);
+  return {
+    statusCurrent,
+    runnerAvailable,
+    pauseAvailable: workActive || turnApprovalPending || (statusCurrent && runnerAvailable),
+    resumeAvailable: statusCurrent && runnerAvailable,
+    currentTurnBusy,
+    globalTurnBusy,
+    backgroundBusy,
+    workActive,
+    paused: runnerAvailable && runner.runner_running === false,
+  };
+}
+
+function syncRunnerControlCopies(facts = runnerFacts()) {
+  const operation = runnerControlOperation;
+  for (const control of document.querySelectorAll("[data-runner-control]")) {
+    const action = control.dataset.runnerControl;
+    const approvalCopy = control.dataset.runnerControlSurface === "approval";
+    const stopping = operation?.action === "pause";
+    const resuming = operation?.action === "resume";
+    const stopVisible = operation ? stopping : (facts.pauseAvailable
+      && (facts.workActive || (approvalCopy && state.pending.size > 0)));
+    const resumeVisible = operation ? resuming : (facts.resumeAvailable && facts.paused);
+    const visible = action === "pause" ? stopVisible : resumeVisible;
+    control.classList.toggle("is-hidden", !visible);
+    control.disabled = !!operation
+      || (action === "pause" ? !facts.pauseAvailable : !facts.resumeAvailable);
+    if (action === "pause") {
+      control.textContent = stopping ? "Stopping…" : "Stop all";
+      control.setAttribute("aria-label", stopping
+        ? "Stopping all chats and pausing schedules"
+        : "Stop all chats and pause schedules");
+    } else {
+      control.textContent = resuming ? "Resuming…" : "Resume schedules";
+      control.setAttribute("aria-label", resuming
+        ? "Resuming schedules; stopped chats stay stopped"
+        : "Resume schedules; stopped chats stay stopped");
+    }
+  }
+  const emergency = document.querySelector(".approval-emergency");
+  const approvalStop = document.getElementById("ap-stop-all");
+  if (emergency && approvalStop) {
+    emergency.classList.toggle("is-hidden", approvalStop.classList.contains("is-hidden"));
+  }
+}
+
+function syncStatusChrome(runner = state.runner || {}) {
   const status = document.querySelector(".status");
   if (!status) return;
+  const facts = runnerFacts(runner);
+  const controlling = !!runnerControlOperation;
+  const stopping = runnerControlOperation?.action === "pause";
+  const resuming = runnerControlOperation?.action === "resume";
   // Idle is not a user task. Keep the global chrome out of the way unless work is active or a
   // non-Chat surface needs an approval shortcut; Chat already owns its own approval pill.
   const attentionElsewhere = state.pending.size > 0 && state.route !== "chat";
-  status.classList.toggle("status-active", !!busy || !!paused || attentionElsewhere);
-  status.classList.toggle("is-working", !!busy);
-  status.classList.toggle("is-paused", !!paused);
+  status.classList.toggle("status-active", facts.workActive || facts.paused
+    || controlling || attentionElsewhere);
+  status.classList.toggle("is-working", facts.workActive || controlling);
+  status.classList.toggle("is-paused", facts.paused && !controlling);
+  status.classList.toggle("is-controlling", controlling);
+  status.classList.toggle("is-stopping", stopping);
+  status.classList.toggle("is-resuming", resuming);
+  status.classList.toggle("has-global-work", facts.workActive && !controlling);
+}
+
+function announceRunnerControl(message) {
+  const feedback = document.getElementById("runner-control-feedback");
+  if (feedback) feedback.textContent = message;
+}
+
+function cancelledTurnCount(data) {
+  const cancelled = data?.cancelled_turns;
+  if (Array.isArray(cancelled)) return cancelled.length;
+  const count = Number(cancelled);
+  return Number.isInteger(count) && count >= 0 ? count : null;
+}
+
+function runnerControlSuccessMessage(action, data, reconciled) {
+  const runner = state.runner || {};
+  if (action === "resume") {
+    if (!reconciled) {
+      return "Resume schedules completed. Current schedule status will refresh automatically. Stopped chats stay stopped.";
+    }
+    if (runner.runner_available === false) {
+      return "Schedules are unavailable. Stopped chats stay stopped.";
+    }
+    if (runner.runner_running === true) {
+      return "Schedules resumed. Stopped chats stay stopped.";
+    }
+    return "Resume schedules completed, but schedules are currently paused. Stopped chats stay stopped.";
+  }
+
+  const count = cancelledTurnCount(data);
+  const stopped = count === null ? "Stop all completed"
+    : (count === 0 ? "No live chats needed stopping"
+      : `Stopped ${count} live chat${count === 1 ? "" : "s"}`);
+  if (!reconciled) return `${stopped}. Current schedule status will refresh automatically.`;
+  const newChat = runner.global_turn_busy ? " Another live chat is active." : "";
+  let schedule = "Current schedule status is still refreshing.";
+  if (runner.runner_available === false) schedule = "Schedules are unavailable.";
+  else if (runner.runner_running === false) schedule = "Schedules are paused.";
+  else if (runner.runner_running === true) schedule = "Schedules are currently running.";
+  return `${stopped}.${newChat} ${schedule}`;
+}
+
+async function runRunnerControl(action) {
+  if (runnerControlOperation) return runnerControlOperation.promise;
+  const facts = runnerFacts();
+  if (action === "pause" && !facts.pauseAvailable) return false;
+  if (action === "resume" && !facts.resumeAvailable) return false;
+  if (action === "pause" && !facts.workActive && state.pending.size === 0) return false;
+  if (action === "resume" && !facts.paused) return false;
+  if (action !== "pause" && action !== "resume") return false;
+
+  const operation = {
+    id: ++runnerControlSequence,
+    action,
+    authorityToken: authorityGeneration,
+    turnDecisionIds: turnPendingDecisionIds(),
+    subagentDecisionIds: subagentPendingDecisionIds(),
+    promise: null,
+  };
+  runnerControlOperation = operation;
+  const startingMessage = action === "pause"
+    ? "Stopping all live chats and pausing schedules…"
+    : "Resuming schedules… Stopped chats stay stopped.";
+  announceRunnerControl(startingMessage);
+  renderRunnerState();
+
+  operation.promise = (async () => {
+    let result = null;
+    let failed = false;
+    let reconciled = false;
+    try {
+      try {
+        const endpoint = action === "pause" ? "/api/runner/pause" : "/api/runner/resume";
+        result = await api.post(endpoint, {});
+        failed = !result.ok;
+        // The POST snapshot can already be stale if another tab starts work while a scheduled
+        // job drains. The scoped GET below is the sole ongoing source of runner/turn state.
+      } catch {
+        failed = true;
+      }
+
+      // A write response is not the ongoing source of truth. Re-read this tab's scoped status on
+      // success, rejection, and transport ambiguity before releasing any control copy.
+      try {
+        reconciled = !!await refreshRunnerStatus({
+          refreshChatHeader: true,
+          timeoutMs: RUNNER_CONTROL_RECONCILE_TIMEOUT_MS,
+          adoptSuperseding: false,
+        });
+      } catch {
+        state.runnerStatusError = true;
+      }
+      if (runnerControlOperation !== operation) return false;
+      if (!failed && action === "pause"
+          && operation.authorityToken === authorityGeneration
+          && !state.runner?.turn_busy) {
+        // Terminal websocket frames normally retire top-level turn approvals first. This
+        // fallback is limited to decisions present when Stop began, while ambiguous subagent
+        // approvals are removed only when the server confirms they did not survive. Studio,
+        // voice, and newly admitted approvals are therefore outside Global Stop's cleanup.
+        clearPendingApprovalIds(operation.turnDecisionIds);
+        await reconcilePendingApprovalIds(
+          operation.subagentDecisionIds,
+          operation.authorityToken,
+        );
+      }
+    } finally {
+      // The shell owns this lock, not the mounted route. Release it even if reconciliation or a
+      // render helper unexpectedly fails so every copy can recover on the next runner snapshot.
+      if (runnerControlOperation === operation) {
+        runnerControlOperation = null;
+        renderRunnerState();
+      }
+    }
+
+    if (failed) {
+      const statusNote = reconciled
+        ? "Current runner status was refreshed"
+        : "Current runner status could not be refreshed yet and will retry automatically";
+      const message = action === "pause"
+        ? `Could not confirm Stop all. ${statusNote}; try again if work is still active.`
+        : `Could not confirm Resume schedules. ${statusNote}; stopped chats remain stopped.`;
+      announceRunnerControl(message);
+      showToast(message, "error");
+      return false;
+    }
+
+    const message = runnerControlSuccessMessage(action, result?.data, reconciled);
+    announceRunnerControl(message);
+    showToast(message);
+    return true;
+  })();
+  return operation.promise;
 }
 
 // --- router ---
@@ -1504,16 +1779,26 @@ function renderLocation() {
 // safe to call whether or not the Daily card is mounted.
 function renderRunnerState() {
   const s = state.runner || {};
-  const busy = !!s.turn_busy;
+  const facts = runnerFacts(s);
+  const operation = runnerControlOperation;
+  const busy = facts.workActive || !!operation;
   const setText = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
   const setClass = (id, c) => { const el = document.getElementById(id); if (el) el.className = c; };
   const dotClass = "runner-dot" + (busy ? " busy" : "");
+  let runnerText = "Kairo is idle";
+  if (operation?.action === "pause") runnerText = "Stopping all chats and pausing schedules";
+  else if (operation?.action === "resume") runnerText = "Resuming schedules";
+  else if (!facts.statusCurrent) runnerText = "Runner status is unavailable";
+  else if (facts.currentTurnBusy) runnerText = "Kairo is working in this chat";
+  else if (facts.globalTurnBusy) runnerText = "Kairo is working in another chat";
+  else if (facts.backgroundBusy) runnerText = "Scheduled work is running";
+  else if (facts.paused) runnerText = "Schedules are paused";
+  else if (s.runner_available === false) runnerText = "Schedules are unavailable";
   // status bar
-  setText("st-runner", busy ? "Kairo is working" : (s.runner_running ? "Kairo is idle" : "Kairo is paused"));
+  setText("st-runner", runnerText);
   setClass("runner-dot", dotClass);
-  setText("st-turn", busy ? "working" : "ready");
-  const stop = document.getElementById("st-stop"); if (stop) stop.classList.toggle("is-hidden", !busy);
-  const resume = document.getElementById("st-resume"); if (resume) resume.classList.toggle("is-hidden", s.runner_running !== false);
+  setText("st-turn", operation ? operation.action : (facts.workActive ? "working" : (facts.paused ? "paused" : "ready")));
+  syncRunnerControlCopies(facts);
   // Phase 10 status strip: active project, run mode, today's spend, cost-ledger health.
   setText("st-project", s.project && s.project.name ? s.project.name : "global");
   setText("st-mode", s.mode || "approval");
@@ -1530,13 +1815,42 @@ function renderRunnerState() {
   // Daily's quiet briefing line (if mounted) shares the settled runner state, but Chat remains
   // the only place to send a message. Keep this copy/format aligned with Daily's initial render.
   if (document.getElementById("daily-now-lead")) {
+    let lead = "Kairo is idle";
+    let desc = "Your briefing is up to date.";
+    if (operation?.action === "pause") {
+      lead = "Stopping all chats";
+      desc = "Scheduled work is being paused safely.";
+    } else if (operation?.action === "resume") {
+      lead = "Resuming schedules";
+      desc = "Stopped chats stay stopped.";
+    } else if (!facts.statusCurrent) {
+      lead = "Runner status is unavailable";
+      desc = facts.workActive
+        ? "Last known work may still be running. Stop all remains available."
+        : "Kairo will retry automatically.";
+    } else if (facts.currentTurnBusy) {
+      lead = "Kairo is working";
+      desc = "Progress is available in Chat.";
+    } else if (facts.globalTurnBusy) {
+      lead = "Kairo is working in another chat";
+      desc = "That chat's progress is available in Chat.";
+    } else if (facts.backgroundBusy) {
+      lead = "Scheduled work is running";
+      desc = "Background work continues independently of this chat.";
+    } else if (facts.paused) {
+      lead = "Schedules are paused";
+      desc = "Stopped chats stay stopped. Resume schedules when you're ready.";
+    } else if (s.runner_available === false) {
+      lead = "Schedules are unavailable";
+      desc = "Global runner controls are unavailable.";
+    }
     setClass("daily-now-dot", dotClass);
-    setText("daily-now-lead", busy ? "Kairo is working" : "Kairo is idle");
-    setText("daily-now-desc", busy ? "Progress is available in Chat." : "Your briefing is up to date.");
+    setText("daily-now-lead", lead);
+    setText("daily-now-desc", desc);
     setText("daily-cost-today", typeof s.today_spend_usd === "number"
       ? `${money(s.today_spend_usd)} today` : "Cost unavailable");
   }
-  syncStatusChrome(busy, s.runner_running === false);
+  syncStatusChrome(s);
 }
 
 // Fix the "No messages yet" reload: the server keeps the active conversation alive across a
@@ -1670,9 +1984,11 @@ async function refreshVoiceStatus() {
   return publishedVoiceStatus;
 }
 
-async function pollStatus({ refreshChatHeader = false } = {}) {
+async function refreshRunnerStatus({
+  refreshChatHeader = false, timeoutMs = null, adoptSuperseding = true,
+} = {}) {
   const runnerWasUnavailable = state.runnerStatusError;
-  const s = await api.runnerStatus({ refresh: true });
+  const s = await api.runnerStatus({ refresh: true, timeoutMs, adoptSuperseding });
   if (s) {
     state.runner = s;
     renderRunnerState(); rehydrateConversation();
@@ -1681,8 +1997,14 @@ async function pollStatus({ refreshChatHeader = false } = {}) {
     if (runnerWasUnavailable || refreshChatHeader) refreshHeader();
   } else {
     // Keep last-known status-bar data, but stop presenting it as writable header state.
+    renderRunnerState();
     refreshHeader();
   }
+  return s;
+}
+
+async function pollStatus({ refreshChatHeader = false } = {}) {
+  await refreshRunnerStatus({ refreshChatHeader });
   await refreshVoiceStatus();
 }
 
@@ -1701,8 +2023,9 @@ function init() {
       );
     }
   });
-  document.getElementById("st-stop").addEventListener("click", async () => { await api.post("/api/runner/pause"); pollStatus(); });
-  document.getElementById("st-resume").addEventListener("click", async () => { await api.post("/api/runner/resume"); pollStatus(); });
+  document.querySelectorAll("[data-runner-control]").forEach((control) => {
+    control.addEventListener("click", () => { void runRunnerControl(control.dataset.runnerControl); });
+  });
   document.getElementById("st-logout").addEventListener("click", async (event) => {
     event.currentTarget.disabled = true;
     await api.post("/auth/logout", {});

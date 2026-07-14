@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -109,6 +110,332 @@ class BlockingCountOnlyRouter(CountOnlyRouter):
         self.calls.append(kwargs)
         self.started.set()
         await self.release.wait()
+
+
+# --- BackgroundRunner: lifecycle ---------------------------------------------
+
+
+class _LifecycleService:
+    def __init__(self) -> None:
+        self.config = SchedulerConfig(wake_cap_seconds=30)
+        self.sleep_started = asyncio.Event()
+
+    async def seconds_until_next(self) -> None:
+        self.sleep_started.set()
+        return None
+
+
+class _ControlledLifecycleRunner(BackgroundRunner):
+    def __init__(
+        self,
+        service: _LifecycleService,
+        cycles: list[tuple[asyncio.Event, asyncio.Event]],
+    ) -> None:
+        super().__init__(
+            service,  # type: ignore[arg-type]
+            notify=lambda _line: None,
+            run_job=None,  # type: ignore[arg-type]
+            turn_lock=asyncio.Lock(),
+        )
+        self.cycles = cycles
+        self.check_count = 0
+
+    async def check_due(self, *, stop_event: asyncio.Event | None = None) -> int:
+        del stop_event
+        index = self.check_count
+        self.check_count += 1
+        if index >= len(self.cycles):
+            raise AssertionError("unexpected extra wake-loop generation")
+        started, release = self.cycles[index]
+        started.set()
+        await release.wait()
+        return 0
+
+
+class _ControlledTurnLock:
+    def __init__(self) -> None:
+        self.waiting = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __aenter__(self):
+        self.waiting.set()
+        await self.release.wait()
+        return self
+
+    async def __aexit__(self, *_exc) -> None:
+        return None
+
+
+class _OneDueReminderService(_LifecycleService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.due_calls = 0
+        self.begin_calls = 0
+        task = SimpleNamespace(id=1, kind="reminder", title="queued", payload="do not fire")
+        self.reminder = SimpleNamespace(action="fire", task=task, scheduled_for=START.isoformat())
+
+    async def due(self) -> list[SimpleNamespace]:
+        self.due_calls += 1
+        return [self.reminder] if self.due_calls == 1 else []
+
+    async def begin_run(self, _due) -> int:
+        self.begin_calls += 1
+        return 1
+
+    async def complete_run(self, *_args, **_kwargs) -> None:
+        return None
+
+
+class _OneDueDigestService(_OneDueReminderService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reminder.task.kind = "digest"
+
+
+async def _first_completed(*tasks: asyncio.Future) -> set[asyncio.Future]:
+    done, _pending = await asyncio.wait_for(
+        asyncio.wait(set(tasks), return_when=asyncio.FIRST_COMPLETED), timeout=3
+    )
+    return done
+
+
+async def test_start_is_idempotent_and_stop_wake_cannot_be_lost_after_a_check() -> None:
+    service = _LifecycleService()
+    check_started = asyncio.Event()
+    release_check = asyncio.Event()
+    runner = _ControlledLifecycleRunner(service, [(check_started, release_check)])
+
+    runner.start()
+    owned = runner._task
+    runner.start()
+    assert runner._task is owned and runner.is_running
+    await check_started.wait()
+
+    stopping_generation = runner.request_stop()
+    assert stopping_generation is owned
+    assert runner._stop.is_set()
+    assert not runner.is_running
+    stopping = asyncio.shield(stopping_generation)
+    sleeping = asyncio.create_task(service.sleep_started.wait())
+    release_check.set()
+    try:
+        done = await _first_completed(stopping, sleeping)
+        assert stopping in done
+        assert not service.sleep_started.is_set()
+        assert runner._task is None
+    finally:
+        if not stopping.done():
+            runner.kick()
+            await stopping
+        sleeping.cancel()
+        await asyncio.gather(sleeping, return_exceptions=True)
+
+
+async def test_cancelling_a_stop_waiter_never_cancels_the_owned_loop() -> None:
+    service = _LifecycleService()
+    check_started = asyncio.Event()
+    release_check = asyncio.Event()
+    runner = _ControlledLifecycleRunner(service, [(check_started, release_check)])
+    runner.start()
+    await check_started.wait()
+    owned = runner._task
+    assert owned is not None
+
+    stopping = asyncio.create_task(runner.stop())
+    await runner._stop.wait()
+    stopping.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+    assert runner._task is owned
+    assert not owned.done() and not owned.cancelled()
+    assert not runner.is_running
+
+    sleeping = asyncio.create_task(service.sleep_started.wait())
+    release_check.set()
+    try:
+        done = await _first_completed(owned, sleeping)
+        assert owned in done
+        assert runner._task is None
+    finally:
+        if not owned.done():
+            runner.kick()
+            await owned
+        sleeping.cancel()
+        await asyncio.gather(sleeping, return_exceptions=True)
+
+
+async def test_stop_while_due_waits_for_turn_lock_never_starts_that_work() -> None:
+    service = _OneDueReminderService()
+    turn_lock = _ControlledTurnLock()
+    notifications: list[str] = []
+    runner = BackgroundRunner(
+        service,  # type: ignore[arg-type]
+        notify=notifications.append,
+        run_job=None,  # type: ignore[arg-type]
+        turn_lock=turn_lock,  # type: ignore[arg-type]
+    )
+    runner.start()
+    await turn_lock.waiting.wait()
+
+    stopping_generation = runner.request_stop()
+    assert stopping_generation is runner._task
+    stopping = asyncio.shield(stopping_generation)
+    sleeping = asyncio.create_task(service.sleep_started.wait())
+    turn_lock.release.set()
+    try:
+        done = await _first_completed(stopping, sleeping)
+        assert stopping in done
+        assert notifications == []
+        assert service.begin_calls == 0
+        assert runner._task is None and not runner.is_running
+    finally:
+        if not stopping.done():
+            runner.kick()
+            await stopping
+        sleeping.cancel()
+        await asyncio.gather(sleeping, return_exceptions=True)
+
+
+async def test_stop_while_digest_waits_for_turn_lock_never_starts_that_work() -> None:
+    service = _OneDueDigestService()
+    turn_lock = _ControlledTurnLock()
+    digest_calls = 0
+
+    async def run_digest(_task) -> JobOutcome:
+        nonlocal digest_calls
+        digest_calls += 1
+        return JobOutcome(session_id=None, text="must not run")
+
+    runner = BackgroundRunner(
+        service,  # type: ignore[arg-type]
+        notify=lambda _line: None,
+        run_job=None,  # type: ignore[arg-type]
+        run_digest=run_digest,
+        turn_lock=turn_lock,  # type: ignore[arg-type]
+    )
+    runner.start()
+    await turn_lock.waiting.wait()
+
+    stopping_generation = runner.request_stop()
+    assert stopping_generation is runner._task
+    stopping = asyncio.shield(stopping_generation)
+    sleeping = asyncio.create_task(service.sleep_started.wait())
+    turn_lock.release.set()
+    try:
+        done = await _first_completed(stopping, sleeping)
+        assert stopping in done
+        assert service.begin_calls == 0
+        assert digest_calls == 0
+        assert runner._task is None and not runner.is_running
+    finally:
+        if not stopping.done():
+            runner.kick()
+            await stopping
+        sleeping.cancel()
+        await asyncio.gather(sleeping, return_exceptions=True)
+
+
+async def test_start_during_stop_restarts_once_and_the_last_stop_command_wins() -> None:
+    service = _LifecycleService()
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+    release_second = asyncio.Event()
+    runner = _ControlledLifecycleRunner(
+        service,
+        [(first_started, release_first), (second_started, release_second)],
+    )
+    runner.start()
+    runner.start()
+    await first_started.wait()
+    first = runner._task
+    assert first is not None
+
+    first_generation = runner.request_stop()
+    assert first_generation is first and runner._stop.is_set()
+    stopping_first = asyncio.shield(first_generation)
+    runner.start()
+    runner.start()
+    assert runner.is_running and runner._task is first
+    sleeping = asyncio.create_task(service.sleep_started.wait())
+    release_first.set()
+    try:
+        done = await _first_completed(stopping_first, sleeping)
+        assert stopping_first in done
+        second = runner._task
+        assert second is not None and second is not first
+        # The stale waiter for the first generation must not clear its replacement.
+        assert runner._task is second and runner.is_running
+    finally:
+        if not stopping_first.done():
+            runner.kick()
+            await stopping_first
+        sleeping.cancel()
+        await asyncio.gather(sleeping, return_exceptions=True)
+    await second_started.wait()
+
+    second_generation = runner.request_stop()
+    assert second_generation is second and runner._stop.is_set()
+    stopping_second = asyncio.shield(second_generation)
+    runner.start()
+    assert runner.is_running
+    final_generation = runner.request_stop()
+    assert final_generation is second
+    stopping_last = asyncio.shield(final_generation)
+    assert not runner.is_running
+    sleeping = asyncio.create_task(service.sleep_started.wait())
+    release_second.set()
+    drained = asyncio.gather(stopping_second, stopping_last)
+    try:
+        done = await _first_completed(drained, sleeping)
+        assert drained in done
+        assert runner._task is None
+        assert runner.check_count == 2
+    finally:
+        if not drained.done():
+            runner.kick()
+            await drained
+        sleeping.cancel()
+        await asyncio.gather(sleeping, return_exceptions=True)
+
+
+async def test_unexpected_sleep_failure_is_retrieved_logged_and_retires_runner() -> None:
+    logged = asyncio.Event()
+
+    class FailingSleepService(_LifecycleService):
+        async def due(self) -> list:
+            return []
+
+        async def seconds_until_next(self) -> None:
+            raise RuntimeError("sleep lookup failed")
+
+    class RecordingLog:
+        def __init__(self) -> None:
+            self.errors: list[tuple[str, dict]] = []
+
+        def error(self, event: str, **kwargs) -> None:
+            self.errors.append((event, kwargs))
+            logged.set()
+
+        def exception(self, _event: str, **_kwargs) -> None:
+            return None
+
+    log = RecordingLog()
+    runner = BackgroundRunner(
+        FailingSleepService(),  # type: ignore[arg-type]
+        notify=lambda _line: None,
+        run_job=None,  # type: ignore[arg-type]
+        turn_lock=asyncio.Lock(),
+        log=log,
+    )
+    runner.start()
+    owned = runner._task
+    assert owned is not None
+
+    await logged.wait()
+    assert owned.done()
+    assert runner._task is None and not runner.is_running
+    assert log.errors == [("wake_loop_crashed", {"error_type": "RuntimeError"})]
 
 
 # --- BackgroundRunner: reminders ---------------------------------------------
@@ -519,7 +846,7 @@ async def test_job_ask_parks_exact_call_and_runner_does_not_complete_it(tmp_path
                         id="toolu-park-1",
                         name="write_file",
                         input={"path": "report.txt", "content": "approved bytes"},
-                    )
+                    ),
                 ]
             )
         ]

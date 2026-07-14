@@ -75,9 +75,18 @@
       <button id="mode-debug"><span class="dbg-dot"></span>Debug</button>
     </div>
     <button class="stop-btn" id="st-logout" title="Revoke this browser session">Lock</button>
-    <button class="stop-btn" id="st-stop">Stop</button>
-    <button class="stop-btn is-hidden" id="st-resume">Resume</button>
+    <button class="stop-btn is-hidden" id="st-stop" type="button"
+            data-runner-control="pause" data-runner-control-surface="header"
+            aria-label="Stop all chats and pause schedules"
+            title="Stop all chats and pause schedules">Stop all</button>
+    <button class="stop-btn is-hidden" id="st-resume" type="button"
+            data-runner-control="resume"
+            aria-label="Resume schedules; stopped chats stay stopped"
+            title="Resume schedules. Stopped chats stay stopped.">Resume schedules</button>
   </header>
+
+  <span class="sr-only" id="runner-control-feedback" role="status" aria-live="polite"
+        aria-atomic="true"></span>
 
   <main>
     <div id="screen" class="screen"></div>
@@ -109,6 +118,13 @@
         <span class="spin" id="ap-spin"></span>
         <span id="ap-waiting">Preparing secure confirmation…</span>
         <button type="button" class="approval-retry" id="ap-retry" hidden>Retry</button>
+      </div>
+      <div class="approval-emergency">
+        <button class="approval-global-stop is-hidden" id="ap-stop-all" type="button"
+                data-runner-control="pause" data-runner-control-surface="approval"
+                aria-label="Stop all chats and pause schedules"
+                title="Stop all chats and pause schedules">Stop all</button>
+        <span>Stops every live chat and pauses scheduled work.</span>
       </div>
       <div class="actions">
         <button class="btn-approve" id="ap-approve" disabled>Allow once</button>

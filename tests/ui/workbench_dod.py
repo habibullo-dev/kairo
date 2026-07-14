@@ -359,8 +359,11 @@ def _base() -> dict:
     return {
         "_hash": "chat",
         "/api/runner": {
+            "runner_available": True,
             "runner_running": True,
             "turn_busy": False,
+            "global_turn_busy": False,
+            "background_busy": False,
             "mode": "approval",
             "project": None,
             "today_spend_usd": 0.42,

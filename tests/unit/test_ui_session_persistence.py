@@ -354,6 +354,301 @@ async def test_cancel_before_response_persists_stopped_turn_and_can_resume(tmp_p
     assert result.text == "continuing safely"
 
 
+async def test_cancel_immediately_after_submit_still_enters_and_settles(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+
+    class NeverCalledClient(FakeClient):
+        async def create(self, **_kwargs):  # type: ignore[override]
+            raise AssertionError("pre-start cancellation must not call the model")
+
+    class RecordingConnections(ConnectionManager):
+        def __init__(self) -> None:
+            super().__init__(clock=lambda: 0.0)
+            self.published: list[dict] = []
+
+        async def publish(self, _context, message: dict) -> None:
+            self.published.append(message)
+
+    connections = RecordingConnections()
+    session = UiSession(
+        loop=_loop(tmp_path, NeverCalledClient([])),
+        connections=connections,
+        sessions=store,
+    )
+    assert session.submit("cancel with no scheduling yield")
+    target = session.current_task
+    assert target is not None and session.cancel()  # deliberately no sleep/event-loop yield
+
+    with pytest.raises(asyncio.CancelledError):
+        await target
+    assert await store.load_messages(session.session_id) == [
+        {"role": "user", "content": "cancel with no scheduling yield"},
+        {"role": "assistant", "content": "(stopped)"},
+    ]
+    assert [message.get("state", message["kind"]) for message in connections.published] == [
+        "saving",
+        "saved",
+        "turn_cancelled",
+    ]
+
+
+async def test_cancel_queued_before_turn_lock_persists_before_terminal(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+
+    class ObservedLock(asyncio.Lock):
+        def __init__(self) -> None:
+            super().__init__()
+            self.acquire_started = asyncio.Event()
+
+        async def acquire(self) -> bool:
+            self.acquire_started.set()
+            return await super().acquire()
+
+    class NeverCalledClient(FakeClient):
+        async def create(self, **_kwargs):  # type: ignore[override]
+            raise AssertionError("a turn cancelled in the queue must never call the model")
+
+    class RecordingConnections(ConnectionManager):
+        def __init__(self) -> None:
+            super().__init__(clock=lambda: 0.0)
+            self.published: list[dict] = []
+
+        async def publish(self, _context, message: dict) -> None:
+            self.published.append(message)
+
+    turn_lock = ObservedLock()
+    connections = RecordingConnections()
+    session = UiSession(
+        loop=_loop(tmp_path, NeverCalledClient([])),
+        connections=connections,
+        turn_lock=turn_lock,
+        sessions=store,
+    )
+    await session.ensure_session()
+    turn_lock.acquire_started.clear()
+    await turn_lock.acquire()
+    turn_lock.acquire_started.clear()
+
+    assert session.submit("queued user request")
+    await turn_lock.acquire_started.wait()
+    target = session.current_task
+    assert target is not None and session.cancel()
+    turn_lock.acquire_started.clear()
+    await turn_lock.acquire_started.wait()  # cancellation finalizer is queued for the same lock
+    assert not target.done()
+
+    turn_lock.release()
+    with pytest.raises(asyncio.CancelledError):
+        await target
+
+    assert await store.load_messages(session.session_id) == [
+        {"role": "user", "content": "queued user request"},
+        {"role": "assistant", "content": "(stopped)"},
+    ]
+    assert [message["kind"] for message in connections.published] == [
+        "session_persistence",
+        "session_persistence",
+        "turn_cancelled",
+    ]
+    assert [message.get("state") for message in connections.published[:2]] == ["saving", "saved"]
+
+
+async def test_prestart_cancel_in_new_chat_never_reuses_same_prompt_snapshot(
+    tmp_path: Path,
+) -> None:
+    store = await _store(tmp_path)
+
+    class NeverCalledClient(FakeClient):
+        async def create(self, **_kwargs):  # type: ignore[override]
+            raise AssertionError("the pre-start turn must not call the model")
+
+    prompt = "repeat this exact request"
+    loop = _loop(tmp_path, NeverCalledClient([]))
+    # Model the prior AgentLoop state at the exact admission boundary. The old snapshot starts
+    # with the identical prompt, so content-prefix heuristics would leak its partial assistant
+    # content into this fresh chat.
+    loop._record_cancellation(  # noqa: SLF001 - regression pins the private handoff state
+        [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": [{"type": "text", "text": "old partial"}]},
+        ]
+    )
+    new_session_id = await store.create_session(project_id=None)
+    session = UiSession(
+        loop=loop,
+        connections=ConnectionManager(clock=lambda: 0.0),
+        sessions=store,
+    )
+    session.start_new_session(None, session_id=new_session_id)
+    assert session.submit(prompt)
+    second = session.current_task
+    assert second is not None and session.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+
+    assert await store.load_messages(new_session_id) == [
+        {"role": "user", "content": prompt},
+        {"role": "assistant", "content": "(stopped)"},
+    ]
+
+
+async def test_cancel_during_session_allocation_finishes_admission_and_persists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = await _store(tmp_path)
+    allocation_started = asyncio.Event()
+    never = asyncio.Event()
+    calls = 0
+    original_create = store.create_session
+
+    async def first_allocation_blocks(*, project_id=None, **kwargs) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            allocation_started.set()
+            await never.wait()
+        return await original_create(project_id=project_id, **kwargs)
+
+    monkeypatch.setattr(store, "create_session", first_allocation_blocks)
+    session = UiSession(
+        loop=_loop(tmp_path, FakeClient([text_message("unreached")])),
+        connections=ConnectionManager(clock=lambda: 0.0),
+        sessions=store,
+    )
+    assert session.submit("retain admission")
+    await allocation_started.wait()
+    target = session.current_task
+    assert target is not None and session.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await target
+    assert calls == 2
+    assert await store.load_messages(session.session_id) == [
+        {"role": "user", "content": "retain admission"},
+        {"role": "assistant", "content": "(stopped)"},
+    ]
+
+
+async def test_repeated_cancel_cannot_interrupt_save_or_terminal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = await _store(tmp_path)
+    model_entered = asyncio.Event()
+    never = asyncio.Event()
+    save_started = asyncio.Event()
+    save_release = asyncio.Event()
+    terminal_started = asyncio.Event()
+    terminal_release = asyncio.Event()
+
+    class BlockingClient(FakeClient):
+        async def create(self, **kwargs):  # type: ignore[override]
+            model_entered.set()
+            await never.wait()
+            return await super().create(**kwargs)
+
+    class RecordingConnections(ConnectionManager):
+        def __init__(self) -> None:
+            super().__init__(clock=lambda: 0.0)
+            self.published: list[dict] = []
+
+        async def publish(self, _context, message: dict) -> None:
+            self.published.append(message)
+            if message.get("kind") == "turn_cancelled":
+                terminal_started.set()
+                await terminal_release.wait()
+
+    original_save = store.save_messages
+
+    async def gated_save(session_id: int, messages: list[dict]) -> None:
+        save_started.set()
+        await save_release.wait()
+        await original_save(session_id, messages)
+
+    monkeypatch.setattr(store, "save_messages", gated_save)
+    connections = RecordingConnections()
+    session = UiSession(
+        loop=_loop(tmp_path, BlockingClient([text_message("unreached")])),
+        connections=connections,
+        sessions=store,
+    )
+    await session.ensure_session()
+    assert session.submit("keep this stopped request")
+    await model_entered.wait()
+    target = session.current_task
+    assert target is not None and session.cancel()
+    await save_started.wait()
+
+    assert not session.cancel()  # terminal settlement is live but no longer cancellable
+    assert target.cancelling() == 1
+    save_release.set()
+    await terminal_started.wait()
+    assert session.persistence_state == "saved"
+    assert not session.cancel()
+    assert target.cancelling() == 1 and not target.done()
+    terminal_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await target
+    assert await store.load_messages(session.session_id) == [
+        {"role": "user", "content": "keep this stopped request"},
+        {"role": "assistant", "content": "(stopped)"},
+    ]
+    assert [message.get("state", message["kind"]) for message in connections.published] == [
+        "saving",
+        "saved",
+        "turn_cancelled",
+    ]
+
+
+async def test_cancel_during_normal_save_acknowledges_and_drains_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = await _store(tmp_path)
+    save_started = asyncio.Event()
+    save_release = asyncio.Event()
+
+    class RecordingConnections(ConnectionManager):
+        def __init__(self) -> None:
+            super().__init__(clock=lambda: 0.0)
+            self.published: list[dict] = []
+
+        async def publish(self, _context, message: dict) -> None:
+            self.published.append(message)
+
+    original_save = store.save_messages
+
+    async def gated_save(session_id: int, messages: list[dict]) -> None:
+        save_started.set()
+        await save_release.wait()
+        await original_save(session_id, messages)
+
+    monkeypatch.setattr(store, "save_messages", gated_save)
+    connections = RecordingConnections()
+    session = UiSession(
+        loop=_loop(tmp_path, FakeClient([text_message("completed reply")])),
+        connections=connections,
+        sessions=store,
+    )
+    assert session.submit("finish this request")
+    await save_started.wait()
+    target = session.current_task
+    assert target is not None and not session.cancel()
+    assert target.cancelling() == 0
+    assert not target.done()
+
+    save_release.set()
+    await target
+    assert session.persistence_state == "saved"
+    assert await store.load_messages(session.session_id) == session.messages
+    assert session.messages[-1]["content"] != "(stopped)"
+    assert [
+        message["state"]
+        for message in connections.published
+        if message.get("kind") == "session_persistence"
+    ] == ["saving", "saved"]
+    assert not any(message.get("kind") == "turn_cancelled" for message in connections.published)
+
+
 async def test_failed_turn_persists_redacted_marker_before_browser_notification(
     tmp_path: Path,
 ) -> None:

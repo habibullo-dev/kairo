@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -224,6 +224,16 @@ class UiSession:
         self.ring: deque[dict] = deque(maxlen=ring_buffer_events)
         self.log = log or get_logger("jarvis.ui.session")
         self._current: asyncio.Task | None = None
+        # The exact submitted task is cancellable only while it is queued/admitting or inside
+        # the model turn. Once terminal transcript settlement begins, the registry still drains
+        # the live task, but cancel() returns false and cannot inject another CancelledError.
+        self._cancellable_task: asyncio.Task | None = None
+        self._settling_task: asyncio.Task | None = None
+        # ``Task.cancel()`` before a newly created task executes can prevent its coroutine body
+        # from running at all. Keep that tiny scheduled phase as intent so the first instruction
+        # can durably settle the admitted request instead of losing it.
+        self._not_started_task: asyncio.Task | None = None
+        self._prestart_cancel_task: asyncio.Task | None = None
         self._turn_generation = 0
         self._pushes: set[asyncio.Task] = set()  # strong refs so pushes aren't GC'd mid-flight
         # Persistence (Phase 10 Task 2): the UI conversation is a real interactive session —
@@ -298,18 +308,29 @@ class UiSession:
         The session row is created lazily on the first turn (kind interactive, scoped to
         ``project_id``) and the full conversation is persisted after the turn — all inside
         the held turn lock, so a background job can't interleave the DB write."""
-        async with self.turn_lock:
-            if self.sessions is not None and self.session_id is None:
-                self.session_id = await self.sessions.create_session(project_id=self.project_id)
-            context = context or self._context()
+        try:
+            await self.turn_lock.acquire()
+        except asyncio.CancelledError:
+            # ``submit`` has already admitted this user turn even when another attended or
+            # background turn still owns the shared lock. A Stop during that queue must retain
+            # the same durable user + ``(stopped)`` record as a Stop inside the model call.
+            self._begin_settlement()
+            await self._await_settlement(self._persist_queued_cancelled_turn(text, context))
+            raise
+        try:
+            # Snapshot only after acquiring the lock so direct deterministic callers retain the
+            # same serialization guarantee as submit(): a prior completed turn cannot be lost.
             turn_messages = [*self.messages, {"role": "user", "content": text}]
-            # The loop mutates the list it receives while constructing an API transcript.  Keep
-            # this pre-call snapshot so a normal exception never persists an unmatched tool_use
-            # or a partial assistant block.
-            loop_messages = list(turn_messages)
             try:
+                if self.sessions is not None and self.session_id is None:
+                    self.session_id = await self.sessions.create_session(project_id=self.project_id)
+                context = context or self._context()
+                # The loop mutates the list it receives while constructing an API transcript.
+                # Keep this pre-call snapshot so an exception never persists an unmatched
+                # tool_use or a partial assistant block.
+                loop_messages = list(turn_messages)
                 if context is None:
-                    # No persisted context means no socket delivery.  This is only the bare/test
+                    # No persisted context means no socket delivery. This is only the bare/test
                     # composition; the workstation registry eagerly calls ensure_session().
                     result = await self.loop.run_turn(loop_messages, on_event=self._emit)
                 else:
@@ -318,24 +339,93 @@ class UiSession:
                             loop_messages, on_event=lambda event: self._emit(event, context)
                         )
             except asyncio.CancelledError:
-                await self._persist_cancelled_turn(turn_messages, text, context)
+                self._begin_settlement()
+                await self._await_settlement(
+                    self._ensure_and_persist_cancelled_turn(turn_messages, text, context)
+                )
                 raise
             except Exception:
-                await self._persist_failed_turn(turn_messages, text, context)
+                self._begin_settlement()
+                await self._await_settlement(
+                    self._ensure_and_persist_failed_turn(turn_messages, text, context)
+                )
                 raise
+
+            # A completed model result owns its save. cancel() rejects Stop during this phase;
+            # the registry still drains the exact task without turning a successful transcript
+            # into a cancellation or interrupting saving -> saved|failed settlement.
+            self._begin_settlement()
             self.messages = result.messages
             self.last_turn_cost_usd = getattr(result, "cost_usd", None)
             self.last_turn_model = getattr(result, "model", None)
             self.last_turn_provider = getattr(result, "provider", None)
             self.turn_budget_usd = getattr(result, "budget_usd", self.turn_budget_usd)
-            await self._persist(context, initial_title=initial_chat_title(text))
+            await self._await_settlement(
+                self._persist(context, initial_title=initial_chat_title(text))
+            )
             return result
+        finally:
+            self.turn_lock.release()
+
+    async def _persist_queued_cancelled_turn(
+        self, text: str, context: ExecutionContext | None
+    ) -> None:
+        """Settle a submitted turn cancelled before it acquired the shared turn lock."""
+        async with self.turn_lock:
+            if self.sessions is not None and self.session_id is None:
+                self.session_id = await self.sessions.create_session(project_id=self.project_id)
+            context = context or self._context()
+            turn_messages = [*self.messages, {"role": "user", "content": text}]
+            await self._persist_cancelled_turn(turn_messages, text, context)
+
+    def _begin_settlement(self) -> None:
+        """Close the Stop injection window for the exact task now settling."""
+        task = asyncio.current_task()
+        if self._current is task:
+            self._cancellable_task = None
+            self._settling_task = task
+
+    async def _ensure_and_persist_cancelled_turn(
+        self, turn_messages: list[dict], text: str, context: ExecutionContext | None
+    ) -> None:
+        """Finish admission if needed, then persist cancellation while holding turn_lock."""
+        if self.sessions is not None and self.session_id is None:
+            self.session_id = await self.sessions.create_session(project_id=self.project_id)
+        await self._persist_cancelled_turn(turn_messages, text, context or self._context())
+
+    async def _ensure_and_persist_failed_turn(
+        self, turn_messages: list[dict], text: str, context: ExecutionContext | None
+    ) -> None:
+        """Finish admission if needed, then persist failure while holding turn_lock."""
+        if self.sessions is not None and self.session_id is None:
+            self.session_id = await self.sessions.create_session(project_id=self.project_id)
+        await self._persist_failed_turn(turn_messages, text, context or self._context())
+
+    @staticmethod
+    async def _await_settlement(cleanup: Awaitable[None]) -> None:
+        """Keep terminal settlement owned even if an external caller cancels again.
+
+        Route-level cancellation is phase-gated, but process shutdown or another direct task
+        owner may still issue ``Task.cancel()``. Shield the one cleanup task and consume those
+        requests only until the durable/terminal step itself has settled.
+        """
+        task = asyncio.ensure_future(cleanup)
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        task.result()
 
     async def _persist_cancelled_turn(
         self, turn_messages: list[dict], text: str, context: ExecutionContext | None
     ) -> None:
         """Keep a cancelled request resumable before surfacing its websocket cancellation."""
-        saved = getattr(self.loop, "cancelled_messages", None) or turn_messages
+        saved = self.loop.cancelled_messages
+        # Admission synchronously retired the prior snapshot. Keep a prefix check as a protocol
+        # invariant: only this turn's richer partial transcript can replace its original input.
+        if not isinstance(saved, list) or saved[: len(turn_messages)] != turn_messages:
+            saved = turn_messages
         self.messages = [*saved, {"role": "assistant", "content": "(stopped)"}]
         # A cancelled turn has no reliable completed-turn cost or routing metadata.
         self.last_turn_cost_usd = None
@@ -472,20 +562,38 @@ class UiSession:
         if self._current is not None and not self._current.done():
             return False
         # Freeze scope before yielding.  A route must not be able to retag a queued turn by
-        # switching projects or resuming a different chat while this task is underway.
+        # switching projects or resuming a different chat while this task is underway. Retire
+        # the previous loop snapshot synchronously too: Stop can arrive before _run executes.
+        self.loop.reset_cancellation_snapshot()
         self._turn_generation += 1
         self._current = asyncio.create_task(self._run(text, self._context()))
+        self._cancellable_task = self._current
+        self._settling_task = None
+        self._not_started_task = self._current
+        self._prestart_cancel_task = None
         return True
 
     async def _run(self, text: str, context: ExecutionContext | None) -> None:
+        task = asyncio.current_task()
+        cancelled_before_start = self._prestart_cancel_task is task
+        if self._not_started_task is task:
+            self._not_started_task = None
         try:
+            if cancelled_before_start:
+                self._begin_settlement()
+                await self._await_settlement(self._persist_queued_cancelled_turn(text, context))
+                raise asyncio.CancelledError
             await self.handle_text(text, context=context)
         except asyncio.CancelledError:
-            await self.connections.publish(context, {"kind": "turn_cancelled"})
+            self._begin_settlement()
+            await self._await_settlement(
+                self.connections.publish(context, {"kind": "turn_cancelled"})
+            )
             raise
         except Exception as exc:  # noqa: BLE001 - a crashed turn is a message, not a dead server
             self.log.warning("ui_turn_error", error_type=type(exc).__name__)
-            await self.connections.publish(context, {"kind": "turn_error"})
+            self._begin_settlement()
+            await self._await_settlement(self.connections.publish(context, {"kind": "turn_error"}))
 
     def start_new_session(
         self,
@@ -555,13 +663,36 @@ class UiSession:
         self.last_turn_provider = None
 
     def cancel(self, *, expected_turn_id: int | None = None) -> bool:
-        """Cancel the in-flight turn (Ctrl-C parity). Returns True if one was cancelled."""
+        """Request cancellation during admission/model work.
+
+        Returns true for a newly or already cancellation-requested turn. A live task whose
+        terminal save has begun returns false: Stop must drain it, but must not report that
+        already-completed/failed model turn as cancelled.
+        """
         if expected_turn_id is not None and expected_turn_id != self.current_turn_id:
             return False
         if self._current is not None and not self._current.done():
-            self._current.cancel()
+            if self._settling_task is self._current:
+                return False
+            # A few legacy/test compositions inject ``_current`` directly. Treat an exact live
+            # task with no known phase as cancellable; production submit() records it eagerly.
+            if self._cancellable_task is not self._current:
+                self._cancellable_task = self._current
+            if self._not_started_task is self._current:
+                self._prestart_cancel_task = self._current
+                return True
+            # Cancellation includes durable transcript settlement and the terminal websocket
+            # frame. Repeated Stop requests acknowledge that same in-progress cancellation but
+            # must not inject another CancelledError into its save/publish awaits.
+            if self._current.cancelling() == 0:
+                self._current.cancel()
             return True
         return False
+
+    @property
+    def current_task(self) -> asyncio.Task | None:
+        """The exact live task, for registry-wide cancel-then-drain orchestration."""
+        return self._current if self._current is not None and not self._current.done() else None
 
     @property
     def current_turn_id(self) -> int | None:

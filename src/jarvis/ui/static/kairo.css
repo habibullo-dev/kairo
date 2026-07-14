@@ -200,7 +200,7 @@ nav.rail {
   gap: 10px; padding: 7px 18px; background: var(--bg); min-width: 0; flex-wrap: wrap; row-gap: 6px; }
 .status-location, .status .statusline, .status .voice, .status .theme-toggle, .status .mode-toggle,
 #st-mic, #st-play, #st-resume { display: none !important; }
-.status.is-paused #st-resume { display: inline-flex !important; }
+.status.is-paused #st-resume, .status.is-resuming #st-resume { display: inline-flex !important; }
 .status-attention { display: inline-flex; align-items: center; min-height: 28px; padding: 4px 9px;
   border: 1px solid rgba(var(--attention-rgb), .5); border-radius: 999px; color: var(--attention);
   background: rgba(var(--attention-rgb), .1); font: 600 11px var(--font); white-space: nowrap; }
@@ -208,7 +208,7 @@ nav.rail {
 /* the dense status row WRAPS onto extra (auto-height) rows at narrow widths so no control ever
    extends past the viewport — paired with the minmax(0,1fr) main column + minmax(56px,auto) row. */
 .runner { display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap; }
-.status:not(.is-working) .runner { display: none; }
+.status:not(.is-working):not(.is-paused):not(.is-controlling) .runner { display: none; }
 .runner-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #2E3B4E; }
 .runner-dot.busy { background: var(--cyan); animation: kairoPulse 2s ease-out infinite; }
 .runner .label { font-size: 12px; color: var(--ink-3); font-weight: 500; }
@@ -232,6 +232,7 @@ body.debug .dbg-only-inline { display: flex; }
 #st-play:hover { border-color: #31435E; color: var(--ink); }
 #st-play.active { color: var(--cyan-soft); border-color: rgba(var(--accent-rgb), .5); }
 .stop-btn.stopped { color: var(--amber-soft); }
+.stop-btn:disabled { cursor: wait; opacity: .62; }
 
 /* Daily/Debug segmented toggle — the clear mode split */
 .mode-toggle { display: flex; background: var(--nav-bg); border: 1px solid var(--line); border-radius: 9px; padding: 3px; gap: 2px; flex-shrink: 0; }
@@ -636,6 +637,10 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 .approval-retry { margin-left: auto; border: 1px solid currentColor; border-radius: 7px; padding: 4px 8px; background: transparent; color: inherit; font: 650 11px var(--font); cursor: pointer; }
 .approve-card .spin { width: 12px; height: 12px; border: 2px solid var(--line-2); border-top-color: var(--cyan); border-radius: 50%; display: none; animation: kairoSpin .7s linear infinite; }
 .approve-card .spin.show { display: inline-block; }
+.approval-emergency { flex: none; display: flex; align-items: center; gap: 10px; padding: 0 22px 14px; color: var(--dim); font-size: 11.5px; }
+.approval-global-stop { flex: none; border: 1px solid rgba(var(--attention-rgb), .55); border-radius: 9px; padding: 8px 12px; background: rgba(var(--attention-rgb), .08); color: var(--attention); font: 700 12px var(--font); cursor: pointer; }
+.approval-global-stop:not(:disabled):hover { background: rgba(var(--attention-rgb), .14); border-color: var(--attention); }
+.approval-global-stop:disabled { cursor: wait; opacity: .62; }
 .approve-card .actions { flex: none; display: flex; gap: 10px; padding: 15px 22px; border-top: 1px solid var(--line); }
 .approve-card .actions button { flex: 1; cursor: pointer; padding: 10px 6px; border-radius: 10px; font-weight: 600; font-size: 12px; white-space: nowrap; }
 .approve-card .actions button:disabled { opacity: 0.45; cursor: default; }
@@ -1008,6 +1013,8 @@ tr.clickable:hover td { color: var(--cyan); }
   .status-location { display: block; flex: 1; }
   .status .runner, .status .statusline, .status .voice, .status .grow, .status .ctx,
   #st-mic, #st-play, #theme-toggle, .mode-toggle, .stop-btn { display: none !important; }
+  .status.has-global-work #st-stop, .status.is-stopping #st-stop,
+  .status.is-paused #st-resume, .status.is-resuming #st-resume { display: inline-flex !important; }
   .status-attention { flex: none; }
   main { min-height: 0; }
   .screen { padding: 20px 14px 88px; }

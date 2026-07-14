@@ -189,7 +189,7 @@ async def test_submit_is_one_turn_at_a_time_and_cancel(tmp_path: Path) -> None:
     assert session.busy is True
     assert session.submit("second") is False  # one interactive turn at a time
     assert session.cancel() is True
-    await asyncio.sleep(0)
+    await asyncio.gather(session._current, return_exceptions=True)
     assert session.busy is False
 
 
@@ -255,10 +255,14 @@ def test_runner_status_pause_resume(tmp_path: Path) -> None:
     runner = _FakeRunner()
     client, _app_, auth = _client(tmp_path, runner=runner)
     status = client.get("/api/runner", headers={"cookie": _hdr(auth)["cookie"]}).json()
+    assert status["runner_available"] is True
     assert status["runner_running"] is True
+    assert status["background_busy"] is False
+    assert status["global_turn_busy"] is False
     # pause → BackgroundRunner.stop() (finish-in-flight-then-stop)
     paused = client.post("/api/runner/pause", headers=_hdr(auth)).json()
     assert paused["runner_running"] is False and runner.stops == 1
+    assert paused["cancelled_turns"] == 0
     # resume → start()
     resumed = client.post("/api/runner/resume", headers=_hdr(auth)).json()
     assert resumed["runner_running"] is True and runner.starts == 1

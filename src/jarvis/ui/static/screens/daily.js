@@ -200,13 +200,42 @@ function renderPending(container, api) {
 
 function renderStatus(container, api) {
   const runner = api.state.runner || {};
-  const busy = !!runner.turn_busy;
+  const currentBusy = !!runner.turn_busy;
+  const globalBusy = currentBusy || !!runner.global_turn_busy;
+  const backgroundBusy = !!runner.background_busy;
+  const busy = globalBusy || backgroundBusy;
+  const statusCurrent = !api.state.runnerStatusError;
+  const available = runner.runner_available === true;
+  const paused = available && runner.runner_running === false;
   const lead = container.querySelector("#daily-now-lead");
   const desc = container.querySelector("#daily-now-desc");
   const dot = container.querySelector("#daily-now-dot");
   const cost = container.querySelector("#daily-cost-today");
-  if (lead) lead.textContent = busy ? "Kairo is working" : "Kairo is idle";
-  if (desc) desc.textContent = busy ? "Progress is available in Chat." : "Your briefing is up to date.";
+  let leadText = "Kairo is idle";
+  let descText = "Your briefing is up to date.";
+  if (!statusCurrent) {
+    leadText = "Runner status is unavailable";
+    descText = busy
+      ? "Last known work may still be running. Stop all remains available."
+      : "Kairo will retry automatically.";
+  } else if (currentBusy) {
+    leadText = "Kairo is working";
+    descText = "Progress is available in Chat.";
+  } else if (globalBusy) {
+    leadText = "Kairo is working in another chat";
+    descText = "That chat's progress is available in Chat.";
+  } else if (backgroundBusy) {
+    leadText = "Scheduled work is running";
+    descText = "Background work continues independently of this chat.";
+  } else if (paused) {
+    leadText = "Schedules are paused";
+    descText = "Stopped chats stay stopped. Resume schedules when you're ready.";
+  } else if (runner.runner_available === false) {
+    leadText = "Schedules are unavailable";
+    descText = "Global runner controls are unavailable.";
+  }
+  if (lead) lead.textContent = leadText;
+  if (desc) desc.textContent = descText;
   if (dot) dot.className = "runner-dot" + (busy ? " busy" : "");
   if (cost) cost.textContent = typeof runner.today_spend_usd === "number"
     ? `${money(runner.today_spend_usd)} today` : "Cost unavailable";

@@ -137,6 +137,7 @@ def _request_token_ceiling(
     provider message framing. This lets the cap refuse before an external model call without
     logging or retaining the request contents.
     """
+
     def budget_shape(value: object) -> object:
         """Replace base64 image bytes with a conservative vision-token allowance.
 
@@ -267,6 +268,15 @@ class AgentLoop:
         """Protocol-valid transcript snapshot for the most recently cancelled turn, if any."""
         return list(self._cancelled_messages) if self._cancelled_messages is not None else None
 
+    def reset_cancellation_snapshot(self) -> None:
+        """Retire the prior turn's snapshot at synchronous admission.
+
+        ``run_turn`` also resets on entry, but an attended task can be cancelled before its
+        coroutine body starts or while it is queued for the shared turn lock. The UI calls this
+        before scheduling that task so such a cancellation can never reuse another turn's data.
+        """
+        self._cancelled_messages = None
+
     def _record_cancellation(self, messages: list[dict]) -> None:
         self._cancelled_messages = _cancellation_snapshot(messages)
 
@@ -312,7 +322,7 @@ class AgentLoop:
         emit: EventSink = on_event or (lambda _e: None)
         trace_id = bind_trace()
         messages = list(messages)
-        self._cancelled_messages = None
+        self.reset_cancellation_snapshot()
         total = Usage()
         total_latency_ms = 0.0
         # The lower limits apply only where the UI composition opted in below; all other loop
@@ -668,9 +678,7 @@ class AgentLoop:
                     iterations=iteration + 1,
                     latency_ms=total_latency_ms,
                     cost_usd=(
-                        turn_cost_usd
-                        if pricing_known and turn_budget_usd is not None
-                        else None
+                        turn_cost_usd if pricing_known and turn_budget_usd is not None else None
                     ),
                     model=response.model,
                     provider=turn_provider,

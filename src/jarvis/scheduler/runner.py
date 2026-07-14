@@ -130,12 +130,16 @@ class BackgroundRunner:
         self.log = log or get_logger("jarvis.scheduler")
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
+        # The command state is separate from the physical loop task.  A stop may be waiting for
+        # an in-flight job to finish while a later start requests the next generation; the last
+        # command wins without ever letting two wake loops coexist.
+        self._desired_running = False
         self.in_flight: str | None = None  # title of a job currently running, for shutdown UX
 
     # --- the testable core ---------------------------------------------------
 
-    async def check_due(self) -> int:
+    async def check_due(self, *, stop_event: asyncio.Event | None = None) -> int:
         """Fire everything currently due; returns how many tasks were actioned.
 
         Each fire is taken under the turn lock (released between tasks so an
@@ -143,15 +147,23 @@ class BackgroundRunner:
         driven by the service's clock."""
         handled = 0
         for due in await self.service.due():
+            if stop_event is not None and stop_event.is_set():
+                break
             # A digest does network + a model call, so it must NOT hold the turn lock for the
             # duration (a Google 429 backoff would freeze the UI). It manages its own brief
             # lock windows around persist + notify (Phase 9, D4).
             if due.action != "missed" and due.task.kind == "digest":
-                await self._fire_digest(due)
-                handled += 1
+                if await self._fire_digest(due, stop_event=stop_event):
+                    handled += 1
+                else:
+                    break
                 continue
             attention_push: AttentionPush | None = None
             async with self.turn_lock:
+                # Stop is cooperative: work already admitted finishes, but a due item that was
+                # merely queued behind an interactive turn must not start after the stop command.
+                if stop_event is not None and stop_event.is_set():
+                    break
                 if due.action == "missed":
                     await self._fire_missed(due)
                 elif due.task.kind == "reminder":
@@ -204,9 +216,7 @@ class BackgroundRunner:
             # JobRunner already atomically persisted the task transcript + exact pending call
             # against ``run_id``.  Completing it here would erase the parked state and could
             # accidentally advance the task.  No action is resumed automatically after restart.
-            self._notify(
-                f'⏸ job #{task.id} "{task.title}" is waiting for your approval', task
-            )
+            self._notify(f'⏸ job #{task.id} "{task.title}" is waiting for your approval', task)
             return await self._parked_approval_push(task)
 
         outcome, verification_status, verification_summary = _verify_outcome(task, outcome)
@@ -258,7 +268,8 @@ class BackgroundRunner:
             if task is None or task.status != "active":
                 return False
             claim = await self.service.store.claim_parked_approval(
-                run_id, resolution=resolution  # type: ignore[arg-type]
+                run_id,
+                resolution=resolution,  # type: ignore[arg-type]
             )
             if claim is None:
                 return False
@@ -327,9 +338,7 @@ class BackgroundRunner:
             if outcome.parked:
                 # The resume worker persisted a fresh exact ASK in the same transaction as its
                 # transcript.  Do not complete or advance the original scheduled occurrence.
-                self._notify(
-                    f'⏸ job #{task.id} "{task.title}" is waiting for your approval', task
-                )
+                self._notify(f'⏸ job #{task.id} "{task.title}" is waiting for your approval', task)
                 attention_push = await self._parked_approval_push(task)
             else:
                 outcome, verification_status, verification_summary = _verify_outcome(task, outcome)
@@ -373,18 +382,22 @@ class BackgroundRunner:
         except Exception as exc:  # noqa: BLE001 - durable parked work must remain reviewable
             self.log.warning("parked_attention_push_failed", error_type=type(exc).__name__)
 
-    async def _fire_digest(self, due: Due) -> None:
+    async def _fire_digest(self, due: Due, *, stop_event: asyncio.Event | None = None) -> bool:
         task = due.task
         # Job semantics: open the running row before the work (crash ⇒ visible orphan, swept
         # to aborted, never a silent re-run of egress). The lock is held only for the DB write.
+        # Recheck the exact runner generation after acquiring it: a digest queued behind an
+        # attended turn has not been admitted yet and must not start after Global Stop.
         async with self.turn_lock:
+            if stop_event is not None and stop_event.is_set():
+                return False
             run_id = await self.service.begin_run(due)
         if self.run_digest is None:  # not composed (e.g. no utility client) — record, don't crash
             async with self.turn_lock:
                 await self.service.complete_run(
                     due, run_id, ok=False, error="digest runner not configured"
                 )
-            return
+            return True
         self.in_flight = task.title
         try:
             outcome = await self.run_digest(task)  # network + model + UI/notifier, NO turn lock
@@ -394,7 +407,7 @@ class BackgroundRunner:
             async with self.turn_lock:
                 await self.service.complete_run(due, run_id, ok=False, error=detail)
                 self._notify(f"✗ digest #{task.id} failed: {detail}", task)
-            return
+            return True
         finally:
             self.in_flight = None
         ok = outcome.error is None
@@ -410,6 +423,7 @@ class BackgroundRunner:
                 cost_usd=outcome.cost_usd,
             )
             self._notify(f"✓ daily digest ready{'' if ok else ' (with errors)'}", task)
+        return True
 
     async def _fire_missed(self, due: Due) -> None:
         task = due.task
@@ -441,39 +455,104 @@ class BackgroundRunner:
     # --- the thin wake loop (one smoke test; logic lives in check_due) --------
 
     def start(self) -> None:
-        self._stop.clear()
-        self._task = asyncio.create_task(self._loop())
+        """Request a running wake loop without ever creating a duplicate generation."""
+        self._desired_running = True
+        task = self._task
+        if task is not None and not task.done():
+            # If this generation is already stopping, its identity remains authoritative until
+            # it finishes.  The done callback observes the latest command and starts exactly one
+            # replacement.  Waking it keeps the handoff prompt even when no job is in flight.
+            if self._stop.is_set():
+                self.kick()
+            return
+        self._start_loop()
+
+    def _start_loop(self) -> None:
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(self._loop(stop_event))
+        self._stop = stop_event
+        self._task = task
+
+        def retire(completed: asyncio.Task[None]) -> None:
+            self._loop_done(completed, stop_event)
+
+        task.add_done_callback(retire)
+
+    def _loop_done(self, task: asyncio.Task[None], stop_event: asyncio.Event) -> None:
+        """Retire only the exact generation that completed, then honor the latest command."""
+        error = None if task.cancelled() else task.exception()
+        if error is not None:
+            # Done callbacks own loop generations even when a caller never awaits the task.
+            # Retrieve and record an escaped sleep/service failure so asyncio does not emit an
+            # unowned "Task exception was never retrieved" warning at shutdown.
+            self.log.error("wake_loop_crashed", error_type=type(error).__name__)
+        if self._task is not task:
+            return
+        self._task = None
+        if self._desired_running and stop_event.is_set():
+            self._start_loop()
+        elif not stop_event.is_set():
+            # An unexpected loop exit is not a successful running state and must not be reported
+            # as one.  Deliberate stop/start handoffs take the branch above.
+            self._desired_running = False
 
     def kick(self) -> None:
         """Wake the loop now (e.g. a task was just scheduled)."""
         self._wake.set()
 
-    async def stop(self) -> None:
-        self._stop.set()
+    def request_stop(self) -> asyncio.Task[None] | None:
+        """Synchronously request stop and return the exact loop generation to drain.
+
+        A caller that has other shutdown work must retain the returned task and later await
+        ``asyncio.shield(task)``.  It must not call :meth:`stop` after that work: a newer
+        :meth:`start` may have become the desired command in the meantime, and issuing stop again
+        would incorrectly overwrite it.
+        """
+        self._desired_running = False
+        task = self._task
+        stop_event = self._stop
+        if task is None:
+            return None
+        stop_event.set()
         self.kick()
-        if self._task is not None:
-            await self._task
-            self._task = None
+        return task
+
+    async def stop(self) -> None:
+        """Request stop and wait for the exact owned generation without cancelling its work."""
+        task = self.request_stop()
+        if task is None:
+            return
+        # An HTTP/client waiter may itself be cancelled.  Shielding prevents that cancellation
+        # from tearing an in-flight scheduled job; the identity-checked done callback retains
+        # ownership and performs any last-command-wins restart after this waiter is gone.
+        await asyncio.shield(task)
 
     @property
     def is_running(self) -> bool:
-        """True while the wake loop is active (started, not stopped). Read-only status for
-        the UI's runner pane / emergency-stop toggle (Phase 8) — no behavior change."""
-        return self._task is not None and not self._task.done()
+        """Whether the latest lifecycle command requests a running scheduler."""
+        return self._desired_running
 
-    async def _loop(self) -> None:
-        while not self._stop.is_set():
+    async def _loop(self, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            # Consume the previous wake *before* checking due work.  Any kick arriving during the
+            # check (including stop) then remains set for the sleep boundary and cannot be lost.
+            self._wake.clear()
+            if stop_event.is_set():
+                break
             try:
-                await self.check_due()
+                await self.check_due(stop_event=stop_event)
             except Exception:  # a bad tick must never kill the loop
                 self.log.exception("wake_tick_failed")
-            await self._sleep_until_next()
+            if stop_event.is_set():
+                break
+            await self._sleep_until_next(stop_event)
 
-    async def _sleep_until_next(self) -> None:
+    async def _sleep_until_next(self, stop_event: asyncio.Event) -> None:
         secs = await self.service.seconds_until_next()
+        if stop_event.is_set():
+            return
         cap = self.service.config.wake_cap_seconds
         delay = cap if secs is None else min(secs, cap)
-        self._wake.clear()
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(self._wake.wait(), timeout=max(delay, _MIN_SLEEP))
 
