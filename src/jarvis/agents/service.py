@@ -39,7 +39,7 @@ from jarvis.config import Config
 from jarvis.core.agent import AgentLoop, Approver, EventSink
 from jarvis.core.client import LLMClient
 from jarvis.core.events import SubAgentCompleted, SubAgentEvent
-from jarvis.core.execution import current_execution_context
+from jarvis.core.execution import bind_project_scope, current_execution_context
 from jarvis.core.prompts import build_system
 from jarvis.observability import get_logger, get_trace_id
 from jarvis.observability.cost import Usage, cost_of, load_pricing, price_for
@@ -414,8 +414,9 @@ class SubAgentService:
         try:
             # Semaphore first, THEN the deadline: queue-wait must not burn the budget.
             async with self._semaphore:
-                async with asyncio.timeout(self.config.sub_agents.timeout_seconds):
-                    result = await loop.run_turn(child_messages, on_event=sink)
+                with bind_project_scope(effective_project_id):
+                    async with asyncio.timeout(self.config.sub_agents.timeout_seconds):
+                        result = await loop.run_turn(child_messages, on_event=sink)
             child_trace_id = get_trace_id()  # child's id (bound by run_turn in this context)
         except TimeoutError:
             status, child_trace_id = "timeout", get_trace_id()

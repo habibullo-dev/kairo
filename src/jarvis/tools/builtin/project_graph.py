@@ -13,6 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from jarvis.core.execution import current_project_scope
 from jarvis.graph.service import dependency_subgraph, subgraph
 from jarvis.knowledge.secrets import scan_text
 from jarvis.tools.base import Permission, Tool, ToolContext, ToolResult
@@ -38,6 +39,9 @@ class QueryProjectGraphParams(BaseModel):
 
 
 def _project_id(context: ToolContext) -> int | None:
+    task_scope = current_project_scope()
+    if task_scope is not None:
+        return task_scope.project_id
     provider = getattr(context, "project", None)
     if provider is None:
         return None

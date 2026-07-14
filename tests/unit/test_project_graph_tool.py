@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from jarvis.agents import SPAWNABLE
+from jarvis.core.execution import bind_project_scope
 from jarvis.graph import GraphStore
 from jarvis.intelligence.context import build_project_overview
 from jarvis.knowledge.store import KnowledgeStore
@@ -131,6 +132,34 @@ async def test_query_project_graph_returns_only_active_project_dependencies(
     assert labels == {"repo/app.py", "repo/core.py"}
     assert "other/private.py" not in raw
     assert data["project_id"] == first and len(data["edges"]) == 1
+
+
+async def test_graph_query_prefers_task_local_project_over_active_workspace(
+    tmp_path: Path,
+) -> None:
+    knowledge, graph, first, second = await _fixture(tmp_path)
+    foreign_a = await _source(
+        knowledge, project_id=second, path="other/a.py", content=b"a"
+    )
+    foreign_b = await _source(
+        knowledge, project_id=second, path="other/b.py", content=b"b"
+    )
+    await _edge(
+        graph,
+        project_id=second,
+        src_kind="source",
+        src_id=str(foreign_a),
+        dst_kind="source",
+        dst_id=str(foreign_b),
+        edge_kind="imports",
+    )
+    tool = QueryProjectGraphTool(_context(first, graph))
+    with bind_project_scope(second):
+        raw = await tool.run(tool.Params(view="dependencies", limit=20))
+    assert isinstance(raw, str)
+    data = json.loads(raw)
+    assert data["project_id"] == second
+    assert {node["label"] for node in data["nodes"]} == {"other/a.py", "other/b.py"}
 
 
 async def test_graph_tool_requires_an_active_project_and_is_read_only_spawnable(

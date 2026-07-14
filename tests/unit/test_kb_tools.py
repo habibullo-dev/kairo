@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from jarvis.config import KnowledgeConfig, load_config
 from jarvis.core import AgentLoop, FakeClient, ToolCall, text_message, tool_use_message
+from jarvis.core.execution import bind_project_scope
 from jarvis.knowledge.service import KnowledgeService
 from jarvis.knowledge.store import KnowledgeStore
 from jarvis.memory.embeddings import FakeEmbedder
@@ -70,6 +71,27 @@ async def test_ingest_then_query_roundtrip(tmp_path: Path) -> None:
         )
     )
     assert "Paris" in result and "[source #1" in result
+
+
+async def test_query_prefers_task_local_project_over_active_workspace() -> None:
+    class _Knowledge:
+        seen_project_id: object = None
+
+        async def query(self, _query: str, _top_k: int | None, *, project_id: object) -> str:
+            self.seen_project_id = project_id
+            return "scoped"
+
+    class _Project:
+        project_id = 1
+
+    knowledge = _Knowledge()
+    tool = QueryKnowledgeBaseTool(
+        ToolContext(knowledge=knowledge, project=lambda: _Project())
+    )
+    with bind_project_scope(2):
+        result = await tool.run(tool.Params(query="architecture"))
+    assert result == "scoped"
+    assert knowledge.seen_project_id == 2
 
 
 async def test_write_wiki_page_tool(tmp_path: Path) -> None:

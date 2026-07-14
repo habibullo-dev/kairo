@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, model_validator
 
+from jarvis.core.execution import current_project_scope
 from jarvis.knowledge.service import KnowledgeError
 from jarvis.knowledge.store import ANY_PROJECT as _KB_ANY_PROJECT
 from jarvis.knowledge.wiki import WikiPathError
@@ -32,13 +33,22 @@ class _NeedsKnowledge:
         return getattr(context, "knowledge", None) is not None
 
     def _active_project_id(self) -> object:
-        """The active project's id for scoping KB reads/ingests (Phase 10 A1). Reads the
-        context's project provider live (a switch only happens between turns). Returns
-        ``ANY_PROJECT`` when there's no project layer — unscoped, byte-identical to Phase 9."""
+        """The task-local or active project id for scoping KB access.
+
+        Orchestration children carry their immutable project through ``cost_context``.  It must
+        take precedence over the process-global browser selection, which can change while a
+        background read-only run is queued.  Without a task-local scope, preserve the legacy
+        active-project/global behavior.
+        """
+        task_scope = current_project_scope()
+        if task_scope is not None:
+            return task_scope.project_id
         provider = getattr(self.context, "project", None)
         if provider is None:
             return _KB_ANY_PROJECT
-        return provider().project_id
+        project = provider()
+        project_id = getattr(project, "project_id", None)
+        return project_id if isinstance(project_id, int) and project_id > 0 else None
 
 
 class IngestSourceParams(BaseModel):

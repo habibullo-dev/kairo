@@ -18,7 +18,11 @@ from jarvis.agents.service import _IN_SUBAGENT
 from jarvis.config import load_config
 from jarvis.core.client import ToolCall, text_message, tool_use_message
 from jarvis.core.events import SubAgentCompleted, SubAgentEvent
-from jarvis.core.execution import ExecutionContext, bind_execution_context
+from jarvis.core.execution import (
+    ExecutionContext,
+    bind_execution_context,
+    current_project_scope,
+)
 from jarvis.observability import bind_trace, clear_trace, get_trace_id
 from jarvis.permissions import PermissionGate, Policy
 from jarvis.persistence import SessionStore
@@ -64,6 +68,16 @@ class _ConcurrencyProbe:
             await asyncio.sleep(self.delay)
         finally:
             self.current -= 1
+        return text_message("done")
+
+
+class _ProjectScopeProbe:
+    def __init__(self) -> None:
+        self.seen: list[int | None] = []
+
+    async def create(self, **_kw: object):
+        scope = current_project_scope()
+        self.seen.append(scope.project_id if scope is not None else None)
         return text_message("done")
 
 
@@ -151,6 +165,24 @@ async def test_spawn_inherits_live_workspace_project_provenance(tmp_path: Path) 
         assert run.project_id == project_id
         child = await sessions.get_meta(run.child_session_id)
         assert child is not None and child.project_id == project_id
+    finally:
+        await db.close()
+
+
+async def test_spawn_binds_explicit_project_scope_for_child_tools(tmp_path: Path) -> None:
+    client = _ProjectScopeProbe()
+    svc, runs, _sessions, db = await _service(tmp_path, client)
+    try:
+        project_id = await ProjectStore(db, runs.lock).create(name="Scoped child")
+        result = await svc.spawn(
+            title="scoped",
+            prompt="inspect",
+            tools=["read_file"],
+            project_id=project_id,
+        )
+        assert not result.is_error
+        assert client.seen == [project_id]
+        assert current_project_scope() is None
     finally:
         await db.close()
 

@@ -19,8 +19,11 @@ from jarvis.core.events import (
 )
 from jarvis.core.execution import (
     ExecutionContext,
+    ProjectExecutionScope,
     bind_execution_context,
+    bind_project_scope,
     current_execution_context,
+    current_project_scope,
 )
 from jarvis.core.prompts import build_system
 
@@ -34,6 +37,7 @@ __all__ = [
     "FakeClient",
     "LLMClient",
     "ModelResponse",
+    "ProjectExecutionScope",
     "TextDelta",
     "ToolCall",
     "ToolFinished",
@@ -42,7 +46,9 @@ __all__ = [
     "TurnResult",
     "build_system",
     "bind_execution_context",
+    "bind_project_scope",
     "current_execution_context",
+    "current_project_scope",
     "text_message",
     "to_model_response",
     "tool_use_message",

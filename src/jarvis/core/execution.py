@@ -40,14 +40,35 @@ class ExecutionContext:
         return {"session_id": self.session_id, "project_id": self.project_id}
 
 
+@dataclass(frozen=True)
+class ProjectExecutionScope:
+    """An explicit task-local data boundary for child work without a UI session."""
+
+    project_id: int | None
+
+    def __post_init__(self) -> None:
+        if self.project_id is not None and (
+            not isinstance(self.project_id, int) or self.project_id < 1
+        ):
+            raise ValueError("project_id must be a positive int or None")
+
+
 _CURRENT_EXECUTION: ContextVar[ExecutionContext | None] = ContextVar(
     "jarvis_execution_context", default=None
+)
+_CURRENT_PROJECT_SCOPE: ContextVar[ProjectExecutionScope | None] = ContextVar(
+    "jarvis_project_execution_scope", default=None
 )
 
 
 def current_execution_context() -> ExecutionContext | None:
     """Return the task-local attended execution scope, if one is active."""
     return _CURRENT_EXECUTION.get()
+
+
+def current_project_scope() -> ProjectExecutionScope | None:
+    """Return an explicitly bound child-work project boundary, if present."""
+    return _CURRENT_PROJECT_SCOPE.get()
 
 
 @contextmanager
@@ -58,3 +79,13 @@ def bind_execution_context(context: ExecutionContext) -> Iterator[None]:
         yield
     finally:
         _CURRENT_EXECUTION.reset(token)
+
+
+@contextmanager
+def bind_project_scope(project_id: int | None) -> Iterator[None]:
+    """Bind project scope for a child task that may outlive the active UI workspace."""
+    token = _CURRENT_PROJECT_SCOPE.set(ProjectExecutionScope(project_id))
+    try:
+        yield
+    finally:
+        _CURRENT_PROJECT_SCOPE.reset(token)
