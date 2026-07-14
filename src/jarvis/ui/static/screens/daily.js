@@ -192,7 +192,7 @@ function renderProject(container, api) {
   host.append(name, links, assessment);
 }
 
-function renderProjectAssessment(container, assessment) {
+function renderProjectAssessment(container, api, assessment) {
   const host = container.querySelector("#daily-project-assessment");
   if (!host) return;
   clear(host);
@@ -282,6 +282,7 @@ async function fillBriefing(container, api) {
   const projectScoped = api.state.context?.project_id != null;
   renderProjectAssessment(
     container,
+    api,
     data ? data.project_assessment : (projectScoped ? { state: "unavailable" } : null),
   );
   if (!data) {

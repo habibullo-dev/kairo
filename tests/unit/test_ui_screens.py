@@ -135,7 +135,9 @@ def test_project_assessment_surfaces_are_read_only_and_escape_model_text() -> No
     assert "not independently validated" in report
     assert "/api/orchestration/run" not in report
     assert "openProjectReport" in gate and 'actionBtn("View report"' in gate
-    assert "data.project_assessment" in daily and "openProjectReport" in daily
+    assert "function renderProjectAssessment(container, api, assessment)" in daily
+    assert "renderProjectAssessment(\n    container,\n    api," in daily
+    assert "data.project_assessment" in daily and "openProjectReport(api, report.id)" in daily
 
 
 def test_all_nav_screens_have_a_module() -> None:
