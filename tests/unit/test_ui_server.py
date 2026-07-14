@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from jarvis.config import load_config
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
+from jarvis.ui.auth import DEFAULT_SESSION_TTL_SECONDS, SESSION_COOKIE, AuthManager
 from jarvis.ui.connections import ConnectionManager
 from jarvis.ui.server import _handle_ws_message, create_app
 
@@ -78,6 +78,7 @@ def test_token_exchange_redirects_clean_and_sets_cookie(tmp_path: Path) -> None:
     assert f"{SESSION_COOKIE}=" in r.headers.get("set-cookie", "")
     assert "httponly" in r.headers["set-cookie"].lower()
     assert "samesite=strict" in r.headers["set-cookie"].lower()
+    assert f"Max-Age={DEFAULT_SESSION_TTL_SECONDS}" in r.headers["set-cookie"]
     assert r.headers.get("cache-control") == "no-store"
     _assert_hardened(r)
 

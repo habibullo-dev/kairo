@@ -2333,7 +2333,9 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
         )
         from jarvis.ui import AuthManager
 
-        auth = AuthManager()
+        # Persist only SHA-256 digests of browser sessions so the one-time launch exchange
+        # survives ordinary browser/server restarts without storing a replayable cookie value.
+        auth = AuthManager(session_store_path=config.data_dir / "ui_sessions.json")
         app = build_ui_app(config, repl=repl, auth=auth, artifacts=artifacts)
         project_intelligence = app.state.project_intelligence
 

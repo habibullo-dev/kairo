@@ -13,13 +13,26 @@ This module is pure policy + state (no framework types), so every rule is unit-t
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import json
+import os
 import secrets
+import time
+from collections.abc import Callable
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from jarvis.config import _LOOPBACK_HOSTS
 
 #: Name of the session cookie set after a successful token exchange.
 SESSION_COOKIE = "kairo_session"
+
+# A workstation login should survive ordinary browser/server restarts without becoming a
+# permanent bearer credential.  Thirty days keeps the daily experience seamless while retaining
+# an automatic revocation boundary.  Stored records contain only SHA-256 digests of the random
+# cookie values, so the file cannot itself be replayed as a browser session.
+DEFAULT_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 
 
 def _parse_host_authority(host_header: str) -> tuple[str, int | None] | None:
@@ -138,16 +151,92 @@ def origin_allowed(origin_header: str, *, host_header: str, scheme: str) -> bool
 
 
 class AuthManager:
-    """Per-launch token + an in-memory set of live session ids.
+    """Per-launch token plus opaque, optionally durable browser sessions.
 
-    The token is minted once per process and printed once (Task 9); a browser exchanges it
-    for an opaque session id held only here (never persisted). Sessions live for the process
-    lifetime — a single-user local app, so there is no session store to secure on disk."""
+    The token is minted once per process and printed once (Task 9).  A browser exchanges it for
+    an opaque session id.  Production supplies ``session_store_path`` so only a digest + expiry
+    survives an ordinary Kairo restart; tests and bare app construction remain in-memory by
+    default.  Raw session ids and the launch token are never written to disk.
+    """
 
-    def __init__(self, token: str | None = None) -> None:
+    def __init__(
+        self,
+        token: str | None = None,
+        *,
+        session_store_path: Path | None = None,
+        session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        if session_ttl_seconds <= 0:
+            raise ValueError("session_ttl_seconds must be positive")
         #: ≥128-bit URL-safe launch token (token_urlsafe(32) ≈ 256 bits).
         self.launch_token = token or secrets.token_urlsafe(32)
-        self._sessions: set[str] = set()
+        self.session_ttl_seconds = int(session_ttl_seconds)
+        self._session_store_path = session_store_path
+        self._clock = clock
+        self._sessions: dict[str, float] = self._load_sessions()
+
+    @staticmethod
+    def _digest(sid: str) -> str:
+        return hashlib.sha256(sid.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _valid_digest(value: object) -> bool:
+        if not isinstance(value, str) or len(value) != 64:
+            return False
+        return all(char in "0123456789abcdef" for char in value)
+
+    def _load_sessions(self) -> dict[str, float]:
+        """Load unexpired digest records; malformed/unreadable state fails closed."""
+        path = self._session_store_path
+        if path is None:
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
+        records = raw.get("sessions") if isinstance(raw, dict) else None
+        if not isinstance(records, dict):
+            return {}
+        now = self._clock()
+        return {
+            digest: float(expiry)
+            for digest, expiry in records.items()
+            if self._valid_digest(digest)
+            and isinstance(expiry, (int, float))
+            and not isinstance(expiry, bool)
+            and float(expiry) > now
+        }
+
+    def _persist_sessions(self) -> None:
+        """Atomically persist digest-only state; a disk failure leaves the live session usable."""
+        path = self._session_store_path
+        if path is None:
+            return
+        payload = json.dumps(
+            {"version": 1, "sessions": self._sessions},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        tmp = path.with_name(f".{path.name}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(payload, encoding="utf-8")
+            os.chmod(tmp, 0o600)
+            tmp.replace(path)
+        except OSError:
+            # Authentication still fails closed after a restart: without a successfully persisted
+            # digest, the browser must perform the one-time token exchange again.
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+
+    def _prune_expired(self) -> None:
+        now = self._clock()
+        expired = [digest for digest, expiry in self._sessions.items() if expiry <= now]
+        if expired:
+            for digest in expired:
+                self._sessions.pop(digest, None)
+            self._persist_sessions()
 
     def check_token(self, token: str | None) -> bool:
         """Constant-time compare against the launch token (no early-exit timing leak)."""
@@ -156,13 +245,26 @@ class AuthManager:
         return secrets.compare_digest(token, self.launch_token)
 
     def mint_session(self) -> str:
-        """Create and record a new opaque session id (returned to set as a cookie)."""
+        """Create and record a new opaque session id (returned only as an HttpOnly cookie)."""
+        self._prune_expired()
         sid = secrets.token_urlsafe(32)
-        self._sessions.add(sid)
+        self._sessions[self._digest(sid)] = self._clock() + self.session_ttl_seconds
+        self._persist_sessions()
         return sid
 
     def is_valid_session(self, sid: str | None) -> bool:
-        return bool(sid) and sid in self._sessions
+        if not sid:
+            return False
+        digest = self._digest(sid)
+        expiry = self._sessions.get(digest)
+        if expiry is None:
+            return False
+        if expiry <= self._clock():
+            self._sessions.pop(digest, None)
+            self._persist_sessions()
+            return False
+        return True
 
     def revoke(self, sid: str) -> None:
-        self._sessions.discard(sid)
+        if self._sessions.pop(self._digest(sid), None) is not None:
+            self._persist_sessions()

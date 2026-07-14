@@ -17,10 +17,12 @@ uv run jarvis --ui
 `jarvis doctor` is local and read-only: it reports credential **names** and presence, optional
 Python extras, an existing database's schema/integrity, and disk headroom. It makes no changes and
 never contacts a provider. Kairo then prints a tokened loopback URL. Open it once in your browser;
-the token is exchanged for a local session and removed from the URL. Create or open a project, then
-start in **Chat**. Choose **Auto** to let Kairo classify a turn before selecting a suitable allowed
-model, or select a manual model when you want a specific one. Ask for a plan or task, then review
-any Gate item on screen.
+the token is exchanged for a 30-day local session and removed from the URL. Only a digest of that
+session is stored, so ordinary browser and Kairo restarts keep the clean loopback URL signed in
+without persisting a replayable cookie value. Create or open a project, then start in **Chat**.
+Choose **Auto** to let Kairo classify a turn before selecting a suitable allowed model, or select a
+manual model when you want a specific one. Ask for a plan or task, then review any Gate item on
+screen.
 
 ## Main surfaces
 

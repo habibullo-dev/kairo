@@ -386,7 +386,14 @@ def create_app(
             sid = auth.mint_session()
             resp = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
             # secure=False: loopback is http, so a Secure cookie would never be sent back.
-            resp.set_cookie(SESSION_COOKIE, sid, httponly=True, samesite="strict", secure=False)
+            resp.set_cookie(
+                SESSION_COOKIE,
+                sid,
+                httponly=True,
+                samesite="strict",
+                secure=False,
+                max_age=auth.session_ttl_seconds,
+            )
             log.info("ui_session_minted")  # note: the token is NOT logged
             return _secure(resp, no_store=True)
         # 4. Session required everywhere except the open paths.

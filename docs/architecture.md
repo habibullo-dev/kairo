@@ -301,9 +301,11 @@ is a *view* over an existing service — the only mutations are a closed, route-
 pre-existing human-authority ops.
 
 - **`auth.py` + `server.py`** — the private-admin-console floor: loopback-only bind (a
-  non-loopback `ui.host` is a config error), a per-launch token exchanged for an
-  `HttpOnly; SameSite=Strict` session via a **clean-URL 303** (no token in history/logs), a
-  Host allowlist (anti DNS-rebinding), an Origin check on mutations + the WS (anti-CSRF),
+  non-loopback `ui.host` is a config error), a per-launch token exchanged for an expiring
+  `HttpOnly; SameSite=Strict` session via a **clean-URL 303** (no token in history/logs).
+  Production persists only the session's SHA-256 digest + expiry, so the clean URL survives
+  ordinary browser/server restarts without writing a replayable cookie value. A Host allowlist
+  (anti DNS-rebinding), an Origin check on mutations + the WS (anti-CSRF),
   strict CSP, `Referrer-Policy: no-referrer`, and **no CORS middleware at all**. FastAPI +
   uvicorn behind the optional `ui` extra; the frontend is hand-written static assets (no
   build step, no CDN).

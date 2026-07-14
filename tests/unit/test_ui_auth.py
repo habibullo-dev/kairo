@@ -8,6 +8,8 @@ makes an approval resolvable only from a live, watching client.
 
 from __future__ import annotations
 
+import pytest
+
 from jarvis.ui.auth import AuthManager, host_allowed, origin_allowed
 from jarvis.ui.connections import ConnectionManager
 
@@ -84,6 +86,60 @@ def test_session_mint_and_validate() -> None:
 def test_generated_token_is_long() -> None:
     # Default token is unguessable (≥128-bit); token_urlsafe(32) ≈ 43 url-safe chars.
     assert len(AuthManager().launch_token) >= 32
+
+
+def test_durable_session_survives_restart_without_persisting_bearer_value(tmp_path) -> None:
+    now = [1_000.0]
+    session_path = tmp_path / "ui_sessions.json"
+    first = AuthManager(
+        token="launch-canary",
+        session_store_path=session_path,
+        session_ttl_seconds=60,
+        clock=lambda: now[0],
+    )
+    sid = first.mint_session()
+
+    persisted = session_path.read_text(encoding="utf-8")
+    assert sid not in persisted
+    assert "launch-canary" not in persisted
+
+    restarted = AuthManager(
+        token="different-launch-token",
+        session_store_path=session_path,
+        session_ttl_seconds=60,
+        clock=lambda: now[0],
+    )
+    assert restarted.is_valid_session(sid)
+
+    restarted.revoke(sid)
+    after_revoke = AuthManager(
+        session_store_path=session_path,
+        session_ttl_seconds=60,
+        clock=lambda: now[0],
+    )
+    assert not after_revoke.is_valid_session(sid)
+
+
+def test_durable_session_expires_and_malformed_state_fails_closed(tmp_path) -> None:
+    now = [1_000.0]
+    session_path = tmp_path / "ui_sessions.json"
+    auth = AuthManager(
+        session_store_path=session_path,
+        session_ttl_seconds=10,
+        clock=lambda: now[0],
+    )
+    sid = auth.mint_session()
+    now[0] = 1_011.0
+    assert not auth.is_valid_session(sid)
+
+    session_path.write_text('{"sessions":{"not-a-digest":999999}}', encoding="utf-8")
+    reloaded = AuthManager(session_store_path=session_path, clock=lambda: now[0])
+    assert not reloaded.is_valid_session(sid)
+
+
+def test_session_ttl_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        AuthManager(session_ttl_seconds=0)
 
 
 # --- connection liveness + surfaces (the substrate for approval/screen) ----

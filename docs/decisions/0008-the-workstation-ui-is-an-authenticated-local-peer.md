@@ -48,10 +48,13 @@ The server earns TTY-equivalent authority or does not run:
 - **Loopback bind only.** A non-loopback `ui.host` is a config error (enforced in
   `UIConfig`, fail-closed). Off-box access needs TLS + real identity — a future phase, not
   a YAML edit.
-- **Per-launch 128-bit token**, printed once, exchanged for an `HttpOnly; SameSite=Strict`
-  session cookie via a **clean-URL `303` redirect** (`Cache-Control: no-store`), so the
-  token never persists in browser history, a `Referer`, or a served page URL. The token is
-  never logged and never echoed by any route.
+- **Per-launch 128-bit token**, printed once, exchanged for an expiring
+  `HttpOnly; SameSite=Strict` session cookie via a **clean-URL `303` redirect**
+  (`Cache-Control: no-store`), so the token never persists in browser history, a `Referer`, or a
+  served page URL. The token is never logged and never echoed by any route. To avoid repeating
+  this exchange after ordinary workstation restarts, production persists only a SHA-256 digest of
+  the opaque session id plus its 30-day expiry; neither the cookie bearer value nor launch token is
+  written to disk.
 - **Every mutating route and the WebSocket require the session.** Data GETs require it too
   (memory/KB contents are sensitive); only static app assets are open.
 - **Host-header allowlist** (defeats DNS rebinding) and **Origin check** on the WebSocket
