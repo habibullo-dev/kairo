@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from jarvis.knowledge.secrets import scan_text
 
 if TYPE_CHECKING:
+    from jarvis.intelligence.store import ProjectReport
     from jarvis.orchestration.store import OrchestrationRun
     from jarvis.projects.snapshot import ProjectSnapshot
 
@@ -49,6 +50,37 @@ class ProjectReportDraft:
     test_gaps: list[dict]
     recommendations: list[dict]
     evidence: list[dict]
+
+
+def recommendation_studio_prefill(
+    report: ProjectReport,
+    recommendation_index: int,
+) -> dict[str, object] | None:
+    """Return one inert, revalidated Studio suggestion from a persisted report.
+
+    The caller still proves snapshot freshness and exact project scope.  This function only
+    revalidates the allowlisted team/workflow pair and constructs a bounded task brief; it never
+    estimates or starts work.
+    """
+    if recommendation_index < 0 or recommendation_index >= min(len(report.recommendations), 5):
+        return None
+    raw = report.recommendations[recommendation_index]
+    if not isinstance(raw, dict):
+        return None
+    title = _plain(raw.get("title"), limit=160)
+    goal = _plain(raw.get("goal"), limit=500)
+    team = _plain(raw.get("suggested_team"), limit=40)
+    workflow = _plain(raw.get("suggested_workflow"), limit=60)
+    if not title or not goal or workflow not in _REMEDIATION_WORKFLOWS.get(team, set()):
+        return None
+    task = f"Project assessment recommendation: {title}\n\nGoal: {goal}"[:720]
+    return {
+        "report_id": report.id,
+        "recommendation": recommendation_index,
+        "team": team,
+        "workflow": workflow,
+        "task": task,
+    }
 
 
 def _plain(value: object, *, limit: int) -> str:

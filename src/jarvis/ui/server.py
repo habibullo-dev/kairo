@@ -27,6 +27,7 @@ from jarvis.graph.review import approve as graph_approve
 from jarvis.graph.review import reject as graph_reject
 from jarvis.graph.search import unified_search
 from jarvis.graph.service import node_card, subgraph, suggestions_view
+from jarvis.intelligence import recommendation_studio_prefill
 from jarvis.observability import get_logger
 from jarvis.observability.cost import load_pricing
 from jarvis.permissions import PermissionGate, load_policy
@@ -72,6 +73,7 @@ from jarvis.ui.readmodels import (
     providers_status,
     serialize_artifact,
     serialize_chat_file,
+    serialize_project_report,
     services_status,
     session_transcript,
     settings_overview,
@@ -279,6 +281,37 @@ def create_app(
             or workspace.context.project_id is None
             or project_id is None
             or project_id == workspace.context.project_id
+        )
+
+    def _exact_project_id(workspace) -> int | None:
+        """Private report content requires one concrete live project, never aggregate scope."""
+        if workspace is not None:
+            return workspace.context.project_id
+        if app.state.workspaces is not None:
+            return None
+        projects = app.state.projects
+        return projects.current().project_id if projects is not None else None
+
+    async def _effective_report_status(report) -> str:
+        """Prove freshness from live bytes; a DB 'current' marker alone is insufficient."""
+        knowledge = app.state.services.knowledge
+        graph = app.state.services.graph
+        if knowledge is None or graph is None:
+            return "stale"
+        try:
+            from jarvis.projects import seal_snapshot
+
+            snapshot = await seal_snapshot(knowledge.store, graph, report.project_id)
+        except Exception as exc:  # stale/unavailable is safer than exposing or trusting failure
+            log.warning(
+                "project_report_freshness_unavailable",
+                error_type=type(exc).__name__,
+            )
+            return "stale"
+        return (
+            "current"
+            if report.status == "current" and report.snapshot_hash == snapshot.snapshot_hash
+            else "stale"
         )
 
     def _chat_scope(request: Request) -> ExecutionContext | None:
@@ -1374,6 +1407,61 @@ def create_app(
                 run_id,
                 budgets=app.state.services.budgets,
             )
+        )
+
+    @app.get("/api/project-intelligence/reports/{report_id}")
+    async def project_intelligence_report(report_id: int, request: Request) -> JSONResponse:
+        reports = app.state.services.project_reports
+        if reports is None:
+            return _unavailable("project intelligence")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        project_id = _exact_project_id(workspace)
+        report = await reports.get(report_id)
+        if project_id is None or report is None or report.project_id != project_id:
+            return JSONResponse({"ok": False, "message": "report not found"}, status_code=404)
+        effective_status = await _effective_report_status(report)
+        return JSONResponse(
+            {"report": serialize_project_report(report, effective_status=effective_status)}
+        )
+
+    @app.get("/api/project-intelligence/reports/{report_id}/studio-prefill")
+    async def project_intelligence_studio_prefill(
+        report_id: int,
+        request: Request,
+        recommendation: int = 0,
+    ) -> JSONResponse:
+        reports = app.state.services.project_reports
+        if reports is None:
+            return _unavailable("project intelligence")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        project_id = _exact_project_id(workspace)
+        report = await reports.get(report_id)
+        if project_id is None or report is None or report.project_id != project_id:
+            return JSONResponse({"ok": False, "message": "report not found"}, status_code=404)
+        if await _effective_report_status(report) != "current":
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "message": "This assessment is stale. Wait for the current project review.",
+                },
+                status_code=409,
+            )
+        prefill = recommendation_studio_prefill(report, recommendation)
+        if prefill is None:
+            return JSONResponse(
+                {"ok": False, "message": "recommendation is not available"},
+                status_code=404,
+            )
+        return JSONResponse(
+            {
+                "ok": True,
+                "prefill": prefill,
+                "notice": "Review scope and cost. Nothing has started.",
+            }
         )
 
     # --- mutations: the enumerated human-authority set (D5, route-closed-set pin) ------

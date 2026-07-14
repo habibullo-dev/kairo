@@ -17,10 +17,12 @@ import datetime as _dt
 import json
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from jarvis.intelligence.report import recommendation_studio_prefill
 from jarvis.memory.store import ANY_PROJECT as _MEM_ANY_PROJECT
 from jarvis.persistence.fts import ANY_PROJECT as _ANY_PROJECT
 from jarvis.reporting.repo import RepoReader
@@ -78,6 +80,156 @@ class UiServices:
     # Phase 16: the ONE attention queue (proposals/alerts/reviews). The Notification Center unions
     # this with live approvals + write-intents + graph suggestions at read time.
     attention: Any = None  # an AttentionStore
+
+
+_PROJECT_REPORT_BUCKETS = (
+    "strengths",
+    "weaknesses",
+    "security_candidates",
+    "fe_be_gaps",
+    "test_gaps",
+)
+_PROJECT_REPORT_COVERAGE = frozenset(
+    {
+        "files_total",
+        "files_reviewed",
+        "files_unreviewed",
+        "bytes_total",
+        "graph_edges",
+        "import_edges",
+        "files_listed",
+        "files_omitted",
+        "structure_nodes",
+        "structure_edges",
+        "dependency_nodes",
+        "dependency_edges",
+        "dependency_edges_omitted",
+        "context_secret_hits",
+        "context_truncated",
+        "context_chars",
+        "findings_retained",
+        "findings_dropped_unsupported",
+    }
+)
+
+
+def _report_text(value: object, *, limit: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    clean = "".join(
+        character
+        for character in value
+        if unicodedata.category(character) not in {"Cc", "Cf"}
+    )
+    return " ".join(clean.split())[:limit]
+
+
+def project_report_counts(report: Any) -> dict[str, int]:
+    return {
+        "strengths": len(report.strengths),
+        "weaknesses": len(report.weaknesses),
+        "security_candidates": len(report.security_candidates),
+        "frontend_backend_gaps": len(report.fe_be_gaps),
+        "test_reliability_gaps": len(report.test_gaps),
+        "recommendations": len(report.recommendations),
+    }
+
+
+def _report_evidence(value: object) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    if not isinstance(value, list):
+        return out
+    for raw in value[:4]:
+        if not isinstance(raw, dict) or raw.get("kind") != "path":
+            continue
+        ref = _report_text(raw.get("ref"), limit=240).replace("\\", "/")
+        path = PurePosixPath(ref)
+        if (
+            not ref
+            or path.is_absolute()
+            or re.match(r"^[a-zA-Z]:", ref)
+            or any(part in {"", ".", ".."} for part in path.parts)
+        ):
+            continue
+        out.append({"kind": "path", "ref": ref, "trust": "model_cited"})
+    return out
+
+
+def _report_findings(value: object, *, security: bool = False) -> list[dict]:
+    out: list[dict] = []
+    if not isinstance(value, list):
+        return out
+    for raw in value[:3]:
+        if not isinstance(raw, dict):
+            continue
+        title = _report_text(raw.get("title"), limit=160)
+        detail = _report_text(raw.get("detail"), limit=700)
+        evidence = _report_evidence(raw.get("evidence"))
+        if not title or not detail or not evidence:
+            continue
+        severity = _report_text(raw.get("severity"), limit=16).lower()
+        confidence = _report_text(raw.get("confidence"), limit=16).lower()
+        row = {
+            "title": title,
+            "detail": detail,
+            "member": _report_text(raw.get("member"), limit=80),
+            "severity": (
+                severity
+                if severity in {"info", "low", "medium", "high", "critical"}
+                else "info"
+            ),
+            "confidence": confidence if confidence in {"low", "medium", "high"} else "low",
+            "evidence": evidence,
+        }
+        if security:
+            row.update({"validated": False, "validation": "candidate"})
+        out.append(row)
+    return out
+
+
+def serialize_project_report(report: Any, *, effective_status: str) -> dict:
+    """Bounded project-private report view; no snapshot/run/source/local-path identifiers."""
+    coverage = {
+        key: value
+        for key, value in report.coverage.items()
+        if key in _PROJECT_REPORT_COVERAGE
+        and (type(value) is bool or (type(value) is int and value >= 0))
+    }
+    recommendations: list[dict] = []
+    for index, raw in enumerate(report.recommendations[:5]):
+        if not isinstance(raw, dict):
+            continue
+        title = _report_text(raw.get("title"), limit=160)
+        goal = _report_text(raw.get("goal"), limit=500)
+        if not title or not goal:
+            continue
+        priority = _report_text(raw.get("priority"), limit=16).lower()
+        recommendations.append(
+            {
+                "index": index,
+                "title": title,
+                "goal": goal,
+                "priority": priority if priority in {"low", "medium", "high"} else "medium",
+                "studio_available": effective_status == "current"
+                and recommendation_studio_prefill(report, index) is not None,
+            }
+        )
+    return {
+        "id": report.id,
+        "status": effective_status,
+        "trust_class": "model_generated",
+        "created_at": report.created_at,
+        "summary": _report_text(report.summary, limit=2_000),
+        "coverage": coverage,
+        "counts": project_report_counts(report),
+        "strengths": _report_findings(report.strengths),
+        "weaknesses": _report_findings(report.weaknesses),
+        "security_candidates": _report_findings(report.security_candidates, security=True),
+        "frontend_backend_gaps": _report_findings(report.fe_be_gaps),
+        "test_reliability_gaps": _report_findings(report.test_gaps),
+        "recommendations": recommendations,
+        "evidence": _report_evidence(report.evidence),
+    }
 
 
 # --- memory ----------------------------------------------------------------

@@ -75,6 +75,7 @@ async def test_enqueue_is_idempotent_per_snapshot_and_profile(tmp_path: Path) ->
     assert (created, created_again, newer_created) == (True, False, True)
     assert same.id == first.id and same.graph_watermark == 12
     assert newer_profile.id != first.id
+    assert (await jobs.latest(project_id)).id == newer_profile.id  # type: ignore[union-attr]
 
 
 async def test_job_lifecycle_claim_requeue_and_finish_is_guarded(tmp_path: Path) -> None:

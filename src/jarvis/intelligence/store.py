@@ -194,6 +194,17 @@ class AnalysisJobStore:
         ).fetchall()
         return [_job(row) for row in rows]
 
+    async def latest(self, project_id: int) -> AnalysisJob | None:
+        """Newest durable assessment identity for one project."""
+        row = await (
+            await self.db.execute(
+                f"SELECT {_JOB_COLUMNS} FROM analysis_jobs "
+                "WHERE project_id=? ORDER BY id DESC LIMIT 1",
+                (project_id,),
+            )
+        ).fetchone()
+        return _job(row) if row else None
+
     async def claim(self, job_id: int) -> AnalysisJob | None:
         now = _now()
         async with self.lock:

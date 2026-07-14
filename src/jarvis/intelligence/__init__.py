@@ -6,7 +6,11 @@ from jarvis.intelligence.coordinator import (
     ProjectIntelligenceCoordinator,
 )
 from jarvis.intelligence.publisher import PublishOutcome, publish_assessment
-from jarvis.intelligence.report import ProjectReportDraft, build_report_draft
+from jarvis.intelligence.report import (
+    ProjectReportDraft,
+    build_report_draft,
+    recommendation_studio_prefill,
+)
 from jarvis.intelligence.store import (
     AnalysisJob,
     AnalysisJobState,
@@ -28,4 +32,5 @@ __all__ = [
     "PublishOutcome",
     "build_report_draft",
     "publish_assessment",
+    "recommendation_studio_prefill",
 ]
