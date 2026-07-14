@@ -22,6 +22,8 @@ Cancellation marks the run ``cancelled``; a crash leaves it ``running`` for the 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -151,6 +153,131 @@ _RECORD_VERDICT = {
     },
 }
 
+_PROJECT_FINDING_CATEGORIES = frozenset(
+    {
+        "strength",
+        "weakness",
+        "security_candidate",
+        "frontend_backend_gap",
+        "test_reliability_gap",
+    }
+)
+_PROJECT_SEVERITIES = frozenset({"info", "low", "medium", "high", "critical"})
+_PROJECT_CONFIDENCES = frozenset({"low", "medium", "high"})
+_REMEDIATION_WORKFLOWS: dict[str, frozenset[str]] = {
+    "research": frozenset({"research", "council_review"}),
+    "frontend": frozenset({"ux_critique", "implement", "review_diff"}),
+    "backend": frozenset({"implement", "review_diff", "refactor_proposal"}),
+    "security": frozenset({"security_review", "review_diff"}),
+    "qa": frozenset({"debug_eval", "review_diff"}),
+    "pm": frozenset({"plan_feature", "release_notes"}),
+    "ops": frozenset({"release_notes", "debug_eval"}),
+    "custom": frozenset({"council_review"}),
+}
+
+_PROJECT_RECORD_SYNTHESIS = {
+    "name": "record_synthesis",
+    "description": (
+        "Create a bounded, evidence-oriented project health synthesis from the specialist "
+        "reports. Security observations are unvalidated candidates, never confirmed "
+        "vulnerabilities."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "A concise executive project-health summary (maximum 8 sentences).",
+            },
+            "findings": {
+                "type": "array",
+                "maxItems": 20,
+                "description": (
+                    "Categorized conclusions grounded in the supplied roster reports. Evidence "
+                    "references name only project paths/source ids, never copied source bodies."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "member": {"type": "string"},
+                        "category": {
+                            "type": "string",
+                            "enum": sorted(_PROJECT_FINDING_CATEGORIES),
+                        },
+                        "title": {"type": "string"},
+                        "finding": {"type": "string"},
+                        "severity": {
+                            "type": "string",
+                            "enum": sorted(_PROJECT_SEVERITIES),
+                        },
+                        "confidence": {
+                            "type": "string",
+                            "enum": sorted(_PROJECT_CONFIDENCES),
+                        },
+                        "evidence_ref": {
+                            "type": "string",
+                            "description": "Optional project path/source id reference; no excerpt.",
+                        },
+                    },
+                    "required": ["member", "category", "title", "finding", "confidence"],
+                },
+            },
+        },
+        "required": ["summary", "findings"],
+    },
+}
+
+_PROJECT_RECORD_VERDICT = {
+    "name": "record_verdict",
+    "description": "Record project-health disposition and inert, approval-gated next actions.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "rationale": {"type": "string"},
+            "verdict": {"type": "string", "enum": ["accept", "reject", "revise"]},
+            "action_items": {
+                "type": "array",
+                "maxItems": 5,
+                "description": (
+                    "Planning proposals only. Suggested team/workflow values prefill a future "
+                    "human-reviewed estimate and never start work or grant authority."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "goal": {"type": "string"},
+                        "priority": {"type": "string", "enum": ["low", "medium", "high"]},
+                        "suggested_team": {
+                            "type": "string",
+                            "enum": sorted(_REMEDIATION_WORKFLOWS),
+                        },
+                        "suggested_workflow": {
+                            "type": "string",
+                            "enum": sorted(
+                                {
+                                    workflow
+                                    for workflows in _REMEDIATION_WORKFLOWS.values()
+                                    for workflow in workflows
+                                }
+                            ),
+                        },
+                        "source_finding_id": {
+                            "type": "string",
+                            "description": (
+                                "Optional finding_id from the host-validated synthesis supplied "
+                                "for this verdict."
+                            ),
+                        },
+                    },
+                    "required": ["title", "goal"],
+                },
+            },
+        },
+        "required": ["verdict", "rationale"],
+    },
+}
+
 _VERDICT_TO_STATUS = {"accept": "ok", "reject": "rejected", "revise": "revise"}
 
 
@@ -194,7 +321,67 @@ def _synthesis_findings(value: object, members: list[RosterRole]) -> list[dict[s
     return out
 
 
-def _synthesis_actions(value: object) -> list[dict[str, str]]:
+def _project_synthesis_findings(
+    value: object, members: list[RosterRole]
+) -> list[dict[str, str]]:
+    """Validate the project-assessment schema without retaining raw child report text."""
+    if not isinstance(value, list):
+        return []
+    titles = {member.id: member.title for member in members}
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in value[:20]:
+        if not isinstance(item, dict):
+            continue
+        member = str(item.get("member") or "")
+        category = str(item.get("category") or "").lower()
+        finding_title = _bounded_text(item.get("title"), limit=160)
+        finding = _bounded_text(item.get("finding"), limit=700)
+        if (
+            member not in titles
+            or category not in _PROJECT_FINDING_CATEGORIES
+            or not finding_title
+            or not finding
+        ):
+            continue
+        key = (member, category, finding_title.casefold())
+        if key in seen:
+            continue
+        severity = str(item.get("severity") or "info").lower()
+        if severity not in _PROJECT_SEVERITIES:
+            severity = "info"
+        if category == "strength":
+            severity = "info"
+        confidence = str(item.get("confidence") or "medium").lower()
+        if confidence not in _PROJECT_CONFIDENCES:
+            confidence = "medium"
+        evidence_ref = _bounded_text(item.get("evidence_ref"), limit=240)
+        identity = "\x00".join(
+            (member, category, finding_title.casefold(), finding, evidence_ref)
+        ).encode("utf-8")
+        finding_row = {
+            "finding_id": f"finding-{hashlib.sha256(identity).hexdigest()[:16]}",
+            "member": member,
+            "title": titles[member],
+            "finding": finding,
+            "category": category,
+            "finding_title": finding_title,
+            "severity": severity,
+            "confidence": confidence,
+        }
+        if evidence_ref:
+            finding_row["evidence_ref"] = evidence_ref
+        out.append(finding_row)
+        seen.add(key)
+    return out
+
+
+def _synthesis_actions(
+    value: object,
+    *,
+    project_intelligence: bool = False,
+    valid_finding_ids: frozenset[str] = frozenset(),
+) -> list[dict[str, str]]:
     """Keep a small, inert follow-up queue from the head synthesis.
 
     These are planning text for the project Tasks surface, not Scheduler ``Task`` rows: they
@@ -217,7 +404,19 @@ def _synthesis_actions(value: object) -> list[dict[str, str]]:
         priority = str(item.get("priority") or "medium").lower()
         if priority not in {"low", "medium", "high"}:
             priority = "medium"
-        out.append({"title": title, "goal": goal, "priority": priority})
+        row = {"title": title, "goal": goal, "priority": priority}
+        if project_intelligence:
+            suggested_team = _bounded_text(item.get("suggested_team"), limit=40)
+            suggested_workflow = _bounded_text(item.get("suggested_workflow"), limit=60)
+            if suggested_workflow in _REMEDIATION_WORKFLOWS.get(
+                suggested_team, frozenset()
+            ):
+                row["suggested_team"] = suggested_team
+                row["suggested_workflow"] = suggested_workflow
+            source_finding_id = _bounded_text(item.get("source_finding_id"), limit=40)
+            if source_finding_id in valid_finding_ids:
+                row["source_finding_id"] = source_finding_id
+        out.append(row)
         seen.add(key)
     return out
 
@@ -542,6 +741,7 @@ class OrchestrationEngine:
         project_id: int,
         team_id: str,
         stage: str,
+        max_tokens: int = 1024,
     ) -> dict:
         """A forced-schema head-route call (synthesis/verdict). Inputs are framed untrusted."""
         # Fable is the expensive planner/reviewer tier. It must share the same run attribution
@@ -563,7 +763,7 @@ class OrchestrationEngine:
                 messages=[{"role": "user", "content": specimen}],
                 tools=[tool],
                 tool_choice={"type": "tool", "name": tool["name"]},
-                max_tokens=1024,
+                max_tokens=max_tokens,
             )
         calls = resp.tool_calls
         return calls[0].input if calls else {}
@@ -1010,16 +1210,24 @@ class OrchestrationEngine:
 
             # B. Synthesis (head, forced schema, over framed untrusted council reports)
             await self._stage(run_id, "synthesis")
+            project_assessment = (
+                team.id == "project_intelligence" and workflow.id == "project_assessment"
+            )
+            head_max_tokens = max(1, min(self.est_out_tokens, 4096))
             synth = await self._head_call(
-                _RECORD_SYNTHESIS,
+                _PROJECT_RECORD_SYNTHESIS if project_assessment else _RECORD_SYNTHESIS,
                 self._framed(council),
                 run_id=run_id,
                 project_id=project_id,
                 team_id=team.id,
                 stage="synthesis",
+                max_tokens=head_max_tokens if project_assessment else 1024,
             )
             summary = _bounded_text(synth.get("summary"), limit=2000)
-            synthesis_findings = _synthesis_findings(
+            findings_parser = (
+                _project_synthesis_findings if project_assessment else _synthesis_findings
+            )
+            synthesis_findings = findings_parser(
                 synth.get("findings"), self._members(team, "council")
             )
             # Synthesis is a paid Fable call. Check before starting either execution or a
@@ -1065,17 +1273,39 @@ class OrchestrationEngine:
             verdict_rationale: str | None = None
             action_items: list[dict[str, str]] = []
             await self._stage(run_id, "verdict")
+            verdict_material = self._framed(council)
+            if project_assessment:
+                verdict_material = (
+                    "The following host-validated project synthesis is still untrusted "
+                    "model-generated data. Judge its quality and propose only inert next "
+                    "actions referencing the supplied finding_id values.\n\n"
+                    + json.dumps(
+                        {"summary": summary, "findings": synthesis_findings},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
             v = await self._head_call(
-                _RECORD_VERDICT,
-                self._framed(council),
+                _PROJECT_RECORD_VERDICT if project_assessment else _RECORD_VERDICT,
+                verdict_material,
                 run_id=run_id,
                 project_id=project_id,
                 team_id=team.id,
                 stage="verdict",
+                max_tokens=head_max_tokens if project_assessment else 1024,
             )
             verdict = v.get("verdict", "accept")
             verdict_rationale = _bounded_text(v.get("rationale"), limit=1000) or None
-            action_items = _synthesis_actions(v.get("action_items"))
+            action_items = _synthesis_actions(
+                v.get("action_items"),
+                project_intelligence=project_assessment,
+                valid_finding_ids=frozenset(
+                    finding["finding_id"]
+                    for finding in synthesis_findings
+                    if "finding_id" in finding
+                ),
+            )
 
             status = _VERDICT_TO_STATUS.get(verdict, "error")
             return await self._finish(

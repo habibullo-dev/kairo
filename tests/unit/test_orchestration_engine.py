@@ -18,6 +18,7 @@ One integration test drives the REAL ``SubAgentService.spawn`` to catch signatur
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -371,7 +372,79 @@ async def test_project_assessment_runs_five_scoped_readers_and_fable_head(
         calls.append(kw)
         return ToolResult(content=f"report:{kw['role']}", is_error=False)
 
-    head = FakeClient([_synth("project mapped"), _verdict("accept")])
+    strength_id = "finding-" + hashlib.sha256(
+        "\x00".join(
+            (
+                "architecture_backend",
+                "strength",
+                "clear service boundary",
+                "The graph shows a stable API boundary.",
+                "repo/api/routes.py",
+            )
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    head = FakeClient(
+        [
+            _synth(
+                "project mapped",
+                [
+                    {
+                        "member": "architecture_backend",
+                        "category": "strength",
+                        "title": "Clear service boundary",
+                        "finding": "The graph shows a stable API boundary.",
+                        "severity": "high",
+                        "confidence": "high",
+                        "evidence_ref": "repo/api/routes.py",
+                    },
+                    {
+                        "member": "architecture_backend",
+                        "category": "weakness",
+                        "title": "Central module",
+                        "finding": "One module has disproportionate dependency degree.",
+                        "severity": "medium",
+                        "confidence": "medium",
+                    },
+                    {
+                        "member": "security_risk",
+                        "category": "security_candidate",
+                        "title": "Authorization path needs validation",
+                        "finding": "A sensitive route may lack a visible guard.",
+                        "severity": "high",
+                        "confidence": "low",
+                        "evidence_ref": "source #17",
+                    },
+                    {
+                        "member": "not_on_roster",
+                        "category": "weakness",
+                        "title": "Forged",
+                        "finding": "drop me",
+                        "confidence": "high",
+                    },
+                ],
+            ),
+            _verdict(
+                "accept",
+                [
+                    {
+                        "title": "Close the API/UI gap",
+                        "goal": "Expose the missing backend capability in the frontend.",
+                        "priority": "high",
+                        "suggested_team": "backend",
+                        "suggested_workflow": "implement",
+                        "source_finding_id": strength_id,
+                    },
+                    {
+                        "title": "Invalid pairing remains inert",
+                        "goal": "Do not prefill an impossible team/workflow pair.",
+                        "suggested_team": "qa",
+                        "suggested_workflow": "implement",
+                        "source_finding_id": "finding-forged",
+                    },
+                ],
+            ),
+        ]
+    )
     engine = OrchestrationEngine(
         spawn=fake_spawn,
         store=store,
@@ -400,6 +473,25 @@ async def test_project_assessment_runs_five_scoped_readers_and_fable_head(
         "record_synthesis",
         "record_verdict",
     ]
+    assert all(call["max_tokens"] == 2048 for call in head.calls)
+    assert [finding["category"] for finding in run.synthesis_findings] == [
+        "strength",
+        "weakness",
+        "security_candidate",
+    ]
+    assert run.synthesis_findings[0]["severity"] == "info"
+    assert run.synthesis_findings[0]["finding_id"] == strength_id
+    assert run.synthesis_findings[2]["evidence_ref"] == "source #17"
+    assert run.action_items[0]["suggested_team"] == "backend"
+    assert run.action_items[0]["suggested_workflow"] == "implement"
+    assert run.action_items[0]["source_finding_id"] == strength_id
+    assert "suggested_team" not in run.action_items[1]
+    assert "source_finding_id" not in run.action_items[1]
+    synthesis_schema = head.calls[0]["tools"][0]["input_schema"]
+    assert synthesis_schema["properties"]["findings"]["maxItems"] == 20
+    verdict_input = head.calls[1]["messages"][0]["content"]
+    assert strength_id in verdict_input
+    assert "report:reviewer" not in verdict_input
 
 
 async def test_fable_head_calls_are_attributed_and_written_back_as_actual_run_cost(
