@@ -670,6 +670,20 @@ class BudgetsConfig(BaseModel):
     treat_unpriced_as_blocking: bool = True  # refuse orchestration on unpriced role models
 
 
+class ProjectIntelligenceConfig(BaseModel):
+    """Standing authorization for bounded, read-only post-import assessment.
+
+    Disabled by default: uploading files alone does not authorize expensive cloud fan-out.  When
+    enabled, the cap is still a hard reservation ceiling and remediation remains separately
+    attended and approval-gated.
+    """
+
+    enabled: bool = False
+    analyze_after_import: bool = True
+    max_cost_usd: float = Field(default=5.0, gt=0, le=100.0)
+    max_attempts: int = Field(default=2, ge=1, le=3)
+
+
 class AttentionConfig(BaseModel):
     """Attention routing (Phase 16). Each priority may opt in to a minimized notifier push;
     unset priorities retain their digest/center behavior. Pushes contain only open-item counts,
@@ -715,6 +729,9 @@ class Config(BaseModel):
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)  # Phase 9
     modes: ModesConfig = Field(default_factory=ModesConfig)  # Phase 10
     budgets: BudgetsConfig = Field(default_factory=BudgetsConfig)  # Phase 10
+    project_intelligence: ProjectIntelligenceConfig = Field(
+        default_factory=ProjectIntelligenceConfig
+    )
     services: ServicesConfig = Field(default_factory=ServicesConfig)  # Phase 10B
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)  # Phase 10C
     context_reuse: ContextReuseConfig = Field(default_factory=ContextReuseConfig)  # Phase 13 (S7)
@@ -810,6 +827,9 @@ def load_config(
             logging=LoggingConfig(**data.get("logging", {})),
             paths=PathsConfig(**data.get("paths", {})),
             budgets=BudgetsConfig(**data.get("budgets", {})),
+            project_intelligence=ProjectIntelligenceConfig(
+                **data.get("project_intelligence", {})
+            ),
             services=ServicesConfig(**data.get("services", {})),
             providers=ProvidersConfig(**data.get("providers", {})),
             context_reuse=ContextReuseConfig(**data.get("context_reuse", {})),

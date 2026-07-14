@@ -46,6 +46,34 @@ def test_defaults_when_no_settings_file(tmp_path: Path) -> None:
     assert cfg.limits.max_iterations == 25
     assert cfg.limits.compaction_threshold == 0.7
     assert cfg.paths.data_dir == Path("data")
+    assert cfg.project_intelligence.enabled is False
+    assert cfg.project_intelligence.analyze_after_import is True
+    assert cfg.project_intelligence.max_cost_usd == 5.0
+    assert cfg.project_intelligence.max_attempts == 2
+
+
+def test_project_intelligence_config_is_explicit_and_bounded(tmp_path: Path) -> None:
+    _write_settings(
+        tmp_path,
+        "project_intelligence:\n"
+        "  enabled: true\n"
+        "  analyze_after_import: false\n"
+        "  max_cost_usd: 12.5\n"
+        "  max_attempts: 3\n",
+    )
+    cfg = load_config(root=tmp_path, env_file=None)
+    assert cfg.project_intelligence.enabled is True
+    assert cfg.project_intelligence.analyze_after_import is False
+    assert cfg.project_intelligence.max_cost_usd == 12.5
+    assert cfg.project_intelligence.max_attempts == 3
+
+    for body in (
+        "project_intelligence:\n  max_cost_usd: 0\n",
+        "project_intelligence:\n  max_attempts: 4\n",
+    ):
+        _write_settings(tmp_path, body)
+        with pytest.raises(ConfigError, match="project_intelligence"):
+            load_config(root=tmp_path, env_file=None)
 
 
 def test_logging_config_defaults_and_yaml_override(tmp_path: Path) -> None:
