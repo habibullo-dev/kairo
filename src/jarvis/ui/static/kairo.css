@@ -752,6 +752,10 @@ body.debug .debug-banner { display: flex; }
 }
 .studio-run-row button:hover { border-color: var(--cyan); }
 .studio-run-row .btn-approve { background: rgba(78,194,111,0.16); border-color: #2f6b45; color: var(--ok); }
+.studio-prefill-note { margin-bottom: 12px; border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; color: var(--muted); background: var(--panel-soft); font-size: 12px; line-height: 1.45; }
+.studio-prefill-note:empty { display: none; }
+.studio-prefill-note.ready { border-color: rgba(var(--accent-rgb), .42); color: var(--cyan-soft); }
+.studio-prefill-note.warn { border-color: rgba(var(--attention-rgb), .42); color: var(--attention); }
 .member { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
 .member-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .member .chips { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 5px; }

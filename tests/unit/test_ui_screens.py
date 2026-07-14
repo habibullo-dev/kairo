@@ -134,6 +134,9 @@ def test_project_assessment_surfaces_are_read_only_and_escape_model_text() -> No
     assert "textContent" in report
     assert "not independently validated" in report
     assert "/api/orchestration/run" not in report
+    assert "Review with AI team" in report
+    assert "studio/report/${reportId}/${recommendationIndex}" in report
+    assert "Nothing starts automatically." in report
     assert "openProjectReport" in gate and 'actionBtn("View report"' in gate
     assert "function renderProjectAssessment(container, api, assessment)" in daily
     assert "renderProjectAssessment(\n    container,\n    api," in daily

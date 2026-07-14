@@ -15,7 +15,13 @@ const S = {
   live: null,        // { run_id, team, workflow, title, stage, agents:[], status, verdict }
   detail: null,      // an expanded run detail { run, members }
   head: null,        // the planner route {model, provider} (Fable) — synthesis + final verdict
+  projectId: null,   // reset all private draft/run state when the exact active project changes
+  task: "",           // human-editable draft; survives harmless Studio rerenders in one project
+  budget: "",
+  prefillKey: null,  // prevents a rerender from overwriting a human-edited assessment draft
 };
+let _renderGeneration = 0;
+let _estimateGeneration = 0;
 
 // The head reviewer/synthesizer is an ENGINE STAGE (Fable on the planner route), not a team
 // member — badged visibly on the roster, the live verdict, and a run's synthesis.
@@ -25,17 +31,38 @@ function headBadge(route) {
 }
 
 export async function render(container, api, args = []) {
+  const renderGeneration = ++_renderGeneration;
   _api = api;
-  const [cat, hist] = await Promise.all([api.get("/api/studio"), api.get("/api/orchestration")]);
+  const reportIntent = args[0] === "report";
+  const reportRoute = parseReportRoute(args);
+  const requestedPrefillKey = reportRoute
+    ? `${reportRoute.reportId}:${reportRoute.recommendation}`
+    : null;
+  if (reportIntent && requestedPrefillKey !== S.prefillKey) S.estimate = null;
+  const [cat, hist, reportSuggestion] = await Promise.all([
+    api.get("/api/studio"),
+    api.get("/api/orchestration"),
+    reportRoute ? api.get(
+      `/api/project-intelligence/reports/${encodeURIComponent(reportRoute.reportId)}/studio-prefill?recommendation=${encodeURIComponent(reportRoute.recommendation)}`
+    ) : Promise.resolve(null),
+  ]);
+  if (renderGeneration !== _renderGeneration) return;
+  if (reportIntent && !reportRouteIsActive(args)) return;
   if (!cat) {
     container.innerHTML = `<div class="rise"><h1>Studio</h1>
       <div class="sub">Orchestration is not available (delegation/sub-agents off).</div></div>`;
     return;
   }
+  if (S.projectId !== cat.active_project_id) resetForProject(cat.active_project_id);
   S.catalog = cat;
   S.runs = (hist && hist.runs) || [];
   S.team = S.team || (cat.teams[0] && cat.teams[0].id);
   S.workflow = S.workflow || defaultWorkflow(cat, S.team);
+  const prefill = validateReportPrefill(reportSuggestion, reportRoute, cat);
+  if (prefill && requestedPrefillKey !== S.prefillKey) {
+    S.team = prefill.team;
+    S.workflow = prefill.workflow;
+  }
 
   const routeModel = mapRoutes(cat.model_routes);
   const svcState = mapServices(cat.services);
@@ -54,6 +81,7 @@ export async function render(container, api, args = []) {
       : ""}
     <div class="studio-grid"${requestedRun != null ? " hidden" : ""}>
       <div class="card rise">
+        <div id="st-prefill-note"></div>
         <div class="card-label">Team</div>
         <select id="st-team">${team ? cat.teams.map((t) =>
           `<option value="${t.id}" ${t.id === S.team ? "selected" : ""}>${esc(t.icon)} ${esc(t.name)}</option>`
@@ -85,9 +113,17 @@ export async function render(container, api, args = []) {
 
   renderEstimatePanel(container);
   renderLive(container);
+  const taskInput = container.querySelector("#st-task");
+  const budgetInput = container.querySelector("#st-budget");
+  if (taskInput) taskInput.value = S.task;
+  if (budgetInput) budgetInput.value = S.budget;
   wire(container, api);
   if (requestedRun != null) await showRunDetail(container, api, requestedRun);
-  else { S.detail = null; renderDetail(container); }
+  else {
+    S.detail = null;
+    renderDetail(container);
+    if (reportIntent) await applyReportPrefill(container, api, prefill, reportRoute);
+  }
 }
 
 // live orchestration events (schema v2) → update the in-flight run panel
@@ -115,6 +151,8 @@ export function onEvent(state, evt) {
 }
 
 function wire(container, api) {
+  container.querySelector("#st-task")?.addEventListener("input", (e) => { S.task = e.target.value; });
+  container.querySelector("#st-budget")?.addEventListener("input", (e) => { S.budget = e.target.value; });
   container.querySelector("#st-team")?.addEventListener("change", (e) => {
     S.team = e.target.value; S.workflow = defaultWorkflow(S.catalog, S.team); S.estimate = null;
     render(container, api);
@@ -135,6 +173,88 @@ async function showRunDetail(container, api, runId) {
   renderDetail(container);
 }
 
+function parseReportRoute(args) {
+  if (args.length !== 3 || args[0] !== "report") return null;
+  if (!/^[1-9]\d{0,9}$/.test(String(args[1] || ""))) return null;
+  if (!/^[0-4]$/.test(String(args[2] ?? ""))) return null;
+  const reportId = Number(args[1]);
+  const recommendation = Number(args[2]);
+  return Number.isSafeInteger(reportId) ? { reportId, recommendation } : null;
+}
+
+function reportRouteIsActive(args) {
+  return location.hash.replace(/^#/, "") === `studio/${args.join("/")}`;
+}
+
+function resetForProject(projectId) {
+  S.projectId = projectId;
+  S.team = null;
+  S.workflow = null;
+  S.estimate = null;
+  S.live = null;
+  S.detail = null;
+  S.task = "";
+  S.budget = "";
+  S.prefillKey = null;
+  _estimateGeneration += 1;
+}
+
+function validateReportPrefill(data, route, catalog) {
+  const prefill = data?.prefill;
+  if (!route || !prefill || typeof prefill !== "object") return null;
+  const team = catalog.teams.find((item) => item.id === prefill.team);
+  const workflowExists = catalog.workflows.some((item) => item.id === prefill.workflow);
+  if (
+    prefill.report_id !== route.reportId
+    || prefill.recommendation !== route.recommendation
+    || !team
+    || !workflowExists
+    || !Array.isArray(team.default_workflows)
+    || !team.default_workflows.includes(prefill.workflow)
+    || typeof prefill.task !== "string"
+    || !prefill.task.trim()
+    || prefill.task.length > 720
+  ) return null;
+  return {
+    team: prefill.team,
+    workflow: prefill.workflow,
+    task: prefill.task,
+  };
+}
+
+async function applyReportPrefill(container, api, prefill, route) {
+  const notice = container.querySelector("#st-prefill-note");
+  const task = container.querySelector("#st-task");
+  if (!notice || !task) return;
+  notice.className = "studio-prefill-note";
+  if (!prefill) {
+    notice.classList.add("warn");
+    notice.textContent = "This assessment recommendation is unavailable or no longer current.";
+    return;
+  }
+  notice.classList.add("ready");
+  notice.textContent = "Suggested from project assessment. Review scope and cost. Nothing has started.";
+  const key = `${route.reportId}:${route.recommendation}`;
+  if (S.prefillKey === key) {
+    task.value = S.task;
+    return;
+  }
+  S.prefillKey = key;
+  S.task = prefill.task;
+  task.value = S.task;
+  const expected = params(container);
+  await doEstimate(container, api, () => (
+    reportRouteIsActive(["report", String(route.reportId), String(route.recommendation)])
+    && S.prefillKey === key
+    && S.projectId === S.catalog?.active_project_id
+    && S.team === expected.team
+    && S.workflow === expected.workflow
+    && S.task.trim() === expected.task
+    && task.isConnected
+    && task.value.trim() === expected.task
+  ));
+}
+
 function params(container) {
   const task = container.querySelector("#st-task")?.value.trim() || "";
   const b = container.querySelector("#st-budget")?.value;
@@ -142,11 +262,18 @@ function params(container) {
   return { team: S.team, workflow: S.workflow, task, budget_usd };
 }
 
-async function doEstimate(container, api) {
+async function doEstimate(container, api, responseIsCurrent = null) {
+  const estimateGeneration = ++_estimateGeneration;
+  const projectId = S.projectId;
   const p = params(container);
   const q = new URLSearchParams({ team: p.team, workflow: p.workflow, task: p.task });
   if (p.budget_usd != null) q.set("budget_usd", String(p.budget_usd));
   const r = await api.get(`/api/orchestration/estimate?${q.toString()}`);
+  if (
+    estimateGeneration !== _estimateGeneration
+    || projectId !== S.projectId
+    || (responseIsCurrent && !responseIsCurrent())
+  ) return;
   S.estimate = r && r.ok ? r.estimate : { decision: "error", reason: (r && r.message) || "failed" };
   renderEstimatePanel(container);
 }

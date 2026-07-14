@@ -47,10 +47,10 @@ function findingsSection(title, note, findings) {
   return section;
 }
 
-function recommendationsSection(recommendations) {
+function recommendationsSection(report) {
   const section = el("section", { class: "project-report-section" });
   section.append(el("h3", { text: "Recommendations" }));
-  const rows = Array.isArray(recommendations) ? recommendations : [];
+  const rows = Array.isArray(report?.recommendations) ? report.recommendations : [];
   if (!rows.length) {
     section.append(el("div", { class: "dim", text: "No supported recommendations." }));
     return section;
@@ -62,6 +62,32 @@ function recommendationsSection(recommendations) {
       el("div", { class: "dim", text: `${text(recommendation?.priority, "medium")} priority` }),
       el("p", { text: text(recommendation?.goal, "No goal supplied.") }),
     );
+    const reportId = report?.id;
+    const recommendationIndex = recommendation?.index;
+    if (
+      report?.status === "current"
+      && recommendation?.studio_available === true
+      && Number.isSafeInteger(reportId)
+      && reportId > 0
+      && Number.isSafeInteger(recommendationIndex)
+      && recommendationIndex >= 0
+      && recommendationIndex <= 4
+    ) {
+      const review = el("button", {
+        class: "chip-btn project-report-review", type: "button", text: "Review with AI team",
+      });
+      review.addEventListener("click", () => {
+        if (activeClose) activeClose();
+        location.hash = `studio/report/${reportId}/${recommendationIndex}`;
+      });
+      card.append(
+        el("div", {
+          class: "dim",
+          text: "Opens Studio to review scope and cost. Nothing starts automatically.",
+        }),
+        review,
+      );
+    }
     section.append(card);
   }
   return section;
@@ -123,7 +149,7 @@ function showReport(report) {
     ),
     findingsSection("Frontend/backend gaps", "Backend capabilities that may be missing, broken, or unclear in the user experience.", report?.frontend_backend_gaps),
     findingsSection("Test and reliability gaps", "Coverage, failure-mode, and operational concerns supported by report evidence.", report?.test_reliability_gaps),
-    recommendationsSection(report?.recommendations),
+    recommendationsSection(report),
     el("div", { class: "dialog-actions" }, [closeButton]),
   );
   overlay.append(card);

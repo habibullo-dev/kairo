@@ -7,6 +7,7 @@ from __future__ import annotations
 from jarvis.ui.server import STATIC_DIR
 
 STUDIO = (STATIC_DIR / "screens" / "studio.js").read_text(encoding="utf-8")
+REPORT = (STATIC_DIR / "ui" / "project-report.js").read_text(encoding="utf-8")
 
 
 def test_head_reviewer_visibly_badged() -> None:
@@ -41,3 +42,39 @@ def test_studio_describes_skill_manifest_as_recorded_evidence_only() -> None:
     assert "recorded skills:" in STUDIO
     assert "Recorded metadata does not prove prompt injection" in STUDIO
     assert "Shadow mode records manifests without injecting guidance." in STUDIO
+
+
+def test_project_recommendation_prefills_and_estimates_but_never_auto_runs() -> None:
+    assert "Review with AI team" in REPORT
+    assert "studio/report/${reportId}/${recommendationIndex}" in REPORT
+    start = STUDIO.index("async function applyReportPrefill")
+    end = STUDIO.index("\nfunction params", start)
+    prefill = STUDIO[start:end]
+    assert "S.task = prefill.task" in prefill
+    assert "task.value = S.task" in prefill
+    assert "Review scope and cost. Nothing has started." in prefill
+    assert "await doEstimate(container, api, () => (" in prefill
+    assert "doRun" not in prefill and "api.post" not in prefill
+    assert "/studio-prefill?recommendation=" in STUDIO
+
+
+def test_project_recommendation_route_and_payload_are_consumer_validated() -> None:
+    assert "args.length !== 3" in STUDIO
+    assert '/^[1-9]\\d{0,9}$/' in STUDIO
+    assert '/^[0-4]$/' in STUDIO
+    assert "prefill.report_id !== route.reportId" in STUDIO
+    assert "prefill.recommendation !== route.recommendation" in STUDIO
+    assert "team.default_workflows.includes(prefill.workflow)" in STUDIO
+    assert "prefill.task.length > 720" in STUDIO
+
+
+def test_project_prefill_draft_is_reset_scoped_and_race_guarded() -> None:
+    assert "if (S.projectId !== cat.active_project_id) resetForProject" in STUDIO
+    assert "S.prefillKey === key" in STUDIO
+    assert 'S.task = ""' in STUDIO and 'S.budget = ""' in STUDIO
+    assert "renderGeneration !== _renderGeneration" in STUDIO
+    assert "estimateGeneration !== _estimateGeneration" in STUDIO
+    assert "projectId !== S.projectId" in STUDIO
+    assert "responseIsCurrent && !responseIsCurrent()" in STUDIO
+    assert 'addEventListener("input", (e) => { S.task = e.target.value; })' in STUDIO
+    assert 'addEventListener("input", (e) => { S.budget = e.target.value; })' in STUDIO
