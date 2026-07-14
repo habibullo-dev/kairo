@@ -1352,6 +1352,59 @@ CREATE INDEX IF NOT EXISTS idx_telegram_news_brief_tokens_request
 """
 
 
+# Project intelligence is snapshot-bound and proposal-only.  The analysis queue is durable so a
+# browser retry or process restart cannot duplicate an expensive run, while reports remain an
+# append-only history whose current/stale marker tracks the project's latest published snapshot.
+_SCHEMA_V30 = """
+CREATE TABLE IF NOT EXISTS analysis_jobs (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id            INTEGER NOT NULL REFERENCES projects(id),
+    snapshot_hash         TEXT NOT NULL,
+    profile_version       TEXT NOT NULL,
+    state                 TEXT NOT NULL DEFAULT 'queued'
+                          CHECK (state IN ('queued', 'running', 'published', 'discarded',
+                                           'failed')),
+    orchestration_run_id  INTEGER REFERENCES orchestration_runs(id),
+    attempts              INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    last_error            TEXT,
+    graph_watermark       INTEGER NOT NULL DEFAULT 0 CHECK (graph_watermark >= 0),
+    coverage_json         TEXT NOT NULL DEFAULT '{}',
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    UNIQUE(project_id, snapshot_hash, profile_version)
+);
+CREATE INDEX IF NOT EXISTS idx_analysis_jobs_queue
+    ON analysis_jobs(state, id);
+CREATE INDEX IF NOT EXISTS idx_analysis_jobs_project
+    ON analysis_jobs(project_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS project_reports (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id               INTEGER NOT NULL REFERENCES projects(id),
+    snapshot_hash            TEXT NOT NULL,
+    profile_version          TEXT NOT NULL,
+    orchestration_run_id     INTEGER REFERENCES orchestration_runs(id),
+    status                   TEXT NOT NULL DEFAULT 'current'
+                             CHECK (status IN ('current', 'stale')),
+    trust_class              TEXT NOT NULL DEFAULT 'model_generated'
+                             CHECK (trust_class = 'model_generated'),
+    summary                  TEXT NOT NULL,
+    coverage_json            TEXT NOT NULL DEFAULT '{}',
+    strengths_json           TEXT NOT NULL DEFAULT '[]',
+    weaknesses_json          TEXT NOT NULL DEFAULT '[]',
+    security_candidates_json TEXT NOT NULL DEFAULT '[]',
+    fe_be_gaps_json          TEXT NOT NULL DEFAULT '[]',
+    test_gaps_json           TEXT NOT NULL DEFAULT '[]',
+    recommendations_json     TEXT NOT NULL DEFAULT '[]',
+    evidence_json            TEXT NOT NULL DEFAULT '[]',
+    created_at               TEXT NOT NULL,
+    UNIQUE(project_id, snapshot_hash, profile_version)
+);
+CREATE INDEX IF NOT EXISTS idx_project_reports_current
+    ON project_reports(project_id, status, id DESC);
+"""
+
+
 # A migration is either a SQL script (run via executescript) or an async callable that
 # needs imperative control (v5's FK toggling + verification).
 MigrationStep = str | Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -1387,6 +1440,7 @@ MIGRATIONS: list[tuple[int, MigrationStep]] = [
     (27, _SCHEMA_V27),
     (28, _migrate_v28),
     (29, _SCHEMA_V29),
+    (30, _SCHEMA_V30),
 ]
 
 
