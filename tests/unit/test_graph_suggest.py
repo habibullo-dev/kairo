@@ -127,7 +127,8 @@ async def test_gather_material_is_bounded_and_model_generated(tmp_path: Path) ->
                                    estimated_cost_usd=0.1, budget_usd=1.0)
         await db.execute("UPDATE orchestration_runs SET synthesis_summary=? WHERE id=?",
                          (f"summary {i}", rid))
-    await db.commit()
+        # Close this direct fixture write before begin_run opens its next explicit transaction.
+        await db.commit()
     store = GraphStore(db, lock)
     mats = await gather_material(store, 1, limit=2)
     assert len(mats) == 2  # bounded by limit
