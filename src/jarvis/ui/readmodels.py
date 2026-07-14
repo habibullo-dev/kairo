@@ -2262,6 +2262,61 @@ def _digest_dict(record) -> dict:
     }
 
 
+async def _project_assessment_daily(
+    config: Config,
+    services: UiServices,
+    project_id: int | None,
+) -> dict | None:
+    """Compact exact-project assessment state; never a full report or provider error."""
+    if project_id is None:
+        return None
+    if not (
+        config.project_intelligence.enabled
+        and config.project_intelligence.analyze_after_import
+    ):
+        return {"state": "disabled", "report": None}
+    jobs = services.analysis_jobs
+    reports = services.project_reports
+    if jobs is None or reports is None:
+        return {"state": "unavailable", "report": None}
+    job = await jobs.latest(project_id)
+    job_state = str(job.state) if job is not None else None
+    if job_state in {"queued", "running"}:
+        return {"state": job_state, "report": None}
+    if job_state == "failed":
+        return {"state": "failed", "report": None}
+
+    report = await reports.latest(project_id, current_only=False)
+    if report is None:
+        return {"state": "failed" if job_state == "published" else "idle", "report": None}
+    if services.knowledge is None or services.graph is None:
+        return {"state": "unavailable", "report": None}
+    try:
+        from jarvis.projects import seal_snapshot
+
+        snapshot = await seal_snapshot(services.knowledge.store, services.graph, project_id)
+    except Exception:
+        return {"state": "unavailable", "report": None}
+    if (
+        report.status != "current"
+        or report.snapshot_hash != snapshot.snapshot_hash
+        or (job is not None and job.snapshot_hash != snapshot.snapshot_hash)
+    ):
+        return {"state": "idle", "report": None}
+    view = serialize_project_report(report, effective_status="current")
+    return {
+        "state": "ready",
+        "report": {
+            "id": view["id"],
+            "summary_preview": _report_text(view["summary"], limit=240),
+            "created_at": view["created_at"],
+            "trust_class": view["trust_class"],
+            "counts": view["counts"],
+            "coverage": view["coverage"],
+        },
+    }
+
+
 async def daily_overview(
     config: Config,
     services: UiServices,
@@ -2270,6 +2325,7 @@ async def daily_overview(
     notice_project_id: int | None = None,
     scope_notices: bool = False,
     gate_pending: int = 0,
+    assessment_project_id: int | None = None,
 ) -> dict:
     """The Daily screen's bootstrap: repo state, eval freshness, today's tasks, the review
     queue count, the latest digest, notices, and connector status — all read-only views."""
@@ -2327,6 +2383,9 @@ async def daily_overview(
         "active_project": active_project,
         "recent_artifacts": recent_artifacts,
         "latest_run": latest_run,
+        "project_assessment": await _project_assessment_daily(
+            config, services, assessment_project_id
+        ),
     }
 
 

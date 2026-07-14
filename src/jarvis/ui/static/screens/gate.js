@@ -4,6 +4,7 @@
 // EXISTING gated route (the center adds no authority). Below it: recent writes (undo) + the
 // audit trail + a read-only policy snapshot (Debug). No raw-HTML sink — user/model text is set
 // via textContent only.
+import { openProjectReport } from "../ui/project-report.js";
 
 export async function render(container, api) {
   container.innerHTML = `
@@ -120,10 +121,21 @@ export async function render(container, api) {
     }
     // attention rows (proposals / alerts / reviews): metadata-only resolve. A proposal's real
     // acceptance is the human acting on its source elsewhere — never a hidden action here.
-    return [
+    const actions = [];
+    if (
+      it.category === "project_intelligence"
+      && Number.isInteger(it.detail?.report_id)
+      && it.detail.report_id > 0
+    ) {
+      actions.push(actionBtn("View report", "btn", () => {
+        void openProjectReport(api, it.detail.report_id);
+      }));
+    }
+    actions.push(
       actionBtn("Clear from list", "btn", () => act(`/api/attention/${it.ref}/resolve`, { action: "done" })),
       actionBtn("Dismiss", "btn", () => act(`/api/attention/${it.ref}/resolve`, { action: "dismiss" })),
-    ];
+    );
+    return actions;
   }
 
   async function act(path, body) {

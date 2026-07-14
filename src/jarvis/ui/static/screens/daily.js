@@ -2,6 +2,7 @@
 // person toward the day, their current project, and the one thing needing attention.
 import { showToast } from "../ui/feedback.js";
 import { money, relTime } from "../ui/format.js";
+import { openProjectReport } from "../ui/project-report.js";
 
 let briefingRefreshInFlight = false;
 
@@ -185,7 +186,61 @@ function renderProject(container, api) {
     a.textContent = label;
     links.appendChild(a);
   }
-  host.append(name, links);
+  const assessment = document.createElement("div");
+  assessment.id = "daily-project-assessment";
+  assessment.className = "daily-project-assessment";
+  host.append(name, links, assessment);
+}
+
+function renderProjectAssessment(container, assessment) {
+  const host = container.querySelector("#daily-project-assessment");
+  if (!host) return;
+  clear(host);
+  if (!assessment) return;
+  const state = assessment.state;
+  const copy = {
+    disabled: "Automatic project assessment is off.",
+    unavailable: "Automatic project assessment is unavailable.",
+    queued: "Kairo queued a read-only assessment of this project.",
+    running: "Kairo is updating this project's read-only assessment.",
+    failed: "The latest project assessment could not complete.",
+    idle: "No current assessment. Import or finalize the project to refresh it.",
+  };
+  if (state !== "ready" || !assessment.report) {
+    host.appendChild(elStatus(copy[state] || "Project assessment status is unavailable.", state));
+    return;
+  }
+  const report = assessment.report;
+  const block = document.createElement("div");
+  block.className = "daily-assessment-ready";
+  const label = document.createElement("div");
+  label.className = "card-label";
+  label.textContent = "Project assessment";
+  const summary = document.createElement("p");
+  summary.textContent = report.summary_preview || "The current read-only assessment is ready.";
+  const counts = report.counts || {};
+  const meta = document.createElement("div");
+  meta.className = "dim";
+  meta.textContent = [
+    `${Number(counts.weaknesses) || 0} weaknesses`,
+    `${Number(counts.security_candidates) || 0} unvalidated security candidates`,
+    `${Number(counts.frontend_backend_gaps) || 0} frontend/backend gaps`,
+    `${Number(counts.test_reliability_gaps) || 0} test gaps`,
+  ].join(" · ");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "chip-btn";
+  button.textContent = "View report";
+  button.addEventListener("click", () => { void openProjectReport(api, report.id); });
+  block.append(label, summary, meta, button);
+  host.appendChild(block);
+}
+
+function elStatus(message, state) {
+  const line = document.createElement("div");
+  line.className = `daily-assessment-state ${state || "unavailable"}`;
+  line.textContent = message;
+  return line;
 }
 
 function renderNotice(container, api) {
@@ -224,6 +279,11 @@ async function fillBriefing(container, api) {
   const host = container.querySelector("#daily-briefing-body");
   if (!host) return;
   const data = await api.get("/api/daily");
+  const projectScoped = api.state.context?.project_id != null;
+  renderProjectAssessment(
+    container,
+    data ? data.project_assessment : (projectScoped ? { state: "unavailable" } : null),
+  );
   if (!data) {
     clear(host);
     host.appendChild(emptyState("Briefing unavailable", "Open Chat while Kairo refreshes this overview.", [["Continue chat", "#chat"]]));

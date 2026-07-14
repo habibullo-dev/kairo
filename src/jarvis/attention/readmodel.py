@@ -19,6 +19,16 @@ from typing import Any
 
 #: Sort order: urgent first, then normal, then low; newest within a band.
 _PRIORITY_ORDER = {"urgent": 0, "normal": 1, "low": 2}
+_PROJECT_INTELLIGENCE_COUNTS = frozenset(
+    {
+        "strengths",
+        "weaknesses",
+        "security_candidates",
+        "frontend_backend_gaps",
+        "test_reliability_gaps",
+        "recommendations",
+    }
+)
 
 
 def _item(
@@ -47,6 +57,30 @@ def _item(
         "category": category,
         "detail": detail,
     }
+
+
+def _project_intelligence_detail(item: Any, *, project_id: int | None) -> dict | None:
+    """Allow one report pointer only inside its exact concrete project queue."""
+    if (
+        project_id is None
+        or item.project_id != project_id
+        or item.source != "project_intelligence"
+        or item.category != "project_intelligence"
+        or not isinstance(item.payload, dict)
+    ):
+        return None
+    report_id = item.payload.get("report_id")
+    counts = item.payload.get("counts")
+    if (
+        type(report_id) is not int
+        or report_id <= 0
+        or item.source_ref != str(report_id)
+        or not isinstance(counts, dict)
+        or set(counts) != _PROJECT_INTELLIGENCE_COUNTS
+        or any(type(value) is not int or value < 0 for value in counts.values())
+    ):
+        return None
+    return {"report_id": report_id, "counts": dict(counts)}
 
 
 async def attention_queue(
@@ -139,6 +173,7 @@ async def attention_queue(
                 created_at=a.created_at,
                 trust_class=a.trust_class,
                 category=a.category,
+                detail=_project_intelligence_detail(a, project_id=project_id),
             )
         )
 

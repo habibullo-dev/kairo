@@ -893,6 +893,7 @@ def create_app(
             notice_project_id=workspace.context.project_id if workspace is not None else None,
             scope_notices=workspace is not None,
             gate_pending=pending,
+            assessment_project_id=_exact_project_id(workspace),
         )
         data["capabilities"] = _capabilities(workspace)  # Phase 15.5 shared connector truth
         return JSONResponse(data)

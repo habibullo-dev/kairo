@@ -121,6 +121,45 @@ async def test_project_scoping(tmp_path: Path) -> None:
     assert q1["total"] == 1 and q1["items"][0]["project_id"] == 1
 
 
+async def test_project_intelligence_pointer_is_exact_project_and_count_only(
+    tmp_path: Path,
+) -> None:
+    s = await _store(tmp_path)
+    counts = {
+        "strengths": 2,
+        "weaknesses": 1,
+        "security_candidates": 1,
+        "frontend_backend_gaps": 3,
+        "test_reliability_gaps": 2,
+        "recommendations": 4,
+    }
+    await s.create(
+        kind=AttentionKind.REVIEW,
+        source="project_intelligence",
+        source_ref="17",
+        title="Kairo completed a read-only project assessment",
+        category="project_intelligence",
+        project_id=1,
+        payload={"report_id": 17, "counts": counts, "model_body": "must not ship"},
+    )
+    scoped = await attention_queue(attention=s, project_id=1)
+    assert scoped["items"][0]["detail"] == {"report_id": 17, "counts": counts}
+    global_view = await attention_queue(attention=s)
+    assert global_view["items"][0]["detail"] is None
+
+    await s.create(
+        kind=AttentionKind.REVIEW,
+        source="project_intelligence",
+        source_ref="18",
+        title="Malformed assessment pointer",
+        category="project_intelligence",
+        project_id=2,
+        payload={"report_id": 18, "counts": {**counts, "strengths": True}},
+    )
+    malformed = await attention_queue(attention=s, project_id=2)
+    assert malformed["items"][0]["detail"] is None
+
+
 async def test_gate_items_use_exact_execution_context(tmp_path: Path) -> None:
     s = await _store(tmp_path)
     context_a = ExecutionContext(session_id=11, project_id=1)

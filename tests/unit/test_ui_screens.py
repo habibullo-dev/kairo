@@ -126,6 +126,18 @@ def test_debug_css_only_toggles_visibility() -> None:
     assert "body.debug .debug-only { display: revert; }" in css
 
 
+def test_project_assessment_surfaces_are_read_only_and_escape_model_text() -> None:
+    report = (STATIC / "ui" / "project-report.js").read_text(encoding="utf-8")
+    gate = (STATIC / "screens" / "gate.js").read_text(encoding="utf-8")
+    daily = (STATIC / "screens" / "daily.js").read_text(encoding="utf-8")
+    assert "innerHTML" not in report
+    assert "textContent" in report
+    assert "not independently validated" in report
+    assert "/api/orchestration/run" not in report
+    assert "openProjectReport" in gate and 'actionBtn("View report"' in gate
+    assert "data.project_assessment" in daily and "openProjectReport" in daily
+
+
 def test_all_nav_screens_have_a_module() -> None:
     # Every routable screen has a module (no dead links / silent stubs). The primary rail is
     # daily/projects/studio/costs/settings; the utility area is gate/trace/hub/lab/meetings;
