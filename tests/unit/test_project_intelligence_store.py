@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from jarvis.intelligence import (
     AnalysisJobStore,
     ProjectReportStore,
 )
+from jarvis.orchestration import OrchestrationStore
 from jarvis.persistence.db import connect
 from jarvis.persistence.migrations import latest_version
 from jarvis.projects import ProjectStore
@@ -182,3 +184,56 @@ async def test_corrupt_report_json_types_fail_closed(tmp_path: Path) -> None:
     assert loaded.coverage == {}
     assert loaded.strengths == []
     assert loaded.weaknesses == []
+
+
+async def test_run_creation_and_analysis_job_attachment_are_atomic(tmp_path: Path) -> None:
+    db, jobs, _reports, project_id = await _stores(tmp_path)
+    orchestrations = OrchestrationStore(db, jobs.lock)
+    queued, _ = await jobs.enqueue(
+        project_id=project_id, snapshot_hash="atomic", profile_version="v1"
+    )
+    claimed = await jobs.claim(queued.id)
+    assert claimed is not None
+
+    async def attach(run_id: int) -> None:
+        if not await jobs.attach_run_in_transaction(claimed, run_id):
+            raise RuntimeError("lost analysis-job claim")
+
+    run_id = await orchestrations.begin_run(
+        project_id=project_id,
+        workflow="project_assessment",
+        title="atomic assessment",
+        config={"team": "project_intelligence"},
+        context_manifest=[],
+        estimated_cost_usd=1.0,
+        budget_usd=5.0,
+        on_created_in_transaction=attach,
+    )
+    attached = await jobs.get(claimed.id)
+    assert attached is not None and attached.orchestration_run_id == run_id
+    assert await orchestrations.get(run_id) is not None
+
+    second, _ = await jobs.enqueue(
+        project_id=project_id, snapshot_hash="rollback", profile_version="v1"
+    )
+    second_claim = await jobs.claim(second.id)
+    assert second_claim is not None
+    stale_claim = replace(second_claim, attempts=second_claim.attempts + 1)
+
+    async def refuse(run_id: int) -> None:
+        if not await jobs.attach_run_in_transaction(stale_claim, run_id):
+            raise RuntimeError("lost analysis-job claim")
+
+    with pytest.raises(RuntimeError, match="lost analysis-job claim"):
+        await orchestrations.begin_run(
+            project_id=project_id,
+            workflow="project_assessment",
+            title="must roll back",
+            config={"team": "project_intelligence"},
+            context_manifest=[],
+            estimated_cost_usd=1.0,
+            budget_usd=5.0,
+            on_created_in_transaction=refuse,
+        )
+    assert (await jobs.get(second.id)).orchestration_run_id is None  # type: ignore[union-attr]
+    assert len(await orchestrations.list(project_id=project_id)) == 1

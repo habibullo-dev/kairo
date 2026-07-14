@@ -64,6 +64,9 @@ class FakeEngine:
 
     async def run(self, **kw) -> int:
         self.calls.append(kw)
+        on_created = kw.get("on_created_in_transaction")
+        if on_created is not None:
+            await on_created(self._run_id)
         sink = kw.get("on_event")
         if sink is not None:
             await sink(
@@ -184,11 +187,17 @@ async def test_started_event_is_broadcast() -> None:
 async def test_automatic_assessment_waits_for_manual_run_and_uses_fixed_team() -> None:
     ctrl, engine, _conn = _controller(1, estimate=_estimate("ok"))
     await ctrl.start(team_id="backend", workflow_id="implement", task="manual")
+    attached: list[int] = []
+
+    async def on_created(run_id: int) -> None:
+        attached.append(run_id)
+
     automatic = asyncio.create_task(
         ctrl.run_automatic_project_assessment(
             project_id=1,
             context=ctrl._build_context("sealed graph-first assessment"),
             budget_usd=5.0,
+            on_created_in_transaction=on_created,
         )
     )
     await asyncio.sleep(0.01)
@@ -201,6 +210,7 @@ async def test_automatic_assessment_waits_for_manual_run_and_uses_fixed_team() -
     assert engine.calls[1]["team"].id == "project_intelligence"
     assert engine.calls[1]["workflow"].id == "project_assessment"
     assert engine.calls[1]["budget_usd"] == 5.0
+    assert attached == [engine._run_id]
 
 
 async def test_manual_start_is_busy_while_automatic_assessment_runs() -> None:

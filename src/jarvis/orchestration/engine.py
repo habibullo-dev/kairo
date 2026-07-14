@@ -1125,6 +1125,7 @@ class OrchestrationEngine:
         confirmed: bool = False,
         execution_context: ExecutionContext | None = None,
         on_event: Callable[[dict], Awaitable[None]] | None = None,
+        on_created_in_transaction: Callable[[int], Awaitable[None]] | None = None,
     ) -> int:
         """Execute the workflow and return the run id. Off any turn lock except the brief
         execution window. Reads run records for control; report text is untrusted data only.
@@ -1163,6 +1164,7 @@ class OrchestrationEngine:
             budget_usd=budget_usd,
             session_id=execution_context.session_id if execution_context is not None else None,
             skills_manifest=skills_manifest,
+            on_created_in_transaction=on_created_in_transaction,
         )
         ledger_failure_generation = self._ledger_failure_generation()
         await self._emit(

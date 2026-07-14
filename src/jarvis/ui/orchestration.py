@@ -313,6 +313,7 @@ class OrchestrationController:
         context: ContextBundle,
         budget_usd: float,
         on_event: Callable[[dict], Awaitable[None]] | None = None,
+        on_created_in_transaction: Callable[[int], Awaitable[None]] | None = None,
     ) -> int:
         """Wait for the shared engine, then run the fixed read-only assessment roster.
 
@@ -344,6 +345,7 @@ class OrchestrationController:
                 budget_usd=budget_usd,
                 confirmed=True,
                 on_event=sink,
+                on_created_in_transaction=on_created_in_transaction,
             )
         finally:
             self._release()

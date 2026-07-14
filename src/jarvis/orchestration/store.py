@@ -12,9 +12,12 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import aiosqlite
+
+from jarvis.persistence.db import transaction
 
 _COLUMNS = (
     "id, project_id, workflow, title, config_json, context_manifest_json, status, stage, "
@@ -142,11 +145,12 @@ class OrchestrationStore:
         session_id: int | None = None,
         trace_id: str | None = None,
         skills_manifest: list[dict] | None = None,
+        on_created_in_transaction: Callable[[int], Awaitable[None]] | None = None,
     ) -> int:
         """Open a ``running`` run row (title is already sanitized by the caller — never raw
         user/email text). config/manifest are metadata + hashes only, no bodies."""
         now = _now()
-        async with self.lock:
+        async with transaction(self.db, self.lock):
             cursor = await self.db.execute(
                 "INSERT INTO orchestration_runs "
                 "(project_id, workflow, title, config_json, context_manifest_json, status, "
@@ -168,9 +172,11 @@ class OrchestrationStore:
                     json.dumps(skills_manifest or []),
                 ),
             )
-            await self.db.commit()
-        assert cursor.lastrowid is not None
-        return cursor.lastrowid
+            assert cursor.lastrowid is not None
+            run_id = cursor.lastrowid
+            if on_created_in_transaction is not None:
+                await on_created_in_transaction(run_id)
+        return run_id
 
     async def set_stage(self, run_id: int, stage: str) -> None:
         async with self.lock:

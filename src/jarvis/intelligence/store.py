@@ -220,6 +220,33 @@ class AnalysisJobStore:
             await self.db.commit()
         return cur.rowcount > 0
 
+    async def attach_run_in_transaction(self, expected: AnalysisJob, run_id: int) -> bool:
+        """CAS-bind a newly inserted orchestration run without acquiring or committing.
+
+        The caller owns ``transaction(self.db, self.lock)``.  Matching the claimed attempt keeps
+        an old worker from attaching work to a later retry of the same durable job.
+        """
+        if (
+            expected.state is not AnalysisJobState.RUNNING
+            or expected.orchestration_run_id is not None
+        ):
+            return False
+        cur = await self.db.execute(
+            "UPDATE analysis_jobs SET orchestration_run_id=?, updated_at=? "
+            "WHERE id=? AND project_id=? AND snapshot_hash=? AND profile_version=? "
+            "AND state='running' AND attempts=? AND orchestration_run_id IS NULL",
+            (
+                run_id,
+                _now(),
+                expected.id,
+                expected.project_id,
+                expected.snapshot_hash,
+                expected.profile_version,
+                expected.attempts,
+            ),
+        )
+        return cur.rowcount == 1
+
     async def requeue(self, job_id: int, *, error: str | None = None) -> bool:
         async with self.lock:
             cur = await self.db.execute(

@@ -453,15 +453,22 @@ async def test_project_assessment_runs_five_scoped_readers_and_fable_head(
         head_model="claude-fable-5",
         turn_lock=asyncio.Lock(),
     )
+    created: list[int] = []
+
+    async def on_created(run_id: int) -> None:
+        created.append(run_id)
+
     run_id = await engine.run(
         project_id=1,
         team=resolve_team("project_intelligence"),
         workflow=WORKFLOWS["project_assessment"],
         context=_CTX,
         title="automatic project assessment",
+        on_created_in_transaction=on_created,
     )
     run = await store.get(run_id)
     assert run is not None and run.status == "ok"
+    assert created == [run_id]
     assert len(calls) == 5
     assert {call["stage"] for call in calls} == {"council"}
     assert all(
