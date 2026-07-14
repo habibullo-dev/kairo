@@ -68,7 +68,7 @@ def _plain(value: object, *, limit: int) -> str:
 def _evidence(
     value: object,
     *,
-    source_ids: set[int],
+    source_paths: dict[int, str],
     logical_paths: set[str],
 ) -> dict[str, str] | None:
     reference = _plain(value, limit=240)
@@ -77,8 +77,15 @@ def _evidence(
     source_match = _SOURCE_REF.fullmatch(reference)
     if source_match is not None:
         source_id = int(source_match.group(1))
-        if source_id in source_ids:
-            return {"kind": "source", "ref": str(source_id), "trust": "model_cited"}
+        # Source row ids are deliberately excluded from the snapshot identity. Normalize an
+        # accepted id citation to its stable logical path before persistence, so byte-identical
+        # reingestion cannot leave a reactivated report pointing at an obsolete row id.
+        if source_id in source_paths:
+            return {
+                "kind": "path",
+                "ref": source_paths[source_id],
+                "trust": "model_cited",
+            }
         return None
     normalized = reference.replace("\\", "/")
     path = PurePosixPath(normalized)
@@ -110,7 +117,7 @@ def build_report_draft(
     if not summary:
         raise ValueError("accepted project assessment has no summary")
 
-    source_ids = {source.source_id for source in snapshot.sources}
+    source_paths = {source.source_id: source.logical_path for source in snapshot.sources}
     logical_paths = {source.logical_path for source in snapshot.sources}
     buckets: dict[str, list[dict]] = {name: [] for name in _CATEGORIES.values()}
     retained_ids: set[str] = set()
@@ -129,7 +136,7 @@ def build_report_draft(
         detail = _plain(raw.get("finding"), limit=700)
         member = _plain(raw.get("member"), limit=80)
         pointer = _evidence(
-            raw.get("evidence_ref"), source_ids=source_ids, logical_paths=logical_paths
+            raw.get("evidence_ref"), source_paths=source_paths, logical_paths=logical_paths
         )
         key = (category, title.casefold())
         if (

@@ -294,6 +294,16 @@ class AttentionStore:
         assert cursor.lastrowid is not None
         return cursor.lastrowid
 
+    async def create_if_new_in_transaction(self, **kwargs: object) -> tuple[int, bool]:
+        """Transaction-owned idempotent insert with a notification-safe created flag."""
+        dedupe_key = kwargs.get("dedupe_key")
+        if isinstance(dedupe_key, str):
+            existing = await self._get_by_key_locked(dedupe_key)
+            if existing is not None:
+                return existing.id, False
+        item_id = await self.create_in_transaction(**kwargs)  # type: ignore[arg-type]
+        return item_id, True
+
     async def get(self, item_id: int) -> AttentionItem | None:
         cur = await self.db.execute(
             f"SELECT {_COLUMNS} FROM attention_items WHERE id = ?", (item_id,)

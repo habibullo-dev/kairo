@@ -98,9 +98,9 @@ def test_report_projection_buckets_and_validates_snapshot_evidence() -> None:
     assert draft.security_candidates[0]["validation"] == "candidate"
     assert draft.recommendations[0]["source_finding_id"] == security_id
     assert draft.evidence == [
-        {"kind": "path", "ref": "repo/api/routes.py", "trust": "model_cited"},
-        {"kind": "source", "ref": "17", "trust": "model_cited"},
+        {"kind": "path", "ref": "repo/api/routes.py", "trust": "model_cited"}
     ]
+    assert draft.security_candidates[0]["evidence"][0]["ref"] == "repo/api/routes.py"
 
 
 def test_report_projection_rejects_control_text_and_unaccepted_run() -> None:

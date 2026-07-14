@@ -1,5 +1,6 @@
 """Durable, snapshot-validated project-intelligence state and report projection."""
 
+from jarvis.intelligence.publisher import PublishOutcome, publish_assessment
 from jarvis.intelligence.report import ProjectReportDraft, build_report_draft
 from jarvis.intelligence.store import (
     AnalysisJob,
@@ -16,5 +17,7 @@ __all__ = [
     "ProjectReport",
     "ProjectReportDraft",
     "ProjectReportStore",
+    "PublishOutcome",
     "build_report_draft",
+    "publish_assessment",
 ]

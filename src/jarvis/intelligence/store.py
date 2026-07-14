@@ -13,9 +13,12 @@ import datetime as _dt
 import json
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiosqlite
+
+if TYPE_CHECKING:
+    from jarvis.intelligence.report import ProjectReportDraft
 
 
 class AnalysisJobState(StrEnum):
@@ -282,6 +285,40 @@ class AnalysisJobStore:
             await self.db.commit()
         return cur.rowcount > 0
 
+    async def transition_in_transaction(
+        self,
+        expected: AnalysisJob,
+        state: AnalysisJobState,
+        *,
+        error: str | None = None,
+        coverage: dict | None = None,
+    ) -> bool:
+        """Full-claim CAS terminal transition; caller owns the shared transaction."""
+        if expected.state is not AnalysisJobState.RUNNING or state not in _TERMINAL:
+            return False
+        sets = ["state=?", "last_error=?", "updated_at=?"]
+        params: list[object] = [state.value, (error or "")[:500] or None, _now()]
+        if coverage is not None:
+            sets.append("coverage_json=?")
+            params.append(_dump(coverage))
+        params.extend(
+            (
+                expected.id,
+                expected.project_id,
+                expected.snapshot_hash,
+                expected.profile_version,
+                expected.attempts,
+                expected.orchestration_run_id,
+            )
+        )
+        cur = await self.db.execute(
+            f"UPDATE analysis_jobs SET {', '.join(sets)} WHERE id=? AND project_id=? "
+            "AND snapshot_hash=? AND profile_version=? AND state='running' AND attempts=? "
+            "AND orchestration_run_id IS ?",
+            tuple(params),
+        )
+        return cur.rowcount == 1
+
 
 @dataclass(frozen=True)
 class ProjectReport:
@@ -406,6 +443,73 @@ class ProjectReportStore:
             ).fetchone()
         assert row is not None
         return _report(row), cur.rowcount > 0
+
+    async def create_draft_in_transaction(
+        self,
+        *,
+        job: AnalysisJob,
+        orchestration_run_id: int,
+        draft: ProjectReportDraft,
+    ) -> tuple[ProjectReport, bool]:
+        """Insert/recover a validated draft without locking or committing."""
+        summary = str(draft.summary).strip()[:4_000]
+        if not summary:
+            raise ValueError("summary is required")
+        now = _now()
+        cur = await self.db.execute(
+            "INSERT OR IGNORE INTO project_reports "
+            "(project_id, snapshot_hash, profile_version, orchestration_run_id, summary, "
+            "coverage_json, strengths_json, weaknesses_json, security_candidates_json, "
+            "fe_be_gaps_json, test_gaps_json, recommendations_json, evidence_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                job.project_id,
+                job.snapshot_hash,
+                job.profile_version,
+                orchestration_run_id,
+                summary,
+                _dump(draft.coverage),
+                _dump(draft.strengths),
+                _dump(draft.weaknesses),
+                _dump(draft.security_candidates),
+                _dump(draft.fe_be_gaps),
+                _dump(draft.test_gaps),
+                _dump(draft.recommendations),
+                _dump(draft.evidence),
+                now,
+            ),
+        )
+        if cur.rowcount > 0:
+            await self.db.execute(
+                "UPDATE project_reports SET status='stale' "
+                "WHERE project_id=? AND status='current' AND "
+                "NOT (snapshot_hash=? AND profile_version=?)",
+                (job.project_id, job.snapshot_hash, job.profile_version),
+            )
+        row = await (
+            await self.db.execute(
+                f"SELECT {_REPORT_COLUMNS} FROM project_reports "
+                "WHERE project_id=? AND snapshot_hash=? AND profile_version=?",
+                (job.project_id, job.snapshot_hash, job.profile_version),
+            )
+        ).fetchone()
+        assert row is not None
+        return _report(row), cur.rowcount > 0
+
+    async def activate_in_transaction(self, report: ProjectReport) -> ProjectReport:
+        """Make a proven-current report current again after a project content reversion."""
+        await self.db.execute(
+            "UPDATE project_reports SET status=CASE WHEN id=? THEN 'current' ELSE 'stale' END "
+            "WHERE project_id=? AND (status='current' OR id=?)",
+            (report.id, report.project_id, report.id),
+        )
+        row = await (
+            await self.db.execute(
+                f"SELECT {_REPORT_COLUMNS} FROM project_reports WHERE id=?", (report.id,)
+            )
+        ).fetchone()
+        assert row is not None
+        return _report(row)
 
     async def get(self, report_id: int) -> ProjectReport | None:
         row = await (
