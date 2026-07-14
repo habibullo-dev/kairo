@@ -361,6 +361,47 @@ async def test_readonly_workflow_council_then_head_verdict(tmp_path: Path) -> No
     assert len(head.calls) == 2  # synthesis + verdict, both on the head route
 
 
+async def test_project_assessment_runs_five_scoped_readers_and_fable_head(
+    tmp_path: Path,
+) -> None:
+    store = await _store(tmp_path)
+    calls: list[dict] = []
+
+    async def fake_spawn(**kw) -> ToolResult:
+        calls.append(kw)
+        return ToolResult(content=f"report:{kw['role']}", is_error=False)
+
+    head = FakeClient([_synth("project mapped"), _verdict("accept")])
+    engine = OrchestrationEngine(
+        spawn=fake_spawn,
+        store=store,
+        head_client=head,
+        head_model="claude-fable-5",
+        turn_lock=asyncio.Lock(),
+    )
+    run_id = await engine.run(
+        project_id=1,
+        team=resolve_team("project_intelligence"),
+        workflow=WORKFLOWS["project_assessment"],
+        context=_CTX,
+        title="automatic project assessment",
+    )
+    run = await store.get(run_id)
+    assert run is not None and run.status == "ok"
+    assert len(calls) == 5
+    assert {call["stage"] for call in calls} == {"council"}
+    assert all(
+        set(call["tools"]) == {"query_project_graph", "query_knowledge_base"}
+        for call in calls
+    )
+    assert {call["role"] for call in calls} == {"reviewer", "ux", "security", "qa", "docs"}
+    assert all(call["orchestration_run_id"] == run_id for call in calls)
+    assert [call["tool_choice"]["name"] for call in head.calls] == [
+        "record_synthesis",
+        "record_verdict",
+    ]
+
+
 async def test_fable_head_calls_are_attributed_and_written_back_as_actual_run_cost(
     tmp_path: Path,
 ) -> None:

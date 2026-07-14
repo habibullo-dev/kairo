@@ -378,7 +378,10 @@ async def test_run_store_records_source_interactive_session(tmp_path: Path) -> N
 
 def test_catalog_read_models_are_complete() -> None:
     teams = teams_catalog()
-    assert len(teams) == 8 and all("members" in t and "id" in t for t in teams)
+    assert len(teams) == 9 and all("members" in t and "id" in t for t in teams)
+    intelligence = next(team for team in teams if team["id"] == "project_intelligence")
+    assert intelligence["default_workflows"] == ["project_assessment"]
+    assert len(intelligence["members"]) == 5
     # Every roster member exposes its route/tools/services/capability (Studio roster cards).
     for t in teams:
         for m in t["members"]:
@@ -408,7 +411,7 @@ def test_studio_bootstrap_route(tmp_path: Path) -> None:
     r = client.get("/api/studio", headers=_cookie(auth))
     assert r.status_code == 200
     data = r.json()
-    assert len(data["teams"]) == 8 and len(data["workflows"]) >= 8
+    assert len(data["teams"]) == 9 and len(data["workflows"]) >= 11
     assert isinstance(data["services"], list) and isinstance(data["model_routes"], list)
     # presence-only: a service row names its credential envs but never a value
     assert all("credentials_present" in s for s in data["services"])

@@ -1,4 +1,4 @@
-"""Team profiles — the 8 project-specific AI teams (Phase 10B).
+"""Team profiles — fixed project-specific AI teams (Phase 10B+).
 
 Code constants over the role→route registry. Each team is a roster of :class:`RosterRole`
 members with per-member tools/services/capability, default workflows, and a team budget.
@@ -17,6 +17,7 @@ from jarvis.services.catalog import SERVICE_CATALOG
 
 _READ = frozenset({"read_file", "list_dir", "glob_search", "query_knowledge_base"})
 _WRITE = frozenset({"read_file", "list_dir", "glob_search", "write_file", "run_shell"})
+_PROJECT_INTELLIGENCE_READ = frozenset({"query_project_graph", "query_knowledge_base"})
 
 
 @dataclass(frozen=True)
@@ -52,7 +53,39 @@ def _writer(
     return RosterRole(id, title, route, _WRITE, services, Capability.WRITE_CAPABLE, "diff_proposal")
 
 
+def _project_analyst(id: str, title: str, route: str) -> RosterRole:
+    """A fixed upload-analysis specialist: scoped KB/graph reads and no host filesystem."""
+    return RosterRole(
+        id,
+        title,
+        route,
+        _PROJECT_INTELLIGENCE_READ,
+        frozenset(),
+        Capability.READ_ONLY,
+        "report",
+    )
+
+
 TEAM_PROFILES: dict[str, TeamProfile] = {
+    "project_intelligence": TeamProfile(
+        "project_intelligence",
+        "Project Intelligence",
+        "Graph-first, read-only project health and frontend/backend parity assessment.",
+        "◇",
+        "#14b8a6",
+        (
+            _project_analyst(
+                "architecture_backend", "Architecture & Backend Analyst", "reviewer"
+            ),
+            _project_analyst("frontend_parity", "Frontend / Backend Parity Analyst", "ux"),
+            _project_analyst("security_risk", "Security Risk Analyst", "security"),
+            _project_analyst("qa_reliability", "QA & Reliability Analyst", "qa"),
+            _project_analyst(
+                "product_maintainability", "Product & Maintainability Analyst", "docs"
+            ),
+        ),
+        ("project_assessment",),
+    ),
     "research": TeamProfile(
         "research",
         "Research",

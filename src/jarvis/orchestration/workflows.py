@@ -92,5 +92,6 @@ WORKFLOWS: dict[str, WorkflowTemplate] = {
         _analysis("debug_eval", "Debug an eval failure", 45),
         _analysis("refactor_proposal", "Propose a refactor", 40),
         _analysis("council_review", "Council review (generic)", 30),
+        _analysis("project_assessment", "Project health assessment", 90),
     )
 }

@@ -1326,7 +1326,7 @@ def serialize_team(team: Any) -> dict:
 
 
 def teams_catalog() -> list[dict]:
-    """All 8 team profiles (code constants) for the Studio team picker."""
+    """All fixed team profiles (code constants) for the Studio team picker."""
     from jarvis.orchestration import TEAM_PROFILES
 
     return [serialize_team(t) for t in TEAM_PROFILES.values()]

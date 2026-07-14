@@ -80,6 +80,7 @@ def test_member_tools_must_be_spawnable() -> None:
 
 def test_all_builtin_teams_valid() -> None:
     assert set(TEAM_PROFILES) == {
+        "project_intelligence",
         "research",
         "frontend",
         "backend",
@@ -91,6 +92,21 @@ def test_all_builtin_teams_valid() -> None:
     }
     for team in TEAM_PROFILES.values():
         validate_team(team)  # raises on any violation
+
+
+def test_project_intelligence_roster_is_fixed_and_project_scoped() -> None:
+    team = resolve_team("project_intelligence")
+    assert [(member.id, member.route_role) for member in team.members] == [
+        ("architecture_backend", "reviewer"),
+        ("frontend_parity", "ux"),
+        ("security_risk", "security"),
+        ("qa_reliability", "qa"),
+        ("product_maintainability", "docs"),
+    ]
+    for member in team.members:
+        assert member.capability is Capability.READ_ONLY
+        assert member.tools == {"query_project_graph", "query_knowledge_base"}
+        assert member.services == frozenset()
 
 
 def test_at_most_one_writer_per_team() -> None:
@@ -213,7 +229,7 @@ def test_second_writer_rejected() -> None:
 
 
 def test_all_workflows_valid_and_execution_is_bounded() -> None:
-    assert len(WORKFLOWS) == 10
+    assert len(WORKFLOWS) == 11
     for wf in WORKFLOWS.values():
         validate_workflow(wf)
         assert [s.kind for s in wf.stages].count("execution") <= 1
@@ -222,6 +238,14 @@ def test_all_workflows_valid_and_execution_is_bounded() -> None:
 def test_only_building_workflows_have_execution() -> None:
     ex = {wid for wid, wf in WORKFLOWS.items() if any(s.kind == "execution" for s in wf.stages)}
     assert ex == {"implement", "plan_feature"}
+
+
+def test_project_assessment_is_analysis_only() -> None:
+    assert [stage.kind for stage in WORKFLOWS["project_assessment"].stages] == [
+        "council",
+        "synthesis",
+        "verdict",
+    ]
 
 
 def test_workflow_rejects_two_execution_stages() -> None:
