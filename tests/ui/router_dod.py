@@ -1708,6 +1708,126 @@ async def _assert_daily_refresh_is_authority_owned(browser: object, base: str) -
         await context.close()
 
 
+async def _assert_manual_task_creation_is_single_flight_and_authority_owned(
+    browser: object, base: str
+) -> None:
+    context, page, errors = await _open_page(browser, base)
+    try:
+        await page.set_viewport_size({"width": 390, "height": 844})
+        await page.evaluate(
+            """async () => {
+              window.__SEED__['/api/tasks'] = [];
+              const { api } = await import('/static/app.js');
+              const originalGet = api.get.bind(api);
+              const originalPost = api.post.bind(api);
+              window.__manualTaskReads = 0;
+              window.__manualTaskPosts = [];
+              api.get = (path, options) => {
+                if (path === '/api/tasks') window.__manualTaskReads += 1;
+                return originalGet(path, options);
+              };
+              api.post = (path, body) => {
+                if (path !== '/api/tasks/create') return originalPost(path, body);
+                return new Promise(resolve => window.__manualTaskPosts.push({
+                  body: structuredClone(body), resolve
+                }));
+              };
+              location.hash = 'tasks';
+            }"""
+        )
+        create = page.get_by_role("button", name="New task", exact=True)
+        await create.wait_for()
+        assert await create.is_visible()
+        create_box = await create.bounding_box()
+        assert create_box is not None and create_box["x"] + create_box["width"] <= 390
+        assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+        await create.click()
+        dialog = page.get_by_role("dialog", name="Create and schedule task")
+        await dialog.wait_for()
+        assert "Source run:" not in (await dialog.text_content() or "")
+        await dialog.get_by_label("Task title").fill("Weekly launch report")
+        await dialog.get_by_label("Task instructions", exact=True).fill(
+            "Summarize launch blockers and owners."
+        )
+        await dialog.get_by_label("Task kind").select_option("job")
+        await dialog.get_by_label("Schedule type").select_option("cron")
+        await dialog.get_by_label("Cron expression").fill("0 9 * * 1-5")
+        await dialog.get_by_label("Required phrases in the final job answer").fill(
+            "STATUS: complete\nOWNERS:"
+        )
+        await dialog.locator("form").evaluate(
+            "form => { form.requestSubmit(); form.requestSubmit(); }"
+        )
+        await page.wait_for_function("window.__manualTaskPosts.length === 1")
+        assert await page.evaluate("window.__manualTaskPosts[0].body") == {
+            "kind": "job",
+            "title": "Weekly launch report",
+            "payload": "Summarize launch blockers and owners.",
+            "schedule_kind": "cron",
+            "schedule_spec": "0 9 * * 1-5",
+            "verify_contains": ["STATUS: complete", "OWNERS:"],
+            "expected_context": {
+                "session_id": 5,
+                "project_id": 1,
+                "context_revision": 1,
+            },
+        }
+        submit = dialog.get_by_role("button", name="Scheduling…", exact=True)
+        assert await submit.is_disabled()
+
+        await page.evaluate(
+            """() => window.__manualTaskPosts[0].resolve({
+              ok: false, status: 400,
+              data: { ok: false, message: 'Cron rejected for test' }
+            })"""
+        )
+        await dialog.get_by_role("alert").get_by_text(
+            "Cron rejected for test", exact=True
+        ).wait_for()
+        assert await dialog.get_by_label("Task title").input_value() == "Weekly launch report"
+        assert await dialog.get_by_label("Task instructions", exact=True).input_value() == (
+            "Summarize launch blockers and owners."
+        )
+        retry = dialog.get_by_role("button", name="Schedule task", exact=True)
+        assert not await retry.is_disabled()
+        await dialog.locator("form").evaluate(
+            "form => { form.requestSubmit(); form.requestSubmit(); }"
+        )
+        await page.wait_for_function("window.__manualTaskPosts.length === 2")
+        assert await page.evaluate(
+            "JSON.stringify(window.__manualTaskPosts[1].body) === "
+            "JSON.stringify(window.__manualTaskPosts[0].body)"
+        )
+
+        reads_before_replacement = await page.evaluate("window.__manualTaskReads")
+        await page.evaluate("location.hash = 'settings'")
+        await page.wait_for_function("location.hash === '#settings'")
+        await _handshake(
+            page,
+            workspace_id="manual-task-replacement",
+            session_id=9,
+            project_id=2,
+            context_revision=2,
+        )
+        await page.wait_for_function("!document.querySelector('.task-draft-dialog')")
+        await page.evaluate(
+            """() => window.__manualTaskPosts[1].resolve({
+              ok: true, status: 200, data: { ok: true, task_id: 77 }
+            })"""
+        )
+        await page.wait_for_timeout(150)
+        assert await page.evaluate("location.hash") == "#settings"
+        assert await page.locator(".task-draft-dialog").count() == 0
+        stale_success = page.get_by_text("Task scheduled. It has not run yet.", exact=True)
+        assert await stale_success.count() == 0
+        assert await page.evaluate("window.__manualTaskPosts.length") == 2
+        assert await page.evaluate("window.__manualTaskReads") == reads_before_replacement
+        assert errors == []
+    finally:
+        await context.close()
+
+
 async def _assert_task_history_is_route_and_authority_owned(browser: object, base: str) -> None:
     context, page, errors = await _open_page(browser, base)
     try:
@@ -3635,6 +3755,10 @@ async def main() -> int:
                         ("palette results", _assert_palette_results_cannot_cross_authority),
                         ("palette action", _assert_palette_action_callback_cannot_cross_authority),
                         ("daily authority", _assert_daily_refresh_is_authority_owned),
+                        (
+                            "manual task creation",
+                            _assert_manual_task_creation_is_single_flight_and_authority_owned,
+                        ),
                         ("task history", _assert_task_history_is_route_and_authority_owned),
                         ("studio reads", _assert_studio_state_and_runs_are_authority_owned),
                         (

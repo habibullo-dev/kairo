@@ -16,6 +16,22 @@ function sameContext(left, right) {
   );
 }
 
+function reviewBinding(api, expectedContext) {
+  return {
+    context: expectedContext,
+    authority: typeof api.authorityToken === "function" ? api.authorityToken() : null,
+    navigation: typeof api.navigationToken === "function" ? api.navigationToken() : null,
+  };
+}
+
+function reviewIsCurrent(api, binding) {
+  return sameContext(api.state?.context, binding.context)
+    && (binding.authority === null || typeof api.authorityIsCurrent !== "function"
+      || api.authorityIsCurrent(binding.authority))
+    && (binding.navigation === null || typeof api.navigationIsCurrent !== "function"
+      || api.navigationIsCurrent(binding.navigation));
+}
+
 function close(value, owner = null) {
   const current = activeDialog;
   if (!current || (owner && current !== owner) || current.saving) return false;
@@ -205,15 +221,40 @@ export function openParkedTaskApproval(approval, api, handlers = {}) {
 }
 
 // Opens an editable draft and returns true only after the person submits a valid task to the
-// existing human-authority route.  source must be provenance only; it never selects a schedule.
-export function openTaskDraft(source, api) {
-  dialogRequestRevision += 1;
+// existing human-authority route. `source` is provenance only; it never selects a schedule.
+// `mode` is a caller-owned option instead of a source field so an untrusted model follow-up can
+// never suppress its provenance by claiming to be a manual task.
+export function openTaskDraft(source, api, { mode = "follow_up" } = {}) {
+  if (mode !== "follow_up" && mode !== "manual") {
+    throw new Error("unsupported task draft mode");
+  }
   // The task is reviewed in this exact chat/project context. This is only an optimistic UI
   // freshness guard; the server compares it to the live workspace under its transition lock.
   const expectedContext = api.state.context && {
     session_id: api.state.context.session_id,
     project_id: api.state.context.project_id,
     context_revision: api.state.context.context_revision,
+  };
+  const binding = reviewBinding(api, expectedContext);
+  if (!expectedContext || !reviewIsCurrent(api, binding)
+      || (typeof api.renderIsCurrent === "function" && !api.renderIsCurrent())) {
+    return Promise.resolve(false);
+  }
+  dialogRequestRevision += 1;
+  const manual = mode === "manual";
+  const reviewedSource = source && typeof source === "object" ? source : {};
+  const copy = manual ? {
+    label: "Create and schedule task",
+    heading: "Create a task",
+    message: "Set up a reminder or unattended job, then review it before scheduling. Opening this draft never runs work.",
+    instructions: "Instructions",
+    hint: "Describe what to remember or do. Jobs can start unattended model work when their schedule fires.",
+  } : {
+    label: "Review and schedule task",
+    heading: "Review and schedule task",
+    message: "This was suggested by a team run. Review and edit it before scheduling; opening this draft never runs work.",
+    instructions: "Instructions and source provenance",
+    hint: "The source run is included for audit context. Edit these instructions as needed.",
   };
   return new Promise((resolve) => {
     if (activeDialog) {
@@ -225,18 +266,18 @@ export function openTaskDraft(source, api) {
     const overlay = el("div", { class: "dialog-overlay", role: "presentation" });
     const card = el("section", {
       class: "dialog-card task-draft-dialog", role: "dialog", "aria-modal": "true",
-      "aria-label": "Review and schedule task",
+      "aria-label": copy.label,
     });
     const title = el("input", {
       class: "dialog-input", type: "text", required: true, maxlength: "240",
       "aria-label": "Task title",
     });
-    title.value = String(source.title || "Follow up").trim() || "Follow up";
+    title.value = manual ? "" : (String(reviewedSource.title || "Follow up").trim() || "Follow up");
     const payload = el("textarea", {
       class: "dialog-input task-draft-payload", rows: "8", required: true,
-      "aria-label": "Task instructions and provenance",
+      "aria-label": manual ? "Task instructions" : "Task instructions and provenance",
     });
-    payload.value = sourcePayload(source);
+    payload.value = manual ? "" : sourcePayload(reviewedSource);
     const kind = el("select", { class: "dialog-input", "aria-label": "Task kind" }, [
       el("option", { value: "reminder", text: "Reminder (notify me)" }),
       el("option", { value: "job", text: "Job (starts an unattended task run)" }),
@@ -271,10 +312,10 @@ export function openTaskDraft(source, api) {
     const submit = button("Schedule task", "dialog-button primary");
     submit.type = "submit";
     const form = el("form", { class: "task-draft-form" }, [
-      el("h2", { class: "dialog-title", text: "Review and schedule task" }),
-      el("p", { class: "dialog-message", text: "This was suggested by a team run. Review and edit it before scheduling; opening this draft never runs work." }),
+      el("h2", { class: "dialog-title", text: copy.heading }),
+      el("p", { class: "dialog-message", text: copy.message }),
       field("Title", title),
-      field("Instructions and source provenance", payload, "The source run is included for audit context. Edit these instructions as needed."),
+      field(copy.instructions, payload, copy.hint),
       el("div", { class: "task-draft-grid" }, [
         field("Task kind", kind), field("Schedule", scheduleKind),
       ]),
@@ -301,8 +342,8 @@ export function openTaskDraft(source, api) {
         showError("Title, instructions, and a schedule are required.");
         return;
       }
-      if (!sameContext(api.state.context, expectedContext)) {
-        showError("This chat or project changed. Review the task again before scheduling it.");
+      if (!reviewIsCurrent(api, binding)) {
+        showError("This screen, chat, or project changed. Review the task again before scheduling it.");
         return;
       }
       owner.saving = true;
@@ -327,6 +368,11 @@ export function openTaskDraft(source, api) {
           expected_context: expectedContext,
         });
         if (activeDialog !== owner) return;
+        if (!reviewIsCurrent(api, binding)) {
+          owner.saving = false;
+          close(false, owner);
+          return;
+        }
         if (result.ok && result.data?.ok) {
           owner.saving = false;
           close(true, owner);
@@ -347,6 +393,11 @@ export function openTaskDraft(source, api) {
         showError(result.data?.message);
       } catch {
         if (activeDialog !== owner) return;
+        if (!reviewIsCurrent(api, binding)) {
+          owner.saving = false;
+          close(false, owner);
+          return;
+        }
         owner.saving = false;
         submit.disabled = false;
         submit.textContent = "Schedule task";
@@ -380,6 +431,10 @@ export function openTaskDraft(source, api) {
     document.body.append(overlay);
     title.focus();
   });
+}
+
+export function openManualTaskDraft(api) {
+  return openTaskDraft({}, api, { mode: "manual" });
 }
 
 function runText(run) {

@@ -2,7 +2,7 @@
 // distinct from scheduled reminders/jobs: model findings never schedule or execute work.
 import { emptyState, chip, row, actionButton, section } from "./_util.js";
 import { el } from "../../ui/dom.js";
-import { openTaskDraft, openTaskHistory } from "../../ui/task-draft.js";
+import { openManualTaskDraft, openTaskDraft, openTaskHistory } from "../../ui/task-draft.js";
 
 export async function render(container, api, ctx) {
   container.textContent = "";
@@ -39,10 +39,21 @@ export async function render(container, api, ctx) {
     ]),
     onClick: () => { location.hash = `studio/${item.runId}`; },
   }));
+  let opening = false;
+  const create = actionButton("New task", async () => {
+    if (opening || !create.isConnected
+        || (typeof api.renderIsCurrent === "function" && !api.renderIsCurrent())) return;
+    opening = true;
+    create.disabled = true;
+    const scheduled = await openManualTaskDraft(api);
+    opening = false;
+    if (create.isConnected) create.disabled = false;
+    if (scheduled) rerender();
+  }, "primary");
   container.appendChild(section("Team follow-ups", followRows.length ? followRows : [
     emptyState("No follow-ups yet", "Completed team reviews will place their recommended next steps here. They never schedule work automatically."),
   ]));
   container.appendChild(section("Scheduled tasks", rows.length ? rows : [
     emptyState("No tasks scheduled", "Reminders and jobs you confirm for this project will appear here."),
-  ]));
+  ], create));
 }

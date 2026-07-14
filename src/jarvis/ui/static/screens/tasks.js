@@ -1,15 +1,28 @@
 // Tasks — reminders & jobs with next-fire times. Creation is always an explicit human-authority
 // action (a task draft or the gated schedule tool); this screen never promotes model output.
-import { esc } from "../ui/dom.js";
-import { openTaskHistory } from "../ui/task-draft.js";
+import { el, esc } from "../ui/dom.js";
+import { openManualTaskDraft, openTaskHistory } from "../ui/task-draft.js";
 
 export async function render(container, api) {
   const rows = await api.getRequired("/api/tasks");
   if (rows === null) { container.innerHTML = unavailable("Tasks", "scheduler off"); return; }
   container.innerHTML = `
-    <div class="rise"><h1>Tasks</h1><div class="sub">Reminders and unattended jobs.</div></div>
+    <div class="rise tasks-page-head"><div><h1>Tasks</h1><div class="sub">Reminders and unattended jobs.</div></div></div>
     <div class="card rise"><table id="tasks-tbl">
       <tr><th>Title</th><th>Kind</th><th>Next</th><th>Status</th><th></th></tr></table></div>`;
+  const create = el("button", { class: "plain-button primary", type: "button" }, ["New task"]);
+  let opening = false;
+  create.addEventListener("click", async () => {
+    if (opening || !create.isConnected
+        || (typeof api.renderIsCurrent === "function" && !api.renderIsCurrent())) return;
+    opening = true;
+    create.disabled = true;
+    const scheduled = await openManualTaskDraft(api);
+    opening = false;
+    if (create.isConnected) create.disabled = false;
+    if (scheduled) await api.refreshRoute();
+  });
+  container.querySelector(".tasks-page-head").appendChild(create);
   const tbl = container.querySelector("#tasks-tbl");
   if (!rows.length) {
     tbl.insertAdjacentHTML("beforeend", `<tr><td colspan="5" class="dim">No tasks scheduled.</td></tr>`);

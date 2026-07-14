@@ -10,7 +10,8 @@ def test_no_screen_keeps_a_local_escaper_or_imports_one_from_vault() -> None:
         assert 'from "./vault.js"' not in source
     for name in ("tasks.js", "lab.js"):
         source = (STATIC_DIR / "screens" / name).read_text(encoding="utf-8")
-        assert 'import { esc } from "../ui/dom.js"' in source
+        # The module may import other shared DOM helpers alongside esc.
+        assert 'esc } from "../ui/dom.js"' in source
 
 
 def test_vault_uses_csp_safe_classes_and_attribute_escaping() -> None:
