@@ -134,7 +134,8 @@ class ParkedTaskApprovalManager:
     def __init__(self, connections: ConnectionManager, *, log=None) -> None:
         self.connections = connections
         self._pending: dict[int, ParkedTaskApproval] = {}
-        self._nonces: dict[str, tuple[int, str]] = {}  # nonce -> (run_id, conn_id)
+        # nonce -> (run_id, conn_id, workspace context revision at visible mint)
+        self._nonces: dict[str, tuple[int, str, int]] = {}
         self._resolving: set[int] = set()
         self.log = log or get_logger("jarvis.ui.parked_task_approvals")
 
@@ -191,10 +192,11 @@ class ParkedTaskApprovalManager:
             pending is None
             or run_id in self._resolving
             or not self.connections.is_live(conn)
+            or conn.context_revision is None
         ):
             return None
         nonce = secrets.token_urlsafe(24)
-        self._nonces[nonce] = (run_id, conn.id)
+        self._nonces[nonce] = (run_id, conn.id, conn.context_revision)
         return nonce
 
     def reserve(
@@ -204,6 +206,7 @@ class ParkedTaskApprovalManager:
         action: str,
         *,
         context: ExecutionContext | None,
+        context_revision: int,
     ) -> tuple[ParkedTaskApproval | None, str]:
         """Consume a nonce and reserve one callback attempt.
 
@@ -223,6 +226,8 @@ class ParkedTaskApprovalManager:
             or not self.connections.is_live(conn)
             or context is None
             or conn.context != context
+            or conn.context_revision != context_revision
+            or bound[2] != context_revision
             or pending is None
             or run_id in self._resolving
         ):
@@ -316,18 +321,12 @@ class ApprovalManager:
         """Issue a single-use nonce for a pending approval — only to a *live* connection
         that has acked the modal is shown (amendment 4). Bound to this connection."""
         pending = self._pending.get(decision_id)
-        if (
-            pending is None
-            or not self.connections.is_live(conn)
-            or conn.context != pending.context
-        ):
+        if pending is None or not self.connections.is_live(conn) or conn.context != pending.context:
             return None
         # A retry on this same watching connection supersedes its previous credential. Other
         # live tabs retain their independently connection-bound nonce, avoiding cross-tab churn.
         self._nonces = {
-            nonce: bound
-            for nonce, bound in self._nonces.items()
-            if bound != (decision_id, conn.id)
+            nonce: bound for nonce, bound in self._nonces.items() if bound != (decision_id, conn.id)
         }
         nonce = secrets.token_urlsafe(24)
         self._nonces[nonce] = (decision_id, conn.id)

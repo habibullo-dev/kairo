@@ -3,6 +3,14 @@
 import { el } from "../../ui/dom.js";
 import { emptyState, chip, row, actionButton, section } from "./_util.js";
 import { renderSourceTree } from "../../ui/source-tree.js";
+import {
+  beginVaultReview, bindVaultReview, pendingVaultReview, settleVaultReview,
+} from "../../ui/vault-review.js";
+
+function setReviewBusy(item, busy) {
+  for (const control of item.querySelectorAll(".ws-rowacts button")) control.disabled = busy;
+  item.setAttribute("aria-busy", busy ? "true" : "false");
+}
 
 export async function render(container, api, ctx) {
   container.textContent = "";
@@ -37,20 +45,44 @@ export async function render(container, api, ctx) {
     ]));
   }
 
-  const rerender = () => render(container, api, ctx);
   const reviewFeedback = el("div", {
-    class: "dim",
+    class: "dim vault-review-feedback",
     role: "status",
     "aria-live": "polite",
   });
-  const reviewSource = async (sourceId, action) => {
+  const reviewSource = async (sourceId, action, item) => {
+    const operation = beginVaultReview(api, ctx.projectId, sourceId, action);
+    if (!operation) return;
+    bindOperation(operation, item);
     const path = action === "approve"
       ? `/api/vault/sources/${sourceId}/approve`
       : `/api/vault/sources/${sourceId}/reject`;
-    const result = await api.post(path, {});
-    if (result.ok) rerender();
-    else reviewFeedback.textContent = result.data.message || "This review action could not be completed.";
+    let result;
+    try {
+      result = await api.post(path, {});
+    } catch {
+      result = { ok: false, data: { message: "This source review could not reach Kairo." } };
+    }
+    await settleVaultReview(operation, result);
   };
+  const bindOperation = (operation, item) => bindVaultReview(
+    operation,
+    ({ pending, result }) => {
+      if (pending) {
+        setReviewBusy(item, true);
+        return true;
+      }
+      if (!item.isConnected) return false;
+      if (result?.ok) {
+        void api.refreshRoute();
+        return true;
+      }
+      setReviewBusy(item, false);
+      reviewFeedback.textContent = result?.data?.message
+        || "This review action could not be completed.";
+      return true;
+    },
+  );
   const projectSources = knowledge && knowledge.project_id === ctx.projectId
     ? (knowledge.sources || []) : [];
   const tree = projectSources.length
@@ -73,14 +105,20 @@ export async function render(container, api, ctx) {
       chip(`Graph nodes ${(graph.nodes || []).length}`), chip(`Graph links ${Number(graph.edge_count) || 0}`),
     ]));
   }
-  const rows = (data.unreviewed || []).map((s) =>
-    row("📄", s.title || s.origin, s.preview, {
-      trailing: el("div", { class: "ws-rowacts" }, [
-        actionButton("Approve", () => reviewSource(s.id, "approve")),
-        actionButton("Reject", () => reviewSource(s.id, "reject"), "ghost"),
-      ]),
-    })
-  );
+  const rows = (data.unreviewed || []).map((s) => {
+    const controls = [];
+    const item = row("📄", s.title || s.origin, s.preview, {
+      trailing: el("div", { class: "ws-rowacts" }, controls),
+    });
+    controls.push(
+      actionButton("Approve", () => reviewSource(s.id, "approve", item)),
+      actionButton("Reject", () => reviewSource(s.id, "reject", item), "ghost"),
+    );
+    item.querySelector(".ws-rowacts")?.append(...controls);
+    const operation = pendingVaultReview(api, ctx.projectId, s.id);
+    if (operation) bindOperation(operation, item);
+    return item;
+  });
 
   container.appendChild(
     section("Awaiting review", rows.length

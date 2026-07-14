@@ -53,22 +53,108 @@ let _escOff = null;
 let _seq = 0;
 let _timer = null;
 let _ctx = { runner: {}, projects: [], models: [], sessions: [] };
+let _ctxAuthorityToken = null;
+let _actionOperation = null;
+
+function authorityToken(api = _api) {
+  return typeof api?.authorityToken === "function" ? api.authorityToken() : null;
+}
+
+function authorityIsCurrent(token, api = _api) {
+  return token === null || typeof api?.authorityIsCurrent !== "function"
+    || api.authorityIsCurrent(token);
+}
+
+function guarded(token, run) {
+  return () => { if (authorityIsCurrent(token)) run(); };
+}
 
 function go(hash) { close(); location.hash = hash; }
 
-// Perform a UI-state write (the allowlist), then close. New/scope also clear the local transcript
-// (a fresh/scoped conversation started server-side); app.js's WS echoes keep the chips in sync.
-async function act(path, body, { resetChat = false, then = null } = {}) {
-  const res = await _api.post(path, body || {});
-  if (res.ok) {
-    // A WebSocket echo is helpful but not the authority for UI state. Refresh the shared cache
-    // before the next consumer opens, so palette/header/status agree even if that echo is late.
-    await _api.runnerStatus({ refresh: true });
-    await refreshHeader();
-    if (resetChat && _api.state) _api.state.chat = [];
-    close();
-    if (then) then();
+// Perform a UI-state write (the allowlist), then close. Authoritative lifecycle frames own
+// conversation clearing, so a delayed HTTP callback can never erase a newer chat.
+async function act(path, body, { then = null } = {}) {
+  const api = _api;
+  const token = authorityToken(api);
+  const startingContext = api?.state?.context
+    ? {
+        session_id: api.state.context.session_id,
+        project_id: api.state.context.project_id,
+        context_revision: api.state.context.context_revision,
+      }
+    : null;
+  const startingWorkspace = typeof api?.workspaceToken === "function" ? api.workspaceToken() : null;
+  if (_actionOperation && authorityIsCurrent(_actionOperation.token, _actionOperation.api)) return;
+  const operation = { api, token, path, body: body || {}, startingContext, startingWorkspace };
+  operation.navigationToken = typeof api?.navigationToken === "function"
+    ? api.navigationToken() : null;
+  _actionOperation = operation;
+  const openRevision = _seq;
+  try {
+    const res = await api.post(path, body || {});
+    if (_actionOperation !== operation) return;
+    // A lifecycle frame or replacement workspace may retire this operation while its POST is in
+    // flight. Never let the old callback refresh chrome, close a newly opened palette, or navigate
+    // the replacement authority. If this write caused the lifecycle change, that frame already
+    // owns the rerender; when the frame is missing, the still-current token permits recovery below.
+    if (!actionResultOwnsCurrentContext(operation)) return;
+    if (openRevision !== _seq && _overlay?.classList.contains("open")) return;
+    if (res.ok) {
+      // A WebSocket echo is helpful but not the authority for UI state. Refresh the shared cache
+      // before the next consumer opens, so palette/header/status agree even if that echo is late.
+      await api.runnerStatus({ refresh: true });
+      await refreshHeader();
+      if (_actionOperation !== operation) return;
+      if (!actionResultOwnsCurrentContext(operation)) return;
+      if (openRevision !== _seq && _overlay?.classList.contains("open")) return;
+      close();
+      const navigationCurrent = operation.navigationToken === null
+        || typeof api.navigationIsCurrent !== "function"
+        || api.navigationIsCurrent(operation.navigationToken);
+      if (then && navigationCurrent) then();
+    }
+  } finally {
+    if (_actionOperation === operation) _actionOperation = null;
   }
+}
+
+function resumeAndGo(sessionId, hash) {
+  const api = _api;
+  const navigationToken = typeof api?.navigationToken === "function"
+    ? api.navigationToken() : null;
+  api.resumeChat(sessionId).then((ok) => {
+    const navigationCurrent = navigationToken === null
+      || typeof api.navigationIsCurrent !== "function"
+      || api.navigationIsCurrent(navigationToken);
+    if (ok && navigationCurrent) go(hash);
+  });
+}
+
+function actionResultOwnsCurrentContext(operation) {
+  const { api, token, path, body, startingContext, startingWorkspace } = operation;
+  if (typeof api?.workspaceToken === "function" && api.workspaceToken() !== startingWorkspace) {
+    return false;
+  }
+  if (authorityIsCurrent(token, api)) return true;
+  const current = api?.state?.context;
+  if (!current || !startingContext) return false;
+  // Context-changing actions are expected to retire their starting authority when the forced
+  // runner read is the first observer. Permit only their exact successor scope; all other writes
+  // must remain under the original authority.
+  if (path === "/api/sessions/new") {
+    return current.project_id === startingContext.project_id
+      && current.session_id !== startingContext.session_id
+      && current.context_revision === startingContext.context_revision + 1
+      && (!Number.isInteger(token) || api.authorityToken() === token + 1);
+  }
+  if (path === "/api/projects/select") {
+    const expectedProject = body.project_id == null ? null : Number(body.project_id);
+    return current.project_id === expectedProject
+      && current.session_id !== startingContext.session_id
+      && current.context_revision === startingContext.context_revision + 1
+      && (!Number.isInteger(token) || api.authorityToken() === token + 1);
+  }
+  return false;
 }
 
 function computeActions(q) {
@@ -76,27 +162,30 @@ function computeActions(q) {
   const out = [];
   const add = (title, snip, run) => out.push({ kind: "action", chip: "Do", title, snip, run });
   const pid = _ctx.runner.project && _ctx.runner.project.id;
+  const token = _ctxAuthorityToken;
   add("New Chat", "Start a fresh conversation",
-    () => act("/api/sessions/new", {}, { resetChat: true, then: () => go("#daily") }));
+    guarded(token, () => act("/api/sessions/new", {}, { then: () => go("#daily") })));
   if (pid) {
-    add("Open Active Workspace", "This project's workspace", () => go(`#workspace/${pid}`));
-    add("Open Graph", "This project's knowledge graph", () => go(`#workspace/${pid}/graph`));
+    add("Open Active Workspace", "This project's workspace", guarded(token, () => go(`#workspace/${pid}`)));
+    add("Open Graph", "This project's knowledge graph", guarded(token, () => go(`#workspace/${pid}/graph`)));
   }
-  add("Run Workflow", "Assemble a team in Studio", () => go("#studio"));
+  add("Run Workflow", "Assemble a team in Studio", guarded(token, () => go("#studio")));
   for (const [v, label] of [["plan", "Planning"], ["approval", "Approval"], ["auto", "Auto"]]) {
-    if (_ctx.runner.mode !== v) add(`Switch mode: ${label}`, "Run mode", () => act("/api/mode", { mode: v }));
+    if (_ctx.runner.mode !== v) add(`Switch mode: ${label}`, "Run mode",
+      guarded(token, () => act("/api/mode", { mode: v })));
   }
   for (const m of _ctx.models) {
     if (m.selectable && !m.current) {
-      add(`Switch model: ${m.label}`, "Interactive model", () => act("/api/model", { model: m.id }));
+      add(`Switch model: ${m.label}`, "Interactive model",
+        guarded(token, () => act("/api/model", { model: m.id })));
     }
   }
   if (pid) add("Switch to Global", "Chat outside any project",
-    () => act("/api/projects/select", { project_id: null }, { resetChat: true, then: () => go("#daily") }));
+    guarded(token, () => act("/api/projects/select", { project_id: null }, { then: () => go("#daily") })));
   for (const p of _ctx.projects) {
     if (p.id !== pid) {
       add(`Switch to project: ${p.name || "Project " + p.id}`, "Project scope",
-        () => act("/api/projects/select", { project_id: p.id }, { resetChat: true, then: () => go("#daily") }));
+        guarded(token, () => act("/api/projects/select", { project_id: p.id }, { then: () => go("#daily") })));
     }
   }
   return out.filter((a) => !ql || a.title.toLowerCase().includes(ql) || a.snip.toLowerCase().includes(ql));
@@ -106,13 +195,14 @@ function computeActions(q) {
 // can miss chats — this makes them always findable + jumpable). Selecting one resumes it.
 function computeChats(q) {
   const ql = q.toLowerCase();
+  const token = _ctxAuthorityToken;
   return (_ctx.sessions || [])
     .filter((s) => !ql || (s.title || "").toLowerCase().includes(ql))
     .slice(0, 8)
     .map((s) => ({
       kind: "chat", chip: "Chat", title: s.title || `Chat ${s.id}`,
       snip: "Resume this conversation",
-      run: () => { _api.resumeChat(s.id).then(() => go("#daily")); },
+      run: guarded(token, () => resumeAndGo(s.id, "#chat")),
     }));
 }
 
@@ -124,10 +214,11 @@ function computeNav(q) {
 }
 
 function resultItems(results) {
+  const token = _ctxAuthorityToken;
   return (results || []).filter((r) => r && DOMAIN_ROUTE[r.domain]).map((r) => ({
     kind: "result", chip: DOMAIN_LABEL[r.domain],
     title: typeof r.title === "string" && r.title.trim() ? r.title : "(untitled)",
-    snip: typeof r.snippet === "string" ? r.snippet : "", run: () => openResult(r),
+    snip: typeof r.snippet === "string" ? r.snippet : "", run: guarded(token, () => openResult(r)),
   }));
 }
 
@@ -135,7 +226,10 @@ function openResult(r) {
   const dest = DOMAIN_ROUTE[r.domain];
   const refId = Number(r.ref_id);
   if (!Number.isSafeInteger(refId) || refId < 1) return;
-  if (dest === "resume") { _api.resumeChat(refId).then(() => go("#daily")); return; }
+  if (dest === "resume") {
+    resumeAndGo(refId, "#chat");
+    return;
+  }
   if (dest === "artifact") {
     window.open(`/api/artifacts/${encodeURIComponent(refId)}/content`, "_blank", "noopener");
     close();
@@ -194,14 +288,17 @@ function scheduleSearch() {
   rebuild();  // actions + nav show instantly; results arrive after the debounce
   const q = _input.value.trim();
   if (_timer) clearTimeout(_timer);
-  if (!q) return;
   const my = ++_seq;
+  if (!q) return;
+  const token = authorityToken();
+  const api = _api;
   _timer = setTimeout(async () => {
-    if (!_api) return;
+    if (!api || my !== _seq || !authorityIsCurrent(token, api)) return;
     const pid = _ctx.runner.project && _ctx.runner.project.id;
     const scope = pid ? `&project_id=${pid}` : "";
-    const data = await _api.get(`/api/search?q=${encodeURIComponent(q)}&limit=25${scope}`);
-    if (my !== _seq) return;  // a newer keystroke superseded this one
+    const data = await api.get(`/api/search?q=${encodeURIComponent(q)}&limit=25${scope}`);
+    if (my !== _seq || !authorityIsCurrent(token, api)
+        || !_overlay?.classList.contains("open")) return;
     _items = [..._actions, ..._chats, ..._navItems, ...resultItems((data && data.results) || [])];
     if (_sel >= _items.length) _sel = Math.max(0, _items.length - 1);
     render();
@@ -242,16 +339,25 @@ async function open() {
   ensureDom();
   if (_overlay.classList.contains("open")) return;
   _overlay.classList.add("open");
+  const openRevision = ++_seq;
+  const token = authorityToken();
+  const api = _api;
+  if (_ctxAuthorityToken !== token) {
+    _ctx = { runner: {}, projects: [], models: [], sessions: [] };
+  }
+  _ctxAuthorityToken = token;
   _input.value = "";
   _sel = 0;
-  rebuild();       // instant: actions + nav (context from the last open)
+  rebuild();       // instant: current-authority actions + nav; prior authority data is cleared
   _input.focus();
   _escOff = pushEscape(close);
   // Refresh the action context (active project/model/mode + the pickers + recent chats), re-render.
   const [runner, projects, models, sessions] = await Promise.all([
-    _api.runnerStatus({ refresh: true }), _api.get("/api/projects"), _api.get("/api/models"),
-    _api.get("/api/sessions?limit=20"),
+    api.runnerStatus({ refresh: true }), api.get("/api/projects"), api.get("/api/models"),
+    api.get("/api/sessions?limit=20"),
   ]);
+  if (openRevision !== _seq || !authorityIsCurrent(token, api)
+      || !_overlay.classList.contains("open")) return;
   _ctx = {
     runner: runner || {}, projects: (projects && projects.projects) || [],
     models: (models && models.models) || [], sessions: (sessions && sessions.sessions) || [],
@@ -278,3 +384,4 @@ export function init(api) {
 }
 
 export function openPalette() { open(); }
+export function closePalette() { close(); }

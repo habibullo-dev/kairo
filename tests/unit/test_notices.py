@@ -67,9 +67,11 @@ async def test_project_notice_delivery_never_broadcasts_to_a_foreign_workspace()
     class Socket:
         def __init__(self) -> None:
             self.sent: list[dict] = []
+            self.delivered = asyncio.Event()
 
         async def send_json(self, message: dict) -> None:
             self.sent.append(message)
+            self.delivered.set()
 
     connections = ConnectionManager(clock=lambda: 0.0)
     socket_a, socket_b = Socket(), Socket()
@@ -89,7 +91,7 @@ async def test_project_notice_delivery_never_broadcasts_to_a_foreign_workspace()
     )
     board = NoticeBoard(publish=connections.publish_project, now=lambda: "t")
     board.post("project A task body", kind="task", project_id=1)
-    await asyncio.sleep(0)
+    await asyncio.wait_for(socket_a.delivered.wait(), timeout=0.1)
     assert [message["notice"]["text"] for message in socket_a.sent] == ["project A task body"]
     assert socket_b.sent == []
     assert [item["text"] for item in board.tail(project_id=1)] == ["project A task body"]

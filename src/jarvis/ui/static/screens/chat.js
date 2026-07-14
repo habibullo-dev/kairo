@@ -1,6 +1,6 @@
 // Chat — Kairo's primary talking surface. It reuses the existing session/model/mode controls and
 // the sole attended turn route; no new route, authority, or event stream is introduced here.
-import { mountHeader, refreshHeader } from "../ui/header.js";
+import { bindHeaderContext, mountHeader, refreshHeader } from "../ui/header.js";
 import { confirmDialog, promptDialog, showToast } from "../ui/feedback.js";
 import { renderConversation, submitConversationTurn } from "./conversation.js";
 import { renderSourceTree } from "../ui/source-tree.js";
@@ -63,7 +63,9 @@ export function render(container, api) {
         showToast("Kairo is still preparing this project's knowledge.", "error");
         return;
       }
-      await submitConversationTurn(api, input, redraw);
+      await submitConversationTurn(
+        api, input, redraw, () => renderImportControls(container, api),
+      );
     };
     container.querySelector("#chat-composer").addEventListener("submit", submit);
     input.addEventListener("keydown", (event) => {
@@ -93,6 +95,11 @@ export function render(container, api) {
     container.querySelector("#chat-mic").addEventListener("click", async () => {
       const mode = api.state.voice.mode || "dictation";
       await api.toggleVoiceCapture(mode, (transcript) => {
+        if (!input.isConnected || api.state.route !== "chat"
+            || document.getElementById("chat-input") !== input) {
+          api.restoreTurnDraft(transcript);
+          return;
+        }
         input.value = input.value ? `${input.value} ${transcript}` : transcript;
         input.dispatchEvent(new Event("input"));
         input.focus();
@@ -101,15 +108,36 @@ export function render(container, api) {
     container.querySelector("#chat-voice-cancel").addEventListener("click", () => api.cancelVoiceCapture());
     container.querySelector("#chat-turn-cancel").addEventListener("click", async () => {
       if (!api.state.runner?.turn_busy || api.state.turnCancelling) return;
+      const authorityToken = typeof api.authorityToken === "function" ? api.authorityToken() : null;
+      const authorityIsCurrent = () => authorityToken === null
+        || typeof api.authorityIsCurrent !== "function"
+        || api.authorityIsCurrent(authorityToken);
+      const expectedContext = api.state.context && {
+        session_id: api.state.context.session_id,
+        project_id: api.state.context.project_id,
+        context_revision: api.state.context.context_revision,
+      };
+      const turnId = Number(api.state.runner?.turn_id);
+      if (!expectedContext || !Number.isInteger(turnId) || turnId < 1) {
+        showToast("Kairo is refreshing this turn. Try Stop again in a moment.", "error");
+        await api.runnerStatus({ refresh: true });
+        renderTurnControls(container, api);
+        return;
+      }
       api.state.turnCancelling = true;
       renderTurnControls(container, api);
       try {
-        const result = await api.post("/api/turn/cancel", {});
+        const result = await api.post("/api/turn/cancel", {
+          expected_context: expectedContext,
+          turn_id: turnId,
+        });
+        if (!authorityIsCurrent()) return;
         if (result.ok && result.data.cancelled) {
           // A successful cancellation settles only when the workspace-scoped turn_cancelled
           // event arrives, or when the server's runner read confirms that the turn is already
           // gone. The latter recovers a transiently missed WebSocket frame without guessing.
           const runner = await api.runnerStatus({ refresh: true });
+          if (!authorityIsCurrent()) return;
           if (runner && !runner.turn_busy) api.state.turnCancelling = false;
           renderTurnControls(container, api);
           return;
@@ -118,11 +146,14 @@ export function render(container, api) {
         // from the server so a 200 {cancelled:false} never leaves this control stuck disabled.
         api.state.turnCancelling = false;
         await api.runnerStatus({ refresh: true });
+        if (!authorityIsCurrent()) return;
         renderTurnControls(container, api);
         showToast(result.data?.message || "This turn has already finished.", "error");
       } catch {
+        if (!authorityIsCurrent()) return;
         api.state.turnCancelling = false;
         await api.runnerStatus({ refresh: true });
+        if (!authorityIsCurrent()) return;
         renderTurnControls(container, api);
         showToast("Kairo couldn't stop this turn. Please try again.", "error");
       }
@@ -130,6 +161,19 @@ export function render(container, api) {
     handle.addEventListener("click", async () => openChatHistory(container, api, {}, redraw));
     container.querySelector("#chat-history-scrim").addEventListener("click", () => closeChatHistory(container));
     mountHeader(container.querySelector("#chat-convo-header"), api, { onChanged: () => redraw() });
+  }
+  // The shell itself survives same-workspace status/handshake refreshes so an unsent draft keeps
+  // its value and focus. Rebind only the header's render ownership; its controls use this latest
+  // facade without triggering four extra status reads on every streamed event.
+  bindHeaderContext(container.querySelector("#chat-convo-header"), api, {
+    onChanged: () => renderThread(container, api),
+  });
+  const liveInput = container.querySelector("#chat-input");
+  if (api.state.turnDraft && liveInput) {
+    liveInput.value = liveInput.value.trim()
+      ? `${api.state.turnDraft}\n${liveInput.value}` : api.state.turnDraft;
+    api.state.turnDraft = null;
+    liveInput.dispatchEvent(new Event("input"));
   }
   renderPending(container, api);
   renderThread(container, api);
@@ -201,9 +245,14 @@ function renderProjectImportProgress(container, api) {
 
 function renderImportControls(container, api) {
   const disabled = Boolean(api.state.projectImport);
-  for (const selector of ["#chat-input", "#chat-attach", ".chat-send", "#chat-mic"]) {
+  for (const selector of ["#chat-input", "#chat-attach", "#chat-mic"]) {
     const control = container.querySelector(selector);
     if (control) control.disabled = disabled;
+  }
+  const send = container.querySelector(".chat-send");
+  if (send) {
+    send.disabled = disabled || Boolean(api.state.turnAdmission) || Boolean(api.state.runner?.turn_busy);
+    send.textContent = api.state.turnAdmission ? "Sending…" : "Send";
   }
 }
 
@@ -264,6 +313,15 @@ function projectFiles(files) {
 }
 
 async function uploadAttachments(container, api, files, { projectFolder = false } = {}) {
+  const authorityToken = typeof api.authorityToken === "function" ? api.authorityToken() : null;
+  const expectedContext = api.state.context && {
+    session_id: api.state.context.session_id,
+    project_id: api.state.context.project_id,
+    context_revision: api.state.context.context_revision,
+  };
+  const authorityIsCurrent = () => authorityToken === null
+    || typeof api.authorityIsCurrent !== "function"
+    || api.authorityIsCurrent(authorityToken);
   const selected = projectFolder ? projectFiles(files) : files;
   if (!selected.length) {
     if (projectFolder) showToast("No supported, non-sensitive files were found in that folder.", "error");
@@ -276,36 +334,51 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
     );
     return;
   }
-  if (projectFolder) api.state.projectImport = {
+  const importState = projectFolder ? {
     stage: "files", done: 0, total: selected.length, added: 0, duplicates: 0, failed: 0,
     secretFiles: 0,
+  } : null;
+  if (projectFolder) api.state.projectImport = importState;
+  const importIsCurrent = () => authorityIsCurrent()
+    && (!projectFolder || api.state.projectImport === importState);
+  const bindExpectedContext = (form) => {
+    if (!expectedContext) return;
+    form.append("expected_session_id", String(expectedContext.session_id));
+    form.append(
+      "expected_project_id",
+      expectedContext.project_id == null ? "global" : String(expectedContext.project_id),
+    );
+    form.append("expected_context_revision", String(expectedContext.context_revision));
   };
   renderImportControls(container, api);
   renderProjectImportProgress(container, api);
   let failures = 0;
   const uploadOne = async (file) => {
+    if (!importIsCurrent()) return;
     const attachment = projectFolder ? null : { title: file.name || "Untitled file", state: "uploading" };
     if (attachment) attachments(api).push(attachment);
     renderAttachments(container, api);
     const form = new FormData();
+    bindExpectedContext(form);
     form.append("file", file, file.name);
     if (projectFolder) {
       form.append("relative_path", file.webkitRelativePath || file.name);
     }
     try {
       const result = await api.upload("/api/chat/attachments", form);
+      if (!importIsCurrent()) return;
       if (result.ok) {
         const secretHits = Number(result.data.suspected_secret_hits) || 0;
         if (secretHits > 0) {
-          if (projectFolder) api.state.projectImport.secretFiles += 1;
+          if (projectFolder) importState.secretFiles += 1;
           else showToast(
             "Kairo redacted suspected credentials from AI indexing. Review Notifications.",
             "error",
           );
         }
         if (projectFolder) {
-          if (result.data.action === "duplicate") api.state.projectImport.duplicates += 1;
-          else api.state.projectImport.added += 1;
+          if (result.data.action === "duplicate") importState.duplicates += 1;
+          else importState.added += 1;
         }
         if (attachment) {
           attachment.state = "ready";
@@ -318,17 +391,19 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
           attachment.error = result.data.message || "Kairo couldn't add this file.";
         }
         failures += 1;
-        if (projectFolder) api.state.projectImport.failed += 1;
+        if (projectFolder) importState.failed += 1;
       }
     } catch {
+      if (!importIsCurrent()) return;
       if (attachment) {
         attachment.state = "error";
         attachment.error = "Kairo couldn't add this file.";
       }
       failures += 1;
-      if (projectFolder) api.state.projectImport.failed += 1;
+      if (projectFolder) importState.failed += 1;
     } finally {
-      if (projectFolder) api.state.projectImport.done += 1;
+      if (!importIsCurrent()) return;
+      if (projectFolder) importState.done += 1;
       renderAttachments(container, api);
       renderProjectImportProgress(container, api);
     }
@@ -336,7 +411,7 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
   if (projectFolder) {
     let next = 0;
     const worker = async () => {
-      while (next < selected.length) {
+      while (importIsCurrent() && next < selected.length) {
         const file = selected[next];
         next += 1;
         await uploadOne(file);
@@ -349,20 +424,25 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
     for (const file of selected) await uploadOne(file);
   }
   if (projectFolder) {
-    api.state.projectImport.stage = "graph";
+    if (!importIsCurrent()) return;
+    importState.stage = "graph";
     renderAttachments(container, api);
     renderProjectImportProgress(container, api);
     let assessmentState = "unavailable";
     try {
       const finalize = new FormData();
+      bindExpectedContext(finalize);
       finalize.append("finalize", "true");
       const graph = await api.upload("/api/chat/attachments", finalize);
+      if (!importIsCurrent()) return;
       if (!graph.ok) failures += 1;
       else assessmentState = graph.data?.assessment?.state || "unavailable";
     } catch {
+      if (!importIsCurrent()) return;
       failures += 1;
     }
-    const summary = api.state.projectImport;
+    if (!importIsCurrent()) return;
+    const summary = importState;
     api.state.projectImport = null;
     renderAttachments(container, api);
     renderImportControls(container, api);
@@ -457,9 +537,12 @@ function closeChatHistory(container) {
   const layer = container.querySelector("#chat-history-layer");
   const panel = container.querySelector("#chat-history-panel");
   if (!layer || !panel) return;
+  chatHistoryRefreshRevision.set(layer, (chatHistoryRefreshRevision.get(layer) || 0) + 1);
   layer.classList.remove("open");
   panel.setAttribute("aria-hidden", "true");
 }
+
+const chatHistoryRefreshRevision = new WeakMap();
 
 function historyButton(label, title, onClick, className = "chat-history-action") {
   const button = document.createElement("button");
@@ -480,17 +563,24 @@ async function openChatHistory(container, api, detail, redraw) {
   panel.setAttribute("aria-hidden", "false");
 
   const refresh = async () => {
+    const revision = (chatHistoryRefreshRevision.get(layer) || 0) + 1;
+    chatHistoryRefreshRevision.set(layer, revision);
+    const authorityToken = typeof api.authorityToken === "function" ? api.authorityToken() : null;
     const [data, runner, files, outputs, knowledge] = await Promise.all([
       api.get("/api/sessions?limit=50"), api.runnerStatus(),
       api.get("/api/chat/files"), api.get("/api/chat/outputs"),
       api.get("/api/chat/knowledge"),
     ]);
-    if (!layer.classList.contains("open")) return;
+    const isCurrent = () => layer.isConnected && layer.classList.contains("open")
+      && chatHistoryRefreshRevision.get(layer) === revision
+      && (authorityToken === null || typeof api.authorityIsCurrent !== "function"
+        || api.authorityIsCurrent(authorityToken));
+    if (!isCurrent()) return;
     renderChatHistory(
       panel, container, api, data || detail, runner || {}, files || {}, outputs || {}, knowledge || {}, redraw, refresh
     );
     await refreshHeader();
-    redraw();
+    if (isCurrent()) redraw();
   };
   await refresh();
 }

@@ -139,7 +139,7 @@ function fallbackOverview(h) {
 
 export async function render(container, api) {
   container.textContent = "";
-  const h = await api.get("/api/hub");
+  const h = await api.getRequired("/api/hub");
   if (!h) {
     container.appendChild(el("div", { class: "rise" }, [el("h1", {}, ["Hub"]),
       el("div", { class: "sub" }, ["Connector status is unavailable."])]));

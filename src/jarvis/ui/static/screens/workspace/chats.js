@@ -4,6 +4,31 @@ import { el } from "../../ui/dom.js";
 import { emptyState, row, actionButton } from "./_util.js";
 import { relTime } from "../../ui/format.js";
 
+function captureAuthority(api) {
+  const context = api.state?.context;
+  return {
+    authority: typeof api.authorityToken === "function" ? api.authorityToken() : null,
+    navigation: typeof api.navigationToken === "function" ? api.navigationToken() : null,
+    workspace: typeof api.workspaceToken === "function" ? api.workspaceToken() : null,
+    context: context ? { ...context } : null,
+  };
+}
+
+function isExactChatSuccessor(api, before, projectId) {
+  const current = api.state?.context;
+  if (!before.context || !current) return false;
+  if (typeof api.workspaceToken === "function" && api.workspaceToken() !== before.workspace) {
+    return false;
+  }
+  if (Number.isInteger(before.authority) && typeof api.authorityToken === "function"
+      && api.authorityToken() !== before.authority + 1) return false;
+  if (before.navigation !== null && typeof api.navigationIsCurrent === "function"
+      && !api.navigationIsCurrent(before.navigation)) return false;
+  return current.project_id === projectId
+    && current.session_id !== before.context.session_id
+    && current.context_revision === before.context.context_revision + 1;
+}
+
 export async function render(container, api, ctx) {
   container.textContent = "";
   const base = "/api/sessions?project_id=" + ctx.projectId;
@@ -20,6 +45,7 @@ export async function render(container, api, ctx) {
   const newChat = actionButton(
     activeProjectId === ctx.projectId ? "New chat in this project" : "Work in this project",
     async () => {
+      const before = captureAuthority(api);
       if (activeProjectId !== ctx.projectId) {
         const selected = await api.post("/api/projects/select", { project_id: ctx.projectId });
         if (!selected.ok) return;
@@ -27,7 +53,8 @@ export async function render(container, api, ctx) {
         const created = await api.post("/api/sessions/new", {});
         if (!created.ok) return;
       }
-      api.state.chat = [];
+      if (typeof api.runnerStatus === "function") await api.runnerStatus({ refresh: true });
+      if (!isExactChatSuccessor(api, before, ctx.projectId)) return;
       location.hash = "chat";
     },
     "primary",
@@ -60,7 +87,13 @@ export async function render(container, api, ctx) {
       const acts = el("div", { class: "ws-rowacts" }, [
         actionButton("Resume", async () => {
           // Loads the chat + its transcript into the Daily view (via the shared helper).
-          if (await api.resumeChat(s.id)) location.hash = "daily";
+          const navigation = typeof api.navigationToken === "function"
+            ? api.navigationToken() : null;
+          const resumed = await api.resumeChat(s.id);
+          const navigationCurrent = navigation === null
+            || typeof api.navigationIsCurrent !== "function"
+            || api.navigationIsCurrent(navigation);
+          if (resumed && navigationCurrent) location.hash = "chat";
         }),
         actionButton(s.pinned ? "Unpin" : "Pin", async () => {
           await api.post(`/api/sessions/${s.id}/pin`, { pinned: !s.pinned });

@@ -5,9 +5,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 STUDIO = (ROOT / "src/jarvis/ui/static/screens/studio.js").read_text(encoding="utf-8")
 OVERVIEW = (ROOT / "src/jarvis/ui/static/screens/workspace/overview.js").read_text(encoding="utf-8")
-WORKSPACE_ARTIFACTS = (
-    ROOT / "src/jarvis/ui/static/screens/workspace/artifacts.js"
-).read_text(encoding="utf-8")
+WORKSPACE_ARTIFACTS = (ROOT / "src/jarvis/ui/static/screens/workspace/artifacts.js").read_text(
+    encoding="utf-8"
+)
 ARTIFACTS = (ROOT / "src/jarvis/ui/static/screens/artifacts.js").read_text(encoding="utf-8")
 READMODELS = (ROOT / "src/jarvis/ui/readmodels.py").read_text(encoding="utf-8")
 TASKS = (ROOT / "src/jarvis/ui/static/screens/workspace/tasks.js").read_text(encoding="utf-8")
@@ -18,7 +18,7 @@ def test_orchestration_artifacts_open_the_existing_read_only_run_detail() -> Non
     for source in (OVERVIEW, WORKSPACE_ARTIFACTS, ARTIFACTS):
         assert 'origin_type === "orchestration"' in source
         assert "studio/${" in source
-    assert "api.get(`/api/orchestration/${runId}`)" in STUDIO
+    assert "api.getRequired(`/api/orchestration/${runId}`)" in STUDIO
     assert "api.post(`/api/orchestration" not in OVERVIEW
     assert "api.post(`/api/orchestration" not in WORKSPACE_ARTIFACTS
 

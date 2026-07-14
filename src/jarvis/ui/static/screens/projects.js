@@ -7,6 +7,7 @@
 import { el } from "../ui/dom.js";
 import { showToast } from "../ui/feedback.js";
 import { money } from "../ui/format.js";
+import { pushEscape } from "../ui/keys.js";
 
 const LABELS = ["Coding", "Creativity", "Business", "Personal", "Learning", "Finance"];
 
@@ -27,18 +28,59 @@ let activeProjectEdit = null;
 let projectEditSequence = 0;
 let activeProjectReset = null;
 
-function closeProjectReset(value) {
-  if (!activeProjectReset) return;
+function captureAuthority(api) {
+  const context = api.state?.context;
+  return {
+    authority: typeof api.authorityToken === "function" ? api.authorityToken() : null,
+    navigation: typeof api.navigationToken === "function" ? api.navigationToken() : null,
+    workspace: typeof api.workspaceToken === "function" ? api.workspaceToken() : null,
+    context: context ? {
+      session_id: context.session_id,
+      project_id: context.project_id,
+      context_revision: context.context_revision,
+    } : null,
+  };
+}
+
+function isExactProjectSuccessor(api, before, projectId) {
+  const current = api.state?.context;
+  if (!before.context || !current) return false;
+  if (typeof api.workspaceToken === "function" && api.workspaceToken() !== before.workspace) {
+    return false;
+  }
+  if (Number.isInteger(before.authority) && typeof api.authorityToken === "function"
+      && api.authorityToken() !== before.authority + 1) return false;
+  if (before.navigation !== null && typeof api.navigationIsCurrent === "function"
+      && !api.navigationIsCurrent(before.navigation)) return false;
+  return current.project_id === projectId
+    && current.session_id !== before.context.session_id
+    && current.context_revision === before.context.context_revision + 1;
+}
+
+function closeProjectReset(value, owner = null) {
+  if (!activeProjectReset || (owner !== null && activeProjectReset !== owner)) return;
   const current = activeProjectReset;
   activeProjectReset = null;
-  document.removeEventListener("keydown", current.onKeydown);
+  current.unregisterEscape();
   current.password.value = "";
   current.overlay.remove();
   current.restoreFocus?.focus?.();
   current.resolve(value);
 }
 
+function detachProjectReset(current) {
+  if (!current || current.detached) return;
+  current.detached = true;
+  current.unregisterEscape();
+  current.password.value = "";
+  current.overlay.remove();
+}
+
 function openProjectReset(project, api) {
+  if (activeProjectReset?.operationPending) {
+    showToast("A project reset is already in progress.", "error");
+    return Promise.resolve(false);
+  }
   return new Promise((resolve) => {
     if (activeProjectReset) closeProjectReset(false);
     const overlay = el("div", { class: "dialog-overlay", role: "presentation" });
@@ -82,39 +124,97 @@ function openProjectReset(project, api) {
       error.hidden = false;
       error.textContent = message || "Project reset failed. Stop active work and try again.";
     };
-    cancel.addEventListener("click", () => closeProjectReset(false));
+    const closeIfIdle = () => {
+      if (activeProjectReset?.operationPending) return;
+      closeProjectReset(false);
+    };
+    cancel.addEventListener("click", closeIfIdle);
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (confirmation.value !== project.name) { showError("The project name does not match."); return; }
       if (!password.value) { showError("Enter the owner password."); return; }
-      setBusy(true); error.hidden = true;
-      const steppedUp = await api.stepUp(password.value);
-      password.value = "";
-      if (!steppedUp.ok) {
-        setBusy(false); showError(steppedUp.data?.message || "Password verification failed."); return;
-      }
-      const result = await api.post(`/api/projects/${encodeURIComponent(project.id)}/reset`, {
+      const owner = activeProjectReset;
+      const resetRequest = {
         confirmation: confirmation.value,
         retain_repositories: retain.checked,
-      });
-      if (!result.ok) { setBusy(false); showError(result.data?.message); return; }
-      closeProjectReset(result.data);
+      };
+      owner.operationPending = true;
+      setBusy(true); error.hidden = true;
+      let steppedUp;
+      try {
+        steppedUp = await api.stepUp(password.value);
+      } catch {
+        steppedUp = {
+          ok: false, data: { message: "Password verification could not reach Kairo." },
+        };
+      }
+      password.value = "";
+      if (activeProjectReset !== owner) return;
+      if (!steppedUp.ok) {
+        owner.operationPending = false;
+        if (owner.detached) {
+          closeProjectReset(false, owner);
+          showToast(steppedUp.data?.message || "Password verification failed.", "error");
+          return;
+        }
+        setBusy(false); showError(steppedUp.data?.message || "Password verification failed."); return;
+      }
+      const beforeReset = captureAuthority(api);
+      let result;
+      try {
+        result = await api.post(
+          `/api/projects/${encodeURIComponent(project.id)}/reset`, resetRequest,
+        );
+      } catch {
+        result = { ok: false, data: { message: "Project reset could not reach Kairo." } };
+      }
+      if (activeProjectReset !== owner) return;
+      owner.operationPending = false;
+      if (!result.ok) {
+        if (owner.detached) {
+          closeProjectReset(false, owner);
+          showToast(result.data?.message || "Project reset failed.", "error");
+          return;
+        }
+        setBusy(false); showError(result.data?.message); return;
+      }
+      if (typeof api.runnerStatus === "function") {
+        await api.runnerStatus({ refresh: true });
+      }
+      if (!isExactProjectSuccessor(api, beforeReset, result.data?.successor_project_id)) {
+        closeProjectReset(false, owner);
+        showToast("The reset completed, but the current workspace changed.");
+        return;
+      }
+      closeProjectReset(result.data, owner);
     });
-    overlay.addEventListener("click", (event) => { if (event.target === overlay) closeProjectReset(false); });
+    overlay.addEventListener("click", (event) => { if (event.target === overlay) closeIfIdle(); });
     const restoreFocus = document.activeElement;
-    const onKeydown = (event) => { if (event.key === "Escape") closeProjectReset(false); };
-    document.addEventListener("keydown", onKeydown);
-    activeProjectReset = { overlay, password, resolve, onKeydown, restoreFocus };
+    const unregisterEscape = pushEscape(closeIfIdle, card);
+    activeProjectReset = {
+      overlay, password, resolve, unregisterEscape, restoreFocus,
+      operationPending: false, detached: false,
+    };
     document.body.append(overlay);
     confirmation.focus();
   });
+}
+
+export function dismissProjectDialogs() {
+  // Password step-up intentionally rotates the owner workspace, and a successful reset then
+  // rotates project/session authority again. Once the user has submitted this destructive,
+  // exact-project transaction, detach its stale DOM but let the immutable in-flight request
+  // finish. Before submission, an authority change still dismisses it immediately.
+  if (activeProjectReset?.operationPending) detachProjectReset(activeProjectReset);
+  else closeProjectReset(false);
+  closeProjectEdit(false);
 }
 
 function closeProjectEdit(value, owner = null) {
   const current = activeProjectEdit;
   if (!current || (owner !== null && current.owner !== owner)) return false;
   activeProjectEdit = null;
-  document.removeEventListener("keydown", current.onKeydown);
+  current.unregisterEscape();
   current.overlay.remove();
   current.restoreFocus?.focus?.();
   current.resolve(value);
@@ -220,18 +320,10 @@ function openProjectEdit(project, api) {
       if (event.target === overlay) closeIfIdle();
     });
     const restoreFocus = document.activeElement;
-    const onKeydown = (event) => {
-      if (event.key === "Escape") { closeIfIdle(); return; }
-      if (event.key !== "Tab") return;
-      const controls = [...card.querySelectorAll("button, input, textarea, [tabindex]:not([tabindex='-1'])")];
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    const unregisterEscape = pushEscape(closeIfIdle, card);
+    activeProjectEdit = {
+      owner, saving: false, overlay, resolve, unregisterEscape, restoreFocus,
     };
-    document.addEventListener("keydown", onKeydown);
-    activeProjectEdit = { owner, saving: false, overlay, resolve, onKeydown, restoreFocus };
     document.body.append(overlay);
     name.focus();
   });
@@ -302,8 +394,15 @@ function projectCard(p, activeId, api, refresh) {
   // refuse to show its private data and look empty. This adds no route or authority.
   const openWorkspace = async () => {
     if (!active) {
+      const beforeSelect = captureAuthority(api);
       const selected = await api.post("/api/projects/select", { project_id: p.id });
       if (!selected.ok) { refresh(); return; }
+      if (typeof api.runnerStatus === "function") {
+        await api.runnerStatus({ refresh: true });
+      }
+      if (!isExactProjectSuccessor(api, beforeSelect, p.id)) return;
+    } else if (api.state?.context?.project_id !== p.id) {
+      return;
     }
     location.hash = `workspace/${p.id}`;
   };
@@ -371,8 +470,8 @@ function collectionsRow() {
 }
 
 export async function render(container, api) {
-  const refresh = () => render(container, api);
-  const data = await api.get("/api/projects/overview");
+  const refresh = () => api.refreshRoute();
+  const data = await api.getRequired("/api/projects/overview");
   container.textContent = "";
 
   const head = el("div", { class: "rise" }, [

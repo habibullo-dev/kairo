@@ -11,9 +11,7 @@ from jarvis.ui.server import STATIC_DIR
 
 DRAFT = (STATIC_DIR / "ui" / "memory-draft.js").read_text(encoding="utf-8")
 GLOBAL_MEMORY = (STATIC_DIR / "screens" / "memory.js").read_text(encoding="utf-8")
-WORKSPACE_MEMORY = (STATIC_DIR / "screens" / "workspace" / "memory.js").read_text(
-    encoding="utf-8"
-)
+WORKSPACE_MEMORY = (STATIC_DIR / "screens" / "workspace" / "memory.js").read_text(encoding="utf-8")
 ROUTES = (STATIC_DIR.parents[3] / "tests" / "unit" / "test_ui_route_consumption.py").read_text(
     encoding="utf-8"
 )
@@ -38,7 +36,7 @@ def test_memory_draft_keeps_its_owner_open_while_a_save_is_pending() -> None:
     assert "if (activeDialog.saving) { resolve(false); return; }" in DRAFT
     assert "owner.saving = true" in DRAFT
     assert "cancel.disabled = true" in DRAFT
-    assert 'close(true, owner)' in DRAFT
+    assert "close(true, owner)" in DRAFT
     assert "Memory could not be saved. Check your connection and try again." in DRAFT
 
 
@@ -48,6 +46,7 @@ def test_memory_draft_binds_human_review_to_the_current_chat_context() -> None:
     assert "const expectedContext = api.state.context" in DRAFT
     assert "sameContext(api.state.context, expectedContext)" in DRAFT
     assert "expected_context: expectedContext" in DRAFT
+    assert "left.context_revision === right.context_revision" in DRAFT
 
 
 def test_memory_draft_supports_only_server_accepted_types() -> None:
@@ -57,7 +56,7 @@ def test_memory_draft_supports_only_server_accepted_types() -> None:
 
 def test_global_and_workspace_memory_surfaces_open_the_same_attended_draft() -> None:
     for source in (GLOBAL_MEMORY, WORKSPACE_MEMORY):
-        assert 'import { openMemoryDraft }' in source
+        assert "import { openMemoryDraft }" in source
         assert "Remember something" in source
         assert "await openMemoryDraft(api)" in source
 

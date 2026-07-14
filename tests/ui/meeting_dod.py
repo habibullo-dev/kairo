@@ -310,18 +310,14 @@ async def _assert_stale_success_cannot_hide_recording(browser: object, base: str
             "Workstation microphone is recording a meeting note."
         )
         await _meeting_state(page, "idle")
-        assert await page.locator("#rec-dot").evaluate(
-            "node => node.classList.contains('show')"
-        )
+        assert await page.locator("#rec-dot").evaluate("node => node.classList.contains('show')")
         await _meeting_recording(page, False)
         assert errors == []
     finally:
         await context.close()
 
 
-async def _assert_stale_poll_cannot_corrupt_concurrent_render(
-    browser: object, base: str
-) -> None:
+async def _assert_stale_poll_cannot_corrupt_concurrent_render(browser: object, base: str) -> None:
     context, page, errors = await _open_page(browser, base)
     try:
         await page.evaluate("window.__voiceStatusDeferrals = 2")
@@ -365,13 +361,9 @@ async def _assert_stale_poll_cannot_corrupt_concurrent_render(
         assert await page.locator("#mtg-state").text_content() == (
             "Listening through the workstation microphone…"
         )
-        assert await page.locator("#rec-dot").evaluate(
-            "node => node.classList.contains('show')"
-        )
+        assert await page.locator("#rec-dot").evaluate("node => node.classList.contains('show')")
         await _meeting_state(page, "idle")
-        assert await page.locator("#rec-dot").evaluate(
-            "node => node.classList.contains('show')"
-        )
+        assert await page.locator("#rec-dot").evaluate("node => node.classList.contains('show')")
         await _meeting_recording(page, False)
         assert errors == []
     finally:
@@ -406,12 +398,8 @@ async def _assert_late_http_cannot_hide_newer_recording(browser: object, base: s
         await page.wait_for_function(
             "document.getElementById('mtg-out').textContent.includes('source #93')"
         )
-        assert await page.locator("#mtg-state").text_content() == (
-            "Ready for a short spoken note"
-        )
-        assert await page.locator("#rec-dot").evaluate(
-            "node => node.classList.contains('show')"
-        )
+        assert await page.locator("#mtg-state").text_content() == ("Ready for a short spoken note")
+        assert await page.locator("#rec-dot").evaluate("node => node.classList.contains('show')")
         assert await page.locator("#mtg-controls").get_attribute("aria-busy") == "false"
         await _meeting_recording(page, False)
         assert errors == []
@@ -553,9 +541,7 @@ async def _assert_newer_screen_status_wins_over_older_poll(browser: object, base
         assert await page.locator("#mtg-state").text_content() == (
             "Listening through the workstation microphone…"
         )
-        assert await page.locator("#rec-dot").evaluate(
-            "node => node.classList.contains('show')"
-        )
+        assert await page.locator("#rec-dot").evaluate("node => node.classList.contains('show')")
         assert errors == []
     finally:
         await context.close()
@@ -569,7 +555,8 @@ async def _assert_replacement_workspace_clears_local_meeting_phase(
         await page.evaluate(
             "() => window.__WB_SOCKET__._onmessage({ data: JSON.stringify({ "
             "type: 'workspace', workspace_id: 'workbench', "
-            "meeting_recording_epoch: 'workbench-process', session_id: 5, project_id: 1 "
+            "meeting_recording_epoch: 'workbench-process', session_id: 5, project_id: 1, "
+            "context_revision: 1 "
             "}) })"
         )
         await page.wait_for_timeout(100)
@@ -584,13 +571,12 @@ async def _assert_replacement_workspace_clears_local_meeting_phase(
         await page.evaluate(
             "() => window.__WB_SOCKET__._onmessage({ data: JSON.stringify({ "
             "type: 'workspace', workspace_id: 'replacement-workspace-id-0001', "
-            "meeting_recording_epoch: 'workbench-process', session_id: 88, project_id: 2 "
+            "meeting_recording_epoch: 'workbench-process', session_id: 88, project_id: 2, "
+            "context_revision: 1 "
             "}) })"
         )
         await page.wait_for_function("window.__voiceStatusResolvers.length >= 1")
-        assert await page.locator("#mtg-state").text_content() == (
-            "Ready for a short spoken note"
-        )
+        assert await page.locator("#mtg-state").text_content() == ("Ready for a short spoken note")
         assert await page.locator("#mtg-availability").text_content() == (
             "Checking voice provider and microphone availability…"
         )
@@ -600,9 +586,7 @@ async def _assert_replacement_workspace_clears_local_meeting_phase(
         await context.close()
 
 
-async def _assert_handshake_cannot_reopen_stale_global_revision(
-    browser: object, base: str
-) -> None:
+async def _assert_handshake_cannot_reopen_stale_global_revision(browser: object, base: str) -> None:
     context, page, errors = await _open_page(browser, base)
     try:
         await page.evaluate("window.__voiceStatusFails = true")
@@ -611,13 +595,12 @@ async def _assert_handshake_cannot_reopen_stale_global_revision(
             "kind: 'meeting_recording', active: true, epoch: 'workbench-process', "
             "revision: 10 }) })"
         )
-        assert await page.locator("#rec-dot").evaluate(
-            "node => node.classList.contains('show')"
-        )
+        assert await page.locator("#rec-dot").evaluate("node => node.classList.contains('show')")
         await page.evaluate(
             "() => window.__WB_SOCKET__._onmessage({ data: JSON.stringify({ "
             "type: 'workspace', workspace_id: 'workbench', "
-            "meeting_recording_epoch: 'workbench-process', session_id: 5, project_id: 1 "
+            "meeting_recording_epoch: 'workbench-process', session_id: 5, project_id: 1, "
+            "context_revision: 1 "
             "}) })"
         )
         await page.evaluate(
@@ -626,9 +609,7 @@ async def _assert_handshake_cannot_reopen_stale_global_revision(
             "revision: 9 }) })"
         )
         await page.wait_for_timeout(100)
-        assert await page.locator("#rec-dot").evaluate(
-            "node => node.classList.contains('show')"
-        )
+        assert await page.locator("#rec-dot").evaluate("node => node.classList.contains('show')")
         assert await page.locator("#meeting-recording-status").text_content() == (
             "Workstation microphone is recording a meeting note."
         )
@@ -646,14 +627,16 @@ async def _assert_same_workspace_handshake_preserves_local_revision(
         workspace_frame = (
             "() => window.__WB_SOCKET__._onmessage({ data: JSON.stringify({ "
             "type: 'workspace', workspace_id: 'workbench', "
-            "meeting_recording_epoch: 'workbench-process', session_id: 5, project_id: 1 "
+            "meeting_recording_epoch: 'workbench-process', session_id: 5, project_id: 1, "
+            "context_revision: 1 "
             "}) })"
         )
         await page.evaluate(workspace_frame)
         await page.evaluate(
             "() => window.__WB_SOCKET__._onmessage({ data: JSON.stringify({ "
             "kind: 'meeting_state', state: 'recording', revision: 10, "
-            "workspace_id: 'workbench', session_id: 5, project_id: 1 }) })"
+            "workspace_id: 'workbench', session_id: 5, project_id: 1, "
+            "context_revision: 1 }) })"
         )
         assert await page.locator("#mtg-state").text_content() == (
             "Listening through the workstation microphone…"
@@ -662,7 +645,8 @@ async def _assert_same_workspace_handshake_preserves_local_revision(
         await page.evaluate(
             "() => window.__WB_SOCKET__._onmessage({ data: JSON.stringify({ "
             "kind: 'meeting_state', state: 'idle', revision: 9, "
-            "workspace_id: 'workbench', session_id: 5, project_id: 1 }) })"
+            "workspace_id: 'workbench', session_id: 5, project_id: 1, "
+            "context_revision: 1 }) })"
         )
         await page.wait_for_timeout(100)
         assert await page.locator("#mtg-state").text_content() == (

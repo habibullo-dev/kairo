@@ -8,6 +8,7 @@ the endpoints, the safety framing, and the client structure with fakes."""
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -140,10 +141,13 @@ def test_meeting_note_route_preserves_workspace_scope_and_returns_source(tmp_pat
     workspace = SimpleNamespace(
         voice=voice,
         context=ExecutionContext(session_id=42, project_id=7),
+        context_revision=3,
     )
 
     @asynccontextmanager
-    async def voice_activity(_workspace):
+    async def voice_activity(_workspace, *, expected_context=None, expected_revision=None):
+        assert expected_context == workspace.context
+        assert expected_revision == workspace.context_revision
         yield
 
     @asynccontextmanager
@@ -167,6 +171,12 @@ def test_meeting_note_route_preserves_workspace_scope_and_returns_source(tmp_pat
     client.app.state.workspaces = SimpleNamespace(
         resolve=lambda **_kw: workspace,
         voice_activity=voice_activity,
+        transition_lock=asyncio.Lock(),
+        claim_matches=lambda candidate, context, revision: (
+            candidate is workspace
+            and context == workspace.context
+            and revision == workspace.context_revision
+        ),
         meeting_receipt_activity=meeting_receipt_activity,
         reserve_server_capture=reserve_server_capture,
     )
@@ -176,6 +186,11 @@ def test_meeting_note_route_preserves_workspace_scope_and_returns_source(tmp_pat
             "title": "  Standup  ",
             "consent": True,
             "capture_id": "123e4567-e89b-42d3-a456-426614174000",
+            "expected_context": {
+                "session_id": 42,
+                "project_id": 7,
+                "context_revision": 3,
+            },
         },
         headers={
             **_hdr(auth, post=True),
@@ -245,8 +260,9 @@ def test_meeting_route_rejects_invalid_capture_receipt_before_microphone(tmp_pat
 def test_utterance_feeds_the_voice_session(tmp_path: Path) -> None:
     v, sess, _tts = _wired()
     client, auth = _client(tmp_path, voice=v)
-    r = client.post("/api/voice/utterance", content=b"webm-audio-bytes",
-                    headers=_hdr(auth, post=True))
+    r = client.post(
+        "/api/voice/utterance", content=b"webm-audio-bytes", headers=_hdr(auth, post=True)
+    )
     assert r.status_code == 200 and r.json()["ran"] is True
     assert sess.audio == b"webm-audio-bytes"  # fed to the SAME session (same loop + VoiceApprover)
     empty = client.post("/api/voice/utterance", content=b"", headers=_hdr(auth, post=True))
@@ -262,8 +278,11 @@ def test_utterance_unavailable_without_voice(tmp_path: Path) -> None:
 def test_dictation_returns_editable_text_without_starting_a_voice_turn(tmp_path: Path) -> None:
     v, sess, _tts = _wired()
     client, auth = _client(tmp_path, voice=v)
-    r = client.post("/api/voice/utterance?mode=dictation", content=b"webm-audio-bytes",
-                    headers=_hdr(auth, post=True))
+    r = client.post(
+        "/api/voice/utterance?mode=dictation",
+        content=b"webm-audio-bytes",
+        headers=_hdr(auth, post=True),
+    )
     assert r.status_code == 200 and r.json() == {"ok": True, "transcript": "dictated words"}
     assert sess.audio is None  # dictation is review-only: it never calls VoiceSession.handle_audio
     bad = client.post(
@@ -297,7 +316,7 @@ def test_client_voice_module_is_safe_and_complete() -> None:
     assert "NotAllowedError" in js  # permission-denied handling
     assert "innerHTML" not in js and " onclick=" not in js  # moves audio + fixed states only
     assert "/api/approvals" not in js and "/api/turn" not in js  # never approves/commits
-    assert "mode === \"dictation\"" in js and "cancelCapture" in js
+    assert 'mode === "dictation"' in js and "cancelCapture" in js
 
 
 def test_talk_button_and_playback_wired_in_shell() -> None:

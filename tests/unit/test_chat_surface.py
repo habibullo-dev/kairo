@@ -33,8 +33,7 @@ def test_cancelled_streaming_drafts_do_not_survive_in_the_live_chat() -> None:
     # A partial provider stream has no completed model response to persist; the browser removes it
     # before adding the durable `(stopped)` marker. Tool-start/deny events settle valid text first.
     assert (
-        'state.chat = state.chat.filter((item) => item.role !== "assistant" || !item.live)'
-        in APP
+        'state.chat = state.chat.filter((item) => item.role !== "assistant" || !item.live)' in APP
     )
     assert "function settleLiveAssistantDrafts(state)" in CONVERSATION
     assert CONVERSATION.count("settleLiveAssistantDrafts(state);") >= 3
@@ -78,7 +77,9 @@ def test_chat_has_readable_full_height_composer_and_context_controls() -> None:
 
 
 def test_chat_stop_cancels_only_the_current_turn() -> None:
-    assert 'api.post("/api/turn/cancel", {})' in CHAT
+    assert 'api.post("/api/turn/cancel", {' in CHAT
+    assert "expected_context: expectedContext" in CHAT
+    assert "turn_id: turnId" in CHAT
     assert "Background jobs keep running." in CHAT
     assert 'api.post("/api/runner/pause"' not in CHAT
     assert ".chat-turn-cancel" in CSS
@@ -89,7 +90,7 @@ def test_chat_stop_recovers_when_cancel_races_or_the_network_fails() -> None:
     # {cancelled:false} when the attended turn completed in the request race. Both that response
     # and a rejected fetch must restore a usable control after a fresh status read.
     assert "result.ok && result.data.cancelled" in CHAT
-    assert 'api.runnerStatus({ refresh: true })' in CHAT
+    assert "api.runnerStatus({ refresh: true })" in CHAT
     assert "if (runner && !runner.turn_busy) api.state.turnCancelling = false;" in CHAT
     assert "This turn has already finished." in CHAT
     assert "Kairo couldn't stop this turn. Please try again." in CHAT
@@ -107,8 +108,11 @@ def test_chat_shows_safe_subagent_progress_without_child_payloads() -> None:
     for token in (
         'evt.type === "subagent_event"',
         'evt.type === "subagent_completed"',
-        "addSubagentActivity", "addSubagentCompletion", "subagent-line",
-        "drafting a response", "compactLabel",
+        "addSubagentActivity",
+        "addSubagentCompletion",
+        "subagent-line",
+        "drafting a response",
+        "compactLabel",
     ):
         assert token in CONVERSATION
     assert "inner.input" not in CONVERSATION
@@ -122,7 +126,7 @@ def test_chat_rehydrates_recorded_delegation_summaries_without_child_bodies() ->
     assert "transcript.delegations" in APP
     assert "recorded delegated work" in APP
     assert "child event timeline" in APP
-    hydration = APP[APP.index("function hydrateTranscript"):APP.index("// --- WebSocket")]
+    hydration = APP[APP.index("function hydrateTranscript") : APP.index("// --- WebSocket")]
     assert "prompt" not in hydration
     assert "result_text" not in hydration
 
@@ -167,8 +171,15 @@ def test_chat_uses_plain_project_language_and_a_time_aware_welcome() -> None:
 
 def test_chat_shelf_has_scoped_files_and_honest_project_outputs() -> None:
     for token in (
-        "/api/chat/files", "/api/chat/outputs", "/api/chat/knowledge",
-        "Files", "Outputs", "Knowledge", "Project outputs", "Open full graph", "Attached folders",
+        "/api/chat/files",
+        "/api/chat/outputs",
+        "/api/chat/knowledge",
+        "Files",
+        "Outputs",
+        "Knowledge",
+        "Project outputs",
+        "Open full graph",
+        "Attached folders",
     ):
         assert token in CHAT
     assert "source_session_id" not in CHAT  # the browser never chooses the scope
@@ -177,8 +188,11 @@ def test_chat_shelf_has_scoped_files_and_honest_project_outputs() -> None:
 
 def test_chat_knowledge_shelf_is_project_bound_and_metadata_only() -> None:
     for token in (
-            "Choose a project", "Project files", "Knowledge connections",
-        "uv run jarvis graph rebuild", "window.location.hash",
+        "Choose a project",
+        "Project files",
+        "Knowledge connections",
+        "uv run jarvis graph rebuild",
+        "window.location.hash",
     ):
         assert token in CHAT
     assert "local_path" not in CHAT
@@ -187,9 +201,18 @@ def test_chat_knowledge_shelf_is_project_bound_and_metadata_only() -> None:
 
 def test_chat_file_button_uses_the_scoped_local_upload_path() -> None:
     for token in (
-        "chat-attach", "chat-file-input", "chat-folder-input", "webkitdirectory",
-        "relative_path", "finalize", "projectImport", "FormData", "api.upload",
-        "PROJECT_IMPORT_CONCURRENCY", "PROJECT_IMPORT_MAX_FILES", "data/connectors",
+        "chat-attach",
+        "chat-file-input",
+        "chat-folder-input",
+        "webkitdirectory",
+        "relative_path",
+        "finalize",
+        "projectImport",
+        "FormData",
+        "api.upload",
+        "PROJECT_IMPORT_CONCURRENCY",
+        "PROJECT_IMPORT_MAX_FILES",
+        "data/connectors",
     ):
         assert token in CHAT
     assert '"/api/chat/attachments"' in CHAT
@@ -199,7 +222,7 @@ def test_chat_file_button_uses_the_scoped_local_upload_path() -> None:
         "Analyzing your project files",
         "Building your local knowledge map",
         "Graphify is connecting folders and files",
-        'projectImport.stage = "graph"',
+        'importState.stage = "graph"',
     ):
         assert token in CHAT
 

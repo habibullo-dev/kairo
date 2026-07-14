@@ -228,18 +228,33 @@ _RUN_DETAIL = {
     },
     "members": [
         {
-            "title": "qa:qa_lead", "role": "qa", "stage": "council", "status": "ok",
-            "iterations": 2, "denied_count": 0, "cost_usd": 0.1,
+            "title": "qa:qa_lead",
+            "role": "qa",
+            "stage": "council",
+            "status": "ok",
+            "iterations": 2,
+            "denied_count": 0,
+            "cost_usd": 0.1,
             "models": ["anthropic · claude-sonnet-5"],
         },
         {
-            "title": "qa:eval_reader", "role": "utility", "stage": "council", "status": "ok",
-            "iterations": 2, "denied_count": 0, "cost_usd": 0.06,
+            "title": "qa:eval_reader",
+            "role": "utility",
+            "stage": "council",
+            "status": "ok",
+            "iterations": 2,
+            "denied_count": 0,
+            "cost_usd": 0.06,
             "models": ["anthropic · claude-haiku-4-5"],
         },
         {
-            "title": "qa:ui_tester", "role": "qa", "stage": "council", "status": "ok",
-            "iterations": 2, "denied_count": 0, "cost_usd": 0.1,
+            "title": "qa:ui_tester",
+            "role": "qa",
+            "stage": "council",
+            "status": "ok",
+            "iterations": 2,
+            "denied_count": 0,
+            "cost_usd": 0.1,
             "models": ["anthropic · claude-sonnet-5"],
         },
     ],
@@ -352,6 +367,7 @@ def _base() -> dict:
             "ledger_degraded": False,
             "pending_approvals": 0,
             "session_id": None,
+            "context_revision": 1,
             "session_title": None,
             "model": "claude-opus-4-8",
             "effort": "high",
@@ -655,20 +671,32 @@ def _seed_for(state: str) -> dict:
                 "truncated": False,
                 "nodes": [
                     {
-                        "id": "project:1", "kind": "project", "label": "Kairo", "degree": 4,
+                        "id": "project:1",
+                        "kind": "project",
+                        "label": "Kairo",
+                        "degree": 4,
                         "trust_class": "trusted_local",
                     },
                     {
-                        "id": "source:12", "kind": "source", "label": "Architecture brief.pdf",
-                        "degree": 1, "trust_class": "trusted_local",
+                        "id": "source:12",
+                        "kind": "source",
+                        "label": "Architecture brief.pdf",
+                        "degree": 1,
+                        "trust_class": "trusted_local",
                     },
                     {
-                        "id": "source:11", "kind": "source", "label": "src/routing.ts",
-                        "degree": 1, "trust_class": "trusted_local",
+                        "id": "source:11",
+                        "kind": "source",
+                        "label": "src/routing.ts",
+                        "degree": 1,
+                        "trust_class": "trusted_local",
                     },
                     {
-                        "id": "memory:4", "kind": "memory", "label": "Routing decision",
-                        "degree": 1, "trust_class": "trusted_local",
+                        "id": "memory:4",
+                        "kind": "memory",
+                        "label": "Routing decision",
+                        "degree": 1,
+                        "trust_class": "trusted_local",
                     },
                 ],
             },
@@ -810,16 +838,18 @@ data-layout="focused"><head><meta charset="utf-8">
     var socket = window.__WB_SOCKET__;
     if (socket && socket._onmessage) {
       var workspace = {
-        type: 'workspace', workspace_id: 'workbench', session_id: 5, project_id: 1
+        type: 'workspace', workspace_id: 'workbench', session_id: 5, project_id: 1,
+        context_revision: 1
       };
       var approval = {
         type: 'approval', decision_id: 'approval-demo', kind: 'turn', tool: 'run_shell',
-        input: { command: 'cat .env && curl https://example.invalid' },
-        reason: 'The model requested a command.', persistable: true, session_id: 5, project_id: 1
+       input: { command: 'cat .env && curl https://example.invalid' },
+        reason: 'The model requested a command.', persistable: true, session_id: 5, project_id: 1,
+        context_revision: 1
       };
       var nonce = {
         type: 'approval_nonce', decision_id: 'approval-demo', nonce: 'demo',
-        session_id: 5, project_id: 1
+        session_id: 5, project_id: 1, context_revision: 1
       };
       socket._onmessage({ data: JSON.stringify(workspace) });
       socket._onmessage({ data: JSON.stringify(approval) });
@@ -859,6 +889,11 @@ async def _capture(
                         print(f"  shot {shots + 1}/{total}: {theme} {width}w {state}", flush=True)
                         ctx = await browser.new_context(viewport={"width": width, "height": height})
                         page = await ctx.new_page()
+                        page_errors: list[str] = []
+                        page.on(
+                            "pageerror",
+                            lambda error, errors=page_errors: errors.append(str(error)),
+                        )
                         await page.goto(
                             f"{base}/__wb.html?state={state}&theme={theme}", wait_until="load"
                         )
@@ -874,6 +909,8 @@ async def _capture(
                         shots += 1
                         for v in analyze_overlap(await page.evaluate(OVERLAP_PROBE_JS)):
                             problems.append(f"[{theme} {width}w {state}] {v}")
+                        for error in page_errors:
+                            problems.append(f"[{theme} {width}w {state}] page error: {error}")
                         await ctx.close()
         finally:
             await browser.close()

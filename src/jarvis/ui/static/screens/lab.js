@@ -3,7 +3,7 @@
 import { esc } from "../ui/dom.js";
 
 export async function render(container, api) {
-  const lab = await api.get("/api/lab");
+  const lab = await api.getRequired("/api/lab");
   if (!lab) { container.innerHTML = `<div class="rise"><h1>Lab</h1><div class="sub">Unavailable.</div></div>`; return; }
   const rows = (lab.history || []).slice().reverse()
     .map((g) => `<tr><td class="mono">${esc(g.git_rev || "?")}</td>

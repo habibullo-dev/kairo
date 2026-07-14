@@ -1073,9 +1073,7 @@ def _build_telegram_remote_control(
     async def status() -> str:
         active_tasks = await repl.tasks.store.list() if repl.tasks is not None else []
         projects = (
-            await repl.projects.store.list(status="active")
-            if repl.projects is not None
-            else []
+            await repl.projects.store.list(status="active") if repl.projects is not None else []
         )
         project_names = {project.id: project.name for project in projects}
         running_orchestrations = [
@@ -1095,11 +1093,7 @@ def _build_telegram_remote_control(
             work = "Yes—Kairo is working now: " + "; ".join(current) + "."
         else:
             work = "No—Kairo is online, but no project work is running right now."
-        remote_mode = (
-            "enabled"
-            if operator_service is not None
-            else "read-only"
-        )
+        remote_mode = "enabled" if operator_service is not None else "read-only"
         return (
             f"{work}\n"
             f"Scheduled tasks: {len(active_tasks)}. Registered projects: {len(projects)}.\n"
@@ -1177,6 +1171,7 @@ def _build_telegram_remote_control(
                     max_results=operator_config.live_web_search_max_results,
                 )
                 remote_tools.register(live_search_tool)
+
                 async def search_news(query: str, max_results: int):
                     return await search_public_web(
                         api_key=config.secrets.tavily_api_key,
@@ -1354,18 +1349,14 @@ def _build_telegram_remote_control(
             )
         return compact_remote_model_reply(result.text)
 
-    async def attachment_chat(
-        attachment: RemoteAttachment, raw: bytes, caption: str
-    ) -> str:
+    async def attachment_chat(attachment: RemoteAttachment, raw: bytes, caption: str) -> str:
         if attachment_processor is None or attachment_loop is None:
             return "Telegram attachments are not enabled on this Kairo instance."
         prepared = await attachment_processor.prepare(attachment, raw, caption=caption)
         async with repl.turn_lock:
             if live_search_tool is not None:
                 live_search_tool.begin_turn()
-            result = await attachment_loop.run_turn(
-                [{"role": "user", "content": prepared.content}]
-            )
+            result = await attachment_loop.run_turn([{"role": "user", "content": prepared.content}])
         return compact_remote_model_reply(result.text)
 
     async def approvals() -> str:
@@ -1450,9 +1441,7 @@ def _build_telegram_remote_control(
             if operator_service is not None or news_brief_service is not None
             else None
         ),
-        news_brief_handler=(
-            news_brief_service.propose if news_brief_service is not None else None
-        ),
+        news_brief_handler=(news_brief_service.propose if news_brief_service is not None else None),
         operator_startup_handler=(
             start_remote_services
             if operator_service is not None or news_brief_service is not None
@@ -1887,9 +1876,7 @@ async def run_voice(config: Config, *, console: Console | None = None) -> None:
 # --- workstation UI (Phase 8) ----------------------------------------------
 
 
-def build_ui_app(
-    config: Config, *, repl: Repl, auth=None, owner_auth=None, artifacts=None
-):
+def build_ui_app(config: Config, *, repl: Repl, auth=None, owner_auth=None, artifacts=None):
     """Compose the workstation app from the REPL's already-built collaborators, with the UI
     approver seams swapped in (ADR-0008): the turn loop's approver is the ``UIApprover`` (Gate
     queue), sub-agent ASKs escalate to the UI screen, and the shared turn lock serializes UI
@@ -2054,8 +2041,7 @@ def build_ui_app(
         projects=repl.projects,
         on_context_replaced=app.state.approvals.fail_context,
         context_busy=lambda context: bool(
-            app.state.orchestrator is not None
-            and app.state.orchestrator.busy_for(context)
+            app.state.orchestrator is not None and app.state.orchestrator.busy_for(context)
         ),
     )
     run_store = repl.agents.run_store if repl.agents is not None else None
@@ -2070,9 +2056,7 @@ def build_ui_app(
     project_reports = (
         ProjectReportStore(repl.store.db, repl.store.lock) if repl.store is not None else None
     )
-    attention = (
-        AttentionStore(repl.store.db, repl.store.lock) if repl.store is not None else None
-    )
+    attention = AttentionStore(repl.store.db, repl.store.lock) if repl.store is not None else None
     app.state.services = UiServices(
         memory=repl.memory,
         tasks=repl.tasks,
@@ -2208,7 +2192,9 @@ def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None, workspac
         build_tts,
     )
 
-    async def _publish_meeting_state(context, state: str, revision: int) -> None:
+    async def _publish_meeting_state(
+        context, state: str, revision: int, context_revision: int | None
+    ) -> None:
         # A durable session may be mounted in more than one browser workspace. Meeting phases
         # belong only to the workspace that initiated the capture, and retain the immutable
         # context in which the hook fired even though delivery is scheduled asynchronously.
@@ -2218,6 +2204,7 @@ def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None, workspac
             workspace,
             {"kind": "meeting_state", "state": state, "revision": revision},
             context=context,
+            context_revision=context_revision,
         )
 
     # UiVoice first, so its read-only note_state hook can wire the state machines below.
@@ -2226,6 +2213,9 @@ def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None, workspac
         stt_name=config.voice.stt_provider,
         tts_name=config.voice.tts_provider,
         meeting_state_publish=_publish_meeting_state if workspace is not None else None,
+        meeting_context_revision=(
+            (lambda: workspace.context_revision) if workspace is not None else None
+        ),
     )
     tts = build_tts(
         config.voice,
@@ -2250,9 +2240,9 @@ def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None, workspac
         approver=approver,
         context_manager=voice_context,
         memory=repl.memory,
-        project=(lambda: workspace.project) if workspace is not None else (
-            repl.projects.current if repl.projects is not None else None
-        ),
+        project=(lambda: workspace.project)
+        if workspace is not None
+        else (repl.projects.current if repl.projects is not None else None),
         add_time_context=repl.tasks is not None,
         system=build_system(
             memory_enabled=repl.memory is not None,
@@ -2271,9 +2261,9 @@ def _build_ui_voice(config: Config, *, repl: Repl, app, artifacts=None, workspac
         output=renderer,
         turn_lock=repl.turn_lock,
         on_state=voice.note_state,
-        project=(lambda: workspace.project) if workspace is not None else (
-            repl.projects.current if repl.projects is not None else None
-        ),
+        project=(lambda: workspace.project)
+        if workspace is not None
+        else (repl.projects.current if repl.projects is not None else None),
     )
     voice.listener = PushToTalkListener(capture, voice_session, on_state=voice.note_state)
     voice.capture = capture
@@ -2314,6 +2304,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
             _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
     with _ctx.suppress(Exception):
         from jarvis.observability import configure_logging
+
         configure_logging(config.logs_dir, **config.logging.model_dump())
     if not config.ui.enabled:
         console.print(

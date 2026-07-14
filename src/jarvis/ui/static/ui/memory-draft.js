@@ -8,7 +8,12 @@ import { showToast } from "./feedback.js";
 let activeDialog = null;
 
 function sameContext(left, right) {
-  return Boolean(left && right && left.session_id === right.session_id && left.project_id === right.project_id);
+  return Boolean(
+    left && right
+    && left.session_id === right.session_id
+    && left.project_id === right.project_id
+    && left.context_revision === right.context_revision
+  );
 }
 
 function close(value, owner = null) {
@@ -20,6 +25,13 @@ function close(value, owner = null) {
   current.restoreFocus?.focus?.();
   current.resolve(value);
   return true;
+}
+
+export function dismissMemoryDraft() {
+  const current = activeDialog;
+  if (!current) return false;
+  current.saving = false;
+  return close(false, current);
 }
 
 function field(labelText, control, hint = null) {
@@ -38,6 +50,7 @@ export function openMemoryDraft(api) {
   const expectedContext = api.state.context && {
     session_id: api.state.context.session_id,
     project_id: api.state.context.project_id,
+    context_revision: api.state.context.context_revision,
   };
   return new Promise((resolve) => {
     if (activeDialog) {
@@ -110,6 +123,7 @@ export function openMemoryDraft(api) {
           type: type.value,
           expected_context: expectedContext,
         });
+        if (activeDialog !== owner) return;
         if (result.ok && result.data?.ok) {
           owner.saving = false;
           close(true, owner);

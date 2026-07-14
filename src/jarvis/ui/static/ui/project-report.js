@@ -6,6 +6,7 @@ import { showToast } from "./feedback.js";
 import { pushEscape } from "./keys.js";
 
 let activeClose = null;
+let reportOpenRevision = 0;
 
 function text(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -47,7 +48,7 @@ function findingsSection(title, note, findings) {
   return section;
 }
 
-function recommendationsSection(report) {
+function recommendationsSection(report, isCurrent) {
   const section = el("section", { class: "project-report-section" });
   section.append(el("h3", { text: "Recommendations" }));
   const rows = Array.isArray(report?.recommendations) ? report.recommendations : [];
@@ -77,6 +78,7 @@ function recommendationsSection(report) {
         class: "chip-btn project-report-review", type: "button", text: "Review with AI team",
       });
       review.addEventListener("click", () => {
+        if (!isCurrent()) { if (activeClose) activeClose(); return; }
         if (activeClose) activeClose();
         location.hash = `studio/report/${reportId}/${recommendationIndex}`;
       });
@@ -93,7 +95,7 @@ function recommendationsSection(report) {
   return section;
 }
 
-function showReport(report) {
+function showReport(report, isCurrent) {
   if (activeClose) activeClose();
   const overlay = el("div", { class: "dialog-overlay", role: "presentation" });
   const card = el("section", {
@@ -114,7 +116,7 @@ function showReport(report) {
     if (restoreFocus instanceof HTMLElement && restoreFocus.isConnected) restoreFocus.focus();
   };
   activeClose = close;
-  unregisterEscape = pushEscape(close);
+  unregisterEscape = pushEscape(close, card);
   closeButton.addEventListener("click", close);
   overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
 
@@ -149,7 +151,7 @@ function showReport(report) {
     ),
     findingsSection("Frontend/backend gaps", "Backend capabilities that may be missing, broken, or unclear in the user experience.", report?.frontend_backend_gaps),
     findingsSection("Test and reliability gaps", "Coverage, failure-mode, and operational concerns supported by report evidence.", report?.test_reliability_gaps),
-    recommendationsSection(report),
+    recommendationsSection(report, isCurrent),
     el("div", { class: "dialog-actions" }, [closeButton]),
   );
   overlay.append(card);
@@ -158,15 +160,31 @@ function showReport(report) {
 }
 
 export async function openProjectReport(api, reportId) {
+  const openRevision = ++reportOpenRevision;
   const id = Number(reportId);
   if (!Number.isInteger(id) || id < 1) {
     showToast("This project assessment link is invalid.", "error");
     return;
   }
+  const authorityToken = typeof api.authorityToken === "function" ? api.authorityToken() : null;
+  const authorityIsCurrent = () => authorityToken === null
+    || typeof api.authorityIsCurrent !== "function"
+    || api.authorityIsCurrent(authorityToken);
+  const readIsCurrent = () => authorityIsCurrent()
+    && (typeof api.renderIsCurrent !== "function" || api.renderIsCurrent());
   const data = await api.get(`/api/project-intelligence/reports/${encodeURIComponent(id)}`);
+  if (openRevision !== reportOpenRevision || !readIsCurrent()) return;
   if (!data?.report) {
     showToast("This project assessment is unavailable in the current project.", "error");
     return;
   }
-  showReport(data.report);
+  // Once mounted, this body-level dialog belongs to workspace authority rather than the route's
+  // short-lived render generation. Passive same-route refreshes must not disable its controls;
+  // an actual authority transition dismisses it through clearAuthorityLocalState().
+  showReport(data.report, authorityIsCurrent);
+}
+
+export function dismissProjectReport() {
+  reportOpenRevision += 1;
+  if (activeClose) activeClose();
 }

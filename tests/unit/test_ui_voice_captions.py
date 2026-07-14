@@ -9,6 +9,7 @@ transcript still enters the model framed as untrusted input.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -245,30 +246,34 @@ async def test_meeting_state_is_separate_scoped_and_content_free() -> None:
 async def test_meeting_state_uses_the_workspace_publisher_when_composed() -> None:
     from jarvis.ui.voice import UiVoice
 
-    delivered: list[tuple[object, str, int]] = []
+    delivered: list[tuple[object, str, int, int | None]] = []
 
-    async def publish(context, state: str, revision: int) -> None:
-        delivered.append((context, state, revision))
+    async def publish(context, state: str, revision: int, context_revision: int | None) -> None:
+        delivered.append((context, state, revision, context_revision))
 
     conns = _Conns()
-    voice = UiVoice(connections=conns, meeting_state_publish=publish)
+    workspace_revision = 7
+    voice = UiVoice(
+        connections=conns,
+        meeting_state_publish=publish,
+        meeting_context_revision=lambda: workspace_revision,
+    )
     with bind_execution_context(_CONTEXT):
         voice.note_meeting_state("recording")
+    workspace_revision = 8
     await voice._meeting_push_tail
 
-    assert delivered == [(_CONTEXT, "recording", 1)]
+    assert delivered == [(_CONTEXT, "recording", 1, 7)]
     assert not any(message.get("kind") == "meeting_state" for message in conns.sent)
 
 
 async def test_meeting_state_delivery_preserves_revision_order_when_first_send_is_slow() -> None:
-    import asyncio
-
     from jarvis.ui.voice import UiVoice
 
     release_first = asyncio.Event()
     delivered: list[tuple[str, int]] = []
 
-    async def publish(_context, state: str, revision: int) -> None:
+    async def publish(_context, state: str, revision: int, _context_revision: int | None) -> None:
         if state == "recording":
             await release_first.wait()
         delivered.append((state, revision))
@@ -287,3 +292,122 @@ async def test_meeting_state_delivery_preserves_revision_order_when_first_send_i
         ("saving", 3),
         ("idle", 4),
     ]
+
+
+async def test_cancelling_meeting_delivery_cancels_its_active_publication() -> None:
+    from jarvis.ui.voice import UiVoice
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    delivered: list[str] = []
+
+    async def publish(_context, state: str, _revision: int, _context_revision: int | None) -> None:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        delivered.append(state)
+
+    voice = UiVoice(meeting_state_publish=publish)
+    voice.note_meeting_state("recording")
+    delivery = voice._meeting_push_tail
+    assert delivery is not None
+    await asyncio.wait_for(started.wait(), timeout=0.1)
+
+    delivery.cancel()
+    result = await asyncio.gather(delivery, return_exceptions=True)
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert cancelled.is_set()
+
+    release.set()
+    await asyncio.sleep(0)
+    assert delivered == []
+
+
+async def test_immediate_meeting_delivery_cancellation_never_starts_custom_publisher() -> None:
+    from jarvis.ui.voice import UiVoice
+
+    publisher_called = False
+
+    async def publication() -> None:
+        await asyncio.sleep(0)
+
+    def publish(_context, _state: str, _revision: int, _context_revision: int | None):
+        nonlocal publisher_called
+        publisher_called = True
+        return publication()
+
+    voice = UiVoice(meeting_state_publish=publish)
+    voice.note_meeting_state("recording")
+    delivery = voice._meeting_push_tail
+    assert delivery is not None
+
+    delivery.cancel()
+    await asyncio.gather(delivery, return_exceptions=True)
+    await asyncio.sleep(0)
+
+    assert publisher_called is False
+
+
+async def test_cancelled_middle_meeting_delivery_cannot_break_revision_order() -> None:
+    from jarvis.ui.voice import UiVoice
+
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    events: list[tuple[str, int]] = []
+
+    async def publish(_context, state: str, revision: int, _context_revision: int | None) -> None:
+        events.append((f"start:{state}", revision))
+        if revision == 1:
+            first_started.set()
+            await release_first.wait()
+        events.append((f"done:{state}", revision))
+
+    voice = UiVoice(meeting_state_publish=publish)
+    voice.note_meeting_state("recording")
+    first = voice._meeting_push_tail
+    assert first is not None
+    await asyncio.wait_for(first_started.wait(), timeout=0.1)
+
+    voice.note_meeting_state("transcribing")
+    middle = voice._meeting_push_tail
+    voice.note_meeting_state("saving")
+    last = voice._meeting_push_tail
+    assert middle is not None and last is not None
+    middle.cancel()
+    await asyncio.gather(middle, return_exceptions=True)
+    await asyncio.sleep(0)
+
+    assert events == [("start:recording", 1)]
+    release_first.set()
+    await asyncio.wait_for(asyncio.gather(first, last), timeout=1)
+    assert events == [
+        ("start:recording", 1),
+        ("done:recording", 1),
+        ("start:saving", 3),
+        ("done:saving", 3),
+    ]
+
+
+async def test_meeting_publisher_may_return_an_already_scheduled_task() -> None:
+    from jarvis.ui.voice import UiVoice
+
+    delivered: list[tuple[str, int]] = []
+
+    async def publication(state: str, revision: int) -> None:
+        await asyncio.sleep(0)
+        delivered.append((state, revision))
+
+    def publish(_context, state: str, revision: int, _context_revision: int | None):
+        return asyncio.create_task(publication(state, revision))
+
+    voice = UiVoice(meeting_state_publish=publish)
+    voice.note_meeting_state("recording")
+    delivery = voice._meeting_push_tail
+    assert delivery is not None
+    await delivery
+
+    assert delivered == [("recording", 1)]

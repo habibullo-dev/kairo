@@ -2,6 +2,7 @@
 // POST /api/turn path; this module deliberately owns no authority. The small Markdown subset
 // below creates every node itself and places all dynamic text with textContent: raw HTML, SVG,
 // images, event handlers, and unsupported syntax remain inert text rather than markup.
+import { showToast } from "../ui/feedback.js";
 
 const FENCE = /^```\s*([A-Za-z0-9_+-]*)\s*$/;
 const HEADING = /^(#{1,3})\s+(.+?)\s*#*\s*$/;
@@ -230,17 +231,61 @@ export function renderConversation(host, state, { emptyHeading, emptyHint } = {}
   host.scrollTop = host.scrollHeight;
 }
 
-export async function submitConversationTurn(api, input, redraw) {
+export async function submitConversationTurn(api, input, redraw, onAdmissionChange = () => {}) {
   const text = input.value.trim();
   if (!text) return;
+  if (api.state.turnAdmission || api.state.runner?.turn_busy) return;
+  const expectedContext = api.state.context && {
+    session_id: api.state.context.session_id,
+    project_id: api.state.context.project_id,
+    context_revision: api.state.context.context_revision,
+  };
+  if (!expectedContext || !Number.isInteger(expectedContext.context_revision)) return;
+  const authorityToken = typeof api.authorityToken === "function" ? api.authorityToken() : null;
+  const optimistic = { role: "user", text };
+  const operation = { authorityToken, optimistic };
+  api.state.turnAdmission = operation;
+  onAdmissionChange();
   input.value = "";
-  api.state.chat.push({ role: "user", text });
+  api.state.chat.push(optimistic);
   redraw();
-  const result = await api.post("/api/turn", { text });
-  if (!result.ok) {
-    api.state.chat.push({ role: "assistant", text: `— ${result.data.message || "busy"} —` });
-    redraw();
+  let result;
+  try {
+    result = await api.post("/api/turn", { text, expected_context: expectedContext });
+  } catch {
+    result = { ok: false, status: 0, data: { message: "Kairo could not be reached." } };
   }
+  if (authorityToken !== null && typeof api.authorityIsCurrent === "function"
+      && !api.authorityIsCurrent(authorityToken)) return;
+  if (!result.ok) {
+    const index = api.state.chat.indexOf(optimistic);
+    if (index >= 0) api.state.chat.splice(index, 1);
+    if (api.state.turnAdmission === operation) {
+      api.state.turnAdmission = null;
+      onAdmissionChange();
+    }
+    if (typeof api.restoreTurnDraft === "function") api.restoreTurnDraft(text);
+    else {
+      input.value = input.value.trim() ? `${text}\n${input.value}` : text;
+      input.dispatchEvent(new Event("input"));
+      input.focus();
+      redraw();
+    }
+    showToast(result.data?.message || "Kairo could not start that turn. Your draft was restored.", "error");
+    return;
+  }
+  // A tiny turn can complete over WebSocket before this POST response arrives. Reconcile the
+  // server's current turn instead of resurrecting `busy` from the older admission snapshot.
+  await api.runnerStatus({ refresh: true });
+  if (authorityToken !== null && typeof api.authorityIsCurrent === "function"
+      && !api.authorityIsCurrent(authorityToken)) return;
+  if (api.state.turnAdmission === operation) {
+    api.state.turnAdmission = null;
+    onAdmissionChange();
+  }
+  if (typeof api.refreshConversationView === "function") api.refreshConversationView();
+  else if (typeof api.refreshRoute === "function") await api.refreshRoute();
+  else redraw();
 }
 
 function compactLabel(value, fallback) {

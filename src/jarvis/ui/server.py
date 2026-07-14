@@ -13,8 +13,10 @@ approvals, read models, and the frontend land in later tasks against this floor.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -36,7 +38,8 @@ from jarvis.observability.cost import load_pricing
 from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.modes import Mode
 from jarvis.persistence.artifacts import ArtifactPathError
-from jarvis.projects import ProjectResetBusyError, ProjectResetError
+from jarvis.persistence.db import transaction
+from jarvis.projects import GLOBAL, ProjectResetBusyError, ProjectResetError, build_project_context
 from jarvis.routing import RoutingMode
 from jarvis.scheduler.verification import VerificationContract
 from jarvis.search import search as _federated_search
@@ -142,6 +145,18 @@ STATIC_DIR = Path(__file__).parent / "static"
 #: Browser-provided only as an opaque routing handle.  The server resolves it against the
 #: authenticated cookie and a currently-live WebSocket before it can select a UI workspace.
 WORKSPACE_HEADER = "x-kairo-workspace-id"
+EXPECTED_SESSION_HEADER = "x-kairo-expected-session-id"
+EXPECTED_PROJECT_HEADER = "x-kairo-expected-project-id"
+EXPECTED_CONTEXT_REVISION_HEADER = "x-kairo-expected-context-revision"
+
+
+@dataclass(frozen=True)
+class _WorkspaceContextClaim:
+    """Untrusted freshness claim; valid only after registry comparison under transition_lock."""
+
+    context: ExecutionContext
+    revision: int
+
 
 #: Media types the artifact content route will serve — TEXT + IMAGES ONLY. No html/svg/js
 #: (script-injection surface); anything else is refused (415). nosniff + CSP are applied on the
@@ -225,6 +240,7 @@ def _runner_status(
             getattr(runner, "in_flight", None) if runner is not None and reveal_in_flight else None
         ),
         "turn_busy": bool(session is not None and session.busy),
+        "turn_id": getattr(session, "current_turn_id", None),
     }
 
 
@@ -298,6 +314,74 @@ def create_app(
             workspace_id=request.headers.get(WORKSPACE_HEADER),
         )
 
+    def _expected_context(session_value: object, project_value: object) -> ExecutionContext | None:
+        """Parse a client freshness claim; the workspace handle remains the authority."""
+        try:
+            if isinstance(session_value, bool):
+                return None
+            session_id = int(session_value)
+            if session_id < 1 or str(session_id) != str(session_value).strip():
+                return None
+            if project_value in (None, "", "global"):
+                project_id = None
+            else:
+                if isinstance(project_value, bool):
+                    return None
+                project_id = int(project_value)
+                if project_id < 1 or str(project_id) != str(project_value).strip():
+                    return None
+        except (TypeError, ValueError):
+            return None
+        return ExecutionContext(session_id=session_id, project_id=project_id)
+
+    def _expected_claim(
+        session_value: object, project_value: object, revision_value: object
+    ) -> _WorkspaceContextClaim | None:
+        context = _expected_context(session_value, project_value)
+        try:
+            if isinstance(revision_value, bool):
+                return None
+            revision = int(revision_value)
+            if revision < 1 or str(revision) != str(revision_value).strip():
+                return None
+        except (TypeError, ValueError):
+            return None
+        return _WorkspaceContextClaim(context=context, revision=revision) if context else None
+
+    def _expected_body_claim(body: object) -> _WorkspaceContextClaim | None:
+        expected = body.get("expected_context") if isinstance(body, dict) else None
+        return _expected_claim(
+            expected.get("session_id") if isinstance(expected, dict) else None,
+            expected.get("project_id") if isinstance(expected, dict) else None,
+            expected.get("context_revision") if isinstance(expected, dict) else None,
+        )
+
+    def _expected_header_claim(request: Request) -> _WorkspaceContextClaim | None:
+        return _expected_claim(
+            request.headers.get(EXPECTED_SESSION_HEADER),
+            request.headers.get(EXPECTED_PROJECT_HEADER),
+            request.headers.get(EXPECTED_CONTEXT_REVISION_HEADER),
+        )
+
+    def _request_claim(request: Request, body: object = None) -> _WorkspaceContextClaim | None:
+        if isinstance(body, dict) and "expected_context" in body:
+            return _expected_body_claim(body)
+        return _expected_header_claim(request)
+
+    def _claim_matches(workspace, claim: _WorkspaceContextClaim | None) -> bool:
+        registry = app.state.workspaces
+        return bool(
+            registry is not None
+            and claim is not None
+            and registry.claim_matches(workspace, claim.context, claim.revision)
+        )
+
+    def _context_changed() -> JSONResponse:
+        return JSONResponse(
+            {"ok": False, "message": "workspace context changed; retry from the current screen"},
+            status_code=409,
+        )
+
     def _session_in_workspace(meta, workspace) -> bool:
         """A session metadata mutation/read stays inside its live workspace project.
 
@@ -320,6 +404,25 @@ def create_app(
             or workspace.context.project_id is None
             or project_id is None
             or project_id == workspace.context.project_id
+        )
+
+    def _claim_can_access_project(
+        project_id: int | None,
+        claim: _WorkspaceContextClaim,
+        *,
+        include_global: bool,
+    ) -> bool:
+        """Authorize an entity against the immutable context admitted for this request.
+
+        Some project screens deliberately include global rows (tasks/memory); quarantined Vault
+        and connector-intent queues are exact-project. The deliberate Global workspace remains
+        their aggregate administrative view.
+        """
+        active_project = claim.context.project_id
+        return bool(
+            active_project is None
+            or project_id == active_project
+            or (include_global and project_id is None)
         )
 
     def _exact_project_id(workspace) -> int | None:
@@ -459,8 +562,6 @@ def create_app(
             approvals.invalidate_connection(conn)
             app.state.parked_task_approvals.invalidate_connection(conn)
             connections.drop(conn)
-            with contextlib.suppress(Exception):
-                await conn.ws.close(code=status.WS_1008_POLICY_VIOLATION)
         registry = app.state.workspaces
         if registry is not None:
             async with registry.transition_lock:
@@ -468,6 +569,12 @@ def create_app(
                     registry.drop_all()
                 else:
                     registry.drop_owner_session(owner_session)
+        # Network close is best-effort and bounded per socket. Revoke every in-memory authority
+        # above before awaiting it, then close concurrently so one stalled peer cannot delay the
+        # rest of logout/recovery by N * the per-connection timeout.
+        await asyncio.gather(
+            *(connections.close(conn, code=status.WS_1008_POLICY_VIOLATION) for conn in targets)
+        )
 
     def _invalidate_workspace_approvals(workspace) -> None:
         """Revoke live confirmation capabilities before replacing a project context."""
@@ -478,6 +585,24 @@ def create_app(
             ):
                 approvals.invalidate_connection(conn)
                 app.state.parked_task_approvals.invalidate_connection(conn)
+
+    def _prepare_workspace_replacements(workspaces: list) -> list[tuple[object, object]]:
+        """Preflight every fallible context hook before a destructive DB transaction."""
+        prepared: list[tuple[object, object]] = []
+        try:
+            for item in workspaces:
+                prepared.append((item, item.prepare_context_replacement()))
+        except Exception:
+            for prior_item, replacement in reversed(prepared):
+                with contextlib.suppress(Exception):
+                    prior_item.rollback_context_replacement(replacement)
+            raise
+        return prepared
+
+    def _rollback_workspace_replacements(prepared: list[tuple[object, object]]) -> None:
+        for item, replacement in reversed(prepared):
+            with contextlib.suppress(Exception):
+                item.rollback_context_replacement(replacement)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):  # noqa: ANN001,ANN202 - framework signature
@@ -784,12 +909,24 @@ def create_app(
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
         body = await request.json()
-        ok, message = approvals.resolve(
-            decision_id,
-            str(body.get("nonce", "")),
-            str(body.get("action", "")),
-            context=workspace.context if workspace is not None else None,
-        )
+        if workspace is not None:
+            claim = _request_claim(request, body)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                ok, message = approvals.resolve(
+                    decision_id,
+                    str(body.get("nonce", "")),
+                    str(body.get("action", "")),
+                    context=claim.context,
+                )
+        else:
+            ok, message = approvals.resolve(
+                decision_id,
+                str(body.get("nonce", "")),
+                str(body.get("action", "")),
+                context=None,
+            )
         return JSONResponse({"ok": ok, "message": message}, status_code=200 if ok else 409)
 
     @app.post("/api/parked-task-approvals/{run_id}/resolve")
@@ -813,11 +950,19 @@ def create_app(
         if svc is None:
             return _unavailable("tasks")
         body = await request.json()
-        pending = app.state.parked_task_approvals.visible_to(run_id, workspace.context)
+        claim = _request_claim(request, body)
+        async with app.state.workspaces.transition_lock:
+            if not _claim_matches(workspace, claim):
+                return _context_changed()
+        pending = app.state.parked_task_approvals.visible_to(run_id, claim.context)
         if pending is None:
             return _deny(status.HTTP_404_NOT_FOUND, "not found")
         task = await svc.store.get(pending.task_id)
-        if task is None or not _workspace_can_access_project(task.project_id, workspace):
+        if (
+            task is None
+            or task.project_id != pending.project_id
+            or not _claim_can_access_project(task.project_id, claim, include_global=True)
+        ):
             return _deny(status.HTTP_404_NOT_FOUND, "not found")
         # ``runs_for`` is ordered newest first.  A parked run remains running/inert, so it is
         # normally the newest row; the larger bound avoids treating a valid long-lived task as a
@@ -839,12 +984,16 @@ def create_app(
                 {"ok": False, "message": "parked task is no longer awaiting this review"},
                 status_code=status.HTTP_409_CONFLICT,
             )
-        reserved, message = app.state.parked_task_approvals.reserve(
-            run_id,
-            str(body.get("nonce", "")),
-            str(body.get("action", "")),
-            context=workspace.context,
-        )
+        async with app.state.workspaces.transition_lock:
+            if not _claim_matches(workspace, claim):
+                return _context_changed()
+            reserved, message = app.state.parked_task_approvals.reserve(
+                run_id,
+                str(body.get("nonce", "")),
+                str(body.get("action", "")),
+                context=claim.context,
+                context_revision=claim.revision,
+            )
         if reserved is None:
             return JSONResponse({"ok": False, "message": message}, status_code=409)
         try:
@@ -892,16 +1041,21 @@ def create_app(
         # A workspace always allocates before scheduling, so every emitted event has a real
         # session id.  The legacy injectable session retains its historical lazy behavior.
         if workspace is not None:
+            claim = _request_claim(request, body)
             async with app.state.workspaces.transition_lock:
-                if workspace.voice_active:
-                    started = False
-                else:
-                    await sess.ensure_session()
-                    started = sess.submit(text)
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                started = False if workspace.voice_active else sess.submit(text)
         else:
             started = sess.submit(text)
         # 409 if a turn is already in flight (one interactive turn at a time, like the REPL).
-        return JSONResponse({"ok": started}, status_code=200 if started else 409)
+        return JSONResponse(
+            {
+                "ok": started,
+                "turn_id": getattr(sess, "current_turn_id", None) if started else None,
+            },
+            status_code=200 if started else 409,
+        )
 
     @app.post("/api/turn/cancel")
     async def cancel_turn(request: Request) -> JSONResponse:
@@ -911,7 +1065,33 @@ def create_app(
         sess = workspace.session if workspace is not None else app.state.session
         if sess is None:
             return JSONResponse({"cancelled": False})
-        return JSONResponse({"cancelled": sess.cancel()})
+        if workspace is None:
+            return JSONResponse({"cancelled": sess.cancel()})
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        claim = _request_claim(request, body)
+        raw_turn_id = body.get("turn_id") if isinstance(body, dict) else None
+        try:
+            turn_id = int(raw_turn_id)
+        except (TypeError, ValueError):
+            turn_id = None
+        async with app.state.workspaces.transition_lock:
+            if not _claim_matches(workspace, claim):
+                return _context_changed()
+            if (
+                isinstance(raw_turn_id, bool)
+                or turn_id is None
+                or turn_id < 1
+                or str(turn_id) != str(raw_turn_id).strip()
+                or getattr(sess, "current_turn_id", None) != turn_id
+            ):
+                return JSONResponse(
+                    {"cancelled": False, "message": "that turn is no longer running"},
+                    status_code=409,
+                )
+            return JSONResponse({"cancelled": sess.cancel()})
 
     # --- emergency stop: existing brakes only (Ctrl-C parity + runner stop) -------------
 
@@ -922,20 +1102,51 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        sess = workspace.session if workspace is not None else app.state.session
-        status = _runner_status(app.state.runner, sess, reveal_in_flight=workspace is None)
+        projects = app.state.projects
+        if workspace is not None:
+            # Freeze one coherent authority snapshot before any budget/session-store await. A
+            # project transition can happen during those reads, but this response can never pair
+            # the old project with the new session (the client rejects older revisions too).
+            async with app.state.workspaces.transition_lock:
+                if not app.state.workspaces.is_live(workspace):
+                    return _context_changed()
+                sess = workspace.session
+                context = workspace.context
+                context_revision = workspace.context_revision
+                cur = workspace.project
+                status = _runner_status(app.state.runner, sess, reveal_in_flight=False)
+                pending_approvals = len(app.state.approvals.pending_for(context))
+                session_snapshot = {
+                    "session_id": context.session_id,
+                    "session_save_state": getattr(sess, "persistence_state", "new"),
+                    "chat_turn_budget_usd": getattr(
+                        sess, "turn_budget_usd", config.chat.hard_stop_usd_per_turn
+                    ),
+                    "last_turn_cost_usd": getattr(sess, "last_turn_cost_usd", None),
+                    "last_turn_model": getattr(sess, "last_turn_model", None),
+                    "last_turn_provider": getattr(sess, "last_turn_provider", None),
+                }
+        else:
+            sess = app.state.session
+            context_revision = None
+            cur = projects.current() if projects is not None else None
+            status = _runner_status(app.state.runner, sess, reveal_in_flight=True)
+            pending_approvals = 0
+            session_snapshot = {
+                "session_id": getattr(sess, "session_id", None),
+                "session_save_state": getattr(sess, "persistence_state", "new"),
+                "chat_turn_budget_usd": getattr(
+                    sess, "turn_budget_usd", config.chat.hard_stop_usd_per_turn
+                ),
+                "last_turn_cost_usd": getattr(sess, "last_turn_cost_usd", None),
+                "last_turn_model": getattr(sess, "last_turn_model", None),
+                "last_turn_provider": getattr(sess, "last_turn_provider", None),
+            }
         modes = app.state.modes
         status["mode"] = modes.current().value if modes is not None else "approval"
-        projects = app.state.projects
-        cur = (
-            workspace.project
-            if workspace is not None
-            else (projects.current() if projects is not None else None)
-        )
         status["project"] = {"id": cur.project_id, "name": cur.name} if cur is not None else None
-        status["pending_approvals"] = (
-            len(app.state.approvals.pending_for(workspace.context)) if workspace is not None else 0
-        )
+        status["context_revision"] = context_revision
+        status["pending_approvals"] = pending_approvals
         budgets = app.state.services.budgets
         status["today_spend_usd"] = (
             (await budgets.period_spend("day"))["cost_usd"] if budgets is not None else None
@@ -959,20 +1170,18 @@ def create_app(
         # client can rehydrate the transcript it is IN (fixes the "No messages yet" reload) and
         # render honest composer chips. session_title is looked up fresh (a rename must show).
         sstore = app.state.services.sessions
-        status["session_id"] = sess.session_id if sess is not None else None
+        status["session_id"] = session_snapshot["session_id"]
         status["session_title"] = None
-        status["session_save_state"] = getattr(sess, "persistence_state", "new")
+        status["session_save_state"] = session_snapshot["session_save_state"]
         status["session_created_at"] = None
         status["session_updated_at"] = None
         status["session_pinned"] = False
-        status["chat_turn_budget_usd"] = getattr(
-            sess, "turn_budget_usd", config.chat.hard_stop_usd_per_turn
-        )
-        status["last_turn_cost_usd"] = getattr(sess, "last_turn_cost_usd", None)
-        status["last_turn_model"] = getattr(sess, "last_turn_model", None)
-        status["last_turn_provider"] = getattr(sess, "last_turn_provider", None)
-        if sess is not None and sess.session_id is not None and sstore is not None:
-            meta = await sstore.get_meta(sess.session_id)
+        status["chat_turn_budget_usd"] = session_snapshot["chat_turn_budget_usd"]
+        status["last_turn_cost_usd"] = session_snapshot["last_turn_cost_usd"]
+        status["last_turn_model"] = session_snapshot["last_turn_model"]
+        status["last_turn_provider"] = session_snapshot["last_turn_provider"]
+        if session_snapshot["session_id"] is not None and sstore is not None:
+            meta = await sstore.get_meta(session_snapshot["session_id"])
             if meta is not None:
                 status["session_title"] = meta.title
                 status["session_created_at"] = meta.created_at
@@ -1444,7 +1653,7 @@ def create_app(
         for source in sources:
             if not source.origin.startswith(folder_prefix):
                 continue
-            relative = source.origin[len(folder_prefix):]
+            relative = source.origin[len(folder_prefix) :]
             root = relative.split("/", 1)[0]
             if root and "/" in relative:
                 folder_counts[root] = folder_counts.get(root, 0) + 1
@@ -1502,13 +1711,18 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        projects = app.state.projects
-        project_id = (
-            workspace.context.project_id
-            if workspace is not None
-            else (projects.current().project_id if projects is not None else None)
-        )
         body = await request.json()
+        projects = app.state.projects
+        if workspace is not None:
+            claim = _request_claim(request, body)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                checked_context = claim.context
+            project_id = checked_context.project_id
+        else:
+            checked_context = None
+            project_id = projects.current().project_id if projects is not None else None
         root = body.get("root")
         if (
             project_id is None
@@ -1805,10 +2019,25 @@ def create_app(
     # --- mutations: the enumerated human-authority set (D5, route-closed-set pin) ------
 
     @app.post("/api/vault/sources/{source_id}/approve")
-    async def vault_approve(source_id: int) -> JSONResponse:
+    async def vault_approve(source_id: int, request: Request) -> JSONResponse:
         svc = app.state.services.knowledge
         if svc is None:
             return _unavailable("knowledge")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        claim = None
+        if workspace is not None:
+            claim = _expected_header_claim(request)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+        source = await svc.store.get_source(source_id)
+        if source is None or (
+            claim is not None
+            and not _claim_can_access_project(source.project_id, claim, include_global=False)
+        ):
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
         try:
             await svc.approve_source(source_id)  # = `kb review` approve
         except Exception:  # noqa: BLE001 - provider details stay server-side; review fails closed
@@ -1823,10 +2052,25 @@ def create_app(
         return JSONResponse({"ok": True})
 
     @app.post("/api/vault/sources/{source_id}/reject")
-    async def vault_reject(source_id: int) -> JSONResponse:
+    async def vault_reject(source_id: int, request: Request) -> JSONResponse:
         svc = app.state.services.knowledge
         if svc is None:
             return _unavailable("knowledge")
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
+        claim = None
+        if workspace is not None:
+            claim = _expected_header_claim(request)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+        source = await svc.store.get_source(source_id)
+        if source is None or (
+            claim is not None
+            and not _claim_can_access_project(source.project_id, claim, include_global=False)
+        ):
+            return _deny(status.HTTP_404_NOT_FOUND, "not found")
         rejected = await svc.reject_source(source_id)
         return JSONResponse({"ok": bool(rejected)})
 
@@ -1856,15 +2100,20 @@ def create_app(
         # Tag the ingest with the active project (Phase 10 A1) so it's retrievable in that
         # scope and never leaked to another project; None (global) when no project is active.
         projects = app.state.projects
-        active_pid = (
-            workspace.context.project_id
-            if workspace is not None
-            else (projects.current().project_id if projects is not None else None)
-        )
+        if workspace is not None:
+            claim = _request_claim(request, body)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                checked_context = claim.context
+            active_pid = checked_context.project_id
+        else:
+            checked_context = None
+            active_pid = projects.current().project_id if projects is not None else None
         try:
             scope = (
-                bind_execution_context(workspace.context)
-                if workspace is not None
+                bind_execution_context(checked_context)
+                if checked_context is not None
                 else contextlib.nullcontext()
             )
             with scope:
@@ -1894,18 +2143,32 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
+        form = None
         try:
             form = await request.form(
                 max_files=1,
-                max_fields=6,
+                max_fields=7,
                 max_part_size=svc.config.max_ingest_bytes + 1,
             )
             upload = form.get("file")
             relative_path = form.get("relative_path")
             projects = app.state.projects
+            attachment_context = None
+            if workspace is not None:
+                claim = _expected_claim(
+                    form.get("expected_session_id"),
+                    form.get("expected_project_id"),
+                    form.get("expected_context_revision"),
+                )
+                async with app.state.workspaces.transition_lock:
+                    if not _claim_matches(workspace, claim):
+                        return _context_changed()
+                    # Capture one immutable pair. Parsing/conversion/ingest may yield, but project
+                    # and source session can no longer be read from different workspace epochs.
+                    attachment_context = claim.context
             project_id = (
-                workspace.context.project_id
-                if workspace is not None
+                attachment_context.project_id
+                if attachment_context is not None
                 else (projects.current().project_id if projects is not None else None)
             )
             # The folder UI finalizes separately, so one rejected last file cannot leave the
@@ -1962,7 +2225,9 @@ def create_app(
             finally:
                 if callable(closer):
                     await closer()
-            source_session_id = workspace.context.session_id if workspace is not None else None
+            source_session_id = (
+                attachment_context.session_id if attachment_context is not None else None
+            )
             if source_session_id is None:
                 # The legacy single-session host has the same invariant as workspaces: an upload
                 # belongs to one durable chat.  Allocate the lazy row before ingestion when the
@@ -1974,14 +2239,20 @@ def create_app(
                     source_session_id = await ensure_session()
                 else:
                     source_session_id = getattr(ui_session, "session_id", None)
-            result = await svc.ingest_uploaded(
-                filename,
-                bytes(raw),
-                created_by="user",
-                source_session_id=source_session_id,
-                project_id=project_id,
-                relative_path=str(relative_path) if relative_path else None,
+            scope = (
+                bind_execution_context(attachment_context)
+                if attachment_context is not None
+                else contextlib.nullcontext()
             )
+            with scope:
+                result = await svc.ingest_uploaded(
+                    filename,
+                    bytes(raw),
+                    created_by="user",
+                    source_session_id=source_session_id,
+                    project_id=project_id,
+                    relative_path=str(relative_path) if relative_path else None,
+                )
         except Exception:  # conversion errors can contain unhelpful local parser details
             log.warning("chat_attachment_ingest_failed", exc_info=True)
             return JSONResponse(
@@ -1994,6 +2265,9 @@ def create_app(
                 },
                 status_code=400,
             )
+        finally:
+            if form is not None:
+                await form.close()
         secret_alert_id = None
         if result.suspected_secret_hits:
             # The detector returns only closed-set rule names + a count; the matched value never
@@ -2056,16 +2330,29 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        if workspace is not None and workspace.context.project_id is not None:
-            return JSONResponse(
-                {"ok": False, "message": "digest is available from the global workspace"},
-                status_code=status.HTTP_409_CONFLICT,
-            )
+        session = workspace.session if workspace is not None else app.state.session
+        if workspace is not None:
+            claim = _expected_header_claim(request)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                if claim.context.project_id is not None:
+                    return JSONResponse(
+                        {"ok": False, "message": "digest is available from the global workspace"},
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
         run_now = getattr(app.state, "run_digest_now", None)
         if run_now is None:
             return _unavailable("digest")
-        session = workspace.session if workspace is not None else app.state.session
-        if session is not None and session.busy:
+        if workspace is not None:
+            async with app.state.workspaces.transition_lock:
+                # Re-check the immutable claim before admission: provider lookup above is cheap,
+                # but a project/session transition may have completed while it ran.
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                if session is not None and session.busy:
+                    return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
+        elif session is not None and session.busy:
             return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
         outcome = await run_now()
         return JSONResponse({"ok": True, "summary": outcome.text})
@@ -2079,16 +2366,20 @@ def create_app(
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
         if workspace is not None:
-            # Match the task list/history contract: a project workspace may cancel only its own
-            # task or a global task. The global workspace retains its administrative aggregate;
-            # a guessed foreign id is never a capability from a project workspace.
-            task = await svc.store.get(task_id)
-            if task is None or (
-                workspace.context.project_id is not None
-                and task.project_id not in (None, workspace.context.project_id)
-            ):
-                return _deny(status.HTTP_404_NOT_FOUND, "not found")
-        cancelled = await svc.cancel(task_id)
+            claim = _expected_header_claim(request)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                # Match the task list/history contract: a project workspace may cancel its own
+                # task or a global task. A guessed foreign id is never authority.
+                task = await svc.store.get(task_id)
+                if task is None or not _claim_can_access_project(
+                    task.project_id, claim, include_global=True
+                ):
+                    return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                cancelled = await svc.cancel(task_id)
+        else:
+            cancelled = await svc.cancel(task_id)
         return JSONResponse({"ok": cancelled is not None})
 
     @app.post("/api/memory/{memory_id}/forget")
@@ -2100,14 +2391,20 @@ def create_app(
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
         if workspace is not None:
-            # A memory id is not authority. Project workspaces may forget their own memories or
-            # deliberately shared global memories, never an id guessed from another project.
-            memory = await svc.store.get(memory_id)
-            if memory is None or (
-                memory.project_id is not None and memory.project_id != workspace.context.project_id
-            ):
-                return _deny(status.HTTP_404_NOT_FOUND, "not found")
-        forgotten = await svc.store.forget(memory_id)  # status flip, never DELETE
+            claim = _expected_header_claim(request)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                # A memory id is not authority. Project workspaces may forget their own memories
+                # or deliberately shared global memories, never another project's row.
+                memory = await svc.store.get(memory_id)
+                if memory is None or not _claim_can_access_project(
+                    memory.project_id, claim, include_global=True
+                ):
+                    return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                forgotten = await svc.store.forget(memory_id)  # status flip, never DELETE
+        else:
+            forgotten = await svc.store.forget(memory_id)
         return JSONResponse({"ok": bool(forgotten)})
 
     @app.post("/api/memory/remember")
@@ -2131,9 +2428,7 @@ def create_app(
             )
         raw_content = body.get("content")
         if not isinstance(raw_content, str):
-            return JSONResponse(
-                {"ok": False, "message": "content must be text"}, status_code=400
-            )
+            return JSONResponse({"ok": False, "message": "content must be text"}, status_code=400)
         content = raw_content.strip()
         if not content:
             return JSONResponse({"ok": False, "message": "content required"}, status_code=400)
@@ -2143,22 +2438,15 @@ def create_app(
             )
         mem_type = body.get("type", "fact")
         if not isinstance(mem_type, str) or mem_type not in _MEMORY_TYPES:
-            return JSONResponse(
-                {"ok": False, "message": "invalid memory type"}, status_code=400
-            )
+            return JSONResponse({"ok": False, "message": "invalid memory type"}, status_code=400)
         checked_context: ExecutionContext | None = None
         if workspace is not None:
-            expected = body.get("expected_context")
+            claim = _request_claim(request, body)
             # This is a freshness check, never a browser-selected scope: capture the one live
             # workspace context under the same lock that project/session transitions use, and
             # reject a draft that was reviewed before another duplicate tab switched context.
             async with app.state.workspaces.transition_lock:
-                checked_context = workspace.context
-                if (
-                    not isinstance(expected, dict)
-                    or expected.get("session_id") != checked_context.session_id
-                    or expected.get("project_id") != checked_context.project_id
-                ):
+                if not _claim_matches(workspace, claim):
                     return JSONResponse(
                         {
                             "ok": False,
@@ -2166,6 +2454,7 @@ def create_app(
                         },
                         status_code=status.HTTP_409_CONFLICT,
                     )
+                checked_context = claim.context
         projects = app.state.projects
         pid = (
             checked_context.project_id
@@ -2200,17 +2489,12 @@ def create_app(
             )
         checked_context: ExecutionContext | None = None
         if workspace is not None:
-            expected = body.get("expected_context")
+            claim = _request_claim(request, body)
             # This is a freshness check, never a browser-selected scope: capture the one live
             # workspace context under the same lock that project/session transitions use, and
             # reject a task draft reviewed before another duplicate tab switched context.
             async with app.state.workspaces.transition_lock:
-                checked_context = workspace.context
-                if (
-                    not isinstance(expected, dict)
-                    or expected.get("session_id") != checked_context.session_id
-                    or expected.get("project_id") != checked_context.project_id
-                ):
+                if not _claim_matches(workspace, claim):
                     return JSONResponse(
                         {
                             "ok": False,
@@ -2218,6 +2502,7 @@ def create_app(
                         },
                         status_code=status.HTTP_409_CONFLICT,
                     )
+                checked_context = claim.context
         projects = app.state.projects
         pid = (
             checked_context.project_id
@@ -2278,17 +2563,51 @@ def create_app(
         if sess is None:
             return _unavailable("sessions")
         if workspace is not None:
+            publication = None
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            claim = _request_claim(request, body)
             async with app.state.workspaces.transition_lock:
-                resumed = await workspace.resume(session_id)
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                if workspace.attended_busy:
+                    return JSONResponse({"ok": False}, status_code=409)
+            try:
+                prepared = await workspace.prepare_resume(session_id)
+            except RuntimeError as exc:
+                if str(exc) == "context_changed":
+                    return _context_changed()
+                return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
+            except KeyError:
+                prepared = None
+            if prepared is None:
+                return JSONResponse({"ok": False}, status_code=409)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                try:
+                    resumed = workspace.commit_resume(prepared)
+                except RuntimeError as exc:
+                    if str(exc) == "context_changed":
+                        return _context_changed()
+                    return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
                 if resumed:
                     app.state.workspaces.refresh_context(workspace)
-                    await app.state.workspaces.publish_workspace(
-                        workspace,
-                        {
-                            "kind": "session_resumed",
-                            "name": workspace.project.name,
-                        },
+                    publication = (
+                        workspace.context,
+                        workspace.context_revision,
+                        {"kind": "session_resumed", "name": workspace.project.name},
                     )
+            if publication is not None:
+                context, context_revision, message = publication
+                await app.state.workspaces.publish_workspace(
+                    workspace,
+                    message,
+                    context=context,
+                    context_revision=context_revision,
+                )
         else:
             resumed = await sess.resume(session_id)
         return JSONResponse({"ok": resumed}, status_code=200 if resumed else 409)
@@ -2297,25 +2616,57 @@ def create_app(
     async def sessions_new(request: Request) -> JSONResponse:
         # Phase 15.5: start a FRESH conversation under the current project scope (exposes the
         # existing UiSession.start_new_session). 409 while a turn is in flight — the loop state
-        # must not change mid-turn. No new authority: a new session is created lazily on its first
-        # turn, exactly like the REPL.
+        # must not change mid-turn. A workspace prepares its durable row before publishing the
+        # context transition; the legacy unscoped session retains the REPL's lazy behavior.
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
         sess = workspace.session if workspace is not None else app.state.session
         if sess is None:
             return _unavailable("sessions")
-        if sess.busy:
-            return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
         if workspace is not None:
+            publication = None
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            claim = _request_claim(request, body)
             async with app.state.workspaces.transition_lock:
-                await workspace.start_new_session()
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                if workspace.attended_busy:
+                    return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
+            try:
+                prepared = await workspace.prepare_new_session()
+            except RuntimeError as exc:
+                if str(exc) == "context_changed":
+                    return _context_changed()
+                return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                try:
+                    workspace.commit_new_session(prepared)
+                except RuntimeError as exc:
+                    if str(exc) == "context_changed":
+                        return _context_changed()
+                    return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
                 app.state.workspaces.refresh_context(workspace)
-                await app.state.workspaces.publish_workspace(
-                    workspace,
+                publication = (
+                    workspace.context,
+                    workspace.context_revision,
                     {"kind": "session_new", "name": workspace.project.name},
                 )
+            context, context_revision, message = publication
+            await app.state.workspaces.publish_workspace(
+                workspace,
+                message,
+                context=context,
+                context_revision=context_revision,
+            )
         else:
+            if sess.busy:
+                return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
             projects = app.state.projects
             cur = projects.current() if projects is not None else None
             sess.start_new_session(cur.project_id if cur is not None else None)
@@ -2349,11 +2700,18 @@ def create_app(
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
         meta = await svc.get_meta(session_id)
-        if not _session_in_workspace(meta, workspace):
-            return JSONResponse({"ok": False, "message": "wrong project scope"}, status_code=404)
-        archived = bool((await request.json()).get("archived", True))
+        body = await request.json()
+        archived = bool(body.get("archived", True))
+        publications = []
         if app.state.workspaces is not None:
+            claim = _request_claim(request, body)
             async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                if meta is None or meta.project_id != claim.context.project_id:
+                    return JSONResponse(
+                        {"ok": False, "message": "wrong project scope"}, status_code=404
+                    )
                 affected = app.state.workspaces.for_session(session_id)
                 orchestrator = app.state.orchestrator
                 if archived and (
@@ -2364,17 +2722,64 @@ def create_app(
                     )
                 ):
                     return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
-                ok = await svc.set_archived(session_id, archived)
-                if ok and archived:
-                    for item in affected:
-                        await item.start_new_session()
+                if not archived:
+                    ok = await svc.set_archived(session_id, False)
+                else:
+                    prepared_replacements = []
+                    try:
+                        prepared_replacements = _prepare_workspace_replacements(affected)
+                        replacement_ids: list[int] = []
+                        async with transaction(svc.db, svc.lock):
+                            for item in affected:
+                                replacement_ids.append(
+                                    await svc.create_session_in_transaction(
+                                        project_id=item.project.project_id
+                                    )
+                                )
+                            ok = await svc.set_archived_in_transaction(session_id, True)
+                            if not ok:
+                                raise RuntimeError("session archive lost its lifecycle race")
+                    except Exception as exc:  # noqa: BLE001 - fail closed on persistence/preflight
+                        _rollback_workspace_replacements(prepared_replacements)
+                        log.warning(
+                            "ui_session_archive_failed",
+                            error_type=type(exc).__name__,
+                            session_id=session_id,
+                        )
+                        return JSONResponse(
+                            {"ok": False, "message": "session archive unavailable"},
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        )
+                    for (item, replacement), replacement_id in zip(
+                        prepared_replacements, replacement_ids, strict=True
+                    ):
+                        item.commit_preallocated_new_session(
+                            replacement,
+                            project=item.project,
+                            session_id=replacement_id,
+                        )
                         app.state.workspaces.refresh_context(item)
-                        await app.state.workspaces.publish_workspace(
-                            item,
-                            {"kind": "session_new", "name": item.project.name},
+                        publications.append(
+                            (
+                                item,
+                                item.context,
+                                item.context_revision,
+                                {"kind": "session_new", "name": item.project.name},
+                            )
                         )
         else:
+            if not _session_in_workspace(meta, workspace):
+                return JSONResponse(
+                    {"ok": False, "message": "wrong project scope"}, status_code=404
+                )
             ok = await svc.set_archived(session_id, archived)
+        for item, context, context_revision, message in publications:
+            await app.state.workspaces.publish_workspace(
+                item,
+                message,
+                context=context,
+                context_revision=context_revision,
+            )
         return JSONResponse({"ok": ok})
 
     @app.post("/api/projects")
@@ -2403,8 +2808,6 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        if not _workspace_can_access_project(project_id, workspace):
-            return _deny(status.HTTP_404_NOT_FOUND, "not found")
         body = await request.json()
         if not isinstance(body, dict):
             return JSONResponse(
@@ -2435,10 +2838,13 @@ def create_app(
                 if ok:
                     await svc.refresh_project_context(project_id)
             else:
+                claim = _request_claim(request, body)
                 async with app.state.workspaces.transition_lock:
-                    ok = await svc.store.update(
-                        project_id, repos=repos, **fields
-                    )
+                    if not _claim_matches(workspace, claim):
+                        return _context_changed()
+                    if not _claim_can_access_project(project_id, claim, include_global=False):
+                        return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                    ok = await svc.store.update(project_id, repos=repos, **fields)
                     if ok:
                         refreshed = await svc.refresh_project_context(project_id)
                         for item in app.state.workspaces.for_project(project_id):
@@ -2455,25 +2861,76 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
+        publications = []
         if app.state.workspaces is not None:
+            claim = _expected_header_claim(request)
             async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                if not _claim_can_access_project(project_id, claim, include_global=False):
+                    return _deny(status.HTTP_404_NOT_FOUND, "not found")
                 affected = app.state.workspaces.for_project(project_id)
                 orchestrator = app.state.orchestrator
                 if any(item.attended_busy for item in affected) or (
                     orchestrator is not None and orchestrator.busy_project(project_id)
                 ):
                     return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
-                archived = await svc.store.archive(project_id)
-                if archived:
-                    for item in affected:
-                        await item.start_new_session(None)
-                        app.state.workspaces.refresh_context(item)
-                        await app.state.workspaces.publish_workspace(
+                session_store = workspace.session.sessions
+                if (
+                    session_store is None
+                    or session_store.db is not svc.store.db
+                    or session_store.lock is not svc.store.lock
+                ):
+                    return _unavailable("atomic project archive")
+                prepared_replacements = []
+                try:
+                    prepared_replacements = _prepare_workspace_replacements(affected)
+                    replacement_ids: list[int] = []
+                    async with transaction(svc.store.db, svc.store.lock):
+                        for _item in affected:
+                            replacement_ids.append(
+                                await session_store.create_session_in_transaction(project_id=None)
+                            )
+                        archived = await svc.store.archive_in_transaction(project_id)
+                        if not archived:
+                            raise RuntimeError("project archive lost its lifecycle race")
+                except Exception as exc:  # noqa: BLE001 - fail closed on persistence/preflight
+                    _rollback_workspace_replacements(prepared_replacements)
+                    log.warning(
+                        "ui_project_archive_failed",
+                        error_type=type(exc).__name__,
+                        project_id=project_id,
+                    )
+                    return JSONResponse(
+                        {"ok": False, "message": "project archive unavailable"},
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
+                for (item, replacement), replacement_id in zip(
+                    prepared_replacements, replacement_ids, strict=True
+                ):
+                    item.commit_preallocated_new_session(
+                        replacement,
+                        project=GLOBAL,
+                        session_id=replacement_id,
+                    )
+                    app.state.workspaces.refresh_context(item)
+                    publications.append(
+                        (
                             item,
+                            item.context,
+                            item.context_revision,
                             {"kind": "project_changed", "name": item.project.name},
                         )
+                    )
         else:
             archived = await svc.store.archive(project_id)
+        for item, context, context_revision, message in publications:
+            await app.state.workspaces.publish_workspace(
+                item,
+                message,
+                context=context,
+                context_revision=context_revision,
+            )
         # If the active project was archived, drop back to global scope + fresh chat.
         if archived and svc.current().project_id == project_id:
             await svc.activate(None)
@@ -2504,8 +2961,6 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        if not _workspace_can_access_project(project_id, workspace):
-            return _deny(status.HTTP_404_NOT_FOUND, "not found")
         body = await request.json()
         if not isinstance(body, dict):
             return JSONResponse(
@@ -2518,54 +2973,112 @@ def create_app(
                 {"ok": False, "message": "confirmation and repository choice required"},
                 status_code=400,
             )
-        project = await svc.store.get(project_id)
-        if project is None or project.status == "archived":
-            return _deny(status.HTTP_404_NOT_FOUND, "not found")
-        if confirmation != project.name:
-            return JSONResponse(
-                {"ok": False, "message": "project name does not match"}, status_code=400
-            )
+        claim = _request_claim(request, body) if workspace is not None else None
 
-        async def _reset() -> tuple[object, list]:
-            affected = (
-                app.state.workspaces.for_project(project_id)
-                if app.state.workspaces is not None
-                else []
-            )
-            # Step-up rotates the owner cookie and therefore creates a fresh (initially global)
-            # caller workspace. Move that initiating workspace to the successor too; otherwise
-            # the response would navigate a global context to a project-scoped screen.
-            if workspace is not None and workspace not in affected:
-                affected.append(workspace)
-            orchestrator = app.state.orchestrator
-            if any(item.attended_busy for item in affected) or (
-                orchestrator is not None and orchestrator.busy_project(project_id)
-            ):
-                raise ProjectResetBusyError("project has in-flight work")
-            result = await svc.store.reset(
-                project_id, retain_repositories=retain_repositories
-            )
-            if result is None:
-                raise ProjectResetError("project not found")
-            return result, affected
-
+        publications = []
         try:
             if app.state.workspaces is None:
-                result, affected = await _reset()
+                project = await svc.store.get(project_id)
+                if project is None or project.status == "archived":
+                    return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                if confirmation != project.name:
+                    return JSONResponse(
+                        {"ok": False, "message": "project name does not match"}, status_code=400
+                    )
+                result = await svc.store.reset(
+                    project_id,
+                    retain_repositories=retain_repositories,
+                )
+                if result is None:
+                    raise ProjectResetError("project not found")
             else:
                 async with app.state.workspaces.transition_lock:
-                    result, affected = await _reset()
+                    if not _claim_matches(workspace, claim):
+                        return _context_changed()
+                    if not _claim_can_access_project(project_id, claim, include_global=False):
+                        return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                    project = await svc.store.get(project_id)
+                    if project is None or project.status == "archived":
+                        return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                    if confirmation != project.name:
+                        return JSONResponse(
+                            {"ok": False, "message": "project name does not match"},
+                            status_code=400,
+                        )
+                    affected = app.state.workspaces.for_project(project_id)
+                    # Step-up rotates the owner cookie and creates a fresh, initially-global
+                    # caller workspace. Move it to the successor with the predecessor's tabs.
+                    if workspace not in affected:
+                        affected.append(workspace)
+                    orchestrator = app.state.orchestrator
+                    if any(item.attended_busy for item in affected) or (
+                        orchestrator is not None and orchestrator.busy_project(project_id)
+                    ):
+                        raise ProjectResetBusyError("project has in-flight work")
+                    session_store = workspace.session.sessions
+                    if (
+                        session_store is None
+                        or session_store.db is not svc.store.db
+                        or session_store.lock is not svc.store.lock
+                    ):
+                        return _unavailable("atomic project reset")
                     for item in affected:
                         _invalidate_workspace_approvals(item)
-                        await item.start_new_session(result.successor_id)
+                    prepared_replacements = []
+                    try:
+                        prepared_replacements = _prepare_workspace_replacements(affected)
+                        replacement_ids: list[int] = []
+                        async with transaction(svc.store.db, svc.store.lock):
+                            result = await svc.store.reset_in_transaction(
+                                project_id,
+                                retain_repositories=retain_repositories,
+                            )
+                            if result is None:
+                                raise ProjectResetError("project not found")
+                            successor = await svc.store.get(result.successor_id)
+                            if successor is None or successor.status == "archived":
+                                raise ProjectResetError("project successor unavailable")
+                            successor_context = build_project_context(successor)
+                            for _item in affected:
+                                replacement_ids.append(
+                                    await session_store.create_session_in_transaction(
+                                        project_id=result.successor_id
+                                    )
+                                )
+                    except (ProjectResetBusyError, ProjectResetError):
+                        _rollback_workspace_replacements(prepared_replacements)
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - transaction must fail closed
+                        _rollback_workspace_replacements(prepared_replacements)
+                        log.warning(
+                            "ui_project_reset_failed",
+                            error_type=type(exc).__name__,
+                            project_id=project_id,
+                        )
+                        return JSONResponse(
+                            {"ok": False, "message": "project reset unavailable"},
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        )
+                    for (item, replacement), replacement_id in zip(
+                        prepared_replacements, replacement_ids, strict=True
+                    ):
+                        item.commit_preallocated_new_session(
+                            replacement,
+                            project=successor_context,
+                            session_id=replacement_id,
+                        )
                         app.state.workspaces.refresh_context(item)
-                        await app.state.workspaces.publish_workspace(
-                            item,
-                            {
-                                "kind": "project_changed",
-                                "name": item.project.name,
-                                "reset_from_project_id": project_id,
-                            },
+                        publications.append(
+                            (
+                                item,
+                                item.context,
+                                item.context_revision,
+                                {
+                                    "kind": "project_changed",
+                                    "name": item.project.name,
+                                    "reset_from_project_id": project_id,
+                                },
+                            )
                         )
         except ProjectResetBusyError:
             return JSONResponse(
@@ -2574,6 +3087,14 @@ def create_app(
             )
         except ProjectResetError:
             return _deny(status.HTTP_409_CONFLICT, "project reset unavailable")
+
+        for item, context, context_revision, message in publications:
+            await app.state.workspaces.publish_workspace(
+                item,
+                message,
+                context=context,
+                context_revision=context_revision,
+            )
 
         if svc.current().project_id == project_id:
             await svc.activate(result.successor_id)
@@ -2602,15 +3123,34 @@ def create_app(
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
         if workspace is not None:
+            claim = _request_claim(request, body)
             try:
                 async with app.state.workspaces.transition_lock:
-                    ctx = await workspace.select_project(pid)
+                    if not _claim_matches(workspace, claim):
+                        return _context_changed()
+                    if workspace.attended_busy:
+                        return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
+                prepared = await workspace.prepare_new_session(pid)
+                async with app.state.workspaces.transition_lock:
+                    if not _claim_matches(workspace, claim):
+                        return _context_changed()
+                    ctx = workspace.commit_new_session(prepared)
                     app.state.workspaces.refresh_context(workspace)
-                    await app.state.workspaces.publish_workspace(
-                        workspace,
+                    publication = (
+                        workspace.context,
+                        workspace.context_revision,
                         {"kind": "project_changed", "name": workspace.project.name},
                     )
+                context, context_revision, message = publication
+                await app.state.workspaces.publish_workspace(
+                    workspace,
+                    message,
+                    context=context,
+                    context_revision=context_revision,
+                )
             except RuntimeError as exc:
+                if str(exc) == "context_changed":
+                    return _context_changed()
                 return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
             except KeyError as exc:
                 return JSONResponse({"ok": False, "message": str(exc)}, status_code=404)
@@ -2667,24 +3207,42 @@ def create_app(
         if svc is None:
             return _unavailable("projects")
         body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"ok": False, "message": "service selection must be an object"},
+                status_code=400,
+            )
+        workspace = _workspace_for(request)
+        if app.state.workspaces is not None and workspace is None:
+            return _workspace_required()
         names = body.get("services")
-        if names is None:  # clear narrowing → full global set for this project
-            ok = await svc.store.set_services(project_id, None)
-            return JSONResponse({"ok": ok, "services": None})
-        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        if names is not None and (
+            not isinstance(names, list) or not all(isinstance(name, str) for name in names)
+        ):
             return JSONResponse(
                 {"ok": False, "message": "services must be a list of names or null"},
                 status_code=400,
             )
-        enabled = set(config.services.enabled)
-        invalid = sorted(n for n in names if n not in enabled)
-        if invalid:  # narrow-only: a project can never widen beyond the global set
-            return JSONResponse(
-                {"ok": False, "message": f"not globally enabled (cannot widen): {invalid}"},
-                status_code=400,
-            )
-        ok = await svc.store.set_services(project_id, sorted(set(names)))
-        return JSONResponse({"ok": ok, "services": sorted(set(names))})
+        normalized = None if names is None else sorted(set(names))
+        if normalized is not None:
+            enabled = set(config.services.enabled)
+            invalid = sorted(name for name in normalized if name not in enabled)
+            if invalid:  # narrow-only: a project can never widen beyond the global set
+                return JSONResponse(
+                    {"ok": False, "message": f"not globally enabled (cannot widen): {invalid}"},
+                    status_code=400,
+                )
+        if workspace is not None:
+            claim = _request_claim(request, body)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                if not _claim_can_access_project(project_id, claim, include_global=False):
+                    return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                ok = await svc.store.set_services(project_id, normalized)
+        else:
+            ok = await svc.store.set_services(project_id, normalized)
+        return JSONResponse({"ok": ok, "services": normalized})
 
     @app.get("/api/artifacts")
     async def artifacts_index(
@@ -2831,15 +3389,35 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        intent = await svc.intents.get(intent_id)
-        if intent is None or not _workspace_can_access_project(intent.project_id, workspace):
-            return _deny(status.HTTP_404_NOT_FOUND, "not found")
-        if intent.state is not IntentState.PREVIEWED:
-            return JSONResponse(
-                {"ok": False, "message": f"intent is {intent.state.value}, not pending"},
-                status_code=status.HTTP_409_CONFLICT,
-            )
-        await svc.intents.approve(intent_id)
+        if workspace is not None:
+            claim = _expected_header_claim(request)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                intent = await svc.intents.get(intent_id)
+                if intent is None or not _claim_can_access_project(
+                    intent.project_id, claim, include_global=False
+                ):
+                    return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                if intent.state is not IntentState.PREVIEWED:
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "message": f"intent is {intent.state.value}, not pending",
+                        },
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
+                await svc.intents.approve(intent_id)
+        else:
+            intent = await svc.intents.get(intent_id)
+            if intent is None:
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
+            if intent.state is not IntentState.PREVIEWED:
+                return JSONResponse(
+                    {"ok": False, "message": f"intent is {intent.state.value}, not pending"},
+                    status_code=status.HTTP_409_CONFLICT,
+                )
+            await svc.intents.approve(intent_id)
         client = svc.connectors.google if svc.connectors is not None else None
         executor = WriteExecutor(client, svc.intents, svc.write_journal, artifacts=svc.artifacts)
         result = await executor.execute(intent_id)
@@ -2862,15 +3440,32 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        intent = await svc.intents.get(intent_id)
-        if intent is None or not _workspace_can_access_project(intent.project_id, workspace):
-            return _deny(status.HTTP_404_NOT_FOUND, "not found")
-        if intent.state not in (IntentState.DRAFT, IntentState.PREVIEWED):
-            return JSONResponse(
-                {"ok": False, "message": f"intent is {intent.state.value}"},
-                status_code=status.HTTP_409_CONFLICT,
-            )
-        await svc.intents.reject(intent_id)
+        if workspace is not None:
+            claim = _expected_header_claim(request)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                intent = await svc.intents.get(intent_id)
+                if intent is None or not _claim_can_access_project(
+                    intent.project_id, claim, include_global=False
+                ):
+                    return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                if intent.state not in (IntentState.DRAFT, IntentState.PREVIEWED):
+                    return JSONResponse(
+                        {"ok": False, "message": f"intent is {intent.state.value}"},
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
+                await svc.intents.reject(intent_id)
+        else:
+            intent = await svc.intents.get(intent_id)
+            if intent is None:
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
+            if intent.state not in (IntentState.DRAFT, IntentState.PREVIEWED):
+                return JSONResponse(
+                    {"ok": False, "message": f"intent is {intent.state.value}"},
+                    status_code=status.HTTP_409_CONFLICT,
+                )
+            await svc.intents.reject(intent_id)
         return JSONResponse({"ok": True})
 
     @app.post("/api/intents/{intent_id}/undo")
@@ -2884,9 +3479,20 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        intent = await svc.intents.get(intent_id)
-        if intent is None or not _workspace_can_access_project(intent.project_id, workspace):
-            return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        if workspace is not None:
+            claim = _expected_header_claim(request)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                intent = await svc.intents.get(intent_id)
+                if intent is None or not _claim_can_access_project(
+                    intent.project_id, claim, include_global=False
+                ):
+                    return _deny(status.HTTP_404_NOT_FOUND, "not found")
+        else:
+            intent = await svc.intents.get(intent_id)
+            if intent is None:
+                return _deny(status.HTTP_404_NOT_FOUND, "not found")
         client = svc.connectors.google if svc.connectors is not None else None
         executor = WriteExecutor(client, svc.intents, svc.write_journal, artifacts=svc.artifacts)
         try:
@@ -3079,9 +3685,7 @@ def create_app(
             edges = await svc.graph.list_edges(
                 project_id=workspace.context.project_id, include_global=False
             )
-            if (kind, ref_id) not in {
-                (edge.src_kind, edge.src_id) for edge in edges
-            } | {
+            if (kind, ref_id) not in {(edge.src_kind, edge.src_id) for edge in edges} | {
                 (edge.dst_kind, edge.dst_id) for edge in edges
             }:
                 return _deny(status.HTTP_404_NOT_FOUND, "not found")
@@ -3116,15 +3720,22 @@ def create_app(
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
         if workspace is not None:
-            # A suggestion id is not authority. Match the review queue's P + global scope, so a
-            # live browser workspace cannot approve another project's quarantined proposal.
-            suggestion = await svc.graph.get_suggestion(suggestion_id)
-            if suggestion is None or (
-                suggestion.project_id is not None
-                and suggestion.project_id != workspace.context.project_id
-            ):
-                return _deny(status.HTTP_404_NOT_FOUND, "not found")
-        return JSONResponse(await graph_approve(svc.graph, suggestion_id, resolved_by="user"))
+            claim = _expected_header_claim(request)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                # A suggestion id is not authority. Match the review queue's P + global scope,
+                # and keep admission plus the local claim/materialization transaction serialized
+                # against workspace replacement.
+                suggestion = await svc.graph.get_suggestion(suggestion_id)
+                if suggestion is None or not _claim_can_access_project(
+                    suggestion.project_id, claim, include_global=True
+                ):
+                    return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                result = await graph_approve(svc.graph, suggestion_id, resolved_by="user")
+        else:
+            result = await graph_approve(svc.graph, suggestion_id, resolved_by="user")
+        return JSONResponse(result)
 
     @app.post("/api/graph/suggestions/{suggestion_id}/reject")
     async def graph_suggestion_reject(suggestion_id: int, request: Request) -> JSONResponse:
@@ -3135,14 +3746,19 @@ def create_app(
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
         if workspace is not None:
-            # See approve: the active workspace may resolve only its own or global suggestions.
-            suggestion = await svc.graph.get_suggestion(suggestion_id)
-            if suggestion is None or (
-                suggestion.project_id is not None
-                and suggestion.project_id != workspace.context.project_id
-            ):
-                return _deny(status.HTTP_404_NOT_FOUND, "not found")
-        return JSONResponse(await graph_reject(svc.graph, suggestion_id, resolved_by="user"))
+            claim = _expected_header_claim(request)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                suggestion = await svc.graph.get_suggestion(suggestion_id)
+                if suggestion is None or not _claim_can_access_project(
+                    suggestion.project_id, claim, include_global=True
+                ):
+                    return _deny(status.HTTP_404_NOT_FOUND, "not found")
+                result = await graph_reject(svc.graph, suggestion_id, resolved_by="user")
+        else:
+            result = await graph_reject(svc.graph, suggestion_id, resolved_by="user")
+        return JSONResponse(result)
 
     @app.get("/api/graph/search")
     async def graph_search(q: str, project_id: int | None = None, limit: int = 20) -> JSONResponse:
@@ -3173,14 +3789,17 @@ def create_app(
             return _workspace_required()
         body = await request.json()
         if workspace is not None:
+            claim = _request_claim(request, body)
             async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
                 result, code = await orch.start(
                     team_id=str(body.get("team", "")),
                     workflow_id=str(body.get("workflow", "")),
                     task=str(body.get("task", "")),
                     budget_usd=body.get("budget_usd"),
                     confirmed=bool(body.get("confirmed", False)),
-                    execution_context=workspace.context,
+                    execution_context=claim.context,
                     project=workspace.project,
                 )
         else:
@@ -3201,13 +3820,15 @@ def create_app(
         workspace = _workspace_for(request)
         if app.state.workspaces is not None and workspace is None:
             return _workspace_required()
-        return JSONResponse(
-            {
-                "cancelled": orch.cancel(
-                    run_id, execution_context=workspace.context if workspace else None
-                )
-            }
-        )
+        if workspace is not None:
+            claim = _expected_header_claim(request)
+            async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
+                cancelled = orch.cancel(run_id, execution_context=claim.context)
+        else:
+            cancelled = orch.cancel(run_id, execution_context=None)
+        return JSONResponse({"cancelled": cancelled})
 
     @app.post("/api/orchestration/{run_id}/resume")
     async def orchestration_resume(run_id: int, request: Request) -> JSONResponse:
@@ -3221,11 +3842,14 @@ def create_app(
             return _workspace_required()
         body = await request.json()
         if workspace is not None:
+            claim = _request_claim(request, body)
             async with app.state.workspaces.transition_lock:
+                if not _claim_matches(workspace, claim):
+                    return _context_changed()
                 result, code = await orch.resume(
                     run_id,
                     task=str(body.get("task", "")),
-                    execution_context=workspace.context,
+                    execution_context=claim.context,
                     project=workspace.project,
                 )
         else:
@@ -3289,12 +3913,19 @@ def create_app(
         v = workspace.voice if workspace is not None else app.state.voice
         if v is None or v.listener is None:
             return _unavailable("voice")
+        claim = _expected_header_claim(request) if workspace is not None else None
+        if workspace is not None and claim is None:
+            return _context_changed()
         if workspace is None:
             heard = await v.listen_once()
         else:
             try:
-                async with app.state.workspaces.voice_activity(workspace):
-                    with bind_execution_context(workspace.context):
+                async with app.state.workspaces.voice_activity(
+                    workspace,
+                    expected_context=claim.context,
+                    expected_revision=claim.revision,
+                ):
+                    with bind_execution_context(claim.context):
                         lease = await app.state.workspaces.reserve_server_capture(
                             v.listener.capture, meeting=False
                         )
@@ -3318,6 +3949,9 @@ def create_app(
         v = workspace.voice if workspace is not None else app.state.voice
         if v is None or v.listener is None:
             return _unavailable("voice")
+        claim = _expected_header_claim(request) if workspace is not None else None
+        if workspace is not None and claim is None:
+            return _context_changed()
         audio = await request.body()
         if not audio:
             return JSONResponse({"ok": False, "message": "empty audio"}, status_code=400)
@@ -3331,20 +3965,32 @@ def create_app(
                 transcript = await v.transcribe_utterance(audio)
             else:
                 try:
-                    async with app.state.workspaces.voice_activity(workspace):
-                        with bind_execution_context(workspace.context):
+                    async with app.state.workspaces.voice_activity(
+                        workspace,
+                        expected_context=claim.context,
+                        expected_revision=claim.revision,
+                    ):
+                        with bind_execution_context(claim.context):
                             transcript = await v.transcribe_utterance(audio)
-                except RuntimeError:
+                except RuntimeError as exc:
+                    if str(exc) == "context_changed":
+                        return _context_changed()
                     return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
             return JSONResponse({"ok": True, "transcript": transcript})
         if workspace is None:
             ran = await v.handle_utterance(audio)
         else:
             try:
-                async with app.state.workspaces.voice_activity(workspace):
-                    with bind_execution_context(workspace.context):
+                async with app.state.workspaces.voice_activity(
+                    workspace,
+                    expected_context=claim.context,
+                    expected_revision=claim.revision,
+                ):
+                    with bind_execution_context(claim.context):
                         ran = await v.handle_utterance(audio)
-            except RuntimeError:
+            except RuntimeError as exc:
+                if str(exc) == "context_changed":
+                    return _context_changed()
                 return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
         return JSONResponse({"ok": True, "ran": ran})
 
@@ -3381,16 +4027,15 @@ def create_app(
                 {"ok": False, "message": "Explicit consent is required before capture."},
                 status_code=422,
             )
+        claim = _request_claim(request, body) if workspace is not None else None
+        if workspace is not None and claim is None:
+            return _context_changed()
         raw_capture_id = body.get("capture_id")
         try:
             capture_uuid = UUID(raw_capture_id) if isinstance(raw_capture_id, str) else None
         except (ValueError, AttributeError):
             capture_uuid = None
-        if (
-            capture_uuid is None
-            or capture_uuid.version != 4
-            or str(capture_uuid) != raw_capture_id
-        ):
+        if capture_uuid is None or capture_uuid.version != 4 or str(capture_uuid) != raw_capture_id:
             return JSONResponse(
                 {"ok": False, "message": "A valid capture receipt is required."},
                 status_code=422,
@@ -3404,19 +4049,23 @@ def create_app(
             if workspace is None:
                 result = await v.capture_meeting(title=title, capture_id=capture_id)
             else:
-                async with app.state.workspaces.voice_activity(workspace):
-                    with bind_execution_context(workspace.context):
+                async with app.state.workspaces.voice_activity(
+                    workspace,
+                    expected_context=claim.context,
+                    expected_revision=claim.revision,
+                ):
+                    with bind_execution_context(claim.context):
                         receipt_scope = (
-                            f"project:{workspace.context.project_id}"
-                            if workspace.context.project_id is not None
+                            f"project:{claim.context.project_id}"
+                            if claim.context.project_id is not None
                             else "global"
                         )
                         receipt_key = f"{receipt_scope}:{capture_id}"
                         async with app.state.workspaces.meeting_receipt_activity(receipt_key):
                             result = await v.reconcile_meeting(
                                 capture_id=capture_id,
-                                source_session_id=workspace.context.session_id,
-                                project_id=workspace.context.project_id,
+                                source_session_id=claim.context.session_id,
+                                project_id=claim.context.project_id,
                             )
                             if result is None:
                                 lease = await app.state.workspaces.reserve_server_capture(
@@ -3427,8 +4076,8 @@ def create_app(
                                         title=title,
                                         capture_id=capture_id,
                                         capture=lease,
-                                        source_session_id=workspace.context.session_id,
-                                        project_id=workspace.context.project_id,
+                                        source_session_id=claim.context.session_id,
+                                        project_id=claim.context.project_id,
                                     )
                                 finally:
                                     await lease.release()
@@ -3438,6 +4087,8 @@ def create_app(
                 status_code=422,
             )
         except RuntimeError as exc:
+            if str(exc) == "context_changed":
+                return _context_changed()
             if str(exc) == "busy":
                 return JSONResponse({"ok": False, "message": "busy"}, status_code=409)
             return JSONResponse(
@@ -3485,8 +4136,8 @@ def create_app(
         await websocket.accept()
         conn = connections.register(websocket, owner_session=owner_session)
         try:
-            await websocket.send_json(
-                {"type": "hello", "heartbeat_seconds": connections.heartbeat_seconds}
+            await connections.send(
+                conn, {"type": "hello", "heartbeat_seconds": connections.heartbeat_seconds}
             )
             while True:
                 # A WebSocket is long-lived authority. Revalidate the durable session before every
@@ -3496,7 +4147,7 @@ def create_app(
                     owner_auth is not None
                     and await owner_auth.validate_session(owner_session) is None
                 ):
-                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                    await connections.close(conn, code=status.WS_1008_POLICY_VIOLATION)
                     break
                 try:
                     msg = await websocket.receive_json()
@@ -3511,13 +4162,15 @@ def create_app(
                             owner_session=owner_session,
                             requested_workspace_id=msg.get("workspace_id"),
                         )
-                        await websocket.send_json(
+                        await connections.send(
+                            conn,
                             {
                                 "type": "workspace",
                                 "workspace_id": workspace.workspace_id,
                                 "meeting_recording_epoch": registry.meeting_recording_epoch,
+                                "context_revision": workspace.context_revision,
                                 **workspace.context.to_wire(),
-                            }
+                            },
                         )
                     continue
                 # approval_shown: the client proves the modal is on screen ⇒ mint a
@@ -3527,13 +4180,15 @@ def create_app(
                     nonce = await approvals.mint_nonce(did, conn) if did else None
                     if nonce is not None:
                         pending = approvals.get(did)
-                        await websocket.send_json(
+                        await connections.send(
+                            conn,
                             {
                                 "type": "approval_nonce",
                                 "decision_id": did,
                                 "nonce": nonce,
                                 **(pending.context.to_wire() if pending is not None else {}),
-                            }
+                                "context_revision": conn.context_revision,
+                            },
                         )
                     continue
                 # A parked scheduler run has no attended source session.  Its nonce is still
@@ -3546,12 +4201,15 @@ def create_app(
                         continue
                     nonce = await app.state.parked_task_approvals.mint_nonce(run_id, conn)
                     if nonce is not None:
-                        await websocket.send_json(
+                        await connections.send(
+                            conn,
                             {
                                 "type": "parked_task_approval_nonce",
                                 "run_id": run_id,
                                 "nonce": nonce,
-                            }
+                                **(conn.context.to_wire() if conn.context is not None else {}),
+                                "context_revision": conn.context_revision,
+                            },
                         )
                     continue
                 _handle_ws_message(connections, conn, msg)

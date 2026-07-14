@@ -94,8 +94,9 @@ class UiVoice:
         stt_name: str = "local",
         tts_name: str = "local",
         meeting_state_publish: (
-            Callable[[ExecutionContext | None, str, int], Awaitable[None]] | None
+            Callable[[ExecutionContext | None, str, int, int | None], Awaitable[None]] | None
         ) = None,
+        meeting_context_revision: Callable[[], int | None] | None = None,
         log=None,
     ) -> None:
         self.listener = listener
@@ -108,11 +109,13 @@ class UiVoice:
         self.stt_name = stt_name
         self.tts_name = tts_name
         self.meeting_state_publish = meeting_state_publish
+        self.meeting_context_revision = meeting_context_revision
         self.log = log or get_logger("jarvis.ui.voice")
         self.state = IDLE
         self.meeting_revision = 0
         self._pushes: set = set()
         self._meeting_push_tail: asyncio.Task | None = None
+        self._meeting_push_barrier: asyncio.Future[None] | None = None
 
     def note_state(self, state: str) -> None:
         """Read-only voice-state hook — wired to the listener/session/meeting ``on_state``.
@@ -138,32 +141,91 @@ class UiVoice:
         self.meeting_revision += 1
         revision = self.meeting_revision
         context = current_execution_context()
+        context_revision = (
+            self.meeting_context_revision() if self.meeting_context_revision is not None else None
+        )
         publisher = self.meeting_state_publish
         if publisher is None and self.connections is None:
             return
         try:
             loop = asyncio.get_running_loop()
-            previous = self._meeting_push_tail
+        except RuntimeError:
+            return
 
-            async def deliver() -> None:
-                if previous is not None:
-                    with suppress(BaseException):
-                        await previous
-                request = loop.create_task(
-                    publisher(context, state, revision)
-                    if publisher is not None
-                    else self.connections.publish(  # type: ignore[union-attr]
-                        context,
-                        {
-                            "kind": "meeting_state",
-                            "state": state,
-                            "revision": revision,
-                        },
+        previous_barrier = self._meeting_push_barrier
+        barrier: asyncio.Future[None] = loop.create_future()
+        # ``ConnectionManager.publish`` captures exact recipients synchronously, so retain that
+        # enqueue-time snapshot. A custom publisher may validly return an already-scheduled Task;
+        # invoke it only after the sequence barrier so it cannot begin before its predecessor.
+        publication: Awaitable[None] | None = (
+            self.connections.publish(  # type: ignore[union-attr]
+                context,
+                {
+                    "kind": "meeting_state",
+                    "state": state,
+                    "revision": revision,
+                },
+            )
+            if publisher is None
+            else None
+        )
+        publication_claimed = False
+        publication_disposed = False
+        barrier_release_scheduled = False
+
+        def dispose_unclaimed_publication() -> None:
+            """Dispose an enqueue-time awaitable when its delivery task never adopts it."""
+            nonlocal publication_disposed
+            if publication is None or publication_claimed or publication_disposed:
+                return
+            publication_disposed = True
+            if isinstance(publication, asyncio.Future):
+                publication.cancel()
+                publication.add_done_callback(self._consume_push_result)
+                return
+            close = getattr(publication, "close", None)
+            if callable(close):
+                close()
+
+        def release_barrier_after_predecessor() -> None:
+            """Keep successors behind the predecessor even if this delivery is cancelled."""
+            nonlocal barrier_release_scheduled
+            if barrier.done() or barrier_release_scheduled:
+                return
+            barrier_release_scheduled = True
+
+            def release(_done: asyncio.Future | None = None) -> None:
+                if not barrier.done():
+                    barrier.set_result(None)
+
+            if previous_barrier is not None and not previous_barrier.done():
+                previous_barrier.add_done_callback(release)
+            else:
+                release()
+
+        async def deliver() -> None:
+            nonlocal publication, publication_claimed
+            request: asyncio.Future[None] | None = None
+            try:
+                if previous_barrier is not None:
+                    # The private barrier never carries an exception. Shield it so cancelling a
+                    # queued state skips only that state and cannot cancel the earlier delivery.
+                    await asyncio.shield(previous_barrier)
+                if publication is None:
+                    assert publisher is not None
+                    publication = publisher(context, state, revision, context_revision)
+                request = asyncio.ensure_future(publication)
+                publication_claimed = True
+                try:
+                    done, pending = await asyncio.wait(
+                        {request}, timeout=self.MEETING_PUSH_TIMEOUT_SECONDS
                     )
-                )
-                done, pending = await asyncio.wait(
-                    {request}, timeout=self.MEETING_PUSH_TIMEOUT_SECONDS
-                )
+                except BaseException:
+                    if not request.done():
+                        request.cancel()
+                    with suppress(BaseException):
+                        await request
+                    raise
                 if pending:
                     request.cancel()
                     request.add_done_callback(self._consume_push_result)
@@ -171,16 +233,32 @@ class UiVoice:
                     return
                 with suppress(BaseException):
                     next(iter(done)).result()
+            finally:
+                dispose_unclaimed_publication()
+                release_barrier_after_predecessor()
 
-            task = loop.create_task(deliver())
-            self._meeting_push_tail = task
-            self._pushes.add(task)
-            task.add_done_callback(self._pushes.discard)
+        delivery = deliver()
+        try:
+            task = loop.create_task(delivery)
         except RuntimeError:
-            pass
+            delivery.close()
+            dispose_unclaimed_publication()
+            release_barrier_after_predecessor()
+            return
+
+        def finish_delivery(done: asyncio.Task) -> None:
+            self._pushes.discard(done)
+            dispose_unclaimed_publication()
+            release_barrier_after_predecessor()
+            self._consume_push_result(done)
+
+        self._meeting_push_barrier = barrier
+        self._meeting_push_tail = task
+        self._pushes.add(task)
+        task.add_done_callback(finish_delivery)
 
     @staticmethod
-    def _consume_push_result(task: asyncio.Task) -> None:
+    def _consume_push_result(task: asyncio.Future) -> None:
         with suppress(BaseException):
             task.result()
 

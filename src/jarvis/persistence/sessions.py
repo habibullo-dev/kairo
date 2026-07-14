@@ -97,16 +97,32 @@ class SessionStore:
         """Create a session. ``project_id`` scopes it to a project (NULL == global). A
         session is bound to one project for its lifetime — reflection/promotion attribute
         to it, so switching projects starts a new session, never re-tags this one."""
-        now = _now()
         async with self.lock:
-            cursor = await self.db.execute(
-                "INSERT INTO sessions (created_at, updated_at, title, kind, project_id) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (now, now, title, kind, project_id),
+            session_id = await self.create_session_in_transaction(
+                title,
+                kind=kind,
+                project_id=project_id,
             )
             await self.db.commit()
+        return session_id
+
+    async def create_session_in_transaction(
+        self, title: str | None = None, *, kind: str = "interactive", project_id: int | None = None
+    ) -> int:
+        """Insert one session while the caller owns this store's database transaction.
+
+        Cross-store lifecycle operations use this primitive so replacement sessions and the
+        archive/reset that requires them either all commit or all roll back. The caller must hold
+        ``self.lock`` through :func:`jarvis.persistence.db.transaction`.
+        """
+        now = _now()
+        cursor = await self.db.execute(
+            "INSERT INTO sessions (created_at, updated_at, title, kind, project_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (now, now, title, kind, project_id),
+        )
         assert cursor.lastrowid is not None
-        return cursor.lastrowid
+        return int(cursor.lastrowid)
 
     async def save_messages(self, session_id: int, messages: list[dict]) -> None:
         """Persist the full conversation for a session (replaces prior rows).
@@ -314,11 +330,16 @@ class SessionStore:
         """Archive/unarchive a chat — a display-status flip (never a delete); archived chats
         drop out of the default lists but keep their full transcript for audit/resume."""
         async with self.lock:
-            cursor = await self.db.execute(
-                "UPDATE sessions SET archived = ? WHERE id = ?",
-                (1 if archived else 0, session_id),
-            )
+            ok = await self.set_archived_in_transaction(session_id, archived)
             await self.db.commit()
+        return ok
+
+    async def set_archived_in_transaction(self, session_id: int, archived: bool) -> bool:
+        """Set archive state while the caller owns this store's database transaction."""
+        cursor = await self.db.execute(
+            "UPDATE sessions SET archived = ? WHERE id = ?",
+            (1 if archived else 0, session_id),
+        )
         return cursor.rowcount > 0
 
     async def set_project(self, session_id: int, project_id: int | None) -> bool:

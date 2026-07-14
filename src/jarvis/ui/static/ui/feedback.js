@@ -76,6 +76,8 @@ export function promptDialog({ title, message, value = "", confirmLabel = "Save"
   return dialogFrame({ title, message, confirmLabel, cancelLabel: "Cancel", inputValue: value });
 }
 
+export function dismissFeedbackDialogs() { closeDialog(null); }
+
 export function showToast(message, tone = "default") {
   let host = document.getElementById("kairo-toasts");
   if (!host) {

@@ -22,7 +22,7 @@ const PRESETS = {
 
 const _S = {
   container: null, api: null, all: [], selectedId: null,
-  q: "", kind: null, pinnedOnly: false, week: false,
+  q: "", kind: null, pinnedOnly: false, week: false, ownerKey: null,
 };
 
 function icon(kind) {
@@ -55,10 +55,8 @@ function filtered() {
   });
 }
 
-async function refresh() {
-  const data = await _S.api.get("/api/artifacts?limit=200");
-  _S.all = (data && data.artifacts) || [];
-  redraw();
+async function refresh(api) {
+  if (typeof api.refreshRoute === "function") await api.refreshRoute();
 }
 
 function metaBlock(a) {
@@ -118,8 +116,9 @@ function previewPanel(a) {
   }
   const pin = el("button", { class: "plain-button" + (a.pinned ? "" : " ghost") }, [a.pinned ? "Unpin" : "Pin"]);
   pin.addEventListener("click", async () => {
-    await _S.api.post(`/api/artifacts/${a.id}/pin`, { pinned: !a.pinned });
-    await refresh();
+    const api = _S.api;
+    await api.post(`/api/artifacts/${a.id}/pin`, { pinned: !a.pinned });
+    await refresh(api);
   });
   const acts = [pin];
   if (a.has_content) {
@@ -139,9 +138,10 @@ function previewPanel(a) {
   });
   const saveLabels = el("button", { class: "plain-button ghost" }, ["Save labels"]);
   saveLabels.addEventListener("click", async () => {
+    const api = _S.api;
     const labels = labelInput.value.split(",").map((s) => s.trim()).filter(Boolean);
-    await _S.api.post(`/api/artifacts/${a.id}/label`, { labels });
-    await refresh();
+    await api.post(`/api/artifacts/${a.id}/label`, { labels });
+    await refresh(api);
   });
 
   const body = el("div", { class: "art-body" }, [el("div", { class: "dim" }, ["Loading…"])]);
@@ -208,17 +208,26 @@ export async function render(container, api, args) {
   const rawKey = (args && args[0]) || "";
   const presetKey = rawKey.replace(/^view-/, "");
   const preset = PRESETS[presetKey] || null;
+  const authorityToken = typeof api.authorityToken === "function" ? api.authorityToken() : null;
+  const ownerKey = JSON.stringify([authorityToken, presetKey]);
+  const ownerChanged = _S.ownerKey !== ownerKey;
   _S.container = container;
   _S.api = api;
-  _S.selectedId = null;
-  _S.q = "";
-  _S.kind = null;
-  _S.pinnedOnly = !!(preset && preset.pinned);
-  _S.week = !!(preset && preset.week);
+  if (ownerChanged) {
+    _S.ownerKey = ownerKey;
+    _S.selectedId = null;
+    _S.q = "";
+    _S.kind = null;
+    _S.pinnedOnly = !!(preset && preset.pinned);
+    _S.week = !!(preset && preset.week);
+  }
 
   container.textContent = "";
-  const data = await api.get("/api/artifacts?limit=200");
+  const data = await api.getRequired("/api/artifacts?limit=200");
   _S.all = (data && data.artifacts) || [];
+  if (_S.selectedId != null && !_S.all.some((artifact) => artifact.id === _S.selectedId)) {
+    _S.selectedId = null;
+  }
 
   const head = el("div", { class: "rise" }, [
     el("h1", {}, ["Artifacts"]),
@@ -229,7 +238,8 @@ export async function render(container, api, args) {
 
   // filter bar: search + pinned toggle + kind chips (from the distinct kinds present)
   const search = el("input", {
-    class: "ws-search", type: "search", placeholder: "Search artifacts…", "aria-label": "Search artifacts",
+    class: "ws-search", type: "search", placeholder: "Search artifacts…",
+    "aria-label": "Search artifacts", value: _S.q,
   });
   search.addEventListener("input", () => { _S.q = search.value; drawList(); });
   const pinToggle = el("button", { class: "filter-chip" + (_S.pinnedOnly ? " active" : "") }, ["Pinned"]);
@@ -241,7 +251,7 @@ export async function render(container, api, args) {
   const kinds = [...new Set(_S.all.map((a) => a.kind).filter(Boolean))].sort();
   const kindChips = el("div", { class: "art-kinds" }, [
     ...kinds.map((k) => {
-      const c = el("button", { class: "filter-chip" }, [k]);
+      const c = el("button", { class: "filter-chip" + (_S.kind === k ? " active" : "") }, [k]);
       c.addEventListener("click", () => {
         _S.kind = _S.kind === k ? null : k;
         for (const b of kindChips.querySelectorAll("button")) {

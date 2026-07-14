@@ -194,7 +194,7 @@ function modelRequestHealthCard(health) {
 
 export async function render(container, api) {
   container.textContent = "";
-  const [c, roi] = await Promise.all([api.get("/api/costs"), api.get("/api/roi")]);
+  const [c, roi] = await Promise.all([api.getRequired("/api/costs"), api.get("/api/roi")]);
   if (!c) {
     container.innerHTML = `<div class="rise"><h1>Costs</h1>
       <div class="sub">Cost tracking is not enabled.</div></div>`;
@@ -212,8 +212,10 @@ export async function render(container, api) {
         in the breakdowns below.</div></div>
     ${budgetBanner(c.budget_warning, lim.confirm_above_usd)}
     <div class="cost-row rise">${metric(c.today, "Today")}${metric(c.week, "This week")}${metric(c.month, "This month")}</div>
-    ${roiBlock(roi, c.hourly_rate_usd)}
-    ${estimateAccuracyCard(roi.estimate_accuracy)}
+    ${roi ? `${roiBlock(roi, c.hourly_rate_usd)}${estimateAccuracyCard(roi.estimate_accuracy)}`
+      : `<div class="surface rise route-partial-failure"><div class="panel-title"><h3>ROI unavailable</h3></div>
+        <div class="dim">Spend is current, but outcome and estimate data could not be loaded.</div>
+        <button class="plain-button ghost" id="costs-retry-roi" type="button">Try again</button></div>`}
     ${primaryDims}
     ${c.by_project ? dimSection(c.by_model, "model", "By model") : ""}
     ${dimSection(c.by_provider, "provider", "By provider")}
@@ -227,5 +229,8 @@ export async function render(container, api) {
     <div class="surface rise"><div class="panel-title"><h3>Limits</h3></div>
       <div class="mono dim">soft/run ${money(lim.soft_warn_usd_per_run)} · hard/run ${money(lim.hard_stop_usd_per_run)}
         · confirm above ${money(lim.confirm_above_usd)}
-        · project/month ${lim.project_monthly_usd == null ? "—" : money(lim.project_monthly_usd)}</div></div>`;
+      · project/month ${lim.project_monthly_usd == null ? "—" : money(lim.project_monthly_usd)}</div></div>`;
+  container.querySelector("#costs-retry-roi")?.addEventListener("click", () => {
+    if (typeof api.retryRoute === "function") void api.retryRoute();
+  });
 }

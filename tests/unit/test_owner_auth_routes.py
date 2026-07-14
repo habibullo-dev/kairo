@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -118,6 +119,56 @@ async def test_login_logout_revokes_cookie_socket_and_session(tmp_path: Path) ->
         assert socket.close_code == 1008
         assert (await client.get("/auth/session")).status_code == 401
         assert (await _login(client)).status_code == 200
+
+
+async def test_logout_drops_all_sockets_and_registry_before_concurrent_closes(
+    tmp_path: Path,
+) -> None:
+    async with _owner_client(tmp_path, pre_enrolled=True) as (client, app, _owner, _now):
+        assert (await _login(client)).status_code == 200
+        bearer = client.cookies[SESSION_COOKIE]
+
+        class _BlockingCloseSocket:
+            def __init__(self) -> None:
+                self.close_started = asyncio.Event()
+                self.release_close = asyncio.Event()
+                self.close_code: int | None = None
+
+            async def close(self, *, code: int) -> None:
+                self.close_code = code
+                self.close_started.set()
+                await self.release_close.wait()
+
+        class _RegistryProbe:
+            def __init__(self) -> None:
+                self.transition_lock = asyncio.Lock()
+                self.revoked = asyncio.Event()
+
+            def drop_owner_session(self, owner_session: str) -> int:
+                assert owner_session == bearer
+                self.revoked.set()
+                return 1
+
+        registry = _RegistryProbe()
+        app.state.workspaces = registry
+        sockets = [_BlockingCloseSocket(), _BlockingCloseSocket()]
+        conns = [app.state.connections.register(socket, owner_session=bearer) for socket in sockets]
+        logout = asyncio.create_task(client.post("/auth/logout", headers=ORIGIN))
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(socket.close_started.wait() for socket in sockets)),
+                timeout=0.2,
+            )
+            assert registry.revoked.is_set()
+            assert all(app.state.connections.get(conn.id) is None for conn in conns)
+        finally:
+            for socket in sockets:
+                socket.release_close.set()
+
+        response = await asyncio.wait_for(logout, timeout=1)
+        assert response.status_code == 200
+        assert [socket.close_code for socket in sockets] == [1008, 1008]
 
 
 async def test_recovery_revokes_every_old_session_and_changes_password(tmp_path: Path) -> None:

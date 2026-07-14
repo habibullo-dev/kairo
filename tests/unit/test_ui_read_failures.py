@@ -9,8 +9,9 @@ SETTINGS = (STATIC_DIR / "screens" / "settings.js").read_text(encoding="utf-8")
 
 
 def test_read_helper_degrades_to_null_for_screen_level_error_states() -> None:
-    assert "async get(path)" in APP
-    assert "catch {\n      return null;" in APP
+    assert "async get(path," in APP
+    assert "catch (failure)" in APP
+    assert ": null;" in APP
 
 
 def test_daily_tasks_distinguishes_an_error_from_no_tasks() -> None:

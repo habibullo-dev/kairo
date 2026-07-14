@@ -16,7 +16,10 @@ title (nothing delegated is hidden).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from jarvis.core.events import (
@@ -40,6 +43,23 @@ if TYPE_CHECKING:
 
 EVENT_SCHEMA_VERSION = 2  # v2: Phase-10B orchestration lifecycle events (started/stage/agent/
 #                                round/completed), broadcast by the OrchestrationController.
+
+
+@dataclass(frozen=True)
+class PreparedUiSessionResume:
+    """Durable resume state loaded under the shared turn lock but not yet made live."""
+
+    session_id: int
+    project_id: int | None
+    messages: list[dict]
+    compaction: tuple[str | None, int] | None
+
+
+@dataclass(frozen=True)
+class PreparedUiSessionNew:
+    """Fallible new-chat cleanup completed before a batch lifecycle transaction commits."""
+
+    prior_compaction: tuple[str | None, int] | None
 
 
 def initial_chat_title(text: str) -> str | None:
@@ -204,6 +224,7 @@ class UiSession:
         self.ring: deque[dict] = deque(maxlen=ring_buffer_events)
         self.log = log or get_logger("jarvis.ui.session")
         self._current: asyncio.Task | None = None
+        self._turn_generation = 0
         self._pushes: set[asyncio.Task] = set()  # strong refs so pushes aren't GC'd mid-flight
         # Persistence (Phase 10 Task 2): the UI conversation is a real interactive session —
         # lazily created on the first turn, saved each turn, resumable. ``project_id`` scopes
@@ -242,6 +263,17 @@ class UiSession:
             if self.session_id is None:
                 self.session_id = await self.sessions.create_session(project_id=self.project_id)
             return self.session_id
+
+    async def allocate_session(self, project_id: int | None) -> int | None:
+        """Allocate a durable empty row without mutating the live conversation.
+
+        Workspace transitions use this prepare step so storage failure leaves the old session,
+        transcript, project, and compaction state intact.
+        """
+        if self.sessions is None:
+            return None
+        async with self.turn_lock:
+            return await self.sessions.create_session(project_id=project_id)
 
     def _emit(self, event: Event, context: ExecutionContext | None = None) -> None:
         """Record an event and schedule delivery to its exact persisted context.
@@ -357,32 +389,82 @@ class UiSession:
             self.log.warning("ui_persist_failed", error_type=type(exc).__name__)
             await self._set_persistence_state("failed", context)
 
-    async def resume(self, session_id: int) -> bool:
-        """Load a past session's messages + frozen compaction into the live loop (mirrors
-        the REPL ``--resume`` mechanics). Refuses while a turn is in flight. Returns False
-        if there's no store or the session has no transcript."""
-        if self.sessions is None or self.busy:
-            return False
+    async def prepare_resume(self, session_id: int) -> PreparedUiSessionResume | None:
+        """Load and validate a resume target without mutating the live conversation.
+
+        The shared turn lock protects the durable snapshot.  Callers may then take their own
+        short-lived authority lock and commit synchronously; no authority lock ever needs to
+        wait for this lock while an attended turn is paused at the Gate.
+        """
+        if self.sessions is None or self._turn_busy_now():
+            return None
         async with self.turn_lock:
+            if self._turn_busy_now():
+                return None
             meta = await self.sessions.get_meta(session_id)
             if meta is None or meta.kind != "interactive" or meta.archived:
-                return False
+                return None
             history = await self.sessions.load_messages(session_id)
             if not history:
-                return False
-            self.messages = history
-            self.session_id = session_id
-            # The durable row is the source of truth: resuming cannot retain the previous
-            # workspace's project and misattribute subsequent events or tool activity.
-            self.project_id = meta.project_id
-            if self.context_manager is not None:
-                summary, cut = await self.sessions.load_compaction(session_id)
-                self.context_manager.restore(summary, cut)
-            self.persistence_state = "saved"
-            self.last_turn_cost_usd = None
-            self.last_turn_model = None
-            self.last_turn_provider = None
+                return None
+            if self._turn_busy_now():
+                return None
+            compaction = (
+                await self.sessions.load_compaction(session_id)
+                if self.context_manager is not None
+                else None
+            )
+            if self._turn_busy_now():
+                return None
+            return PreparedUiSessionResume(
+                session_id=session_id,
+                project_id=meta.project_id,
+                messages=history,
+                compaction=compaction,
+            )
+
+    def commit_resume(
+        self,
+        prepared: PreparedUiSessionResume,
+        *,
+        before_commit: Callable[[], None] | None = None,
+    ) -> bool:
+        """Commit a prepared resume without yielding; roll back compaction if its hook fails."""
+        if self.busy:
+            return False
+        if self.context_manager is not None:
+            prior_compaction = self.context_manager.state()
+            try:
+                self.context_manager.restore(*(prepared.compaction or (None, 0)))
+                if before_commit is not None:
+                    before_commit()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    self.context_manager.restore(*prior_compaction)
+                raise
+        elif before_commit is not None:
+            before_commit()
+        self.messages = prepared.messages
+        self.session_id = prepared.session_id
+        self.project_id = prepared.project_id
+        self.persistence_state = "saved"
+        self.last_turn_cost_usd = None
+        self.last_turn_model = None
+        self.last_turn_provider = None
         return True
+
+    async def resume(
+        self, session_id: int, *, before_commit: Callable[[], None] | None = None
+    ) -> bool:
+        """Load and atomically commit a past interactive session."""
+        prepared = await self.prepare_resume(session_id)
+        return bool(
+            prepared is not None and self.commit_resume(prepared, before_commit=before_commit)
+        )
+
+    def _turn_busy_now(self) -> bool:
+        """Re-read task state across awaits; it may change while another coroutine runs."""
+        return self.busy
 
     def submit(self, text: str) -> bool:
         """Start a turn in the background (events flow over WS). Returns False if a turn is
@@ -391,6 +473,7 @@ class UiSession:
             return False
         # Freeze scope before yielding.  A route must not be able to retag a queued turn by
         # switching projects or resuming a different chat while this task is underway.
+        self._turn_generation += 1
         self._current = asyncio.create_task(self._run(text, self._context()))
         return True
 
@@ -404,27 +487,86 @@ class UiSession:
             self.log.warning("ui_turn_error", error_type=type(exc).__name__)
             await self.connections.publish(context, {"kind": "turn_error"})
 
-    def start_new_session(self, project_id: int | None) -> None:
+    def start_new_session(
+        self,
+        project_id: int | None,
+        *,
+        session_id: int | None = None,
+        before_commit: Callable[[], None] | None = None,
+    ) -> None:
         """Begin a fresh conversation under a (possibly new) project scope. A session is
         bound to one project for its life (reflection/promotion attribute to it), so a
         project switch starts over rather than re-tagging the current transcript."""
+        prepared = self.prepare_new_session_commit(before_commit=before_commit)
+        self.commit_prepared_new_session(
+            prepared,
+            project_id=project_id,
+            session_id=session_id,
+        )
+
+    def prepare_new_session_commit(
+        self, *, before_commit: Callable[[], None] | None = None
+    ) -> PreparedUiSessionNew:
+        """Run every fallible synchronous new-chat step without publishing new authority.
+
+        Destructive fan-out routes preflight all affected workspaces before opening their shared
+        SQLite transaction. Once that transaction commits, :meth:`commit_prepared_new_session`
+        is assignment-only and cannot strand a later workspace on archived authority.
+        """
+        if self.busy:
+            raise RuntimeError("busy")
+        prior_compaction = (
+            self.context_manager.state() if self.context_manager is not None else None
+        )
+        if self.context_manager is not None:
+            # A compaction summary belongs to one conversation.  It must not survive a new chat.
+            try:
+                self.context_manager.restore(None, 0)
+                if before_commit is not None:
+                    before_commit()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    self.context_manager.restore(*prior_compaction)
+                raise
+        elif before_commit is not None:
+            before_commit()
+        return PreparedUiSessionNew(prior_compaction=prior_compaction)
+
+    def rollback_prepared_new_session(self, prepared: PreparedUiSessionNew) -> None:
+        """Restore compaction when a batch preflight or its database transaction fails."""
+        if self.context_manager is not None and prepared.prior_compaction is not None:
+            self.context_manager.restore(*prepared.prior_compaction)
+
+    def commit_prepared_new_session(
+        self,
+        prepared: PreparedUiSessionNew,
+        *,
+        project_id: int | None,
+        session_id: int | None,
+    ) -> None:
+        """Publish a preflighted new chat through non-fallible in-memory assignments."""
+        del prepared  # the token documents that fallible cleanup already completed
         self.messages = []
-        self.session_id = None
+        self.session_id = session_id
         self.project_id = project_id
         self.persistence_state = "new"
         self.last_turn_cost_usd = None
         self.last_turn_model = None
         self.last_turn_provider = None
-        if self.context_manager is not None:
-            # A compaction summary belongs to one conversation.  It must not survive a new chat.
-            self.context_manager.restore(None, 0)
 
-    def cancel(self) -> bool:
+    def cancel(self, *, expected_turn_id: int | None = None) -> bool:
         """Cancel the in-flight turn (Ctrl-C parity). Returns True if one was cancelled."""
+        if expected_turn_id is not None and expected_turn_id != self.current_turn_id:
+            return False
         if self._current is not None and not self._current.done():
             self._current.cancel()
             return True
         return False
+
+    @property
+    def current_turn_id(self) -> int | None:
+        """Process-local identity for the exact in-flight turn exposed to attended controls."""
+        return self._turn_generation if self.busy else None
 
     @property
     def busy(self) -> bool:

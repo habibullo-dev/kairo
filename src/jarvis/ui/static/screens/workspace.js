@@ -27,8 +27,23 @@ export async function render(container, api, args) {
     return;
   }
 
-  const ctx = await api.get(`/api/workspace/${projectId}`);
+  const ctx = await api.getRequired(`/api/workspace/${projectId}`);
   const project = (ctx && ctx.project) || null;
+  if (!project) {
+    const currentProjectId = api.state.context?.project_id;
+    const actions = [el("a", { href: "#projects", class: "plain-button" }, ["Open Projects"])];
+    if (Number.isInteger(currentProjectId) && currentProjectId > 0) {
+      actions.push(el("a", {
+        href: `#workspace/${currentProjectId}`, class: "plain-button ghost",
+      }, ["Open current workspace"]));
+    }
+    container.appendChild(el("div", { class: "empty-state rise" }, [
+      el("h4", {}, ["Workspace unavailable"]),
+      el("div", {}, ["This project is not the current workspace, or it is no longer available."]),
+      el("div", { class: "chip-row" }, actions),
+    ]));
+    return;
+  }
 
   const tile = el("div", { class: "card-tile ws-tile" }, [
     project ? (project.icon || (project.name || "?").slice(0, 1).toUpperCase()) : "?",
@@ -59,9 +74,11 @@ export async function render(container, api, args) {
 
   try {
     const mod = await import(`./workspace/${tab}.js`);
+    if (!api.renderIsCurrent()) return;
     panel.textContent = "";
     await mod.render(panel, api, { projectId, project });
   } catch {
+    if (!api.renderIsCurrent()) return;
     panel.textContent = "";
     panel.appendChild(el("div", { class: "empty-state" }, [
       el("h4", {}, ["Panel unavailable"]),

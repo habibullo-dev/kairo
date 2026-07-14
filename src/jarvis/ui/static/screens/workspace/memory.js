@@ -16,7 +16,7 @@ export async function render(container, api, ctx) {
     container.appendChild(emptyState("Unavailable", "Couldn't load this tab — it'll refresh shortly."));
     return;
   }
-  const rerender = () => render(container, api, ctx);
+  const rerender = () => api.refreshRoute();
 
   // --- Suggested: the QUARANTINED review queue (approve/reject before anything is durable) ---
   const sugg = await api.get("/api/graph/suggestions?project_id=" + pid);

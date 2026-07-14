@@ -60,8 +60,8 @@ def test_project_recommendation_prefills_and_estimates_but_never_auto_runs() -> 
 
 def test_project_recommendation_route_and_payload_are_consumer_validated() -> None:
     assert "args.length !== 3" in STUDIO
-    assert '/^[1-9]\\d{0,9}$/' in STUDIO
-    assert '/^[0-4]$/' in STUDIO
+    assert "/^[1-9]\\d{0,9}$/" in STUDIO
+    assert "/^[0-4]$/" in STUDIO
     assert "prefill.report_id !== route.reportId" in STUDIO
     assert "prefill.recommendation !== route.recommendation" in STUDIO
     assert "team.default_workflows.includes(prefill.workflow)" in STUDIO
@@ -69,12 +69,19 @@ def test_project_recommendation_route_and_payload_are_consumer_validated() -> No
 
 
 def test_project_prefill_draft_is_reset_scoped_and_race_guarded() -> None:
-    assert "if (S.projectId !== cat.active_project_id) resetForProject" in STUDIO
+    assert "S.projectId !== cat.active_project_id || S.authorityToken !== authorityToken" in STUDIO
+    assert "resetForProject(cat.active_project_id, authorityToken)" in STUDIO
     assert "S.prefillKey === key" in STUDIO
     assert 'S.task = ""' in STUDIO and 'S.budget = ""' in STUDIO
     assert "renderGeneration !== _renderGeneration" in STUDIO
     assert "estimateGeneration !== _estimateGeneration" in STUDIO
     assert "projectId !== S.projectId" in STUDIO
     assert "responseIsCurrent && !responseIsCurrent()" in STUDIO
-    assert 'addEventListener("input", (e) => { S.task = e.target.value; })' in STUDIO
-    assert 'addEventListener("input", (e) => { S.budget = e.target.value; })' in STUDIO
+    assert '#st-task")?.addEventListener("input"' in STUDIO
+    assert "S.task = e.target.value;" in STUDIO
+    assert '#st-budget")?.addEventListener("input"' in STUDIO
+    assert "S.budget = e.target.value;" in STUDIO
+    assert "invalidateEstimate(container);" in STUDIO
+    assert 'api.getRequired("/api/studio")' in STUDIO
+    assert "if (_runOperation) return;" in STUDIO
+    assert "renderRunControls(container);" in STUDIO

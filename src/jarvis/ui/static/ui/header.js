@@ -6,47 +6,156 @@
 // not in this compact composer control. All text
 // is set via el()/textContent (chat titles + project names are user/model text) — no raw-HTML sink.
 import { el } from "./dom.js";
+import { showToast } from "./feedback.js";
 
 const MODES = [["plan", "Planning"], ["approval", "Approval"], ["auto", "Auto"]];
 
 let _host = null;
 let _api = null;
 let _onChanged = () => {};
+let _refreshRevision = 0;
+let _latestHeaderRefresh = null;
 
-export async function mountHeader(host, api, opts = {}) {
+// Header renders replace every selector, so operation ownership cannot live on a DOM node. Keep
+// one operation per logical setting and bind it to the router's authenticated authority instead.
+// Effort keys include their model because effort is persisted per model server-side.
+const controlOperations = new Map();
+
+function authorityToken(api = _api) {
+  return typeof api?.authorityToken === "function" ? api.authorityToken() : null;
+}
+
+function authorityIsCurrent(api, token) {
+  return token === null || typeof api?.authorityIsCurrent !== "function"
+    || api.authorityIsCurrent(token);
+}
+
+function pendingControlOperation(setting, api = _api) {
+  const operation = controlOperations.get(setting);
+  const token = authorityToken(api);
+  return operation && operation.authorityToken === token && authorityIsCurrent(api, token)
+    ? operation : null;
+}
+
+function operationIsCurrent(operation) {
+  return controlOperations.get(operation.setting) === operation
+    && operation.authorityToken === authorityToken(_api)
+    && authorityIsCurrent(operation.api, operation.authorityToken)
+    && authorityIsCurrent(_api, operation.authorityToken);
+}
+
+function showPendingControl(control, operation) {
+  if (operation.control !== control) {
+    operation.control = control;
+    operation.controlWasDisabled = control.disabled;
+  }
+  // Before the POST settles, retain the user's selected value across passive header refreshes.
+  // During reconciliation, leave the freshly-read server value in place while keeping it busy.
+  if (operation.phase === "posting"
+      && [...control.options].some((option) => option.value === operation.pendingValue)) {
+    control.value = operation.pendingValue;
+  }
+  control.disabled = true;
+  control.setAttribute("aria-busy", "true");
+  return control;
+}
+
+function restorePendingControl(control, setting) {
+  const operation = pendingControlOperation(setting);
+  return operation ? showPendingControl(control, operation) : control;
+}
+
+export function bindHeaderContext(host, api, opts = {}) {
+  // The router keeps the same host only when workspace/session/project identity is unchanged.
+  // Let an in-flight read finish across that passive rebind; a different host invalidates it.
+  if (_host !== host) _refreshRevision += 1;
   _host = host;
   _api = api;
   _onChanged = opts.onChanged || (() => {});
+}
+
+export async function mountHeader(host, api, opts = {}) {
+  bindHeaderContext(host, api, opts);
   await refreshHeader();
 }
 
 // Re-fetch + re-render. Safe to call any time: a no-op when the host isn't on screen (so a WS
 // model/mode/project echo while another screen is open costs nothing).
 export async function refreshHeader({ refreshRunner = false } = {}) {
-  if (!_host || !_host.isConnected) return;
-  const [runner, models, caps, projects] = await Promise.all([
-    _api.runnerStatus({ refresh: refreshRunner }), _api.get("/api/models"), _api.get("/api/capabilities"),
-    _api.get("/api/projects"),
-  ]);
-  render(runner, models, caps, projects);
+  if (!_host || !_host.isConnected) return false;
+  const revision = ++_refreshRevision;
+  const host = _host;
+  const api = _api;
+  const refresh = { revision, promise: null };
+  refresh.promise = (async () => {
+    const [runner, models, caps, projects] = await Promise.all([
+      api.runnerStatus({ refresh: refreshRunner }), api.get("/api/models"), api.get("/api/capabilities"),
+      api.get("/api/projects"),
+    ]);
+    if (revision !== _refreshRevision || _host !== host || !host.isConnected
+        || (typeof _api.renderIsCurrent === "function" && !_api.renderIsCurrent())) return false;
+    render(runner, models, caps, projects);
+    return true;
+  })();
+  _latestHeaderRefresh = refresh;
+  return await refresh.promise;
 }
 
 // POST a UI-state change, then refresh. `conversation` also tells Daily to reload the chat view
 // (a new/resumed/archived chat changed which transcript is live).
-async function post(path, body) {
-  const res = await _api.post(path, body || {});
-  if (res.ok) await refreshHeader({ refreshRunner: true });
+async function postControl(control, setting, path, body) {
+  const api = _api;
+  const existing = pendingControlOperation(setting, api);
+  if (existing) {
+    showPendingControl(control, existing);
+    return false;
+  }
+  const operation = {
+    api, setting, authorityToken: authorityToken(api), pendingValue: control.value,
+    phase: "posting", control: null, controlWasDisabled: false,
+  };
+  controlOperations.set(setting, operation);
+  showPendingControl(control, operation);
+  let res;
+  try {
+    res = await api.post(path, body || {});
+  } catch {
+    res = { ok: false, data: { message: "Kairo could not be reached." } };
+  }
+
+  if (!operationIsCurrent(operation)) {
+    if (controlOperations.get(setting) === operation) controlOperations.delete(setting);
+    return false;
+  }
+  operation.phase = "reconciling";
+  if (!res.ok) showToast(res.data?.message || "That setting was not changed.", "error");
+
+  // If another same-authority refresh supersedes this reconciliation read, wait for that newer
+  // render before releasing the selector. Otherwise a failed optimistic value could be exposed
+  // briefly as writable while the authoritative replacement is still in flight.
+  const requestedRevision = _refreshRevision + 1;
+  let reconciled = await refreshHeader({ refreshRunner: true });
+  let observedRevision = requestedRevision;
+  while (!reconciled && operationIsCurrent(operation)) {
+    const latest = _latestHeaderRefresh;
+    if (!latest || latest.revision <= observedRevision) break;
+    observedRevision = latest.revision;
+    reconciled = await latest.promise;
+  }
+
+  const ownsCurrentOperation = operationIsCurrent(operation);
+  if (controlOperations.get(setting) === operation) controlOperations.delete(setting);
+  if (!ownsCurrentOperation) return false;
+  const liveControl = operation.control;
+  if (reconciled && liveControl?.isConnected) {
+    liveControl.disabled = operation.controlWasDisabled;
+    liveControl.removeAttribute("aria-busy");
+  }
   return res.ok;
 }
 
-function resetChat() {
-  if (_api.state) {
-    _api.state.chat = [];
-    _api.state.chatAttachments = [];
-  }
-}
-
 function scopeSelect(runner, projects, unavailable = false) {
+  const setting = "project";
   const activeId = (runner.project && runner.project.id) ?? null;
   const opts = unavailable
     ? [el("option", { value: "", selected: true }, ["Project status unavailable"])]
@@ -65,13 +174,14 @@ function scopeSelect(runner, projects, unavailable = false) {
       : "Project for this chat",
   }, opts);
   sel.value = unavailable || activeId == null ? "" : String(activeId);
+  restorePendingControl(sel, setting);
   sel.addEventListener("change", async () => {
     if (unavailable) return;
     // Switching scope starts a FRESH scoped conversation server-side (a session is bound to one
     // project for life). Clear the client transcript so the old chat doesn't linger.
-    const res = await _api.post("/api/projects/select",
+    const ok = await postControl(sel, setting, "/api/projects/select",
       { project_id: sel.value === "" ? null : Number(sel.value) });
-    if (res.ok) { resetChat(); await refreshHeader({ refreshRunner: true }); _onChanged(); }
+    if (ok) _onChanged();
   });
   return sel;
 }
@@ -81,11 +191,12 @@ function scopeSelect(runner, projects, unavailable = false) {
 // an honest reason (text-only / not-allowed-for-private / unavailable). When Auto, a caption shows
 // what it picked last turn ("→ Sonnet 5").
 function modelSelect(models, unavailable = false) {
+  const setting = "model";
   if (unavailable) {
-    return el("select", { class: "hdr-select", "aria-label": "Model routing", disabled: true,
+    return restorePendingControl(el("select", { class: "hdr-select", "aria-label": "Model routing", disabled: true,
       title: "Model status is unavailable. Reload this view to try again." }, [
       el("option", { value: "" }, ["Model status unavailable"]),
-    ]);
+    ]), setting);
   }
   const policy = models.policy || "manual";
   const auto = models.auto || {};
@@ -110,7 +221,12 @@ function modelSelect(models, unavailable = false) {
   const sel = el("select", { class: "hdr-select", "aria-label": "Model routing" }, opts);
   sel.value = policy === "auto" ? "auto" : (models.current || "auto");
   sel.title = auto.description || "uses cheap models first, escalates only when needed";
-  sel.addEventListener("change", () => { if (!unavailable && sel.value) post("/api/model", { model: sel.value }); });
+  restorePendingControl(sel, setting);
+  sel.addEventListener("change", () => {
+    if (!unavailable && sel.value) void postControl(
+      sel, setting, "/api/model", { model: sel.value },
+    );
+  });
   return sel;
 }
 
@@ -123,6 +239,7 @@ function effortSelect(models, unavailable = false) {
   const levels = models.effort_levels || [];
   if (!levels.length) return null;
   const cur = models.current_effort || "high";
+  const setting = `effort:${models.current || ""}`;
   const curRow = (models.models || []).find((m) => m.current);
   // Auto manages effort per tier. Haiku-like economy models do not accept an effort parameter.
   const isAuto = (models.policy || "manual") === "auto";
@@ -132,24 +249,31 @@ function effortSelect(models, unavailable = false) {
   const sel = el("select", { class: "hdr-select hdr-effort", "aria-label": "Effort (cost)" }, opts);
   sel.value = cur;
   sel.title = "Lower effort spends fewer tokens (cheaper); higher is more thorough.";
+  restorePendingControl(sel, setting);
   sel.addEventListener("change", () => {
-    if (sel.value) post("/api/effort", { effort: sel.value, model: models.current });
+    if (sel.value) void postControl(
+      sel, setting, "/api/effort", { effort: sel.value, model: models.current },
+    );
   });
   return sel;
 }
 
 function modeSelect(runner, unavailable = false) {
+  const setting = "mode";
   if (unavailable) {
-    return el("select", { class: "hdr-select", "aria-label": "Mode", disabled: true,
+    return restorePendingControl(el("select", { class: "hdr-select", "aria-label": "Mode", disabled: true,
       title: "Run-mode status is unavailable. Reload this view to try again." }, [
       el("option", { value: "" }, ["Mode status unavailable"]),
-    ]);
+    ]), setting);
   }
   const cur = runner.mode || "approval";
   const sel = el("select", { class: "hdr-select", "aria-label": "Mode" },
     MODES.map(([v, label]) => el("option", { value: v, selected: v === cur }, [label])));
   sel.value = cur;
-  sel.addEventListener("change", () => { if (!unavailable) post("/api/mode", { mode: sel.value }); });
+  restorePendingControl(sel, setting);
+  sel.addEventListener("change", () => {
+    if (!unavailable) void postControl(sel, setting, "/api/mode", { mode: sel.value });
+  });
   return sel;
 }
 

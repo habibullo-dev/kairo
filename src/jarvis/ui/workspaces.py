@@ -26,7 +26,7 @@ from jarvis.projects.context import GLOBAL, ProjectContext, build_project_contex
 if TYPE_CHECKING:
     from jarvis.projects.service import ProjectService
     from jarvis.ui.connections import Connection, ConnectionManager
-    from jarvis.ui.session import UiSession
+    from jarvis.ui.session import PreparedUiSessionNew, PreparedUiSessionResume, UiSession
 
 
 WorkspaceSessionFactory = Callable[["UiWorkspace"], "UiSession"]
@@ -34,6 +34,35 @@ WorkspaceVoiceFactory = Callable[["UiWorkspace"], object]
 ContextReplacedHook = Callable[[ExecutionContext], None]
 ContextBusyCheck = Callable[[ExecutionContext], bool]
 _KEEP_PROJECT = object()
+
+
+@dataclass(frozen=True)
+class PreparedWorkspaceNewSession:
+    """A fresh durable row plus the workspace authority snapshot that requested it."""
+
+    source_context: ExecutionContext
+    source_revision: int
+    project: ProjectContext
+    session_id: int
+
+
+@dataclass(frozen=True)
+class PreparedWorkspaceResume:
+    """A fully loaded resume target that has not yet replaced live workspace state."""
+
+    source_context: ExecutionContext
+    source_revision: int
+    project: ProjectContext
+    session: PreparedUiSessionResume
+
+
+@dataclass(frozen=True)
+class PreparedWorkspaceContextReplacement:
+    """Fallible context cleanup completed while old workspace authority remains live."""
+
+    source_context: ExecutionContext
+    source_revision: int
+    session: PreparedUiSessionNew
 
 
 @dataclass
@@ -50,6 +79,10 @@ class UiWorkspace:
 
     def __post_init__(self) -> None:
         self.project: ProjectContext = GLOBAL
+        # Monotonic identity for the *selection epoch*, not just its session/project pair. A
+        # workspace can move A -> B -> resume A; delayed A requests must not become current again.
+        self.context_revision = 1
+        self.revoked = False
         self.voice_active = 0
         self.session = self.make_session(self)
         # Voice has mutable transcript/state too, so it belongs to the workspace rather than
@@ -101,6 +134,121 @@ class UiWorkspace:
             raise KeyError(f"no project #{project_id}")
         return build_project_context(project)
 
+    def _source_matches(self, context: ExecutionContext, revision: int) -> bool:
+        return bool(
+            not self.revoked and self.context == context and self.context_revision == revision
+        )
+
+    def _attended_busy_now(self) -> bool:
+        """Re-read attended state across awaits; another request may admit work meanwhile."""
+        return self.attended_busy
+
+    async def prepare_new_session(
+        self, project_id: int | None | object = _KEEP_PROJECT
+    ) -> PreparedWorkspaceNewSession:
+        """Resolve the target and allocate its row without changing browser-visible authority."""
+        if self.revoked:
+            raise RuntimeError("workspace_revoked")
+        if self._attended_busy_now():
+            raise RuntimeError("busy")
+        source_context = self.context
+        source_revision = self.context_revision
+        project = self.project
+        if project_id is not _KEEP_PROJECT:
+            project = await self._project_context(project_id)  # type: ignore[arg-type]
+        if not self._source_matches(source_context, source_revision):
+            raise RuntimeError("context_changed")
+        if self._attended_busy_now():
+            raise RuntimeError("busy")
+        session_id = await self.session.allocate_session(project.project_id)
+        if session_id is None:
+            raise RuntimeError("a UI workspace requires persistent session storage")
+        if not self._source_matches(source_context, source_revision):
+            raise RuntimeError("context_changed")
+        if self._attended_busy_now():
+            raise RuntimeError("busy")
+        return PreparedWorkspaceNewSession(
+            source_context=source_context,
+            source_revision=source_revision,
+            project=project,
+            session_id=session_id,
+        )
+
+    def commit_new_session(self, prepared: PreparedWorkspaceNewSession) -> ExecutionContext:
+        """Publish one prepared fresh-session transition as a non-yielding state change."""
+        if not self._source_matches(prepared.source_context, prepared.source_revision):
+            raise RuntimeError("context_changed")
+        if self._attended_busy_now():
+            raise RuntimeError("busy")
+        replacement = self.prepare_context_replacement()
+        if (
+            replacement.source_context != prepared.source_context
+            or replacement.source_revision != prepared.source_revision
+        ):
+            self.rollback_context_replacement(replacement)
+            raise RuntimeError("context_changed")
+        try:
+            return self.commit_preallocated_new_session(
+                replacement,
+                project=prepared.project,
+                session_id=prepared.session_id,
+            )
+        except Exception:
+            self.rollback_context_replacement(replacement)
+            raise
+
+    def prepare_context_replacement(self) -> PreparedWorkspaceContextReplacement:
+        """Preflight a fresh context without awaiting, allocating, or changing its identity."""
+        if self.revoked:
+            raise RuntimeError("workspace_revoked")
+        if self._attended_busy_now():
+            raise RuntimeError("busy")
+        source_context = self.context
+        source_revision = self.context_revision
+        on_context_replaced = self.on_context_replaced
+        prepared_session = self.session.prepare_new_session_commit(
+            before_commit=(
+                (lambda: on_context_replaced(source_context))
+                if on_context_replaced is not None
+                else None
+            ),
+        )
+        return PreparedWorkspaceContextReplacement(
+            source_context=source_context,
+            source_revision=source_revision,
+            session=prepared_session,
+        )
+
+    def rollback_context_replacement(self, prepared: PreparedWorkspaceContextReplacement) -> None:
+        """Restore in-memory compaction after a failed batch preflight/database transaction."""
+        self.session.rollback_prepared_new_session(prepared.session)
+
+    def commit_preallocated_new_session(
+        self,
+        prepared: PreparedWorkspaceContextReplacement,
+        *,
+        project: ProjectContext,
+        session_id: int,
+    ) -> ExecutionContext:
+        """Commit a preflighted externally allocated session without any fallible await."""
+        if not self._source_matches(prepared.source_context, prepared.source_revision):
+            raise RuntimeError("context_changed")
+        if self._attended_busy_now():
+            raise RuntimeError("busy")
+        new_context = ExecutionContext(session_id=session_id, project_id=project.project_id)
+        if self.projects is not None:
+            # Bind first: if a custom ProjectService rejects the context, no live session state has
+            # changed and the caller can roll back the prepared compaction token.
+            self.projects.bind_execution_context(new_context, project)
+        self.session.commit_prepared_new_session(
+            prepared.session,
+            project_id=project.project_id,
+            session_id=session_id,
+        )
+        self.project = project
+        self.context_revision += 1
+        return self.context
+
     async def start_new_session(
         self, project_id: int | None | object = _KEEP_PROJECT
     ) -> ExecutionContext:
@@ -109,42 +257,63 @@ class UiWorkspace:
         A workspace refuses this transition while its turn is live.  That is intentional: the
         active task holds an immutable execution context, rather than being silently redirected.
         """
-        if self.attended_busy:
-            raise RuntimeError("busy")
-        project = self.project
-        if project_id is not _KEEP_PROJECT:
-            project = await self._project_context(project_id)  # type: ignore[arg-type]
-        old_context = self.context
-        if self.on_context_replaced is not None:
-            self.on_context_replaced(old_context)
-        self.project = project
-        self.session.start_new_session(self.project.project_id)
-        await self.session.ensure_session()
-        self._bind_project_scope()
-        return self.context
+        prepared = await self.prepare_new_session(project_id)
+        return self.commit_new_session(prepared)
 
     async def select_project(self, project_id: int | None) -> ExecutionContext:
         """Switch project by creating a new chat; existing transcripts remain immutable."""
         return await self.start_new_session(project_id)
 
+    async def prepare_resume(self, session_id: int) -> PreparedWorkspaceResume | None:
+        """Load a resume target while leaving the current workspace context untouched."""
+        if self.revoked or self._attended_busy_now() or self.session.sessions is None:
+            return None
+        source_context = self.context
+        source_revision = self.context_revision
+        prepared_session = await self.session.prepare_resume(session_id)
+        if prepared_session is None:
+            return None
+        if not self._source_matches(source_context, source_revision):
+            raise RuntimeError("context_changed")
+        if self._attended_busy_now():
+            return None
+        project = await self._project_context(prepared_session.project_id)
+        if not self._source_matches(source_context, source_revision):
+            raise RuntimeError("context_changed")
+        if self._attended_busy_now():
+            return None
+        return PreparedWorkspaceResume(
+            source_context=source_context,
+            source_revision=source_revision,
+            project=project,
+            session=prepared_session,
+        )
+
+    def commit_resume(self, prepared: PreparedWorkspaceResume) -> bool:
+        """Publish a prepared resume as one non-yielding session/project transition."""
+        if not self._source_matches(prepared.source_context, prepared.source_revision):
+            raise RuntimeError("context_changed")
+        if self._attended_busy_now():
+            return False
+        on_context_replaced = self.on_context_replaced
+        if not self.session.commit_resume(
+            prepared.session,
+            before_commit=(
+                (lambda: on_context_replaced(prepared.source_context))
+                if on_context_replaced is not None
+                else None
+            ),
+        ):
+            return False
+        self.project = prepared.project
+        self._bind_project_scope()
+        self.context_revision += 1
+        return True
+
     async def resume(self, session_id: int) -> bool:
         """Resume a persisted interactive chat and restore its durable project binding."""
-        if self.attended_busy or self.session.sessions is None:
-            return False
-        if self.context_busy is not None and self.context_busy(self.context):
-            return False
-        meta = await self.session.sessions.get_meta(session_id)
-        if meta is None or meta.kind != "interactive" or meta.archived:
-            return False
-        project = await self._project_context(meta.project_id)
-        old_context = self.context
-        if not await self.session.resume(session_id):
-            return False
-        if self.on_context_replaced is not None:
-            self.on_context_replaced(old_context)
-        self.project = project
-        self._bind_project_scope()
-        return True
+        prepared = await self.prepare_resume(session_id)
+        return prepared is not None and self.commit_resume(prepared)
 
 
 class ServerCaptureLease:
@@ -257,30 +426,47 @@ class UiWorkspaceRegistry:
         self, conn: Connection, *, owner_session: str, requested_workspace_id: object = None
     ) -> UiWorkspace:
         """Bind ``conn`` to an existing or freshly minted workspace for its auth cookie."""
-        workspace_id = self._valid_workspace_id(requested_workspace_id)
-        key = (owner_session, workspace_id) if workspace_id is not None else None
-        workspace = self._workspaces.get(key) if key is not None else None
-        if workspace is None:
-            workspace_id = secrets.token_urlsafe(24)
-            key = (owner_session, workspace_id)
-            workspace = UiWorkspace(
-                owner_session=owner_session,
-                workspace_id=workspace_id,
-                make_session=self.make_session,
-                projects=self.projects,
-                make_voice=self.make_voice,
-                on_context_replaced=self.on_context_replaced,
-                context_busy=self.context_busy,
-            )
-            await workspace.initialize()
-            self._workspaces[key] = workspace
-        self.connections.bind_workspace(
-            conn,
+        async with self.transition_lock:
+            workspace_id = self._valid_workspace_id(requested_workspace_id)
+            key = (owner_session, workspace_id) if workspace_id is not None else None
+            workspace = self._workspaces.get(key) if key is not None else None
+            if workspace is not None:
+                self.connections.bind_workspace(
+                    conn,
+                    owner_session=owner_session,
+                    workspace_id=workspace.workspace_id,
+                    context=workspace.context,
+                    context_revision=workspace.context_revision,
+                )
+                return workspace
+
+        # Initializing a new workspace allocates through the process-wide turn lock.  Keep that
+        # wait outside ``transition_lock`` so another workspace can resolve/cancel a Gate-paused
+        # turn.  The candidate is invisible until the final non-yielding registration below.
+        workspace_id = secrets.token_urlsafe(24)
+        key = (owner_session, workspace_id)
+        workspace = UiWorkspace(
             owner_session=owner_session,
-            workspace_id=workspace.workspace_id,
-            context=workspace.context,
+            workspace_id=workspace_id,
+            make_session=self.make_session,
+            projects=self.projects,
+            make_voice=self.make_voice,
+            on_context_replaced=self.on_context_replaced,
+            context_busy=self.context_busy,
         )
-        return workspace
+        await workspace.initialize()
+        async with self.transition_lock:
+            if key in self._workspaces:
+                raise RuntimeError("workspace id collision")
+            self.connections.bind_workspace(
+                conn,
+                owner_session=owner_session,
+                workspace_id=workspace.workspace_id,
+                context=workspace.context,
+                context_revision=workspace.context_revision,
+            )
+            self._workspaces[key] = workspace
+            return workspace
 
     def resolve(self, *, owner_session: str | None, workspace_id: object) -> UiWorkspace | None:
         """Resolve an HTTP request only when that cookie owns a live bound WebSocket."""
@@ -290,11 +476,29 @@ class UiWorkspaceRegistry:
         if workspace_id is None:
             return None
         workspace = self._workspaces.get((owner_session, workspace_id))
-        if workspace is None or not self.connections.has_live_workspace(
-            owner_session=owner_session, workspace_id=workspace_id
-        ):
+        if workspace is None or not self.is_live(workspace):
             return None
         return workspace
+
+    def is_live(self, workspace: UiWorkspace) -> bool:
+        """Whether this exact object is still registered and watched by an authenticated socket."""
+        return bool(
+            not workspace.revoked
+            and self._workspaces.get((workspace.owner_session, workspace.workspace_id)) is workspace
+            and self.connections.has_live_workspace(
+                owner_session=workspace.owner_session, workspace_id=workspace.workspace_id
+            )
+        )
+
+    def claim_matches(
+        self, workspace: UiWorkspace, context: ExecutionContext, context_revision: int
+    ) -> bool:
+        """Validate one immutable client freshness claim against live server authority."""
+        return bool(
+            self.is_live(workspace)
+            and workspace.context == context
+            and workspace.context_revision == context_revision
+        )
 
     def refresh_context(self, workspace: UiWorkspace) -> None:
         """Retarget all current sockets after a new/resumed session or project selection."""
@@ -302,6 +506,7 @@ class UiWorkspaceRegistry:
             owner_session=workspace.owner_session,
             workspace_id=workspace.workspace_id,
             context=workspace.context,
+            context_revision=workspace.context_revision,
         )
 
     def for_project(self, project_id: int) -> list[UiWorkspace]:
@@ -329,6 +534,7 @@ class UiWorkspaceRegistry:
         keys = [key for key in self._workspaces if key[0] == owner_session]
         for key in keys:
             workspace = self._workspaces.pop(key)
+            workspace.revoked = True
             workspace.session.cancel()
             if self.on_context_replaced is not None:
                 self.on_context_replaced(workspace.context)
@@ -345,6 +551,7 @@ class UiWorkspaceRegistry:
         message: dict,
         *,
         context: ExecutionContext | None = None,
+        context_revision: int | None = None,
     ) -> None:
         """Emit a lifecycle event only to one workspace.
 
@@ -356,13 +563,31 @@ class UiWorkspaceRegistry:
             owner_session=workspace.owner_session,
             workspace_id=workspace.workspace_id,
             context=context or workspace.context,
-            message=message,
+            message={
+                **message,
+                "context_revision": (
+                    context_revision if context_revision is not None else workspace.context_revision
+                ),
+            },
         )
 
     @asynccontextmanager
-    async def voice_activity(self, workspace: UiWorkspace):
+    async def voice_activity(
+        self,
+        workspace: UiWorkspace,
+        *,
+        expected_context: ExecutionContext | None = None,
+        expected_revision: int | None = None,
+    ):
         """Mark a voice/meeting command active without holding the transition lock for its run."""
         async with self.transition_lock:
+            if expected_context is not None and (
+                expected_revision is None
+                or not self.claim_matches(workspace, expected_context, expected_revision)
+            ):
+                raise RuntimeError("context_changed")
+            if expected_context is None and not self.is_live(workspace):
+                raise RuntimeError("context_changed")
             if workspace.attended_busy:
                 raise RuntimeError("busy")
             workspace.voice_active += 1

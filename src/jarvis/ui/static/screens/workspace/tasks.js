@@ -18,7 +18,7 @@ export async function render(container, api, ctx) {
   const runs = (runsData && runsData.runs) || [];
   const followUps = runs.flatMap((run) => (Array.isArray(run.action_items) ? run.action_items : [])
     .map((item) => ({ ...item, runId: run.id, runTitle: run.title || run.workflow || "Team run" })));
-  const rerender = () => render(container, api, ctx);
+  const rerender = () => api.refreshRoute();
   const rows = tasks.map((t) => {
     const when = t.next_run_at ? t.next_run_at.slice(0, 16).replace("T", " ") : "";
     const sub = t.kind + " · " + t.status + (when ? " · " + when : "");

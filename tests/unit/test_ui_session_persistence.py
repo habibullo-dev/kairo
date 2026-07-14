@@ -172,6 +172,68 @@ async def test_resume_restores_messages(tmp_path: Path) -> None:
     assert len(await store.load_messages(old)) == 4
 
 
+async def test_failed_resume_compaction_load_preserves_live_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = await _store(tmp_path)
+    current = await store.create_session()
+    target = await store.create_session()
+    await store.save_messages(current, [{"role": "user", "content": "current"}])
+    await store.save_messages(target, [{"role": "user", "content": "target"}])
+    await store.save_compaction(current, "current summary", 1)
+    context = ContextManager()
+    session = UiSession(
+        loop=_loop(tmp_path, FakeClient([])),
+        connections=ConnectionManager(clock=lambda: 0.0),
+        sessions=store,
+        context_manager=context,
+    )
+    assert await session.resume(current)
+    before = (session.session_id, list(session.messages), session.project_id, context.state())
+    original = store.load_compaction
+
+    async def fail_target(session_id: int):
+        if session_id == target:
+            raise OSError("compaction unavailable")
+        return await original(session_id)
+
+    monkeypatch.setattr(store, "load_compaction", fail_target)
+    with pytest.raises(OSError, match="compaction unavailable"):
+        await session.resume(target)
+
+    assert (session.session_id, session.messages, session.project_id, context.state()) == before
+
+
+async def test_context_replacement_hook_failure_is_atomic(tmp_path: Path) -> None:
+    store = await _store(tmp_path)
+    current = await store.create_session()
+    target = await store.create_session()
+    await store.save_messages(current, [{"role": "user", "content": "current"}])
+    await store.save_messages(target, [{"role": "user", "content": "target"}])
+    await store.save_compaction(current, "current summary", 1)
+    await store.save_compaction(target, "target summary", 1)
+    context = ContextManager()
+    session = UiSession(
+        loop=_loop(tmp_path, FakeClient([])),
+        connections=ConnectionManager(clock=lambda: 0.0),
+        sessions=store,
+        context_manager=context,
+    )
+    assert await session.resume(current)
+    before = (session.session_id, list(session.messages), session.project_id, context.state())
+
+    def fail_hook() -> None:
+        raise RuntimeError("invalidation failed")
+
+    with pytest.raises(RuntimeError, match="invalidation failed"):
+        await session.resume(target, before_commit=fail_hook)
+    assert (session.session_id, session.messages, session.project_id, context.state()) == before
+
+    with pytest.raises(RuntimeError, match="invalidation failed"):
+        session.start_new_session(None, session_id=999, before_commit=fail_hook)
+    assert (session.session_id, session.messages, session.project_id, context.state()) == before
+
+
 async def test_resume_unknown_session_is_false(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     session = UiSession(

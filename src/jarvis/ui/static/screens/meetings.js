@@ -7,11 +7,13 @@ let activeContainer = null;
 let activeApi = null;
 let activeReady = false;
 let inFlight = false;
+let inFlightAuthorityToken = null;
 let serverPhase = "idle";
 let lifecycleRevision = 0;
 let voiceStatusRevision = 0;
 let renderGeneration = 0;
 let lastVoiceStatus = null;
+let operationOutcome = null;
 const memoryReceipts = new Map();
 
 const CAPTURE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -103,6 +105,41 @@ function showMessage(container, message, { openKnowledge = false } = {}) {
   }
 }
 
+function authorityIsCurrent(api, token) {
+  return token === null || typeof api.authorityIsCurrent !== "function"
+    || api.authorityIsCurrent(token);
+}
+
+// The route can remount while capture is pending. Resolve only into the currently connected
+// Meetings container under the exact authority that started the request; the captured container
+// is merely an obsolete DOM snapshot after a remount.
+function liveOperationContainer(api, authorityToken) {
+  if (!authorityIsCurrent(api, authorityToken) || activeApi?.state?.route !== "meetings"
+      || !activeContainer?.isConnected) return null;
+  const activeToken = typeof activeApi.authorityToken === "function"
+    ? activeApi.authorityToken() : null;
+  if (authorityToken !== null && activeToken !== authorityToken) return null;
+  return activeContainer;
+}
+
+function rememberOperationOutcome(api, authorityToken, message, options = {}) {
+  if (!authorityIsCurrent(api, authorityToken)) return null;
+  operationOutcome = {
+    authorityToken,
+    message,
+    options: { openKnowledge: Boolean(options.openKnowledge) },
+  };
+  const liveContainer = liveOperationContainer(api, authorityToken);
+  if (liveContainer) showMessage(liveContainer, message, options);
+  return liveContainer;
+}
+
+function showRememberedOutcome(container, api, authorityToken) {
+  if (!operationOutcome || operationOutcome.authorityToken !== authorityToken
+      || !authorityIsCurrent(api, authorityToken)) return;
+  showMessage(container, operationOutcome.message, operationOutcome.options);
+}
+
 function failureMessage(result) {
   if (result?.status === 409) return "Another voice action is active. Wait for it to finish, then retry.";
   if (result?.status === 422) return "No speech was detected, so nothing was saved. Try again closer to the microphone.";
@@ -155,6 +192,18 @@ function applyVoiceStatus(container, status, api) {
 }
 
 export async function render(container, api) {
+  const renderAuthorityToken = typeof api.authorityToken === "function"
+    ? api.authorityToken() : null;
+  if (inFlight && inFlightAuthorityToken !== null
+      && typeof api.authorityIsCurrent === "function"
+      && !api.authorityIsCurrent(inFlightAuthorityToken)) {
+    inFlight = false;
+    inFlightAuthorityToken = null;
+  }
+  if (operationOutcome && (operationOutcome.authorityToken !== renderAuthorityToken
+      || !authorityIsCurrent(api, operationOutcome.authorityToken))) {
+    operationOutcome = null;
+  }
   const generation = ++renderGeneration;
   activeContainer = container;
   activeApi = api;
@@ -190,6 +239,7 @@ export async function render(container, api) {
     </div>
     <div class="card rise"><div class="card-label">Where this note goes</div>
       <div class="dim meeting-history-note">Only the transcript is kept. It appears in the <a href="#vault">Knowledge</a> review queue as an unreviewed source and is never acted on automatically.</div></div>`;
+  showRememberedOutcome(container, api, renderAuthorityToken);
 
   const loadingAvailability = container.querySelector("#mtg-availability");
   if (loadingAvailability) {
@@ -225,13 +275,28 @@ export async function render(container, api) {
   if (!button) return;
   button.addEventListener("click", async () => {
     if (inFlight || button.dataset.available !== "1" || !consent?.checked) return;
+    const operationAuthorityToken = typeof api.authorityToken === "function"
+      ? api.authorityToken() : null;
+    const expectedContext = api.state.context && {
+      session_id: api.state.context.session_id,
+      project_id: api.state.context.project_id,
+      context_revision: api.state.context.context_revision,
+    };
+    const operationIsCurrent = () => operationAuthorityToken === null
+      || typeof api.authorityIsCurrent !== "function"
+      || api.authorityIsCurrent(operationAuthorityToken);
     inFlight = true;
+    inFlightAuthorityToken = operationAuthorityToken;
+    operationOutcome = null;
     setPhase(container, "requesting");
     showMessage(container, "Checking for a saved result first. Kairo will show Listening only if the microphone opens.");
     const title = container.querySelector("#mtg-title")?.value.trim() || "Meeting note";
     const receipt = captureReceiptFor(api);
     if (!receipt) {
-      inFlight = false;
+      if (inFlightAuthorityToken === operationAuthorityToken) {
+        inFlight = false;
+        inFlightAuthorityToken = null;
+      }
       showMessage(container, "The workspace context is not ready. Wait for Kairo to reconnect.");
       setPhase(container, serverPhase);
       return;
@@ -240,20 +305,23 @@ export async function render(container, api) {
     try {
       const r = await api.post(
         "/api/voice/meeting",
-        { title, consent: true, capture_id: receipt.id },
+        { title, consent: true, capture_id: receipt.id, expected_context: expectedContext },
       );
       responseStatus = r.status;
       const sourceId = Number(r?.data?.source_id);
       if (!r?.ok || !r.data.ok || !Number.isInteger(sourceId) || sourceId < 1) {
-        showMessage(container, failureMessage(r));
+        rememberOperationOutcome(api, operationAuthorityToken, failureMessage(r));
         return;
       }
-      consent.checked = false;
       clearCaptureReceipt(receipt);
+      const liveContainer = liveOperationContainer(api, operationAuthorityToken);
+      const liveConsent = liveContainer?.querySelector("#mtg-consent");
+      if (liveConsent) liveConsent.checked = false;
       const sourceStatus = r.data.source_status || "live";
       if (sourceStatus !== "live") {
-        showMessage(
-          container,
+        rememberOperationOutcome(
+          api,
+          operationAuthorityToken,
           `This capture receipt already belongs to ${sourceStatus} source #${sourceId}. No new audio was recorded; consent again to start a new note.`,
         );
         return;
@@ -262,23 +330,37 @@ export async function render(container, api) {
         ? " Indexing is pending; it remains unreviewed. Retry approval after Knowledge providers recover."
         : "";
       const reviewStatus = r.data.review_status === "reviewed" ? "reviewed" : "unreviewed";
-      showMessage(
-        container,
+      rememberOperationOutcome(
+        api,
+        operationAuthorityToken,
         `Saved “${r.data.title || title}” as ${reviewStatus} source #${sourceId}.${indexNote}`,
         { openKnowledge: true },
       );
     } catch {
-      consent.checked = false;
-      if (serverPhase === "idle") serverPhase = "unknown";
-      showMessage(container, "The connection ended before Kairo could confirm whether the note was saved. Check Knowledge before capturing again.");
+      if (operationIsCurrent() && serverPhase === "idle") serverPhase = "unknown";
+      const liveContainer = rememberOperationOutcome(
+        api,
+        operationAuthorityToken,
+        "The connection ended before Kairo could confirm whether the note was saved. Check Knowledge before capturing again.",
+      );
+      const liveConsent = liveContainer?.querySelector("#mtg-consent");
+      if (liveConsent) liveConsent.checked = false;
     } finally {
-      inFlight = false;
+      if (inFlightAuthorityToken === operationAuthorityToken) {
+        inFlight = false;
+        inFlightAuthorityToken = null;
+      }
       if (responseStatus !== null && responseStatus !== 409) {
-        consent.checked = false;
+        const liveConsent = liveOperationContainer(api, operationAuthorityToken)
+          ?.querySelector("#mtg-consent");
+        if (liveConsent) liveConsent.checked = false;
       }
       // The HTTP response has no lifecycle ordering relative to another tab. Production emits
       // an authoritative terminal ``idle`` frame before returning; keep any newer WS/status phase.
-      setPhase(container, serverPhase);
+      if (operationIsCurrent()) {
+        const liveContainer = liveOperationContainer(api, operationAuthorityToken);
+        if (liveContainer) setPhase(liveContainer, serverPhase);
+      }
     }
   });
 }

@@ -19,9 +19,17 @@ const S = {
   task: "",           // human-editable draft; survives harmless Studio rerenders in one project
   budget: "",
   prefillKey: null,  // prevents a rerender from overwriting a human-edited assessment draft
+  confirmation: null, // exact params + authority for one visible cost-confirmation response
+  authorityToken: null,
+  resumeNotice: null,
 };
 let _renderGeneration = 0;
 let _estimateGeneration = 0;
+let _runSequence = 0;
+let _runOperation = null;
+let _resumeOperation = null;
+let _activeContainer = null;
+let _activeApi = null;
 
 // The head reviewer/synthesizer is an ENGINE STAGE (Fable on the planner route), not a team
 // member — badged visibly on the roster, the live verdict, and a run's synthesis.
@@ -32,7 +40,15 @@ function headBadge(route) {
 
 export async function render(container, api, args = []) {
   const renderGeneration = ++_renderGeneration;
-  _api = api;
+  _activeContainer = container;
+  _activeApi = api;
+  const authorityToken = typeof api.authorityToken === "function" ? api.authorityToken() : null;
+  const contextProjectId = api.state.context?.project_id ?? null;
+  // Retire old private state before yielding to catalog/history reads. Otherwise a new
+  // authority's first orchestration event can arrive during the await and be wiped by a late reset.
+  if (S.projectId !== contextProjectId || S.authorityToken !== authorityToken) {
+    resetForProject(contextProjectId, authorityToken);
+  }
   const reportIntent = args[0] === "report";
   const reportRoute = parseReportRoute(args);
   const requestedPrefillKey = reportRoute
@@ -40,7 +56,7 @@ export async function render(container, api, args = []) {
     : null;
   if (reportIntent && requestedPrefillKey !== S.prefillKey) S.estimate = null;
   const [cat, hist, reportSuggestion] = await Promise.all([
-    api.get("/api/studio"),
+    api.getRequired("/api/studio"),
     api.get("/api/orchestration"),
     reportRoute ? api.get(
       `/api/project-intelligence/reports/${encodeURIComponent(reportRoute.reportId)}/studio-prefill?recommendation=${encodeURIComponent(reportRoute.recommendation)}`
@@ -53,7 +69,9 @@ export async function render(container, api, args = []) {
       <div class="sub">Orchestration is not available (delegation/sub-agents off).</div></div>`;
     return;
   }
-  if (S.projectId !== cat.active_project_id) resetForProject(cat.active_project_id);
+  if (S.projectId !== cat.active_project_id || S.authorityToken !== authorityToken) {
+    resetForProject(cat.active_project_id, authorityToken);
+  }
   S.catalog = cat;
   S.runs = (hist && hist.runs) || [];
   S.team = S.team || (cat.teams[0] && cat.teams[0].id);
@@ -68,6 +86,10 @@ export async function render(container, api, args = []) {
   const svcState = mapServices(cat.services);
   const team = cat.teams.find((t) => t.id === S.team) || cat.teams[0];
   S.head = routeModel["planner"] || null;
+  if (S.confirmation) {
+    S.confirmation.api = api;
+    S.confirmation.container = container;
+  }
   const requestedRun = /^\d+$/.test(String(args[0] || "")) ? Number(args[0]) : null;
 
   container.innerHTML = `
@@ -118,10 +140,11 @@ export async function render(container, api, args = []) {
   if (taskInput) taskInput.value = S.task;
   if (budgetInput) budgetInput.value = S.budget;
   wire(container, api);
-  if (requestedRun != null) await showRunDetail(container, api, requestedRun);
+  renderRunControls(container);
+  if (requestedRun != null) await showRunDetail(container, api, requestedRun, authorityToken);
   else {
     S.detail = null;
-    renderDetail(container);
+    renderDetail(container, api, authorityToken);
     if (reportIntent) await applyReportPrefill(container, api, prefill, reportRoute);
   }
 }
@@ -151,14 +174,22 @@ export function onEvent(state, evt) {
 }
 
 function wire(container, api) {
-  container.querySelector("#st-task")?.addEventListener("input", (e) => { S.task = e.target.value; });
-  container.querySelector("#st-budget")?.addEventListener("input", (e) => { S.budget = e.target.value; });
+  container.querySelector("#st-task")?.addEventListener("input", (e) => {
+    S.task = e.target.value;
+    invalidateEstimate(container);
+  });
+  container.querySelector("#st-budget")?.addEventListener("input", (e) => {
+    S.budget = e.target.value;
+    invalidateEstimate(container);
+  });
   container.querySelector("#st-team")?.addEventListener("change", (e) => {
-    S.team = e.target.value; S.workflow = defaultWorkflow(S.catalog, S.team); S.estimate = null;
-    render(container, api);
+    S.team = e.target.value; S.workflow = defaultWorkflow(S.catalog, S.team);
+    invalidateEstimate(container);
+    void api.refreshRoute();
   });
   container.querySelector("#st-workflow")?.addEventListener("change", (e) => {
-    S.workflow = e.target.value; S.estimate = null; renderEstimatePanel(container);
+    S.workflow = e.target.value;
+    invalidateEstimate(container);
   });
   container.querySelector("#st-estimate")?.addEventListener("click", () => doEstimate(container, api));
   container.querySelector("#st-run")?.addEventListener("click", () => doRun(container, api, false));
@@ -167,10 +198,14 @@ function wire(container, api) {
   }
 }
 
-async function showRunDetail(container, api, runId) {
-  const detail = await api.get(`/api/orchestration/${runId}`);
+async function showRunDetail(container, api, runId, authorityToken) {
+  const detail = await api.getRequired(`/api/orchestration/${runId}`);
+  if ((authorityToken !== null && typeof api.authorityIsCurrent === "function"
+      && !api.authorityIsCurrent(authorityToken))
+      || (typeof api.renderIsCurrent === "function" && !api.renderIsCurrent())) return;
   S.detail = detail && detail.run ? detail : null;
-  renderDetail(container);
+  S.resumeNotice = null;
+  renderDetail(container, api, authorityToken);
 }
 
 function parseReportRoute(args) {
@@ -186,8 +221,9 @@ function reportRouteIsActive(args) {
   return location.hash.replace(/^#/, "") === `studio/${args.join("/")}`;
 }
 
-function resetForProject(projectId) {
+function resetForProject(projectId, authorityToken = null) {
   S.projectId = projectId;
+  S.authorityToken = authorityToken;
   S.team = null;
   S.workflow = null;
   S.estimate = null;
@@ -196,7 +232,41 @@ function resetForProject(projectId) {
   S.task = "";
   S.budget = "";
   S.prefillKey = null;
+  S.confirmation = null;
+  S.resumeNotice = null;
+  _runOperation = null;
+  _resumeOperation = null;
   _estimateGeneration += 1;
+}
+
+function invalidateEstimate(container) {
+  S.estimate = null;
+  S.confirmation = null;
+  _estimateGeneration += 1;
+  renderEstimatePanel(container);
+}
+
+function renderRunControls(container) {
+  const busy = Boolean(_runOperation && _runOperation.authorityToken === S.authorityToken);
+  for (const selector of ["#st-team", "#st-workflow", "#st-task", "#st-budget", "#st-estimate", "#st-run", "#st-confirm"]) {
+    const control = container.querySelector(selector);
+    if (control) control.disabled = busy;
+  }
+  const run = container.querySelector("#st-run");
+  if (run) run.textContent = busy ? "Starting…" : "Run";
+}
+
+function sameParams(left, right) {
+  return Boolean(left && right
+    && left.team === right.team
+    && left.workflow === right.workflow
+    && left.task === right.task
+    && left.budget_usd === right.budget_usd);
+}
+
+function draftParams() {
+  const budget = S.budget ? Number(S.budget) : null;
+  return { team: S.team, workflow: S.workflow, task: S.task.trim(), budget_usd: budget };
 }
 
 function validateReportPrefill(data, route, catalog) {
@@ -265,6 +335,7 @@ function params(container) {
 async function doEstimate(container, api, responseIsCurrent = null) {
   const estimateGeneration = ++_estimateGeneration;
   const projectId = S.projectId;
+  const authorityToken = typeof api.authorityToken === "function" ? api.authorityToken() : null;
   const p = params(container);
   const q = new URLSearchParams({ team: p.team, workflow: p.workflow, task: p.task });
   if (p.budget_usd != null) q.set("budget_usd", String(p.budget_usd));
@@ -272,27 +343,70 @@ async function doEstimate(container, api, responseIsCurrent = null) {
   if (
     estimateGeneration !== _estimateGeneration
     || projectId !== S.projectId
+    || (authorityToken !== null && typeof api.authorityIsCurrent === "function"
+      && !api.authorityIsCurrent(authorityToken))
+    || (typeof api.renderIsCurrent === "function" && !api.renderIsCurrent())
     || (responseIsCurrent && !responseIsCurrent())
   ) return;
   S.estimate = r && r.ok ? r.estimate : { decision: "error", reason: (r && r.message) || "failed" };
   renderEstimatePanel(container);
 }
 
-async function doRun(container, api, confirmed) {
-  const p = params(container);
-  const r = await api.post("/api/orchestration/run", { ...p, confirmed });
-  if (r.status === 200 && r.data.needs_confirmation) {
-    S.estimate = r.data.estimate; S.estimate._needs_confirm = true;
-    renderEstimatePanel(container);
+async function doRun(container, api, confirmed, confirmation = null) {
+  if (_runOperation) return;
+  if (confirmed && (!confirmation || S.confirmation !== confirmation)) return;
+  const p = confirmed ? confirmation.params : params(container);
+  const projectId = S.projectId;
+  const authorityToken = typeof api.authorityToken === "function" ? api.authorityToken() : null;
+  const operation = {
+    id: ++_runSequence, authorityToken, projectId, params: { ...p }, confirmed, confirmation,
+  };
+  _runOperation = operation;
+  renderRunControls(container);
+  let r;
+  try {
+    r = await api.post("/api/orchestration/run", { ...p, confirmed });
+  } catch {
+    r = { ok: false, status: 0, data: { message: "run request failed" } };
+  }
+  const authorityCurrent = authorityToken === null
+    || typeof api.authorityIsCurrent !== "function"
+    || api.authorityIsCurrent(authorityToken);
+  if (_runOperation !== operation || !authorityCurrent || projectId !== S.projectId
+      || authorityToken !== S.authorityToken) return;
+  _runOperation = null;
+  const liveContainer = _activeContainer?.isConnected ? _activeContainer : null;
+  S.confirmation = null;
+  if (r.status === 200 && r.data?.needs_confirmation) {
+    S.estimate = { ...r.data.estimate, _needs_confirm: true };
+    // A cost prompt is useful only while its exact unchanged draft is still visible. A committed
+    // launch response is reconciled below even after a harmless rerender, but an unseen prompt is
+    // deliberately dropped so returning to Studio requires a fresh estimate/run decision.
+    if (liveContainer && sameParams(draftParams(), p)) {
+      S.confirmation = {
+        api: _activeApi || api, container: liveContainer, authorityToken, projectId,
+        params: { ...p },
+      };
+      renderEstimatePanel(liveContainer);
+      renderRunControls(liveContainer);
+    } else {
+      S.estimate = null;
+    }
     return;
   }
   if (!r.ok) {
-    S.estimate = { decision: "error", reason: r.data.message || `HTTP ${r.status}` };
-    renderEstimatePanel(container);
+    S.estimate = { decision: "error", reason: r.data?.message || `HTTP ${r.status}` };
+    if (liveContainer) {
+      renderEstimatePanel(liveContainer);
+      renderRunControls(liveContainer);
+    }
     return;
   }
-  S.estimate = r.data.estimate || null;
-  renderEstimatePanel(container);
+  S.estimate = r.data?.estimate || null;
+  if (liveContainer) {
+    renderEstimatePanel(liveContainer);
+    renderRunControls(liveContainer);
+  }
 }
 
 function renderEstimatePanel(container) {
@@ -310,7 +424,8 @@ function renderEstimatePanel(container) {
     `<tr><td>${esc(m.member_id)}</td><td class="dim">${esc(m.model)}</td>
      <td class="dim num">×${m.turns}</td>
      <td class="num">${money(m.model_usd)}</td></tr>`).join("");
-  const confirmBtn = (e.decision === "confirm" && e._needs_confirm)
+  const confirmation = S.confirmation;
+  const confirmBtn = (e.decision === "confirm" && e._needs_confirm && confirmation)
     ? `<button id="st-confirm" class="btn-always">Confirm & run (${money(e.total_usd)})</button>` : "";
   el.innerHTML = `<div class="est-panel ${cls}">
     <div><b>Worst case: ${money(e.total_usd)}</b> · ${esc(e.decision)}</div>
@@ -318,7 +433,11 @@ function renderEstimatePanel(container) {
     ${e.unpriced && e.unpriced.length ? `<div class="warn dim">unpriced: ${esc(e.unpriced.join(", "))}</div>` : ""}
     <table class="studio-table">${members}</table>
     ${confirmBtn}</div>`;
-  el.querySelector("#st-confirm")?.addEventListener("click", () => doRun(container, api_(), true));
+  el.querySelector("#st-confirm")?.addEventListener(
+    "click",
+    () => doRun(container, confirmation.api, true, confirmation),
+  );
+  renderRunControls(container);
 }
 
 function renderLive(container) {
@@ -341,10 +460,18 @@ function renderLive(container) {
     <div class="studio-agent-list">${agents}</div></div>`;
 }
 
-function renderDetail(container) {
+function renderDetail(container, api, authorityToken) {
   const el = container.querySelector("#st-detail");
   if (!el || !S.detail || !S.detail.run) { if (el) el.innerHTML = ""; return; }
-  const r = S.detail.run;
+  const detail = S.detail;
+  const r = detail.run;
+  const ownsDetail = () => (
+    S.detail === detail
+    && S.authorityToken === authorityToken
+    && (authorityToken === null || typeof api.authorityIsCurrent !== "function"
+      || api.authorityIsCurrent(authorityToken))
+    && (typeof api.renderIsCurrent !== "function" || api.renderIsCurrent())
+  );
   const money = (n) => (n == null ? "—" : `$${n.toFixed(4)}`);
   const recordedSkills = (entries) => (entries || []).map((skill) =>
     `<span class="chip dim" title="pack ${esc(skill.sha256)} · compiled ${esc(skill.compiled_sha256)}">${esc(skill.pack)} v${esc(skill.version)} · ${esc(skill.member)}/${esc(skill.stage)}</span>`).join(" ");
@@ -391,13 +518,18 @@ function renderDetail(container) {
         <div class="dim run-actions-note">Added to this project's Team follow-ups. They are not scheduled or run automatically.</div>
         ${actions}<button class="plain-button ghost run-actions-open" data-project-tasks="${r.project_id}">Open project Tasks</button></section>`
     : `<div class="dim run-findings-note">This earlier run did not record a structured follow-up plan. Run the review again to create one.</div>`;
+  const resumeBusy = Boolean(_resumeOperation
+    && _resumeOperation.authorityToken === authorityToken
+    && _resumeOperation.runId === r.id);
   const resumeBlock = r.can_resume
     ? `<section class="run-actions"><div class="synth-head">Recover safely</div>
         <div class="dim run-actions-note">This run stopped after synthesis and before any writer began. Re-enter the exact original task brief to continue from that bounded synthesis. The original brief and team reports were not stored.</div>
-        <textarea id="st-resume-task" rows="3" placeholder="Re-enter the exact original task brief"></textarea>
-        <button id="st-resume" class="plain-button ghost">Continue from synthesis</button>
-        <div id="st-resume-note" class="dim run-actions-note"></div></section>`
-    : "";
+        <textarea id="st-run-resume-task" rows="3" placeholder="Re-enter the exact original task brief"></textarea>
+        <button id="st-run-resume" class="plain-button ghost" ${resumeBusy ? "disabled" : ""}>${resumeBusy ? "Continuing…" : "Continue from synthesis"}</button>
+        <div id="st-run-resume-note" class="dim run-actions-note"></div></section>`
+    : (S.resumeNotice
+      ? `<section class="run-actions"><div class="dim run-actions-note">${esc(S.resumeNotice)}</div></section>`
+      : "");
   el.innerHTML = `<div class="card rise">
     <div class="card-label">Run #${r.id} · ${esc(r.title)} ${statusPill(r.status, r.verdict)}</div>
     <div class="dim">est ${money(r.estimated_cost_usd)} · actual ${money(r.actual_cost_usd)}
@@ -410,6 +542,7 @@ function renderDetail(container) {
     <div class="dim studio-context">Skill packs recorded at run start: ${skillManifest || "No skill packs recorded for this run."}</div>
     <div class="dim studio-context-note">Recorded metadata does not prove prompt injection; Shadow mode records manifests without injecting guidance.</div></div>`;
   el.querySelector("[data-project-tasks]")?.addEventListener("click", (event) => {
+    if (!ownsDetail()) return;
     const projectId = Number(event.currentTarget.dataset.projectTasks);
     if (Number.isInteger(projectId) && projectId > 0) location.hash = `workspace/${projectId}/tasks`;
   });
@@ -417,26 +550,49 @@ function renderDetail(container) {
     button.addEventListener("click", async (event) => {
       const index = Number(event.currentTarget.dataset.promoteFollowUp);
       const item = actionItems[index];
-      if (!item) return;
+      if (!item || !ownsDetail()) return;
       await openTaskDraft({
         runId: r.id,
         runTitle: r.title || r.workflow || "Team run",
         title: item.title,
         goal: item.goal,
         priority: item.priority,
-      }, api_());
+      }, api);
     });
   });
-  el.querySelector("#st-resume")?.addEventListener("click", async () => {
-    const task = el.querySelector("#st-resume-task")?.value.trim() || "";
-    const note = el.querySelector("#st-resume-note");
+  el.querySelector("#st-run-resume")?.addEventListener("click", async () => {
+    if (_resumeOperation || !ownsDetail()) return;
+    const task = el.querySelector("#st-run-resume-task")?.value.trim() || "";
+    const note = el.querySelector("#st-run-resume-note");
     if (!task) { if (note) note.textContent = "Re-enter the original task brief first."; return; }
-    const response = await api_().post(`/api/orchestration/${r.id}/resume`, { task });
+    const button = el.querySelector("#st-run-resume");
+    const operation = { authorityToken, runId: r.id, task };
+    _resumeOperation = operation;
+    S.resumeNotice = null;
+    if (button) button.disabled = true;
+    let response;
+    try {
+      response = await api.post(`/api/orchestration/${r.id}/resume`, { task });
+    } catch {
+      response = { ok: false, status: 0, data: { message: "Continuation request failed." } };
+    }
+    const authorityCurrent = authorityToken === null
+      || typeof api.authorityIsCurrent !== "function"
+      || api.authorityIsCurrent(authorityToken);
+    const operationCurrent = _resumeOperation === operation;
+    if (operationCurrent) _resumeOperation = null;
+    if (!operationCurrent || !authorityCurrent
+        || S.authorityToken !== authorityToken || S.detail?.run?.id !== r.id) return;
     if (!response.ok) {
-      if (note) note.textContent = response.data?.message || `HTTP ${response.status}`;
+      S.resumeNotice = response.data?.message || `HTTP ${response.status}`;
+      const liveContainer = _activeContainer?.isConnected ? _activeContainer : null;
+      if (liveContainer) renderDetail(liveContainer, _activeApi || api, authorityToken);
       return;
     }
-    if (note) note.textContent = "Continuation started. The checkpoint has been consumed before any writer runs.";
+    S.resumeNotice = "Continuation started. The checkpoint has been consumed before any writer runs.";
+    S.detail.run.can_resume = false;
+    const liveContainer = _activeContainer?.isConnected ? _activeContainer : null;
+    if (liveContainer) renderDetail(liveContainer, _activeApi || api, authorityToken);
   });
 }
 
@@ -505,7 +661,3 @@ function mapServices(services) {
   for (const s of services || []) m[s.name] = s.state;
   return m;
 }
-// render() stashes the `api` handle so the confirm button (re-rendered after a needs_confirmation
-// response) can re-POST with confirmed=true without threading `api` through every helper.
-let _api = null;
-function api_() { return _api; }

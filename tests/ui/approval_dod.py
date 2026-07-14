@@ -75,6 +75,7 @@ async def _open_page(browser: object, base: str) -> tuple[object, object, list[s
           socket._onopen();
           socket._onmessage({ data: JSON.stringify({
             type: "workspace", workspace_id: "approval-dod", session_id: 5, project_id: 1,
+            context_revision: 1,
           }) });
           document.getElementById("rail-search").focus();
         }"""
@@ -103,6 +104,7 @@ def _approval(decision_id: str) -> dict[str, object]:
         "persistable": True,
         "session_id": 5,
         "project_id": 1,
+        "context_revision": 1,
     }
 
 
@@ -113,6 +115,7 @@ def _nonce(decision_id: str, value: str) -> dict[str, object]:
         "nonce": value,
         "session_id": 5,
         "project_id": 1,
+        "context_revision": 1,
     }
 
 

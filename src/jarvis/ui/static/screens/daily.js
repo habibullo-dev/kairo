@@ -4,9 +4,35 @@ import { showToast } from "../ui/feedback.js";
 import { money, relTime } from "../ui/format.js";
 import { openProjectReport } from "../ui/project-report.js";
 
-let briefingRefreshInFlight = false;
+let briefingRefreshOperation = null;
+let briefingRefreshSequence = 0;
+let briefingReadRevision = 0;
+let tasksReadRevision = 0;
+const routeApiByContainer = new WeakMap();
+let activeDailyContainer = null;
+
+function renderIsCurrent(container, api) {
+  return container.isConnected
+    && (typeof api.renderIsCurrent !== "function" || api.renderIsCurrent());
+}
+
+function authorityToken(api) {
+  return typeof api.authorityToken === "function" ? api.authorityToken() : null;
+}
+
+function authorityIsCurrent(api, token) {
+  return token === null || typeof api.authorityIsCurrent !== "function"
+    || api.authorityIsCurrent(token);
+}
+
+function refreshBelongsTo(api) {
+  if (!briefingRefreshOperation) return false;
+  const token = authorityToken(api);
+  return briefingRefreshOperation.authorityToken === token && authorityIsCurrent(api, token);
+}
 
 export function render(container, api) {
+  activeDailyContainer = container;
   if (!container.querySelector("#daily-briefing")) {
     container.innerHTML = `
       <section class="daily-briefing rise">
@@ -31,6 +57,9 @@ export function render(container, api) {
         </nav>
       </section>`;
   }
+  // The Daily shell is intentionally reused. Keep its one persistent Refresh listener pointed at
+  // the latest route facade so a same-workspace handshake does not strand it on an old generation.
+  routeApiByContainer.set(container, api);
   renderPending(container, api);
   renderStatus(container, api);
   renderProject(container, api);
@@ -44,8 +73,9 @@ function renderBriefingRefresh(container, api) {
   if (!button) return;
   const busy = !!api.state.runner?.turn_busy;
   const projectScoped = api.state.context?.project_id != null;
-  button.disabled = briefingRefreshInFlight || busy || projectScoped;
-  button.textContent = briefingRefreshInFlight ? "Refreshing…" : (projectScoped ? "Global only" : "Refresh");
+  const refreshing = refreshBelongsTo(api);
+  button.disabled = refreshing || busy || projectScoped;
+  button.textContent = refreshing ? "Refreshing…" : (projectScoped ? "Global only" : "Refresh");
   button.title = projectScoped
     ? "Daily briefing refresh uses global connected sources. Open the global workspace to run it."
     : (busy
@@ -53,29 +83,47 @@ function renderBriefingRefresh(container, api) {
     : "Run a fresh briefing from your connected sources.");
   if (button.dataset.bound === "true") return;
   button.dataset.bound = "true";
-  button.addEventListener("click", () => { void refreshBriefing(container, api); });
+  button.addEventListener("click", () => {
+    void refreshBriefing(container, routeApiByContainer.get(container) || api);
+  });
 }
 
 async function refreshBriefing(container, api) {
-  if (briefingRefreshInFlight || api.state.runner?.turn_busy) return;
+  if (refreshBelongsTo(api) || api.state.runner?.turn_busy) return;
   if (api.state.context?.project_id != null) {
     showToast("Open the global workspace to refresh the daily briefing.", "error");
     return;
   }
-  briefingRefreshInFlight = true;
+  const operation = {
+    id: ++briefingRefreshSequence,
+    authorityToken: authorityToken(api),
+  };
+  briefingRefreshOperation = operation;
   renderBriefingRefresh(container, api);
   try {
     const result = await api.post("/api/digest/run", {});
+    if (briefingRefreshOperation !== operation
+        || !authorityIsCurrent(api, operation.authorityToken)) return;
     if (!result.ok) {
       const busy = result.status === 409 || result.data?.message === "busy";
       showToast(busy ? "Kairo is already working. Try refreshing the briefing shortly." : "Briefing refresh failed.", "error");
       return;
     }
     showToast("Briefing refreshed.");
-    await fillBriefing(container, api);
+    const liveContainer = activeDailyContainer?.isConnected ? activeDailyContainer : container;
+    const liveApi = routeApiByContainer.get(liveContainer) || api;
+    await fillBriefing(liveContainer, liveApi);
+  } catch {
+    if (briefingRefreshOperation === operation
+        && authorityIsCurrent(api, operation.authorityToken)) {
+      showToast("Briefing refresh failed.", "error");
+    }
   } finally {
-    briefingRefreshInFlight = false;
-    renderBriefingRefresh(container, api);
+    if (briefingRefreshOperation === operation) briefingRefreshOperation = null;
+    if (!authorityIsCurrent(api, operation.authorityToken)) return;
+    const liveContainer = activeDailyContainer?.isConnected ? activeDailyContainer : container;
+    const liveApi = routeApiByContainer.get(liveContainer) || api;
+    renderBriefingRefresh(liveContainer, liveApi);
   }
 }
 
@@ -268,8 +316,12 @@ function renderNotice(container, api) {
 let fillTimer = null;
 function scheduleFills(container, api) {
   if (fillTimer) clearTimeout(fillTimer);
+  // A rerender supersedes both old responses immediately, including the debounce interval.
+  briefingReadRevision += 1;
+  tasksReadRevision += 1;
   fillTimer = setTimeout(() => {
     fillTimer = null;
+    if (!renderIsCurrent(container, api)) return;
     fillBriefing(container, api);
     fillToday(container, api);
   }, 150);
@@ -278,7 +330,9 @@ function scheduleFills(container, api) {
 async function fillBriefing(container, api) {
   const host = container.querySelector("#daily-briefing-body");
   if (!host) return;
+  const revision = ++briefingReadRevision;
   const data = await api.get("/api/daily");
+  if (revision !== briefingReadRevision || !renderIsCurrent(container, api)) return;
   const projectScoped = api.state.context?.project_id != null;
   renderProjectAssessment(
     container,
@@ -314,7 +368,9 @@ async function fillBriefing(container, api) {
 async function fillToday(container, api) {
   const host = container.querySelector("#daily-today-rows");
   if (!host) return;
+  const revision = ++tasksReadRevision;
   const tasks = await api.get("/api/tasks");
+  if (revision !== tasksReadRevision || !renderIsCurrent(container, api)) return;
   clear(host);
   if (tasks === null) {
     host.appendChild(emptyState("Tasks unavailable", "Kairo couldn't load scheduled work right now."));

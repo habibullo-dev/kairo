@@ -6,7 +6,7 @@
 import { render as renderDaily } from "./screens/daily.js";
 import { render as renderChat } from "./screens/chat.js";
 import { onConversationEvent } from "./screens/conversation.js";
-import { render as renderProjects } from "./screens/projects.js";
+import { dismissProjectDialogs, render as renderProjects } from "./screens/projects.js";
 import { render as renderStudio, onEvent as studioOnEvent } from "./screens/studio.js";
 import { render as renderGate } from "./screens/gate.js";
 import { render as renderVault } from "./screens/vault.js";
@@ -23,11 +23,14 @@ import { render as renderArtifacts } from "./screens/artifacts.js";
 import { get as getTheme, initTheme, setTheme } from "./ui/theme.js";
 import { initKeys, clearScope, pushEscape } from "./ui/keys.js";
 import { emit as busEmit, on as busOn } from "./ui/bus.js";
-import { init as initPalette, openPalette } from "./ui/palette.js";
+import { closePalette, init as initPalette, openPalette } from "./ui/palette.js";
 import { refreshHeader } from "./ui/header.js";
 import { canCapture, cancelCapture, playCaption, playbackOn, recording, setPlayback, stopCaption, toggleTalk } from "./ui/voice.js";
 import { money } from "./ui/format.js";
-import { openParkedTaskApproval } from "./ui/task-draft.js";
+import { dismissTaskDialogs, openParkedTaskApproval } from "./ui/task-draft.js";
+import { dismissMemoryDraft } from "./ui/memory-draft.js";
+import { dismissFeedbackDialogs } from "./ui/feedback.js";
+import { dismissProjectReport } from "./ui/project-report.js";
 
 const state = {
   chat: [],            // Daily conversation items {role, text} | {tool, resolution}
@@ -39,6 +42,8 @@ const state = {
   voice: { enabled: false, meeting: "idle", meeting_recording: false },
   trace: [],           // raw events (Debug/Trace)
   notices: [],         // background job/reminder/digest notices (Phase 9)
+  turnAdmission: null, // exact optimistic /api/turn admission currently awaiting reconciliation
+  turnDraft: null,     // failed admission restored across same-authority route remounts
   context: null,       // server-owned {session_id, project_id}; never inferred from a hash
   route: "chat",
   routeArgs: [],       // positional hash args after the screen name (#workspace/{id})
@@ -79,6 +84,15 @@ function workspaceHeaders(base = {}) {
   return workspaceId ? { ...base, "x-kairo-workspace-id": workspaceId } : base;
 }
 
+function expectedContextHeaders(context = state.context) {
+  if (!Number.isInteger(context?.session_id) || !Number.isInteger(context?.context_revision)) return {};
+  return {
+    "x-kairo-expected-session-id": String(context.session_id),
+    "x-kairo-expected-project-id": context.project_id == null ? "global" : String(context.project_id),
+    "x-kairo-expected-context-revision": String(context.context_revision),
+  };
+}
+
 function sessionAlive(response) {
   if (response.status !== 401) return true;
   location.replace("/login");
@@ -87,37 +101,114 @@ function sessionAlive(response) {
 
 // --- tiny API helper (same-origin; cookie carried automatically) ---
 let runnerStatusRequest = null;
+let runnerStatusRequestGeneration = -1;
+let runnerStatusAbort = null;
+let runnerStatusGeneration = -1;
+let runnerStatusRequestRevision = 0;
+let turnSettlementRevision = 0;
+const API_READ_OUTCOME = Symbol("api-read-outcome");
+const EXPECTED_UNAVAILABLE_READ_STATUSES = new Set([404, 503]);
+const INITIAL_ROUTE_READ_TIMEOUT_MS = 15000;
 export const api = {
   state,
-  async get(path) {
+  authorityToken() { return authorityGeneration; },
+  authorityIsCurrent(token) { return token === authorityGeneration; },
+  navigationToken() { return navigationGeneration; },
+  navigationIsCurrent(token) { return token === navigationGeneration; },
+  restoreTurnDraft(text) {
+    const value = String(text || "").trim();
+    if (!value) return;
+    const liveInput = state.route === "chat" ? document.getElementById("chat-input") : null;
+    if (liveInput) {
+      liveInput.value = liveInput.value.trim() ? `${value}\n${liveInput.value}` : value;
+      liveInput.dispatchEvent(new Event("input"));
+      liveInput.focus();
+    } else {
+      state.turnDraft = state.turnDraft ? `${value}\n${state.turnDraft}` : value;
+    }
+    refreshConversation();
+  },
+  refreshConversationView() { refreshConversation(); },
+  workspaceToken() { return workspaceId; },
+  async get(path, { signal, diagnostic = false } = {}) {
     try {
-      const r = await fetch(path, { headers: workspaceHeaders({ "accept": "application/json" }) });
-      if (!sessionAlive(r)) return null;
-      return r.ok ? await r.json() : null;
-    } catch {
-      return null;  // read surfaces render a distinct unavailable state instead of throwing
+      const r = await fetch(path, {
+        headers: workspaceHeaders({ "accept": "application/json" }),
+        signal,
+      });
+      if (!sessionAlive(r)) {
+        return diagnostic ? { [API_READ_OUTCOME]: true, data: null, failure: null } : null;
+      }
+      if (!r.ok) {
+        const failure = diagnostic && !EXPECTED_UNAVAILABLE_READ_STATUSES.has(r.status)
+          ? new Error(`read failed with status ${r.status}`)
+          : null;
+        return diagnostic ? { [API_READ_OUTCOME]: true, data: null, failure } : null;
+      }
+      const data = await r.json();
+      return diagnostic ? { [API_READ_OUTCOME]: true, data, failure: null } : data;
+    } catch (failure) {
+      // Ordinary read surfaces deliberately use null for feature-off/partial-unavailable states.
+      // The router asks for a diagnostic outcome only while an async screen owns its initial
+      // render, allowing transport/JSON failures to reach that screen's recovery boundary.
+      return diagnostic ? { [API_READ_OUTCOME]: true, data: null, failure } : null;
     }
   },
   async voiceStatus() {
     return refreshVoiceStatus();
   },
   async runnerStatus({ refresh = false } = {}) {
+    const generation = contextGeneration;
+    if (!refresh && runnerStatusRequest && runnerStatusRequestGeneration === generation) {
+      return runnerStatusRequest;
+    }
+    if (runnerStatusRequest) runnerStatusAbort?.abort();
     // Retain last-known state for passive chrome, but never hand it to an interactive surface
-    // after a failed read. The scheduled refresh is the sole recovery path in that interval.
-    if (!refresh && state.runnerStatusError) return null;
-    if (!refresh && state.runner) return state.runner;
-    if (runnerStatusRequest) return runnerStatusRequest;
-    runnerStatusRequest = api.get("/api/runner").then((runner) => {
+    // after a failed read or a workspace epoch change. The scheduled refresh is the sole recovery
+    // path in that interval, and an old workspace's request can never block or populate the new one.
+    if (!refresh && runnerStatusGeneration === generation && state.runnerStatusError) return null;
+    if (!refresh && runnerStatusGeneration === generation && state.runner) return state.runner;
+    const controller = new AbortController();
+    const revision = ++runnerStatusRequestRevision;
+    const settlementRevision = turnSettlementRevision;
+    const request = api.get("/api/runner", { signal: controller.signal }).then((runner) => {
+      if (generation !== contextGeneration) return null;
+      if (revision !== runnerStatusRequestRevision) {
+        // A forced refresh superseded this read in the same authority. Its original callers
+        // adopt the newest request instead of observing an AbortError-shaped null and falsely
+        // reporting that runner state is unavailable.
+        return runnerStatusRequestGeneration === generation
+          && runnerStatusRequest !== request ? runnerStatusRequest : null;
+      }
+      // A terminal frame is newer than a runner snapshot that was already in flight. Never let
+      // that older snapshot resurrect the completed turn as busy; the terminal frame has already
+      // settled the visible state and the next poll will obtain a post-terminal snapshot.
+      if (settlementRevision !== turnSettlementRevision && runner?.turn_busy) {
+        const settledRunner = state.runner || { ...runner, turn_busy: false, turn_id: null };
+        state.runnerStatusError = false;
+        runnerStatusGeneration = generation;
+        if (!state.runner) reconcileRunnerContext(settledRunner);
+        return settledRunner;
+      }
       state.runnerStatusError = runner == null;
-      if (runner) state.runner = runner;
+      runnerStatusGeneration = generation;
+      if (runner) reconcileRunnerContext(runner);
       return runner;
-    }).finally(() => { runnerStatusRequest = null; });
-    return runnerStatusRequest;
+    }).finally(() => {
+      if (runnerStatusRequest === request) {
+        runnerStatusRequest = null;
+        runnerStatusAbort = null;
+      }
+    });
+    runnerStatusRequest = request;
+    runnerStatusRequestGeneration = generation;
+    runnerStatusAbort = controller;
+    return request;
   },
   async post(path, body) {
     const r = await fetch(path, {
       method: "POST",
-      headers: workspaceHeaders({ "content-type": "application/json" }),
+      headers: workspaceHeaders({ ...expectedContextHeaders(), "content-type": "application/json" }),
       body: JSON.stringify(body || {}),
     });
     if (!sessionAlive(r)) return { ok: false, status: r.status, data: {} };
@@ -125,17 +216,23 @@ export const api = {
   },
   async stepUp(password) {
     const generation = workspaceGeneration;
+    const startingWorkspace = workspaceId;
     const result = await api.post("/auth/step-up", { password });
     if (!result.ok) return result;
     if (!await waitForWorkspaceAfter(generation)) {
       return { ok: false, status: 409, data: { message: "secure workspace reconnect timed out" } };
+    }
+    if (!workspaceId || workspaceId === startingWorkspace) {
+      return { ok: false, status: 409, data: { message: "secure workspace replacement was not observed" } };
     }
     return result;
   },
   async upload(path, body) {
     // FormData lets the browser set its own multipart boundary. The server still receives the
     // same authenticated, server-owned workspace handle as every other attended UI action.
-    const r = await fetch(path, { method: "POST", headers: workspaceHeaders(), body });
+    const r = await fetch(path, {
+      method: "POST", headers: workspaceHeaders(expectedContextHeaders()), body,
+    });
     if (!sessionAlive(r)) return { ok: false, status: r.status, data: {} };
     return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
   },
@@ -186,6 +283,10 @@ export const api = {
         if (_parkedTaskDialog === controller) _parkedTaskDialog = null;
       },
     });
+    if (!controller) {
+      state.parkedTaskApprovals.delete(runId);
+      return false;
+    }
     _parkedTaskDialog = controller;
     return true;
   },
@@ -194,19 +295,70 @@ export const api = {
       onVoiceState("error", state.voice.reason || "Voice is unavailable.");
       return;
     }
-    await toggleTalk({ mode, headers: workspaceHeaders(), onState: onVoiceState, onTranscript });
+    const authorityToken = authorityGeneration;
+    const navigationToken = navigationGeneration;
+    await toggleTalk({
+      mode,
+      headers: workspaceHeaders(expectedContextHeaders()),
+      onState: onVoiceState,
+      onTranscript: (transcript) => {
+        if (authorityToken !== authorityGeneration) return;
+        // Same-authority navigation keeps the capture valid but retires the textarea callback
+        // that started it. Preserve finalized dictation as a draft for the active/new Chat DOM.
+        if (navigationToken !== navigationGeneration) api.restoreTurnDraft(transcript);
+        else onTranscript?.(transcript);
+      },
+      isCurrent: () => authorityToken === authorityGeneration,
+    });
   },
   cancelVoiceCapture() {
-    if (cancelCapture(onVoiceState)) return;
-    if (stopCaption()) onVoiceState("idle");
+    const captureStopped = cancelCapture(onVoiceState);
+    const captionStopped = stopCaption();
+    if (!captureStopped && captionStopped) onVoiceState("idle");
   },
   // Resume a past chat into the live session AND load its transcript into the Daily conversation
   // view (so resuming actually shows the conversation). Returns false if a turn is in flight (409).
   async resumeChat(sessionId) {
+    const startingAuthority = authorityGeneration;
+    const startingWorkspace = workspaceId;
+    const startingContext = state.context && { ...state.context };
+    const ownsExactSuccessor = () => Boolean(
+      startingContext
+      && workspaceId === startingWorkspace
+      && authorityGeneration === startingAuthority + 1
+      && state.context?.session_id === sessionId
+      && state.context?.context_revision === startingContext.context_revision + 1
+    );
     const res = await api.post(`/api/sessions/${sessionId}/resume`, {});
     if (!res.ok) return false;
+    // If the lifecycle echo won the race, it already cleared/hydrated the exact target. A
+    // replacement workspace or a later context transition must never be navigated by this old
+    // callback, even though its server response was successful.
+    if (workspaceId !== startingWorkspace) return false;
+    if (authorityGeneration !== startingAuthority) {
+      return ownsExactSuccessor();
+    }
+    // The HTTP transition may beat or replace its WebSocket echo. Retire the old transcript
+    // immediately, then force an authoritative runner snapshot to reconcile the target context.
+    state.chat = [];
+    state.chatAttachments = [];
+    invalidateConversationHydration();
+    refreshConversation();
+    await api.runnerStatus({ refresh: true });
+    if (!ownsExactSuccessor()) return false;
+    const expectedContext = state.context;
+    const expectedAuthority = authorityGeneration;
+    const emptyChat = state.chat;
     const t = await api.get(`/api/sessions/${sessionId}`);
-    if (t && Array.isArray(t.messages)) state.chat = hydrateTranscript(t);
+    if (workspaceId !== startingWorkspace || authorityGeneration !== expectedAuthority
+        || state.context?.session_id !== expectedContext.session_id
+        || state.context?.project_id !== expectedContext.project_id
+        || state.context?.context_revision !== expectedContext.context_revision) return false;
+    if (state.chat !== emptyChat || state.chat.length) return true;
+    if (t && Array.isArray(t.messages)) {
+      state.chat = hydrateTranscript(t);
+      refreshConversation();
+    }
     state.chatAttachments = [];
     return true;
   },
@@ -217,7 +369,53 @@ let ws = null;
 let heartbeatTimer = null;
 let mounted = new Set();
 let workspaceGeneration = 0;
+let contextGeneration = 0;
+let authorityGeneration = 0;
 const workspaceWaiters = new Set();
+
+function advanceContextGeneration() {
+  contextGeneration += 1;
+  if (runnerStatusRequest && runnerStatusRequestGeneration !== contextGeneration) {
+    runnerStatusAbort?.abort();
+  }
+}
+
+function reconcileRunnerContext(runner) {
+  const priorContext = state.context;
+  state.runner = runner;
+  if (runner.session_id == null) return false;
+  const idsChanged = Boolean(priorContext
+    && (priorContext.session_id !== runner.session_id
+      || priorContext.project_id !== (runner.project ? runner.project.id : null)));
+  const contextRevision = validContextRevision(runner.context_revision)
+    ?? (priorContext ? priorContext.context_revision + (idsChanged ? 1 : 0) : 1);
+  const nextContext = {
+    session_id: runner.session_id,
+    project_id: runner.project ? runner.project.id : null,
+    context_revision: contextRevision,
+  };
+  const contextChanged = Boolean(priorContext
+    && (priorContext.session_id !== nextContext.session_id
+      || priorContext.project_id !== nextContext.project_id
+      || priorContext.context_revision !== nextContext.context_revision));
+  const projectChanged = priorContext?.project_id !== nextContext.project_id;
+  state.context = nextContext;
+  if (contextChanged) {
+    // Any consumer of runnerStatus may be the first observer after a missed lifecycle frame.
+    // Reconcile before exposing the snapshot so chrome and writable screens cannot straddle two
+    // server-owned contexts until the periodic poll happens to run.
+    advanceContextGeneration();
+    authorityGeneration += 1;
+    runnerStatusGeneration = contextGeneration;
+    clearAuthorityLocalState();
+  }
+  if (contextChanged || !priorContext) {
+    renderRunnerState();
+    rehydrateConversation();
+    rerenderAfterContextChange({ projectChanged });
+  }
+  return contextChanged;
+}
 
 function waitForWorkspaceAfter(generation, timeoutMs = 7000) {
   if (workspaceGeneration > generation) return Promise.resolve(true);
@@ -300,15 +498,33 @@ function connect() {
 function handleMessage(msg) {
   if (msg.type === "workspace") {
     const nextWorkspaceId = msg.workspace_id || null;
-    const workspaceChanged = Boolean(
-      workspaceId && nextWorkspaceId && workspaceId !== nextWorkspaceId,
-    );
+    const priorContext = state.context;
+    const idsChanged = Boolean(priorContext
+      && (priorContext.session_id !== msg.session_id
+        || priorContext.project_id !== msg.project_id));
+    const contextRevision = validContextRevision(msg.context_revision);
+    if (contextRevision === null) return;
+    if (priorContext && workspaceId === nextWorkspaceId
+        && (contextRevision < priorContext.context_revision
+          || (contextRevision === priorContext.context_revision && idsChanged))) return;
+    const sameWorkspaceContext = workspaceId === nextWorkspaceId
+      && priorContext?.session_id === msg.session_id
+      && priorContext?.project_id === msg.project_id
+      && priorContext?.context_revision === contextRevision;
+    const workspaceChanged = workspaceId !== nextWorkspaceId;
+    const contextChanged = !priorContext || idsChanged
+      || priorContext.context_revision !== contextRevision;
+    const authorityChanged = workspaceChanged || contextChanged;
     workspaceId = nextWorkspaceId;
     try {
       if (workspaceId) sessionStorage.setItem(WORKSPACE_KEY, workspaceId);
       else sessionStorage.removeItem(WORKSPACE_KEY);
     } catch { /* storage unavailable — this socket remains usable */ }
-    state.context = { session_id: msg.session_id, project_id: msg.project_id };
+    advanceContextGeneration();
+    if (authorityChanged) authorityGeneration += 1;
+    state.context = {
+      session_id: msg.session_id, project_id: msg.project_id, context_revision: contextRevision,
+    };
     // Local phase revisions are owned by this workspace. Global mic revisions are process-wide:
     // a frame can arrive before this handshake, so reset them only when the server epoch changes.
     const handshakeRecordingEpoch = wireEpoch(msg.meeting_recording_epoch);
@@ -318,7 +534,8 @@ function handleMessage(msg) {
     }
     lastPublishedVoiceStatus = null;
     voiceStatusSequence += 1;
-    if (workspaceChanged) {
+    if (authorityChanged) {
+      clearWorkspaceLocalState();
       // Meeting workflow is workspace-local. Never carry an old tab/session's recording phase
       // into a replacement workspace while its own status is still loading or unavailable.
       state.voice.meeting = "idle";
@@ -329,12 +546,21 @@ function handleMessage(msg) {
     }
     workspaceGeneration += 1;
     for (const waiter of [...workspaceWaiters]) waiter();
-    pollStatus();
-    renderRoute();
+    pollStatus({ refreshChatHeader: sameWorkspaceContext });
+    rerenderAfterContextChange({ projectChanged: true });
     return;
   }
   const lifecycle = ["project_changed", "session_new", "session_resumed"].includes(msg.kind);
   if (msg.workspace_id && msg.workspace_id !== workspaceId) return;
+  if (lifecycle && msg.workspace_id === workspaceId) {
+    const revision = validContextRevision(msg.context_revision);
+    const current = state.context;
+    if (revision === null || (current && (
+      revision < current.context_revision
+      || (revision === current.context_revision
+        && (msg.session_id !== current.session_id || msg.project_id !== current.project_id))
+    ))) return;
+  }
   if (msg.session_id != null && !acceptsContext(msg) && !(lifecycle && msg.workspace_id === workspaceId)) return;
   if (msg.type === "approval") { onApproval(msg); return; }
   if (msg.type === "approval_nonce") { onNonce(msg); return; }
@@ -360,21 +586,40 @@ function handleMessage(msg) {
   }
   if (msg.kind === "project_changed") {
     // A scope switch started a fresh scoped conversation server-side — clear the local view.
-    clearPendingApprovals();
     if (state.runner) state.runner.project = { id: msg.project_id, name: msg.name };
-    state.context = { session_id: msg.session_id, project_id: msg.project_id };
-    state.chat = [];
-    state.chatAttachments = [];
-    state.notices = [];  // history belongs to the prior project scope, never the next one
-    renderRunnerState(); refreshHeader(); refreshConversation(); return;
+    const priorContext = state.context;
+    const contextRevision = validContextRevision(msg.context_revision);
+    if (contextRevision === null) return;
+    if (priorContext?.session_id === msg.session_id
+        && priorContext?.project_id === msg.project_id
+        && priorContext?.context_revision === contextRevision) {
+      renderRunnerState(); refreshHeader(); return;
+    }
+    advanceContextGeneration();
+    authorityGeneration += 1;
+    state.context = {
+      session_id: msg.session_id, project_id: msg.project_id, context_revision: contextRevision,
+    };
+    clearAuthorityLocalState({ clearRunner: true });
+    renderRunnerState(); rerenderAfterContextChange({ projectChanged: true }); return;
   }
   if (msg.kind === "session_new" || msg.kind === "session_resumed") {
-    clearPendingApprovals();
-    state.context = { session_id: msg.session_id, project_id: msg.project_id };
-    if (msg.kind === "session_new") state.chat = [];
-    state.chatAttachments = [];
-    state.notices = [];
-    pollStatus(); refreshHeader(); refreshConversation(); return;
+    const priorContext = state.context;
+    const contextRevision = validContextRevision(msg.context_revision);
+    if (contextRevision === null) return;
+    const projectChanged = priorContext?.project_id !== msg.project_id;
+    if (priorContext?.session_id === msg.session_id
+        && priorContext?.project_id === msg.project_id
+        && priorContext?.context_revision === contextRevision) {
+      pollStatus(); return;
+    }
+    advanceContextGeneration();
+    authorityGeneration += 1;
+    state.context = {
+      session_id: msg.session_id, project_id: msg.project_id, context_revision: contextRevision,
+    };
+    clearAuthorityLocalState({ clearRunner: true });
+    pollStatus(); rerenderAfterContextChange({ projectChanged }); return;
   }
   if (msg.kind === "session_persistence") {
     if (state.runner) state.runner.session_save_state = msg.state;
@@ -394,7 +639,11 @@ function handleMessage(msg) {
     return;
   }
   if (msg.kind === "turn_cancelled" || msg.kind === "turn_error") {
-    if (state.runner) state.runner.turn_busy = false;  // settle: the turn ended
+    turnSettlementRevision += 1;
+    if (state.runner) {
+      state.runner.turn_busy = false;  // settle: the turn ended
+      state.runner.turn_id = null;
+    }
     // Live drafts from an interrupted or failed provider request are not durable protocol
     // messages. Drop only those drafts; completed tool-round text was settled earlier.
     state.chat = state.chat.filter((item) => item.role !== "assistant" || !item.live);
@@ -409,7 +658,14 @@ function handleMessage(msg) {
 // frame, reconnect, or future emitter cannot mutate this tab from another chat/project.
 function acceptsContext(msg) {
   const c = state.context;
-  return !!c && msg.session_id === c.session_id && msg.project_id === c.project_id;
+  const revision = validContextRevision(msg.context_revision);
+  return !!c && msg.session_id === c.session_id && msg.project_id === c.project_id
+    && revision === c.context_revision;
+}
+
+function validContextRevision(value) {
+  const revision = Number(value);
+  return Number.isInteger(revision) && revision > 0 ? revision : null;
 }
 
 // Background notices (job/reminder/digest) reach the browser here — the calm, non-modal
@@ -440,7 +696,15 @@ function onVoice(msg) {
   refreshConversation();
   // Optional playback: speak the SAFE reply caption (the server masks + caps before TTS). The
   // caption is always on screen too, so playback is a best-effort enhancement, never the record.
-  if (msg.role !== "heard") playCaption(msg.text, workspaceHeaders(), onVoiceState);
+  if (msg.role !== "heard") {
+    const authorityToken = authorityGeneration;
+    playCaption(
+      msg.text,
+      workspaceHeaders(),
+      onVoiceState,
+      () => authorityToken === authorityGeneration,
+    );
+  }
 }
 
 // Read-only conversation/dictation voice-state pill — content-free. Meeting workflow and the
@@ -519,7 +783,13 @@ function onEvent(evt) {
   busEmit("event", evt);
   // A completed turn settles the runner state immediately — don't wait for the next poll,
   // or the Daily card lingers on "working" after the turn (incl. a denied one) ends.
-  if (evt.type === "turn_completed" && state.runner) state.runner.turn_busy = false;
+  if (evt.type === "turn_completed" && state.runner) {
+    turnSettlementRevision += 1;
+    state.runner.turn_busy = false;
+    state.runner.turn_id = null;
+  } else if (evt.type === "turn_completed") {
+    turnSettlementRevision += 1;
+  }
   onConversationEvent(state, evt);
   refreshConversation();
   refreshIfActive("trace");
@@ -800,13 +1070,45 @@ function hideApproval() {
   if (wasShown && restore instanceof HTMLElement && restore.isConnected) restore.focus();
 }
 
-function clearPendingApprovals() {
+function clearPendingApprovals({ refresh = true } = {}) {
   state.pending.clear();
   _approvalResolving.clear();
   _approvalRecovering.clear();
   hideApproval();
   updateGateBadge();
-  refreshIfActive("gate");
+  if (refresh) refreshIfActive("gate");
+}
+
+function clearAuthorityLocalState({ clearRunner = false } = {}) {
+  api.cancelVoiceCapture();
+  closePalette();
+  clearPendingApprovals({ refresh: false });
+  state.parkedTaskApprovals.clear();
+  _parkedTaskDialog?.dismiss?.();
+  _parkedTaskDialog = null;
+  dismissTaskDialogs();
+  dismissMemoryDraft();
+  dismissFeedbackDialogs();
+  dismissProjectDialogs();
+  dismissProjectReport();
+  state.chat = [];
+  state.chatAttachments = [];
+  state.projectImport = null;
+  state.turnCancelling = false;
+  state.turnAdmission = null;
+  state.turnDraft = null;
+  state.notices = [];
+  state.trace = [];
+  if (clearRunner) {
+    state.runner = null;
+    state.runnerStatusError = false;
+  }
+  invalidateConversationHydration();
+  if (clearRunner) renderRunnerState();
+}
+
+function clearWorkspaceLocalState() {
+  clearAuthorityLocalState({ clearRunner: true });
 }
 
 function updateGateBadge() {
@@ -854,6 +1156,162 @@ const WORKSPACE_LABELS = {
   costs: "Costs", activity: "Activity",
 };
 
+// A route render is a small transaction. Async screens must never keep the prior screen usable
+// while they load, overwrite a newer route when their read returns late, or reject into a blank
+// shell. The live container is replaced only when the route identity changes (or the user retries),
+// so ordinary same-screen refreshes still preserve drafts and focus.
+let routeRenderGeneration = 0;
+let activeRouteKey = null;
+let activeRouteController = null;
+let navigationGeneration = 0;
+const ROUTE_RENDER_STALE = Symbol("route-render-stale");
+
+function routeKey() {
+  // A route rendered under another server-owned workspace/session is a different surface even if
+  // its hash is unchanged. Same-workspace reconnects keep this identity and preserve live drafts.
+  return JSON.stringify([
+    workspaceId,
+    state.context?.session_id ?? null,
+    state.context?.project_id ?? null,
+    state.context?.context_revision ?? null,
+    state.route,
+    ...(state.routeArgs || []),
+  ]);
+}
+
+function routeLabel(name = state.route) {
+  return Object.hasOwn(ROUTE_LABELS, name) ? ROUTE_LABELS[name] : cap(name);
+}
+
+function replaceRouteContainer(container) {
+  const replacement = container.cloneNode(false);
+  replacement.className = "screen";
+  container.replaceWith(replacement);
+  return replacement;
+}
+
+function scopedRouteApi(container, generation, context, signal) {
+  const scoped = Object.create(api);
+  const isCurrent = () => generation === routeRenderGeneration && container.isConnected;
+  scoped.renderIsCurrent = isCurrent;
+  // A write that began on this still-live route may finish after a passive same-key refresh.
+  // Let it schedule a newer router-owned read; navigation/authority changes replace this node.
+  scoped.refreshRoute = () => (
+    container.isConnected && document.getElementById("screen") === container
+      ? renderRoute()
+      : Promise.resolve()
+  );
+  scoped.retryRoute = () => (isCurrent() ? renderRoute({ reset: true }) : Promise.resolve());
+  // Only the reads that belong to the returned initial-render Promise are strict. Once that
+  // Promise settles, controls may keep this facade for normal long-lived clicks without becoming
+  // invalid merely because a passive same-screen refresh ran later.
+  const read = async (path, options = {}, required = false) => {
+    const diagnostic = context.initial;
+    const outcome = await api.get(path, diagnostic
+      ? { ...options, signal, diagnostic: true }
+      : options);
+    const wrapped = outcome && outcome[API_READ_OUTCOME] === true;
+    if (context.initial && !isCurrent()) throw ROUTE_RENDER_STALE;
+    if (required && context.initial && wrapped && outcome.failure) throw outcome.failure;
+    return wrapped ? outcome.data : outcome;
+  };
+  scoped.get = (path, options = {}) => read(path, options);
+  // Required is intentionally opt-in. Composite screens such as Notifications keep their useful
+  // sections visible when one independent read fails; a primary screen read instead reaches the
+  // shell retry boundary on transport or malformed-JSON failure. HTTP feature-off responses stay
+  // null so the screen can retain its precise unavailable copy.
+  scoped.getRequired = (path, options = {}) => read(path, options, true);
+  return scoped;
+}
+
+// Bound the whole initial screen transaction, including dependencies such as voiceStatus() and
+// runnerStatus() that do not use scoped get(). One timer owns the render; post-mount callbacks are
+// outside this promise and retain their existing unbounded/action-specific behavior.
+function boundedInitialRouteRender(result, controller) {
+  const configuredTimeout = Number(globalThis.__KAIRO_INITIAL_ROUTE_READ_TIMEOUT_MS__);
+  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+    ? configuredTimeout : INITIAL_ROUTE_READ_TIMEOUT_MS;
+  return new Promise((resolve, reject) => {
+    let timeoutFailure = null;
+    const cleanup = () => {
+      clearTimeout(timer);
+      controller.signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(timeoutFailure || ROUTE_RENDER_STALE);
+    };
+    const timer = setTimeout(() => {
+      timeoutFailure = new Error("initial route render timed out");
+      timeoutFailure.routeRenderTimeout = true;
+      controller.abort();
+    }, timeoutMs);
+    controller.signal.addEventListener("abort", onAbort, { once: true });
+    if (controller.signal.aborted) {
+      onAbort();
+      return;
+    }
+    Promise.resolve(result).then(
+      (value) => { cleanup(); resolve(value); },
+      (error) => { cleanup(); reject(error); },
+    );
+  });
+}
+
+function renderRouteLoading(container) {
+  container.textContent = "";
+  container.setAttribute("aria-busy", "true");
+  const status = document.createElement("section");
+  status.className = "route-state route-loading";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.setAttribute("aria-atomic", "true");
+  const pulse = document.createElement("span");
+  pulse.className = "route-state-pulse";
+  pulse.setAttribute("aria-hidden", "true");
+  const copy = document.createElement("div");
+  const heading = document.createElement("h1");
+  heading.textContent = `Opening ${routeLabel()}`;
+  const detail = document.createElement("p");
+  detail.textContent = "Loading the latest workspace state…";
+  copy.append(heading, detail);
+  status.append(pulse, copy);
+  container.appendChild(status);
+  return status;
+}
+
+function renderRouteFailure(container, error) {
+  container.textContent = "";
+  container.setAttribute("aria-busy", "false");
+  const failure = document.createElement("section");
+  failure.className = "route-state route-failure";
+  failure.setAttribute("role", "alert");
+  const heading = document.createElement("h1");
+  heading.tabIndex = -1;
+  heading.textContent = `${routeLabel()} couldn't open`;
+  const detail = document.createElement("p");
+  detail.textContent = "Kairo couldn't load this screen. Check the connection and try again.";
+  const actions = document.createElement("div");
+  actions.className = "route-state-actions";
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "plain-button primary";
+  retry.textContent = "Try again";
+  retry.addEventListener("click", () => {
+    if (container.isConnected) void renderRoute({ reset: true });
+  });
+  const chat = document.createElement("a");
+  chat.className = "plain-button ghost";
+  chat.href = "#chat";
+  chat.textContent = "Open Chat";
+  actions.append(retry, chat);
+  failure.append(heading, detail, actions);
+  container.appendChild(failure);
+  // Keep provider/data detail out of the UI, while retaining the local exception for developers.
+  console.error(`Kairo failed to render ${state.route}`, error);
+  requestAnimationFrame(() => { if (heading.isConnected) heading.focus(); });
+}
+
 function refreshIfActive(name) { if (state.route === name) renderRoute(); }
 function vaultHasDraft() {
   const input = document.getElementById("vault-ingest-input");
@@ -866,10 +1324,55 @@ function refreshWorkspaceTabs(...tabs) {
 }
 function refreshConversation() { refreshIfActive("chat"); refreshIfActive("daily"); }
 
-function renderRoute() {
-  const container = document.getElementById("screen");
+function rerenderAfterContextChange({ projectChanged = false } = {}) {
+  if (projectChanged && state.route === "workspace") {
+    const nextProjectId = Number(state.context?.project_id);
+    const viewedProjectId = Number(state.routeArgs?.[0]);
+    if (!Number.isInteger(nextProjectId) || nextProjectId < 1
+        || viewedProjectId !== nextProjectId) {
+      const nextHash = Number.isInteger(nextProjectId) && nextProjectId > 0
+        ? `#workspace/${nextProjectId}`
+        : "#projects";
+      // The old workspace is no longer the live authority. Replace this history entry so Back
+      // cannot reopen an archived/foreign project, then synchronously remove its controls.
+      history.replaceState(null, "", nextHash);
+      navigate({ preserveIntent: true });
+      return;
+    }
+  }
+  renderRoute();
+}
+
+function renderRoute({ reset = false } = {}) {
+  const nextRouteKey = routeKey();
+  const routeChanged = nextRouteKey !== activeRouteKey;
+  if (activeRouteController) activeRouteController.abort();
+  activeRouteController = new AbortController();
+  const controller = activeRouteController;
+  let shellLoading = null;
+  let container = document.getElementById("screen");
+  if (routeChanged || reset) {
+    activeRouteKey = nextRouteKey;
+    container = replaceRouteContainer(container);
+    shellLoading = renderRouteLoading(container);
+  } else {
+    container.className = "screen";
+    container.setAttribute("aria-busy", "true");
+  }
+  const generation = ++routeRenderGeneration;
+  const renderContext = { initial: true };
+  const screenApi = scopedRouteApi(container, generation, renderContext, controller.signal);
+  const routeName = state.route;
+  const routeArgs = [...(state.routeArgs || [])];
   document.body.dataset.route = state.route;
-  container.className = "screen";
+  // The hash is available before the server-owned workspace handshake. Keep every interactive
+  // screen fail-closed until that authority exists; otherwise a user can type into a composer
+  // that must be destroyed as soon as the first workspace frame arrives.
+  if (!state.context) {
+    if (!shellLoading?.isConnected) renderRouteLoading(container);
+    if (activeRouteController === controller) activeRouteController = null;
+    return Promise.resolve();
+  }
   if (DEBUG_ROUTES.has(state.route) && !document.body.classList.contains("debug")) {
     container.textContent = "";
     const h = document.createElement("h1");
@@ -882,14 +1385,63 @@ function renderRoute() {
     link.href = "#settings";
     link.textContent = "Open Settings";
     container.append(h, sub, link);
-    return;
+    container.setAttribute("aria-busy", "false");
+    if (activeRouteController === controller) activeRouteController = null;
+    return Promise.resolve();
   }
   // Own-property lookup only: state.route is hash-derived, so "#__proto__" etc. must fall
   // through to the safe unknown-route branch, never resolve an inherited Object member.
-  const fn = Object.hasOwn(screens, state.route) ? screens[state.route] : null;
+  const fn = Object.hasOwn(screens, state.route) ? screens[routeName] : null;
   if (fn) {
-    fn(container, api, state.routeArgs || []);
-    return;
+    let result;
+    try {
+      result = fn(container, screenApi, routeArgs);
+    } catch (error) {
+      renderContext.initial = false;
+      if (activeRouteController === controller) activeRouteController = null;
+      if (generation === routeRenderGeneration && container.isConnected) {
+        renderRouteFailure(container, error);
+      }
+      return Promise.resolve();
+    }
+    if (!result || typeof result.then !== "function") {
+      renderContext.initial = false;
+      // Sync screens may launch their own guarded background reads (Chat header, Daily cards,
+      // Settings status). They are not owned by the returned route render, so do not abort them
+      // when a passive same-screen refresh creates a newer generation.
+      if (activeRouteController === controller) activeRouteController = null;
+      if (generation === routeRenderGeneration && container.isConnected) {
+        container.setAttribute("aria-busy", "false");
+      }
+      return Promise.resolve();
+    }
+    // Some async screens clear before their first await. Restore the shell-level loading state
+    // for that gap; screens with a richer local skeleton keep it.
+    if (!container.hasChildNodes()) shellLoading = renderRouteLoading(container);
+    const job = boundedInitialRouteRender(result, controller).then(
+      () => {
+        renderContext.initial = false;
+        if (activeRouteController === controller) activeRouteController = null;
+        if (generation === routeRenderGeneration && container.isConnected) {
+          if (shellLoading?.isConnected) shellLoading.remove();
+          container.setAttribute("aria-busy", "false");
+        }
+      },
+      (error) => {
+        const timedOut = error?.routeRenderTimeout === true;
+        // A superseded or timed-out underlying renderer may still settle if a dependency ignored
+        // AbortSignal. Keep its scoped facade strict, and disconnect its container on timeout, so
+        // that orphan can never paint over the retry surface.
+        if (error !== ROUTE_RENDER_STALE && !timedOut) renderContext.initial = false;
+        if (activeRouteController === controller) activeRouteController = null;
+        if (error === ROUTE_RENDER_STALE) return;
+        if (generation === routeRenderGeneration && container.isConnected) {
+          if (timedOut) container = replaceRouteContainer(container);
+          renderRouteFailure(container, error);
+        }
+      },
+    );
+    return job;
   }
   // Unknown route — build with textContent, never interpolate the (hash-derived, so
   // attacker-influenceable) route name into innerHTML. CSP already blocks inline handlers;
@@ -901,6 +1453,9 @@ function renderRoute() {
   sub.className = "sub";
   sub.textContent = "Unknown screen.";
   container.append(h, sub);
+  container.setAttribute("aria-busy", "false");
+  if (activeRouteController === controller) activeRouteController = null;
+  return Promise.resolve();
 }
 
 // Parse the hash into a screen name + positional args: "#workspace/12" -> {name:"workspace",
@@ -910,7 +1465,8 @@ function parseHash() {
   return { name: parts[0] || "chat", args: parts.slice(1) };
 }
 
-function navigate() {
+function navigate({ preserveIntent = false } = {}) {
+  if (!preserveIntent) navigationGeneration += 1;
   const { name, args } = parseHash();
   if (state.route && state.route !== name) setSurface(state.route, false);
   state.route = name;
@@ -919,7 +1475,12 @@ function navigate() {
   setSurface(name, true);
   if (name === "gate") setSurface("gate", true);
   document.querySelector(".mobile-more")?.removeAttribute("open");
-  for (const a of document.querySelectorAll(".rail a")) a.classList.toggle("active", a.dataset.screen === name);
+  for (const a of document.querySelectorAll(".rail a")) {
+    const active = a.dataset.screen === name;
+    a.classList.toggle("active", active);
+    if (active) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  }
   renderLocation();
   renderRoute();
 }
@@ -978,19 +1539,42 @@ function renderRunnerState() {
   syncStatusChrome(busy, s.runner_running === false);
 }
 
-let _rehydrated = false;
 // Fix the "No messages yet" reload: the server keeps the active conversation alive across a
-// browser reload, so on first load pull the transcript we are IN back into the view. Runs once,
-// only when there's an active session and no local chat yet (never clobbers an in-progress chat).
+// browser reload, so pull the transcript for the exact live authority back into the view. A late
+// response from a replaced workspace/session is ignored and a failed read remains retryable.
+let rehydratedConversationKey = null;
+let conversationHydrationRevision = 0;
+
+function conversationHydrationKey() {
+  const sid = state.context?.session_id ?? state.runner?.session_id;
+  if (sid == null) return null;
+  return JSON.stringify([
+    workspaceId, sid, state.context?.project_id ?? null,
+    state.context?.context_revision ?? null,
+  ]);
+}
+
+function invalidateConversationHydration() {
+  conversationHydrationRevision += 1;
+  rehydratedConversationKey = null;
+}
+
 async function rehydrateConversation() {
-  const sid = state.runner && state.runner.session_id;
-  if (_rehydrated || sid == null) return;
-  _rehydrated = true;
+  const key = conversationHydrationKey();
+  const sid = state.context?.session_id ?? state.runner?.session_id;
+  if (!key || rehydratedConversationKey === key || sid == null) return;
+  rehydratedConversationKey = key;
   if (state.chat.length) return;
+  const emptyChat = state.chat;
+  const revision = ++conversationHydrationRevision;
   const t = await api.get(`/api/sessions/${sid}`);
+  if (revision !== conversationHydrationRevision || key !== conversationHydrationKey()) return;
+  if (state.chat !== emptyChat || state.chat.length) return;
   if (t && Array.isArray(t.messages)) {
     state.chat = hydrateTranscript(t);
     refreshConversation();
+  } else {
+    rehydratedConversationKey = null;
   }
 }
 
@@ -1086,18 +1670,15 @@ async function refreshVoiceStatus() {
   return publishedVoiceStatus;
 }
 
-async function pollStatus() {
+async function pollStatus({ refreshChatHeader = false } = {}) {
   const runnerWasUnavailable = state.runnerStatusError;
   const s = await api.runnerStatus({ refresh: true });
   if (s) {
     state.runner = s;
-    if (s.session_id != null) {
-      state.context = { session_id: s.session_id, project_id: s.project ? s.project.id : null };
-    }
     renderRunnerState(); rehydrateConversation();
     // Re-enable the header immediately after an outage; otherwise its deliberately disabled
     // controls would remain frozen until an unrelated event happens to refresh it.
-    if (runnerWasUnavailable) refreshHeader();
+    if (runnerWasUnavailable || refreshChatHeader) refreshHeader();
   } else {
     // Keep last-known status-bar data, but stop presenting it as writable header state.
     refreshHeader();
@@ -1161,7 +1742,7 @@ function init() {
   initKeys();                                        // single keydown dispatcher
   initPalette(api);                                  // Ctrl/Cmd-K command palette (search + actions)
   document.getElementById("rail-search").addEventListener("click", () => openPalette());
-  window.addEventListener("hashchange", navigate);
+  window.addEventListener("hashchange", () => navigate());
   connect();
   navigate();
   pollStatus();

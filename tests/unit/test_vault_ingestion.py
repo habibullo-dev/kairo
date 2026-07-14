@@ -6,15 +6,18 @@ route runs the SAME sensitive-path gate floor as the tool (DENY ⇒ 403)."""
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.datastructures import UploadFile
 
 from jarvis.attention import AttentionStore
 from jarvis.config import KnowledgeConfig, load_config
+from jarvis.core.execution import ExecutionContext
 from jarvis.graph import GraphStore
 from jarvis.graph.builder import rebuild as rebuild_graph
 from jarvis.knowledge.service import KnowledgeService
@@ -26,7 +29,7 @@ from jarvis.projects import ProjectStore
 from jarvis.projects.service import ProjectService
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
 from jarvis.ui.readmodels import UiServices, vault_overview
-from jarvis.ui.server import create_app
+from jarvis.ui.server import WORKSPACE_HEADER, create_app
 
 _OPEN: list = []
 
@@ -131,9 +134,7 @@ async def test_vault_review_queue_is_project_scoped_without_narrowing_global_que
     project_id = await projects.create(name="Scoped review project")
     svc.bound_unattended = True
     await svc.ingest(text="GLOBAL-REVIEW-CANARY", title="global note")
-    await svc.ingest(
-        text="PROJECT-REVIEW-CANARY", title="project note", project_id=project_id
-    )
+    await svc.ingest(text="PROJECT-REVIEW-CANARY", title="project note", project_id=project_id)
 
     global_queue = await vault_overview(svc)
     assert {item["title"] for item in global_queue["unreviewed"]} == {"global note", "project note"}
@@ -336,7 +337,8 @@ async def test_folder_upload_finalize_rebuilds_the_project_graph(tmp_path: Path)
     client, auth = _app(tmp_path, svc)
     client.app.state.projects = project_service
     client.app.state.services = UiServices(
-        knowledge=svc, graph=GraphStore(svc.store.db, svc.store.lock),
+        knowledge=svc,
+        graph=GraphStore(svc.store.db, svc.store.lock),
     )
     uploaded = client.post(
         "/api/chat/attachments",
@@ -348,7 +350,8 @@ async def test_folder_upload_finalize_rebuilds_the_project_graph(tmp_path: Path)
     assert "graph_rebuilt" not in uploaded.json()  # only the explicit finalize request rebuilds
 
     finalized = client.post(
-        "/api/chat/attachments", data={"finalize": "true"}, headers=_cookie(auth))
+        "/api/chat/attachments", data={"finalize": "true"}, headers=_cookie(auth)
+    )
     assert finalized.status_code == 200 and finalized.json() == {
         "ok": True,
         "graph_rebuilt": True,
@@ -383,7 +386,8 @@ async def test_folder_finalize_returns_only_closed_assessment_state(
     client, auth = _app(tmp_path, svc)
     client.app.state.projects = project_service
     client.app.state.services = UiServices(
-        knowledge=svc, graph=GraphStore(svc.store.db, svc.store.lock),
+        knowledge=svc,
+        graph=GraphStore(svc.store.db, svc.store.lock),
     )
     client.app.state.config.project_intelligence.enabled = True
 
@@ -418,7 +422,8 @@ async def test_folder_finalize_keeps_graph_success_when_assessment_enqueue_fails
     client, auth = _app(tmp_path, svc)
     client.app.state.projects = project_service
     client.app.state.services = UiServices(
-        knowledge=svc, graph=GraphStore(svc.store.db, svc.store.lock),
+        knowledge=svc,
+        graph=GraphStore(svc.store.db, svc.store.lock),
     )
     client.app.state.config.project_intelligence.enabled = True
 
@@ -453,11 +458,10 @@ async def test_project_folder_detach_rejects_only_that_folder_and_rebuilds_graph
     client, auth = _app(tmp_path, svc)
     client.app.state.projects = project_service
     client.app.state.services = UiServices(
-        knowledge=svc, graph=GraphStore(svc.store.db, svc.store.lock),
+        knowledge=svc,
+        graph=GraphStore(svc.store.db, svc.store.lock),
     )
-    await svc.ingest_uploaded(
-        "old.py", b"old", project_id=project_id, relative_path="wrong/old.py"
-    )
+    await svc.ingest_uploaded("old.py", b"old", project_id=project_id, relative_path="wrong/old.py")
     retained = await svc.ingest_uploaded(
         "new.py", b"new", project_id=project_id, relative_path="right/new.py"
     )
@@ -532,7 +536,10 @@ async def test_chat_knowledge_is_project_scoped_and_bodies_free(tmp_path: Path) 
     assert payload["source_count"] == 1
     assert [source["title"] for source in payload["sources"]] == ["alpha.md"]
     assert payload["graph"] == {
-        "available": False, "nodes": [], "edge_count": 0, "truncated": False,
+        "available": False,
+        "nodes": [],
+        "edge_count": 0,
+        "truncated": False,
     }
     rendered = str(payload)
     assert "PROJECT-A-BODY-CANARY" not in rendered
@@ -573,6 +580,73 @@ async def test_chat_attachment_binds_to_a_legacy_live_session_when_one_exists(
     assert [row["title"] for row in listed["files"]] == ["legacy.md"]
 
 
+async def test_chat_attachment_captures_one_expected_workspace_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svc = await _service(tmp_path)
+    sessions = SessionStore(svc.store.db, svc.store.lock)
+    projects = ProjectStore(svc.store.db, svc.store.lock)
+    session_a = await sessions.create_session()
+    session_b = await sessions.create_session()
+    project_a = await projects.create(name="Project A")
+    project_b = await projects.create(name="Project B")
+    workspace = SimpleNamespace(
+        context=ExecutionContext(session_id=session_a, project_id=project_a),
+        context_revision=8,
+    )
+    client, auth = _app(tmp_path, svc)
+    client.app.state.workspaces = SimpleNamespace(
+        resolve=lambda **_kw: workspace,
+        transition_lock=asyncio.Lock(),
+        claim_matches=lambda candidate, context, revision: (
+            candidate is workspace
+            and context == workspace.context
+            and revision == workspace.context_revision
+        ),
+    )
+    original_close = UploadFile.close
+    switched = False
+
+    async def close_and_switch_context(upload: UploadFile) -> None:
+        nonlocal switched
+        await original_close(upload)
+        if not switched:
+            switched = True
+            # The vulnerable route read project_id before the body and session_id after close,
+            # producing an impossible A/B source. The fixed route freezes A/A before either yield.
+            workspace.context = ExecutionContext(session_id=session_b, project_id=project_b)
+            workspace.context_revision += 1
+
+    monkeypatch.setattr(UploadFile, "close", close_and_switch_context)
+    response = client.post(
+        "/api/chat/attachments",
+        data={
+            "expected_session_id": str(session_a),
+            "expected_project_id": str(project_a),
+            "expected_context_revision": "8",
+        },
+        files={"file": ("scoped.md", b"# Scoped\n\nContext", "text/markdown")},
+        headers={**_cookie(auth), WORKSPACE_HEADER: "w" * 24},
+    )
+    assert response.status_code == 200 and response.json()["ok"] is True
+    source = await svc.store.get_source(response.json()["source_id"])
+    assert source is not None
+    assert (source.source_session_id, source.project_id) == (session_a, project_a)
+
+    rejected = client.post(
+        "/api/chat/attachments",
+        data={
+            "expected_session_id": str(session_a),
+            "expected_project_id": str(project_a),
+            "expected_context_revision": "8",
+        },
+        files={"file": ("stale.md", b"# Stale", "text/markdown")},
+        headers={**_cookie(auth), WORKSPACE_HEADER: "w" * 24},
+    )
+    assert rejected.status_code == 409
+
+
 async def test_ingest_route_denies_sensitive_path_403(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
     svc = await _service(tmp_path)
@@ -600,9 +674,7 @@ def test_vault_js_has_ingest_box_and_text_preview() -> None:
     assert "project_readiness" in js
     assert "entire project into every prompt" in js
 
-    workspace_js = (STATIC_DIR / "screens" / "workspace" / "vault.js").read_text(
-        encoding="utf-8"
-    )
+    workspace_js = (STATIC_DIR / "screens" / "workspace" / "vault.js").read_text(encoding="utf-8")
     assert "project_readiness" in workspace_js
     assert "direct verified dependencies" in workspace_js
     assert "/api/chat/knowledge?project_id=" in workspace_js

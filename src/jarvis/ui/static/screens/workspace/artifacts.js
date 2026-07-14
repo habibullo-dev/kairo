@@ -45,7 +45,7 @@ export async function render(container, api, ctx) {
       ? () => openArtifact(a) : undefined;
     const trailing = actionButton(a.pinned ? "Unpin" : "Pin", async () => {
       await api.post(`/api/artifacts/${a.id}/pin`, { pinned: !a.pinned });
-      render(container, api, ctx);
+      await api.refreshRoute();
     }, "ghost");
     return row(iconFor(a.kind), a.title, sub, { onClick, trailing });
   });

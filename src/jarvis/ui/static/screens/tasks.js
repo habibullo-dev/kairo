@@ -4,7 +4,7 @@ import { esc } from "../ui/dom.js";
 import { openTaskHistory } from "../ui/task-draft.js";
 
 export async function render(container, api) {
-  const rows = await api.get("/api/tasks");
+  const rows = await api.getRequired("/api/tasks");
   if (rows === null) { container.innerHTML = unavailable("Tasks", "scheduler off"); return; }
   container.innerHTML = `
     <div class="rise"><h1>Tasks</h1><div class="sub">Reminders and unattended jobs.</div></div>
@@ -31,7 +31,10 @@ export async function render(container, api) {
       const b = document.createElement("button");
       b.className = "rowbtn";
       b.textContent = "Cancel";
-      b.addEventListener("click", async () => { await api.post(`/api/tasks/${t.id}/cancel`); render(container, api); });
+      b.addEventListener("click", async () => {
+        await api.post(`/api/tasks/${t.id}/cancel`);
+        await api.refreshRoute();
+      });
       tr.lastElementChild.appendChild(b);
     }
     tbl.appendChild(tr);

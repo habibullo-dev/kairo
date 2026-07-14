@@ -11,6 +11,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -18,7 +19,7 @@ from jarvis.actions.intents import IntentStore
 from jarvis.actions.journal import ConnectorWriteJournal
 from jarvis.agents import AgentRunStore
 from jarvis.attention.store import AttentionKind, AttentionStore
-from jarvis.config import load_config
+from jarvis.config import KnowledgeConfig, load_config
 from jarvis.core.client import ToolCall
 from jarvis.core.events import TextDelta
 from jarvis.core.execution import (
@@ -27,6 +28,9 @@ from jarvis.core.execution import (
     current_execution_context,
 )
 from jarvis.graph import GraphStore
+from jarvis.knowledge.service import KnowledgeService
+from jarvis.knowledge.store import KnowledgeStore
+from jarvis.memory.embeddings import FakeEmbedder
 from jarvis.memory.store import MemoryStore
 from jarvis.permissions.gate import Decision
 from jarvis.persistence import SessionStore
@@ -40,7 +44,13 @@ from jarvis.ui.auth import SESSION_COOKIE, AuthManager
 from jarvis.ui.connections import ConnectionManager
 from jarvis.ui.notices import NoticeBoard
 from jarvis.ui.readmodels import UiServices
-from jarvis.ui.server import WORKSPACE_HEADER, create_app
+from jarvis.ui.server import (
+    EXPECTED_CONTEXT_REVISION_HEADER,
+    EXPECTED_PROJECT_HEADER,
+    EXPECTED_SESSION_HEADER,
+    WORKSPACE_HEADER,
+    create_app,
+)
 from jarvis.ui.session import UiSession
 from jarvis.ui.workspaces import UiWorkspaceRegistry
 
@@ -91,13 +101,16 @@ class _TaskRecorder:
 
 
 async def _registry(
-    tmp_path: Path, *, on_context_replaced=None
+    tmp_path: Path,
+    *,
+    on_context_replaced=None,
+    turn_lock: asyncio.Lock | None = None,
 ) -> tuple[UiWorkspaceRegistry, ConnectionManager, ProjectService]:
     db = await connect(tmp_path / "workspaces.db")
     _OPEN.append(db)
-    lock = asyncio.Lock()
-    store = SessionStore(db, lock)
-    projects = ProjectService(ProjectStore(db, lock))
+    store_lock = asyncio.Lock()
+    store = SessionStore(db, store_lock)
+    projects = ProjectService(ProjectStore(db, store_lock))
     connections = ConnectionManager(clock=lambda: 0.0)
     loops: list[_Loop] = []
 
@@ -107,6 +120,7 @@ async def _registry(
         return UiSession(
             loop=loop,
             connections=connections,
+            turn_lock=turn_lock,
             sessions=store,
             project_id=workspace.project.project_id,
         )
@@ -118,6 +132,36 @@ async def _registry(
         on_context_replaced=on_context_replaced,
     )
     return registry, connections, projects
+
+
+def _workspace_claim(workspace) -> dict:
+    return {**workspace.context.to_wire(), "context_revision": workspace.context_revision}
+
+
+def _workspace_post_headers(owner: str, workspace) -> dict[str, str]:
+    return {
+        "cookie": f"{SESSION_COOKIE}={owner}",
+        WORKSPACE_HEADER: workspace.workspace_id,
+        "origin": "http://127.0.0.1",
+    }
+
+
+async def _seed_workspace_approval(app, workspace, conn):
+    with bind_execution_context(workspace.context):
+        resolution = asyncio.create_task(
+            app.state.approvals.request(
+                ToolCall("lock-order-call", "write_file", {"path": "review.txt"}),
+                Decision(Permission.ASK, "confirm"),
+                kind="turn",
+                title=None,
+                on_always=lambda: None,
+            )
+        )
+    await asyncio.sleep(0)
+    (pending,) = app.state.approvals.pending_for(workspace.context)
+    nonce = await app.state.approvals.mint_nonce(pending.decision_id, conn)
+    assert nonce is not None
+    return resolution, pending.decision_id, nonce
 
 
 async def test_two_live_sockets_keep_turn_events_and_project_contexts_isolated(
@@ -153,10 +197,10 @@ async def test_two_live_sockets_keep_turn_events_and_project_contexts_isolated(
     b_events = [message for message in socket_b.sent if message.get("kind") == "event"]
     assert a_events and not b_events
     assert all(
-        (event["session_id"], event["project_id"])
-        == (workspace_a.context.session_id, project_a)
+        (event["session_id"], event["project_id"]) == (workspace_a.context.session_id, project_a)
         for event in a_events
     )
+    assert all(event["context_revision"] == workspace_a.context_revision for event in a_events)
     # The tool project provider resolves from the task-local execution context, not the mutable
     # process active project.  This is what keeps a project-scoped tool inside A's workspace.
     assert workspace_a.session.loop.contexts == [workspace_a.context]
@@ -167,10 +211,10 @@ async def test_two_live_sockets_keep_turn_events_and_project_contexts_isolated(
     b_events = [message for message in socket_b.sent if message.get("kind") == "event"]
     assert b_events
     assert all(
-        (event["session_id"], event["project_id"])
-        == (workspace_b.context.session_id, project_b)
+        (event["session_id"], event["project_id"]) == (workspace_b.context.session_id, project_b)
         for event in b_events
     )
+    assert all(event["context_revision"] == workspace_b.context_revision for event in b_events)
     assert workspace_b.session.loop.contexts == [workspace_b.context]
 
 
@@ -184,6 +228,102 @@ async def test_workspace_id_is_bound_to_its_authenticated_cookie(tmp_path: Path)
     )
     assert registry.resolve(owner_session="owner-b", workspace_id=workspace.workspace_id) is None
     assert registry.resolve(owner_session="owner-a", workspace_id="short") is None
+
+
+async def test_reconnect_attach_waits_for_transition_and_binds_final_revision(
+    tmp_path: Path,
+) -> None:
+    registry, connections, _projects = await _registry(tmp_path)
+    owner = "owner-a"
+    workspace = await registry.attach(
+        connections.register(_Socket(), owner_session=owner), owner_session=owner
+    )
+    reconnect = connections.register(_Socket(), owner_session=owner)
+
+    async with registry.transition_lock:
+        attaching = asyncio.create_task(
+            registry.attach(
+                reconnect,
+                owner_session=owner,
+                requested_workspace_id=workspace.workspace_id,
+            )
+        )
+        await asyncio.sleep(0)
+        assert not attaching.done()
+        await workspace.start_new_session()
+        registry.refresh_context(workspace)
+        final_context = workspace.context
+        final_revision = workspace.context_revision
+
+    assert await attaching is workspace
+    assert reconnect.context == final_context
+    assert reconnect.context_revision == final_revision
+
+
+async def test_fresh_attach_does_not_hold_transition_lock_while_waiting_for_turn_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    shared_turn_lock = asyncio.Lock()
+    registry, connections, _projects = await _registry(tmp_path, turn_lock=shared_turn_lock)
+    owner = "owner-a"
+    conn = connections.register(_Socket(), owner_session=owner)
+    waiting_for_turn = asyncio.Event()
+    original_ensure = UiSession.ensure_session
+
+    async def observed_ensure(session: UiSession):
+        waiting_for_turn.set()
+        return await original_ensure(session)
+
+    monkeypatch.setattr(UiSession, "ensure_session", observed_ensure)
+    await shared_turn_lock.acquire()
+    attaching = asyncio.create_task(registry.attach(conn, owner_session=owner))
+    await asyncio.wait_for(waiting_for_turn.wait(), timeout=1)
+
+    transition_waiter = asyncio.create_task(registry.transition_lock.acquire())
+    done, _pending = await asyncio.wait({transition_waiter}, timeout=0.5)
+    transition_was_available = transition_waiter in done
+    if transition_was_available:
+        registry.transition_lock.release()
+    else:
+        transition_waiter.cancel()
+        await asyncio.gather(transition_waiter, return_exceptions=True)
+    shared_turn_lock.release()
+    workspace = await asyncio.wait_for(attaching, timeout=1)
+
+    assert transition_was_available
+    assert registry.resolve(owner_session=owner, workspace_id=workspace.workspace_id) is workspace
+
+
+async def test_failed_new_session_allocation_preserves_workspace_authority(
+    tmp_path: Path, monkeypatch
+) -> None:
+    invalidated: list[ExecutionContext] = []
+    registry, connections, _projects = await _registry(
+        tmp_path, on_context_replaced=invalidated.append
+    )
+    workspace = await registry.attach(
+        connections.register(_Socket(), owner_session="owner-a"), owner_session="owner-a"
+    )
+    workspace.session.messages = [{"role": "user", "content": "keep me"}]
+    before = (
+        workspace.context,
+        workspace.context_revision,
+        workspace.project,
+        list(workspace.session.messages),
+    )
+
+    async def fail_create(*, project_id=None):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(workspace.session.sessions, "create_session", fail_create)
+    with pytest.raises(OSError, match="storage unavailable"):
+        await workspace.start_new_session()
+
+    assert workspace.context == before[0]
+    assert workspace.context_revision == before[1]
+    assert workspace.project == before[2]
+    assert workspace.session.messages == before[3]
+    assert invalidated == []
 
 
 async def test_project_metadata_update_refreshes_live_contexts_without_switching_sessions(
@@ -212,6 +352,9 @@ async def test_project_metadata_update_refreshes_live_contexts_without_switching
     headers = {
         "cookie": f"{SESSION_COOKIE}={owner_a}",
         WORKSPACE_HEADER: workspace_a.workspace_id,
+        EXPECTED_SESSION_HEADER: str(workspace_a.context.session_id),
+        EXPECTED_PROJECT_HEADER: str(workspace_a.context.project_id),
+        EXPECTED_CONTEXT_REVISION_HEADER: str(workspace_a.context_revision),
         "origin": "http://127.0.0.1",
     }
     updated = client.post(
@@ -262,6 +405,325 @@ async def test_emergency_cancel_covers_every_live_workspace(tmp_path: Path) -> N
     assert not workspace_a.session.busy and not workspace_b.session.busy
 
 
+async def test_turn_cancel_requires_the_exact_context_and_turn_generation(
+    tmp_path: Path,
+) -> None:
+    registry, connections, _projects = await _registry(tmp_path)
+    auth = AuthManager(token="tok")
+    owner = auth.mint_session()
+    workspace = await registry.attach(
+        connections.register(_Socket(), owner_session=owner), owner_session=owner
+    )
+    config = load_config(root=tmp_path, env_file=None)
+    app = create_app(config, auth=auth, connections=connections)
+    app.state.workspaces = registry
+    headers = {
+        "cookie": f"{SESSION_COOKIE}={owner}",
+        WORKSPACE_HEADER: workspace.workspace_id,
+        "origin": "http://127.0.0.1",
+    }
+
+    first = asyncio.create_task(asyncio.Event().wait())
+    workspace.session._turn_generation = 1
+    workspace.session._current = first
+    old_context = workspace.context
+    old_revision = workspace.context_revision
+    old_claim = {**old_context.to_wire(), "context_revision": old_revision}
+    first.cancel()
+    await asyncio.gather(first, return_exceptions=True)
+
+    second = asyncio.create_task(asyncio.Event().wait())
+    workspace.session._turn_generation = 2
+    workspace.session._current = second
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        stale_turn = await client.post(
+            "/api/turn/cancel",
+            json={"expected_context": old_claim, "turn_id": 1},
+            headers=headers,
+        )
+        assert stale_turn.status_code == 409
+        assert not second.cancelled() and workspace.session.current_turn_id == 2
+
+        second.cancel()
+        await asyncio.gather(second, return_exceptions=True)
+        async with registry.transition_lock:
+            await workspace.start_new_session()
+            registry.refresh_context(workspace)
+        third = asyncio.create_task(asyncio.Event().wait())
+        workspace.session._turn_generation = 3
+        workspace.session._current = third
+        stale_context = await client.post(
+            "/api/turn/cancel",
+            json={"expected_context": old_claim, "turn_id": 3},
+            headers=headers,
+        )
+        assert stale_context.status_code == 409
+        assert not third.cancelled() and workspace.session.current_turn_id == 3
+        current_claim = {
+            **workspace.context.to_wire(),
+            "context_revision": workspace.context_revision,
+        }
+        current = await client.post(
+            "/api/turn/cancel",
+            json={"expected_context": current_claim, "turn_id": 3},
+            headers=headers,
+        )
+        assert current.status_code == 200 and current.json()["cancelled"] is True
+        await asyncio.gather(third, return_exceptions=True)
+
+
+@pytest.mark.parametrize("transition_kind", ["new", "select", "resume"])
+async def test_context_transition_wait_does_not_block_gate_resolution(
+    tmp_path: Path, monkeypatch, transition_kind: str
+) -> None:
+    shared_turn_lock = asyncio.Lock()
+    registry, connections, projects = await _registry(tmp_path, turn_lock=shared_turn_lock)
+    auth = AuthManager(token="tok")
+    owner = auth.mint_session()
+    conn_a = connections.register(_Socket(), owner_session=owner)
+    conn_b = connections.register(_Socket(), owner_session=owner)
+    workspace_a = await registry.attach(conn_a, owner_session=owner)
+    workspace_b = await registry.attach(conn_b, owner_session=owner)
+    app = create_app(
+        load_config(root=tmp_path, env_file=None),
+        auth=auth,
+        connections=connections,
+    )
+    app.state.projects = projects
+    app.state.workspaces = registry
+    resolution, decision_id, nonce = await _seed_workspace_approval(app, workspace_a, conn_a)
+
+    target_project = await projects.store.create(name="Target")
+    target_session = await workspace_b.session.sessions.create_session()
+    await workspace_b.session.sessions.save_messages(
+        target_session, [{"role": "user", "content": "resume target"}]
+    )
+    if transition_kind == "new":
+        path = "/api/sessions/new"
+        payload = {"expected_context": _workspace_claim(workspace_b)}
+        prepare_name = "prepare_new_session"
+    elif transition_kind == "select":
+        path = "/api/projects/select"
+        payload = {
+            "project_id": target_project,
+            "expected_context": _workspace_claim(workspace_b),
+        }
+        prepare_name = "prepare_new_session"
+    else:
+        path = f"/api/sessions/{target_session}/resume"
+        payload = {"expected_context": _workspace_claim(workspace_b)}
+        prepare_name = "prepare_resume"
+
+    entered_prepare = asyncio.Event()
+    original_prepare = getattr(workspace_b, prepare_name)
+
+    async def observed_prepare(*args, **kwargs):
+        entered_prepare.set()
+        return await original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(workspace_b, prepare_name, observed_prepare)
+    transport = httpx.ASGITransport(app=app)
+    transition_response = None
+    approval_response = None
+    approval_completed_while_turn_locked = False
+    transition_request = None
+    approval_request = None
+    await shared_turn_lock.acquire()
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        try:
+            transition_request = asyncio.create_task(
+                client.post(
+                    path,
+                    json=payload,
+                    headers=_workspace_post_headers(owner, workspace_b),
+                )
+            )
+            await asyncio.wait_for(entered_prepare.wait(), timeout=1)
+            approval_request = asyncio.create_task(
+                client.post(
+                    f"/api/approvals/{decision_id}/resolve",
+                    json={
+                        "nonce": nonce,
+                        "action": "approve",
+                        "expected_context": _workspace_claim(workspace_a),
+                    },
+                    headers=_workspace_post_headers(owner, workspace_a),
+                )
+            )
+            done, _pending = await asyncio.wait({approval_request}, timeout=1)
+            approval_completed_while_turn_locked = approval_request in done
+        finally:
+            shared_turn_lock.release()
+            if transition_request is not None:
+                transition_response = await asyncio.wait_for(transition_request, timeout=2)
+            if approval_request is not None:
+                approval_response = await asyncio.wait_for(approval_request, timeout=2)
+
+    if not resolution.done():
+        app.state.approvals.resolve(decision_id, nonce, "deny", context=workspace_a.context)
+    resolved_permission = await asyncio.wait_for(resolution, timeout=1)
+    assert approval_completed_while_turn_locked
+    assert approval_response is not None and approval_response.status_code == 200
+    assert transition_response is not None and transition_response.status_code == 200
+    assert resolved_permission is Permission.ALLOW
+
+
+async def test_queued_turn_keeps_approval_and_exact_cancel_routes_responsive(
+    tmp_path: Path,
+) -> None:
+    shared_turn_lock = asyncio.Lock()
+    registry, connections, projects = await _registry(tmp_path, turn_lock=shared_turn_lock)
+    auth = AuthManager(token="tok")
+    owner = auth.mint_session()
+    conn_a = connections.register(_Socket(), owner_session=owner)
+    conn_b = connections.register(_Socket(), owner_session=owner)
+    workspace_a = await registry.attach(conn_a, owner_session=owner)
+    workspace_b = await registry.attach(conn_b, owner_session=owner)
+    app = create_app(
+        load_config(root=tmp_path, env_file=None),
+        auth=auth,
+        connections=connections,
+    )
+    app.state.projects = projects
+    app.state.workspaces = registry
+    resolution, decision_id, nonce = await _seed_workspace_approval(app, workspace_a, conn_a)
+    transport = httpx.ASGITransport(app=app)
+    turn_response = None
+    approval_response = None
+    cancel_response = None
+    turn_returned_while_locked = False
+    approval_returned_while_locked = False
+    cancel_returned_while_locked = False
+    turn_request = None
+    approval_request = None
+    cancel_request = None
+    await shared_turn_lock.acquire()
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        try:
+            turn_request = asyncio.create_task(
+                client.post(
+                    "/api/turn",
+                    json={
+                        "text": "queued behind the Gate-paused turn",
+                        "expected_context": _workspace_claim(workspace_b),
+                    },
+                    headers=_workspace_post_headers(owner, workspace_b),
+                )
+            )
+            done, _pending = await asyncio.wait({turn_request}, timeout=1)
+            turn_returned_while_locked = turn_request in done
+            if turn_returned_while_locked:
+                turn_response = turn_request.result()
+                turn_id = turn_response.json()["turn_id"]
+                approval_request = asyncio.create_task(
+                    client.post(
+                        f"/api/approvals/{decision_id}/resolve",
+                        json={
+                            "nonce": nonce,
+                            "action": "approve",
+                            "expected_context": _workspace_claim(workspace_a),
+                        },
+                        headers=_workspace_post_headers(owner, workspace_a),
+                    )
+                )
+                cancel_request = asyncio.create_task(
+                    client.post(
+                        "/api/turn/cancel",
+                        json={
+                            "turn_id": turn_id,
+                            "expected_context": _workspace_claim(workspace_b),
+                        },
+                        headers=_workspace_post_headers(owner, workspace_b),
+                    )
+                )
+                done, _pending = await asyncio.wait({approval_request, cancel_request}, timeout=1)
+                approval_returned_while_locked = approval_request in done
+                cancel_returned_while_locked = cancel_request in done
+        finally:
+            shared_turn_lock.release()
+            if turn_request is not None:
+                turn_response = await asyncio.wait_for(turn_request, timeout=2)
+            if approval_request is not None:
+                approval_response = await asyncio.wait_for(approval_request, timeout=2)
+            if cancel_request is not None:
+                cancel_response = await asyncio.wait_for(cancel_request, timeout=2)
+
+    workspace_b.session.cancel()
+    if workspace_b.session._current is not None:
+        await asyncio.gather(workspace_b.session._current, return_exceptions=True)
+    if not resolution.done():
+        app.state.approvals.resolve(decision_id, nonce, "deny", context=workspace_a.context)
+    resolved_permission = await asyncio.wait_for(resolution, timeout=1)
+    assert turn_returned_while_locked
+    assert approval_returned_while_locked
+    assert cancel_returned_while_locked
+    assert turn_response is not None and turn_response.status_code == 200
+    assert approval_response is not None and approval_response.status_code == 200
+    assert cancel_response is not None and cancel_response.json()["cancelled"] is True
+    assert resolved_permission is Permission.ALLOW
+
+
+async def test_voice_utterance_rejects_replaced_workspace_context(tmp_path: Path) -> None:
+    registry, connections, _projects = await _registry(tmp_path)
+    auth = AuthManager(token="tok")
+    owner = auth.mint_session()
+    workspace = await registry.attach(
+        connections.register(_Socket(), owner_session=owner), owner_session=owner
+    )
+    calls: list[bytes] = []
+
+    class _Voice:
+        listener = object()
+
+        async def handle_utterance(self, audio: bytes) -> bool:
+            calls.append(audio)
+            return True
+
+    workspace.voice = _Voice()
+    old_context = workspace.context
+    old_revision = workspace.context_revision
+    async with registry.transition_lock:
+        await workspace.start_new_session()
+        registry.refresh_context(workspace)
+
+    config = load_config(root=tmp_path, env_file=None)
+    app = create_app(config, auth=auth, connections=connections)
+    app.state.workspaces = registry
+    transport = httpx.ASGITransport(app=app)
+    headers = {
+        "cookie": f"{SESSION_COOKIE}={owner}",
+        WORKSPACE_HEADER: workspace.workspace_id,
+        EXPECTED_SESSION_HEADER: str(old_context.session_id),
+        EXPECTED_PROJECT_HEADER: "global",
+        EXPECTED_CONTEXT_REVISION_HEADER: str(old_revision),
+        "origin": "http://127.0.0.1",
+        "content-type": "audio/webm",
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.post(
+            "/api/voice/utterance?mode=conversation", content=b"old-context-audio", headers=headers
+        )
+
+    assert response.status_code == 409
+    assert response.json()["message"] == "workspace context changed; retry from the current screen"
+    assert calls == []
+
+    current_headers = {
+        **headers,
+        EXPECTED_SESSION_HEADER: str(workspace.context.session_id),
+        EXPECTED_PROJECT_HEADER: "global",
+        EXPECTED_CONTEXT_REVISION_HEADER: str(workspace.context_revision),
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        current = await client.post(
+            "/api/voice/utterance?mode=conversation",
+            content=b"current-context-audio",
+            headers=current_headers,
+        )
+    assert current.status_code == 200 and calls == [b"current-context-audio"]
+
+
 async def test_revoked_owner_drop_cancels_and_forgets_only_owned_workspaces(
     tmp_path: Path,
 ) -> None:
@@ -284,9 +746,7 @@ async def test_revoked_owner_drop_cancels_and_forgets_only_owned_workspaces(
         workspace_a2.session._current,
         return_exceptions=True,
     )
-    assert registry.resolve(
-        owner_session="owner-a", workspace_id=workspace_a1.workspace_id
-    ) is None
+    assert registry.resolve(owner_session="owner-a", workspace_id=workspace_a1.workspace_id) is None
     assert (
         registry.resolve(owner_session="owner-b", workspace_id=workspace_b.workspace_id)
         is workspace_b
@@ -297,9 +757,7 @@ async def test_revoked_owner_drop_cancels_and_forgets_only_owned_workspaces(
     }
 
     assert registry.drop_all() == 1
-    assert registry.resolve(
-        owner_session="owner-b", workspace_id=workspace_b.workspace_id
-    ) is None
+    assert registry.resolve(owner_session="owner-b", workspace_id=workspace_b.workspace_id) is None
 
 
 async def test_project_switch_fails_old_context_gate_approval(tmp_path: Path) -> None:
@@ -629,13 +1087,12 @@ async def test_meeting_workflow_event_targets_one_workspace_even_for_same_sessio
     registry.refresh_context(workspace_b)
     assert workspace_b.context == workspace_a.context
 
-    await registry.publish_workspace(
-        workspace_a, {"kind": "meeting_state", "state": "saving"}
-    )
+    await registry.publish_workspace(workspace_a, {"kind": "meeting_state", "state": "saving"})
     assert socket_a.sent[-1] == {
         "kind": "meeting_state",
         "state": "saving",
         **workspace_a.context.to_wire(),
+        "context_revision": workspace_a.context_revision,
         "workspace_id": workspace_a.workspace_id,
     }
     assert not any(message.get("kind") == "meeting_state" for message in socket_b.sent)
@@ -741,6 +1198,15 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
         project_id=None,
     )
     graph = GraphStore(workspace_a.session.sessions.db, workspace_a.session.sessions.lock)
+    knowledge = KnowledgeService(
+        KnowledgeStore(workspace_a.session.sessions.db, workspace_a.session.sessions.lock),
+        FakeEmbedder(),
+        KnowledgeConfig(),
+        knowledge_dir=tmp_path / "knowledge",
+        root=tmp_path,
+    )
+    knowledge.ensure_dirs()
+    knowledge.bound_unattended = True
     memory_store = MemoryStore(workspace_a.session.sessions.db)
     remembered: list[tuple[str, str, int | None]] = []
 
@@ -835,6 +1301,7 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
         memory=memory,
         intents=intents,
         attention=attention,
+        knowledge=knowledge,
         projects=projects,
         connectors=connectors,
         graph=graph,
@@ -848,9 +1315,17 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
     client = TestClient(app, base_url="http://127.0.0.1")
 
     def headers(owner: str, workspace_id: str) -> dict[str, str]:
+        workspace = workspace_a if workspace_id == workspace_a.workspace_id else workspace_b
         return {
             "cookie": f"{SESSION_COOKIE}={owner}",
             WORKSPACE_HEADER: workspace_id,
+            EXPECTED_SESSION_HEADER: str(workspace.context.session_id),
+            EXPECTED_PROJECT_HEADER: (
+                "global"
+                if workspace.context.project_id is None
+                else str(workspace.context.project_id)
+            ),
+            EXPECTED_CONTEXT_REVISION_HEADER: str(workspace.context_revision),
         }
 
     own = headers(owner_a, workspace_a.workspace_id)
@@ -868,9 +1343,12 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
     assert client.get(f"/api/tasks/{global_task.id}/runs", headers=foreign).status_code == 200
     assert client.get(f"/api/tasks?project_id={project_a}", headers=foreign).status_code == 404
     assert client.get(f"/api/memory?project_id={project_a}", headers=foreign).status_code == 404
-    assert client.get(
-        "/api/search", params={"q": "project-a", "project_id": project_a}, headers=foreign
-    ).status_code == 404
+    assert (
+        client.get(
+            "/api/search", params={"q": "project-a", "project_id": project_a}, headers=foreign
+        ).status_code
+        == 404
+    )
     assert [row["text"] for row in client.get("/api/notices", headers=own).json()["notices"]] == [
         "Project A scheduler payload"
     ]
@@ -879,12 +1357,10 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
     assert [row["text"] for row in client.get("/api/daily", headers=own).json()["notices"]] == [
         "Project A scheduler payload"
     ]
-    assert [
-        row["text"] for row in client.get("/api/daily", headers=foreign).json()["notices"]
-    ] == ["Project B scheduler payload"]
-    digest_response = client.post(
-        "/api/digest/run", headers={**own, "origin": "http://127.0.0.1"}
-    )
+    assert [row["text"] for row in client.get("/api/daily", headers=foreign).json()["notices"]] == [
+        "Project B scheduler payload"
+    ]
+    digest_response = client.post("/api/digest/run", headers={**own, "origin": "http://127.0.0.1"})
     assert digest_response.status_code == 409
     # Task ids are not authority either: foreign project tasks cannot be cancelled by guessing
     # an id, while global reminders remain a deliberate shared workspace surface.
@@ -902,15 +1378,29 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
     )
     assert foreign_update.status_code == 404
     assert (await projects.store.get(project_b)).name == "Project B"
+    foreign_services = client.post(
+        f"/api/projects/{project_b}/services",
+        json={"services": None},
+        headers=own_post,
+    )
+    assert foreign_services.status_code == 404
 
     # Memory deletion must obey the same P + global boundary. A foreign id cannot become a
     # capability merely because its numeric value was observed elsewhere in the UI.
     own_memory = await memory.store.add(
-        type="fact", content="A only", embedding=[0.1, 0.2], embedding_model="fake", source="user",
+        type="fact",
+        content="A only",
+        embedding=[0.1, 0.2],
+        embedding_model="fake",
+        source="user",
         project_id=project_a,
     )
     foreign_memory = await memory.store.add(
-        type="fact", content="B only", embedding=[0.3, 0.4], embedding_model="fake", source="user",
+        type="fact",
+        content="B only",
+        embedding=[0.3, 0.4],
+        embedding_model="fake",
+        source="user",
         project_id=project_b,
     )
     assert client.post(f"/api/memory/{foreign_memory}/forget", headers=own_post).status_code == 404
@@ -921,21 +1411,29 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
     # Gate detail, queue, and every mutation route must share the live workspace boundary; a
     # numeric intent/attention id from Project B never becomes read or execution authority in A.
     assert client.get("/api/intents", headers=own).json()["pending"][0]["id"] == own_intent
-    assert client.get(
-        "/api/intents", params={"project_id": project_b}, headers=own
-    ).status_code == 404
+    assert (
+        client.get("/api/intents", params={"project_id": project_b}, headers=own).status_code == 404
+    )
     for suffix in ("", "/approve", "/reject", "/undo"):
         method = client.get if not suffix else client.post
         kwargs = {"headers": own if not suffix else own_post}
         assert method(f"/api/intents/{foreign_intent}{suffix}", **kwargs).status_code == 404
     assert (await intents.get(foreign_intent)).state.value == "previewed"
-    assert client.post(
-        f"/api/attention/{foreign_attention}/resolve", json={"action": "dismiss"}, headers=own_post
-    ).status_code == 404
+    assert (
+        client.post(
+            f"/api/attention/{foreign_attention}/resolve",
+            json={"action": "dismiss"},
+            headers=own_post,
+        ).status_code
+        == 404
+    )
     assert (await attention.get(foreign_attention)).state.value == "open"
-    assert client.post(
-        f"/api/attention/{own_attention}/resolve", json={"action": "dismiss"}, headers=own_post
-    ).json()["ok"] is True
+    assert (
+        client.post(
+            f"/api/attention/{own_attention}/resolve", json={"action": "dismiss"}, headers=own_post
+        ).json()["ok"]
+        is True
+    )
 
     # Connector-write audit rows follow the same server-owned workspace scope. The browser has
     # no project selector and no remote/rollback handles to turn a numeric id into authority.
@@ -947,28 +1445,39 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
     # Quarantined graph-suggestion review mutations use the same P + global workspace scope as
     # their review queue. A guessed numeric id from Project B must never resolve its proposal.
     own_post = {**own, "origin": "http://127.0.0.1"}
-    assert client.post(
-        f"/api/graph/suggestions/{foreign_suggestion}/approve", headers=own_post
-    ).status_code == 404
-    assert client.post(
-        f"/api/graph/suggestions/{foreign_suggestion}/reject", headers=own_post
-    ).status_code == 404
+    assert (
+        client.post(
+            f"/api/graph/suggestions/{foreign_suggestion}/approve", headers=own_post
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/api/graph/suggestions/{foreign_suggestion}/reject", headers=own_post
+        ).status_code
+        == 404
+    )
     assert (await graph.get_suggestion(foreign_suggestion)).status == "pending"
-    assert client.get(
-        f"/api/graph/suggestions?project_id={project_a}", headers=foreign
-    ).status_code == 404
-    assert client.post(
-        f"/api/graph/suggestions/{own_suggestion}/approve", headers=own_post
-    ).json()["ok"] is True
-    assert client.post(
-        f"/api/graph/suggestions/{global_suggestion}/reject", headers=own_post
-    ).json()["ok"] is True
+    assert (
+        client.get(f"/api/graph/suggestions?project_id={project_a}", headers=foreign).status_code
+        == 404
+    )
+    assert (
+        client.post(f"/api/graph/suggestions/{own_suggestion}/approve", headers=own_post).json()[
+            "ok"
+        ]
+        is True
+    )
+    assert (
+        client.post(f"/api/graph/suggestions/{global_suggestion}/reject", headers=own_post).json()[
+            "ok"
+        ]
+        is True
+    )
 
     def drive_exposed(payload: dict) -> bool:
         row = next(
-            row
-            for row in payload["capabilities"]["connectors"]
-            if row["name"] == "Google Drive"
+            row for row in payload["capabilities"]["connectors"] if row["name"] == "Google Drive"
         )
         return row["exposed_to_chat"]
 
@@ -977,9 +1486,7 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
         foreign_payload = client.get(path, headers=foreign).json()
         own_caps = own_payload if path == "/api/capabilities" else own_payload["capabilities"]
         foreign_caps = (
-            foreign_payload
-            if path == "/api/capabilities"
-            else foreign_payload["capabilities"]
+            foreign_payload if path == "/api/capabilities" else foreign_payload["capabilities"]
         )
         assert drive_exposed({"capabilities": own_caps}) is True, path
         assert drive_exposed({"capabilities": foreign_caps}) is False, path
@@ -990,7 +1497,12 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
     expected_context = {
         "session_id": workspace_a.context.session_id,
         "project_id": workspace_a.context.project_id,
+        "context_revision": workspace_a.context_revision,
     }
+    await workspace_a.session.sessions.save_messages(
+        expected_context["session_id"],
+        [{"role": "user", "content": "ABA authority anchor"}],
+    )
     scheduled = client.post(
         "/api/tasks/create",
         json={
@@ -1008,9 +1520,7 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
         headers=own_post,
     )
     assert saved.status_code == 200 and remembered == [("A reviewed fact", "fact", project_a)]
-    switched = client.post(
-        "/api/projects/select", json={"project_id": project_b}, headers=own_post
-    )
+    switched = client.post("/api/projects/select", json={"project_id": project_b}, headers=own_post)
     assert switched.status_code == 200
     stale = client.post(
         "/api/memory/remember",
@@ -1030,6 +1540,98 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
     assert stale_task.status_code == 409
     assert len(await tasks.store.list(include_finished=True)) == task_count
 
+    # Re-enter the original session after visiting B. The session/project tuple is now identical
+    # to the old claim, so only the monotonic context revision can distinguish this ABA cycle.
+    current_b_post = {
+        **headers(owner_a, workspace_a.workspace_id),
+        "origin": "http://127.0.0.1",
+    }
+    resumed = client.post(
+        f"/api/sessions/{expected_context['session_id']}/resume",
+        json={},
+        headers=current_b_post,
+    )
+    assert resumed.status_code == 200 and resumed.json()["ok"] is True
+    assert workspace_a.context == ExecutionContext(
+        session_id=expected_context["session_id"], project_id=project_a
+    )
+    assert workspace_a.context_revision > expected_context["context_revision"]
+
+    aba_task = await tasks.schedule(
+        kind="reminder",
+        title="ABA task",
+        payload="review",
+        schedule_kind="once",
+        schedule_spec="2099-01-01T00:00:00Z",
+        created_by="user",
+        project_id=project_a,
+    )
+    aba_memory = await memory.store.add(
+        type="fact",
+        content="ABA memory",
+        embedding=[0.5, 0.6],
+        embedding_model="fake",
+        source="user",
+        project_id=project_a,
+    )
+    aba_intent = await intents.create_draft(
+        idempotency_key="project-a-aba-intent",
+        provider="google",
+        kind="calendar_create",
+        request={},
+        summary="Project A ABA draft",
+        source="agent",
+        project_id=project_a,
+    )
+    await intents.mark_previewed(
+        aba_intent,
+        preview={"title": "ABA", "fields": [], "diff": [], "notes": [], "warnings": []},
+    )
+    aba_suggestion = await graph.add_suggestion(
+        kind="memory",
+        payload={"content": "Project A ABA suggestion"},
+        trust_class="model_generated",
+        project_id=project_a,
+    )
+    aba_source = await knowledge.ingest(
+        text="Project A ABA source",
+        title="ABA source",
+        project_id=project_a,
+    )
+
+    stale_route_responses = [
+        client.post(f"/api/tasks/{aba_task.id}/cancel", headers=own_post),
+        client.post(f"/api/memory/{aba_memory}/forget", headers=own_post),
+        client.post(f"/api/intents/{aba_intent}/reject", headers=own_post),
+        client.post(f"/api/graph/suggestions/{aba_suggestion}/approve", headers=own_post),
+        client.post(f"/api/vault/sources/{aba_source.source_id}/approve", headers=own_post),
+        client.post(f"/api/vault/sources/{aba_source.source_id}/reject", headers=own_post),
+        client.post(
+            f"/api/sessions/{expected_context['session_id']}/archive",
+            json={"archived": True},
+            headers=own_post,
+        ),
+        client.post(
+            f"/api/projects/{project_a}/update",
+            json={"name": "ABA hijack"},
+            headers=own_post,
+        ),
+        client.post(f"/api/projects/{project_a}/archive", headers=own_post),
+        client.post(
+            f"/api/projects/{project_a}/services",
+            json={"services": None},
+            headers=own_post,
+        ),
+    ]
+    assert {response.status_code for response in stale_route_responses} == {409}
+    assert (await tasks.store.get(aba_task.id)).status != "cancelled"
+    assert (await memory.store.get(aba_memory)).status == "live"
+    assert (await intents.get(aba_intent)).state.value == "previewed"
+    assert (await graph.get_suggestion(aba_suggestion)).status == "pending"
+    assert (await knowledge.store.get_source(aba_source.source_id)).review_status == "unreviewed"
+    assert (await projects.store.get(project_a)).name == "Project A"
+    assert (await projects.store.get(project_a)).status == "active"
+
     # The global workspace is deliberately the administrative aggregate used by the Tasks
     # screen. It may inspect and cancel an existing project task; only a project workspace is
     # restricted to its own rows plus explicit global reminders.
@@ -1042,12 +1644,21 @@ async def test_workspace_read_models_use_the_live_workspace_scope(tmp_path: Path
         created_by="user",
         project_id=project_a,
     )
+    current_post = {
+        **headers(owner_a, workspace_a.workspace_id),
+        "origin": "http://127.0.0.1",
+    }
     global_scope = client.post(
-        "/api/projects/select", json={"project_id": None}, headers=own_post
+        "/api/projects/select", json={"project_id": None}, headers=current_post
     )
     assert global_scope.status_code == 200
     assert client.get(f"/api/tasks/{admin_task.id}/runs", headers=own).status_code == 200
-    assert client.post(f"/api/tasks/{admin_task.id}/cancel", headers=own_post).json()["ok"] is True
+    global_post = {
+        **headers(owner_a, workspace_a.workspace_id),
+        "origin": "http://127.0.0.1",
+    }
+    cancelled = client.post(f"/api/tasks/{admin_task.id}/cancel", headers=global_post)
+    assert cancelled.json()["ok"] is True
 
 
 async def test_delegation_history_is_scoped_by_the_live_workspace(tmp_path: Path) -> None:
@@ -1127,9 +1738,7 @@ async def test_delegation_history_is_scoped_by_the_live_workspace(tmp_path: Path
         "started_at",
     }
     assert "PRIVATE-A-PROMPT" not in a_rows.text and "parent-a" not in a_rows.text
-    missing_workspace = client.get(
-        "/api/agents", headers={"cookie": f"{SESSION_COOKIE}={owner_a}"}
-    )
+    missing_workspace = client.get("/api/agents", headers={"cookie": f"{SESSION_COOKIE}={owner_a}"})
     assert missing_workspace.status_code == 409
 
 
@@ -1187,6 +1796,9 @@ async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
                     "cookie": cookie,
                     "origin": "http://127.0.0.1",
                     WORKSPACE_HEADER: hello_a["workspace_id"],
+                    EXPECTED_SESSION_HEADER: str(hello_a["session_id"]),
+                    EXPECTED_PROJECT_HEADER: "global",
+                    EXPECTED_CONTEXT_REVISION_HEADER: str(hello_a["context_revision"]),
                 },
             )
             assert switched.status_code == 200 and switched.json()["active_project_id"] == project_a
@@ -1226,9 +1838,14 @@ async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
                 sample_workspace.session.sessions.db, sample_workspace.session.sessions.lock
             )
             await graph_store.upsert_edge(
-                src_kind="project", src_id=str(project_a), dst_kind="folder",
-                dst_id=f"{project_a}:private", edge_kind="contains", origin="derived",
-                trust_class="trusted_local", created_by="system",
+                src_kind="project",
+                src_id=str(project_a),
+                dst_kind="folder",
+                dst_id=f"{project_a}:private",
+                edge_kind="contains",
+                origin="derived",
+                trust_class="trusted_local",
+                created_by="system",
                 created_at="2026-01-01T00:00:00+00:00",
                 project_id=project_a,
             )
@@ -1293,6 +1910,7 @@ async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
                         "expected_context": {
                             "session_id": runner["session_id"],
                             "project_id": runner["project"]["id"],
+                            "context_revision": runner["context_revision"],
                         },
                     },
                     headers={
@@ -1309,7 +1927,13 @@ async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
             # session behind A's back.
             resumed_b = client.post(
                 f"/api/sessions/{after_a['session_id']}/resume",
-                json={},
+                json={
+                    "expected_context": {
+                        "session_id": after_b["session_id"],
+                        "project_id": None,
+                        "context_revision": after_b["context_revision"],
+                    }
+                },
                 headers={
                     "cookie": cookie,
                     "origin": "http://127.0.0.1",
@@ -1328,6 +1952,9 @@ async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
                     "cookie": cookie,
                     "origin": "http://127.0.0.1",
                     WORKSPACE_HEADER: hello_a["workspace_id"],
+                    EXPECTED_SESSION_HEADER: str(changed["session_id"]),
+                    EXPECTED_PROJECT_HEADER: str(changed["project_id"]),
+                    EXPECTED_CONTEXT_REVISION_HEADER: str(changed["context_revision"]),
                 },
             )
             assert archived.status_code == 200 and archived.json()["ok"] is True
@@ -1340,3 +1967,144 @@ async def test_two_websockets_receive_distinct_server_owned_workspace_contexts(
             assert replacement_b["session_id"] != after_a["session_id"]
             assert replacement_b["session_id"] != replacement["session_id"]
             assert replacement_b["project_id"] == project_a
+
+
+async def test_shared_session_archive_rolls_back_every_replacement_on_insert_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    registry, connections, projects = await _registry(tmp_path)
+    project_id = await projects.store.create(name="Atomic Session Archive")
+    auth = AuthManager(token="tok")
+    owner = auth.mint_session()
+    socket_a, socket_b = _Socket(), _Socket()
+    workspace_a = await registry.attach(
+        connections.register(socket_a, owner_session=owner), owner_session=owner
+    )
+    workspace_b = await registry.attach(
+        connections.register(socket_b, owner_session=owner), owner_session=owner
+    )
+    await workspace_a.select_project(project_id)
+    await workspace_b.select_project(project_id)
+    registry.refresh_context(workspace_a)
+    registry.refresh_context(workspace_b)
+    sessions = workspace_a.session.sessions
+    assert sessions is not None
+    shared_session_id = workspace_a.context.session_id
+    await sessions.save_messages(
+        shared_session_id,
+        [{"role": "user", "content": "shared authority must survive rollback"}],
+    )
+    assert await workspace_b.resume(shared_session_id)
+    registry.refresh_context(workspace_b)
+    before = [
+        (item.context, item.context_revision, list(item.session.messages))
+        for item in (workspace_a, workspace_b)
+    ]
+    before_count = (await (await sessions.db.execute("SELECT COUNT(*) FROM sessions")).fetchone())[
+        0
+    ]
+    socket_a.sent.clear()
+    socket_b.sent.clear()
+
+    original_insert = sessions.create_session_in_transaction
+    inserts = 0
+
+    async def fail_second_insert(*args, **kwargs):
+        nonlocal inserts
+        inserts += 1
+        if inserts == 2:
+            raise OSError("injected replacement failure")
+        return await original_insert(*args, **kwargs)
+
+    monkeypatch.setattr(sessions, "create_session_in_transaction", fail_second_insert)
+    app = create_app(
+        load_config(root=tmp_path, env_file=None),
+        auth=auth,
+        connections=connections,
+    )
+    app.state.projects = projects
+    app.state.workspaces = registry
+    app.state.services = UiServices(sessions=sessions)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.post(
+            f"/api/sessions/{shared_session_id}/archive",
+            json={"archived": True, "expected_context": _workspace_claim(workspace_a)},
+            headers=_workspace_post_headers(owner, workspace_a),
+        )
+
+    assert response.status_code == 503
+    meta = await sessions.get_meta(shared_session_id)
+    assert meta is not None and meta.archived is False
+    assert [
+        (item.context, item.context_revision, list(item.session.messages))
+        for item in (workspace_a, workspace_b)
+    ] == before
+    after_count = (await (await sessions.db.execute("SELECT COUNT(*) FROM sessions")).fetchone())[0]
+    assert after_count == before_count
+    assert socket_a.sent == socket_b.sent == []
+
+
+async def test_project_archive_rolls_back_all_tabs_and_rows_on_insert_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    registry, connections, projects = await _registry(tmp_path)
+    project_id = await projects.store.create(name="Atomic Project Archive")
+    auth = AuthManager(token="tok")
+    owner = auth.mint_session()
+    socket_a, socket_b = _Socket(), _Socket()
+    workspace_a = await registry.attach(
+        connections.register(socket_a, owner_session=owner), owner_session=owner
+    )
+    workspace_b = await registry.attach(
+        connections.register(socket_b, owner_session=owner), owner_session=owner
+    )
+    await workspace_a.select_project(project_id)
+    await workspace_b.select_project(project_id)
+    registry.refresh_context(workspace_a)
+    registry.refresh_context(workspace_b)
+    sessions = workspace_a.session.sessions
+    assert sessions is not None
+    before = [(item.context, item.context_revision) for item in (workspace_a, workspace_b)]
+    before_count = (await (await sessions.db.execute("SELECT COUNT(*) FROM sessions")).fetchone())[
+        0
+    ]
+    socket_a.sent.clear()
+    socket_b.sent.clear()
+
+    original_insert = sessions.create_session_in_transaction
+    inserts = 0
+
+    async def fail_second_insert(*args, **kwargs):
+        nonlocal inserts
+        inserts += 1
+        if inserts == 2:
+            raise OSError("injected replacement failure")
+        return await original_insert(*args, **kwargs)
+
+    monkeypatch.setattr(sessions, "create_session_in_transaction", fail_second_insert)
+    app = create_app(
+        load_config(root=tmp_path, env_file=None),
+        auth=auth,
+        connections=connections,
+    )
+    app.state.projects = projects
+    app.state.workspaces = registry
+    app.state.services = UiServices(sessions=sessions)
+    headers = {
+        **_workspace_post_headers(owner, workspace_a),
+        EXPECTED_SESSION_HEADER: str(workspace_a.context.session_id),
+        EXPECTED_PROJECT_HEADER: str(project_id),
+        EXPECTED_CONTEXT_REVISION_HEADER: str(workspace_a.context_revision),
+    }
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.post(f"/api/projects/{project_id}/archive", headers=headers)
+
+    assert response.status_code == 503
+    project = await projects.store.get(project_id)
+    assert project is not None and project.status == "active" and project.archived_at is None
+    assert [(item.context, item.context_revision) for item in (workspace_a, workspace_b)] == before
+    after_count = (await (await sessions.db.execute("SELECT COUNT(*) FROM sessions")).fetchone())[0]
+    assert after_count == before_count
+    assert socket_a.sent == socket_b.sent == []

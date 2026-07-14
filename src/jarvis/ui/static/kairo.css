@@ -245,6 +245,20 @@ main { grid-area: main; overflow-y: auto; overflow-x: hidden; position: relative
 .screen { max-width: 900px; margin: 0 auto; padding: 34px 32px 0; }
 :root[data-layout="expanded"] .screen { max-width: 1180px; } /* wider reading column (Settings knob) */
 .screen.pad { padding-bottom: 60px; }
+.route-state { min-height: clamp(260px, 54vh, 500px); display: flex; align-items: center;
+  justify-content: center; gap: 14px; padding: 32px; border: 1px solid var(--line);
+  border-radius: 14px; background: var(--panel-soft); color: var(--muted); text-align: left; }
+.route-state h1 { margin: 0 0 6px; color: var(--ink); }
+.route-state p { margin: 0; max-width: 500px; font-size: 13.5px; line-height: 1.55; }
+.route-state-pulse { width: 10px; height: 10px; flex: 0 0 auto; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 18px rgba(var(--accent-rgb), .45);
+  animation: kairoPulse 1.6s ease-out infinite; }
+.route-failure { flex-direction: column; align-items: flex-start; }
+.route-failure h1:focus { outline: none; }
+.route-state-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 10px; }
+.route-state-actions .plain-button { display: inline-flex; align-items: center; justify-content: center;
+  text-decoration: none; }
+@media (prefers-reduced-motion: reduce) { .route-state-pulse { animation: none; } }
 h1 { font-size: 23px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 5px; }
 .sub { color: var(--dim); font-size: 13.5px; margin-bottom: 26px; }
 .rise { animation: kairoRise .45s ease both; }

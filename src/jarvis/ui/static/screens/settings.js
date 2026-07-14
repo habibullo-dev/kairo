@@ -32,6 +32,7 @@ const ACCENTS = [
 
 let _refocus = null;   // keyboard focus to restore after an appearance re-render
 let _status = null;    // cached {hub, costs, runner} so an appearance change doesn't reflash it
+let _statusAuthorityToken = null;
 
 function segRow(cfg, current, onchange) {
   const seg = el(
@@ -302,14 +303,25 @@ function renderStatus(region) {
 }
 
 async function fetchStatus(api) {
+  const authorityToken = typeof api.authorityToken === "function" ? api.authorityToken() : null;
   const [hub, costs, runner, settings] = await Promise.all([
     api.get("/api/hub"), api.get("/api/costs"), api.runnerStatus(), api.get("/api/settings"),
   ]);
+  if (typeof api.renderIsCurrent === "function" && !api.renderIsCurrent()) return false;
+  if (authorityToken !== null && typeof api.authorityIsCurrent === "function"
+      && !api.authorityIsCurrent(authorityToken)) return false;
   _status = { hub, costs, runner, settings };
+  _statusAuthorityToken = authorityToken;
+  return true;
 }
 
 export function render(container, api) {
   container.textContent = "";
+  const authorityToken = typeof api.authorityToken === "function" ? api.authorityToken() : null;
+  if (_statusAuthorityToken !== authorityToken) {
+    _status = null;
+    _statusAuthorityToken = authorityToken;
+  }
   const onchange = (key, val) => { _refocus = { key, val }; set({ [key]: val }); };
   const st = get();
 
@@ -330,7 +342,16 @@ export function render(container, api) {
   const statusRegion = el("div", { class: "set-status" }, []);
   container.append(head, appearance, statusRegion);
   renderStatus(statusRegion);           // cached (instant) or a Loading line
-  fetchStatus(api).then(() => {          // refresh in the background, then repaint the status region
+  fetchStatus(api).then((current) => {   // refresh in the background, then repaint the status region
+    if (!current) return;
+    const region = container.querySelector(".set-status");
+    if (region) renderStatus(region);
+  }).catch(() => {
+    if (typeof api.renderIsCurrent === "function" && !api.renderIsCurrent()) return;
+    if (authorityToken !== null && typeof api.authorityIsCurrent === "function"
+        && !api.authorityIsCurrent(authorityToken)) return;
+    _status = { hub: null, costs: null, runner: null, settings: null };
+    _statusAuthorityToken = authorityToken;
     const region = container.querySelector(".set-status");
     if (region) renderStatus(region);
   });

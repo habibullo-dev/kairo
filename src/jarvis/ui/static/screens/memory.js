@@ -3,7 +3,7 @@ import { el } from "../ui/dom.js";
 import { openMemoryDraft } from "../ui/memory-draft.js";
 
 export async function render(container, api) {
-  const rows = await api.get("/api/memory");
+  const rows = await api.getRequired("/api/memory");
   container.textContent = "";
   if (rows === null) {
     container.append(el("div", { class: "rise" }, [
@@ -14,7 +14,7 @@ export async function render(container, api) {
   }
   const remember = el("button", { class: "rowbtn", type: "button", text: "Remember something" });
   remember.addEventListener("click", async () => {
-    if (await openMemoryDraft(api)) render(container, api);
+    if (await openMemoryDraft(api)) await api.refreshRoute();
   });
   const tbl = el("table", { id: "mem-tbl" }, [
     el("tr", {}, [
@@ -39,7 +39,10 @@ export async function render(container, api) {
   for (const m of rows) {
     const actions = el("td", { class: "actions-cell" });
     const b = el("button", { class: "rowbtn", type: "button", text: "Forget" });
-    b.addEventListener("click", async () => { await api.post(`/api/memory/${m.id}/forget`); render(container, api); });
+    b.addEventListener("click", async () => {
+      await api.post(`/api/memory/${m.id}/forget`);
+      await api.refreshRoute();
+    });
     actions.append(b);
     tbl.append(el("tr", {}, [
       el("td", { text: m.content }),

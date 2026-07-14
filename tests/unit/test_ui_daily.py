@@ -43,7 +43,8 @@ def test_daily_refreshes_only_the_existing_attended_briefing_route() -> None:
     # through the already-pinned digest endpoint and is disabled while another turn is busy.
     assert 'api.post("/api/digest/run", {})' in DAILY_JS
     assert "daily-briefing-refresh" in DAILY_JS
-    assert "briefingRefreshInFlight" in DAILY_JS
+    assert "briefingRefreshOperation" in DAILY_JS
+    assert "authorityIsCurrent(api, operation.authorityToken)" in DAILY_JS
     assert "result.status === 409" in DAILY_JS
     assert "projectScoped" in DAILY_JS and "Global only" in DAILY_JS
     assert "Open the global workspace to refresh the daily briefing." in DAILY_JS

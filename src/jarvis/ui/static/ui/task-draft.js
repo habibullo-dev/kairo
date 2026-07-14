@@ -5,9 +5,15 @@ import { el } from "./dom.js";
 import { showToast } from "./feedback.js";
 
 let activeDialog = null;
+let dialogRequestRevision = 0;
 
 function sameContext(left, right) {
-  return Boolean(left && right && left.session_id === right.session_id && left.project_id === right.project_id);
+  return Boolean(
+    left && right
+    && left.session_id === right.session_id
+    && left.project_id === right.project_id
+    && left.context_revision === right.context_revision
+  );
 }
 
 function close(value, owner = null) {
@@ -19,6 +25,14 @@ function close(value, owner = null) {
   current.restoreFocus?.focus?.();
   current.resolve(value);
   return true;
+}
+
+export function dismissTaskDialogs() {
+  dialogRequestRevision += 1;
+  const current = activeDialog;
+  if (!current) return false;
+  current.saving = false;
+  return close(false, current);
 }
 
 function button(label, className) {
@@ -73,9 +87,10 @@ function scheduleControl(kind, schedule) {
 // it cannot create an "always" policy.  The server mints the nonce only after this exact payload
 // is on a live local screen, then re-reads the task/run before its host callback may resume it.
 export function openParkedTaskApproval(approval, api, handlers = {}) {
+  dialogRequestRevision += 1;
   const runId = Number(approval && approval.run_id);
   if (!Number.isInteger(runId) || runId < 1) throw new Error("invalid parked task run");
-  if (activeDialog) close(false);
+  if (activeDialog && !close(false)) return null;
 
   const overlay = el("div", { class: "dialog-overlay", role: "presentation" });
   const card = el("section", {
@@ -113,6 +128,11 @@ export function openParkedTaskApproval(approval, api, handlers = {}) {
   const dismiss = () => {
     if (close(false, owner)) handlers.onDismissed?.();
   };
+  const forceDismiss = () => {
+    if (activeDialog !== owner) return;
+    owner.saving = false;
+    dismiss();
+  };
   const resolve = async (action) => {
     if (!nonce || owner?.saving) return;
     owner.saving = true;
@@ -127,7 +147,9 @@ export function openParkedTaskApproval(approval, api, handlers = {}) {
     } catch {
       result = { ok: false, data: {} };
     }
+    if (activeDialog !== owner) return;
     if (result.ok) {
+      owner.saving = false;
       handlers.onResolved?.();
       close(true, owner);
       return;
@@ -172,6 +194,7 @@ export function openParkedTaskApproval(approval, api, handlers = {}) {
 
   return {
     runId,
+    dismiss: forceDismiss,
     setNonce(value) {
       if (typeof value !== "string" || !value || activeDialog !== owner || owner.saving) return;
       nonce = value;
@@ -184,11 +207,13 @@ export function openParkedTaskApproval(approval, api, handlers = {}) {
 // Opens an editable draft and returns true only after the person submits a valid task to the
 // existing human-authority route.  source must be provenance only; it never selects a schedule.
 export function openTaskDraft(source, api) {
+  dialogRequestRevision += 1;
   // The task is reviewed in this exact chat/project context. This is only an optimistic UI
   // freshness guard; the server compares it to the live workspace under its transition lock.
   const expectedContext = api.state.context && {
     session_id: api.state.context.session_id,
     project_id: api.state.context.project_id,
+    context_revision: api.state.context.context_revision,
   };
   return new Promise((resolve) => {
     if (activeDialog) {
@@ -301,6 +326,7 @@ export function openTaskDraft(source, api) {
           verify_contains: verifyContains.length ? verifyContains : null,
           expected_context: expectedContext,
         });
+        if (activeDialog !== owner) return;
         if (result.ok && result.data?.ok) {
           owner.saving = false;
           close(true, owner);
@@ -373,12 +399,21 @@ function runText(run) {
 
 // Run history is read-only and fetched only after the person asks to inspect a specific task.
 export async function openTaskHistory(task, api) {
+  const historyRevision = ++dialogRequestRevision;
+  const authorityToken = typeof api.authorityToken === "function" ? api.authorityToken() : null;
+  const requestIsCurrent = () => (
+    (authorityToken === null || typeof api.authorityIsCurrent !== "function"
+      || api.authorityIsCurrent(authorityToken))
+    && (typeof api.renderIsCurrent !== "function" || api.renderIsCurrent())
+  );
   const rows = await api.get(`/api/tasks/${encodeURIComponent(task.id)}/runs`);
+  if (historyRevision !== dialogRequestRevision || !requestIsCurrent()) return;
   if (rows === null) {
     showToast("Task history is unavailable right now.", "error");
     return;
   }
-  if (activeDialog) close(false);
+  if (activeDialog && !close(false)) return;
+  if (historyRevision !== dialogRequestRevision) return;
   await new Promise((resolve) => {
     const overlay = el("div", { class: "dialog-overlay", role: "presentation" });
     const card = el("section", {

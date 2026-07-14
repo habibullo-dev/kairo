@@ -25,9 +25,9 @@ _ALLOWED_WRITES = ("/api/sessions/new", "/api/mode", "/api/model", "/api/project
 def test_palette_writes_only_the_allowlisted_ui_state_routes() -> None:
     for route in _ALLOWED_WRITES:
         assert route in PALETTE_JS, route
-    # every write funnels through ONE helper (act) — _api.post appears exactly once, and act is
+    # every write funnels through ONE helper (act) — api.post appears exactly once, and act is
     # only ever handed an allowlisted path. No other mutation path exists in the palette.
-    assert PALETTE_JS.count("_api.post(") == 1
+    assert PALETTE_JS.count("api.post(") == 1
     # never the agent turn, an approval, or a graph-review write.
     assert "/api/turn" not in PALETTE_JS
     assert "/api/approvals" not in PALETTE_JS
@@ -58,7 +58,7 @@ def test_palette_result_routing_reads_and_navigates() -> None:
 def test_palette_searches_the_federated_search() -> None:
     assert "/api/search" in PALETTE_JS
     assert "/api/graph/search" not in PALETTE_JS
-    assert "_api.get(" in PALETTE_JS  # search is a GET
+    assert "api.get(" in PALETTE_JS  # search is a GET
 
 
 def test_palette_makes_recent_chats_findable() -> None:

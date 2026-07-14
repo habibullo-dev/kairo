@@ -1,9 +1,21 @@
 // Vault — KB stats + the unreviewed review queue (kb review) + lint. Amber flags anything
 // awaiting review (quarantined untrusted content).
 import { esc, escAttr } from "../ui/dom.js";
+import {
+  beginVaultReview, bindVaultReview, pendingVaultReview, settleVaultReview,
+} from "../ui/vault-review.js";
+
+function setReviewBusy(card, busy, action = null) {
+  for (const control of card.querySelectorAll(".review-actions button")) control.disabled = busy;
+  card.setAttribute("aria-busy", busy ? "true" : "false");
+  if (busy) {
+    const feedback = card.querySelector(".vault-review-feedback");
+    if (feedback) feedback.textContent = action === "approve" ? "Approving…" : "Rejecting…";
+  }
+}
 
 export async function render(container, api) {
-  const data = await api.get("/api/vault");
+  const data = await api.getRequired("/api/vault");
   if (!data) { container.innerHTML = unavailable("Vault", "knowledge base off"); return; }
   const stats = data.stats || {};
   const readiness = data.project_readiness;
@@ -43,13 +55,14 @@ export async function render(container, api) {
     const res = await api.post("/api/vault/ingest", body);
     const out = container.querySelector("#vault-ingest-out");
     out.textContent = res.ok ? `${res.data.action}: source #${res.data.source_id}` : `— ${res.data.message} —`;
-    if (res.ok) render(container, api);
+    if (res.ok) await api.refreshRoute();
   };
   container.querySelector("#vault-ingest-go").addEventListener("click", ingest);
   ingestInput.addEventListener("keydown", (e) => { if (e.key === "Enter") ingest(); });
 
   const q = container.querySelector("#vault-queue");
   const items = data.unreviewed || [];
+  const projectId = data.project_id ?? api.state?.context?.project_id ?? null;
   if (!items.length) {
     q.innerHTML = `<div class="dim">Nothing to review. You're clear.</div>`;
   } else {
@@ -59,6 +72,8 @@ export async function render(container, api) {
     for (const s of items) {
       const card = document.createElement("div");
       card.className = "review-item";
+      const sourceKey = String(s.id);
+      card.dataset.vaultSourceId = sourceKey;
       const head = document.createElement("div");
       head.className = "review-head";
       head.innerHTML = `<span>${esc(s.title || "(untitled)")} <span class="tag amber">${esc(s.review_status)}</span></span>
@@ -66,20 +81,49 @@ export async function render(container, api) {
       const actions = document.createElement("div");
       actions.className = "review-actions";
       const feedback = document.createElement("div");
-      feedback.className = "dim";
+      feedback.className = "dim vault-review-feedback";
       feedback.setAttribute("role", "status");
       feedback.setAttribute("aria-live", "polite");
-      actions.append(btn("Approve", async () => {
-        const result = await api.post(`/api/vault/sources/${s.id}/approve`);
-        if (result.ok) render(container, api);
-        else feedback.textContent = result.data.message || "This source could not be approved.";
-      }));
-      actions.append(btn("Reject", async () => { await api.post(`/api/vault/sources/${s.id}/reject`); render(container, api); }));
+      const bindOperation = (operation) => bindVaultReview(operation, ({ pending, result }) => {
+        if (pending) {
+          setReviewBusy(card, true, operation.action);
+          return true;
+        }
+        if (!card.isConnected) return false;
+        if (result?.ok) {
+          void api.refreshRoute();
+          return true;
+        }
+        setReviewBusy(card, false);
+        feedback.textContent = result?.data?.message
+          || "This review action could not be completed.";
+        return true;
+      });
+      const review = async (action) => {
+        const operation = beginVaultReview(api, projectId, s.id, action);
+        if (!operation) return;
+        bindOperation(operation);
+        let result;
+        try {
+          const path = action === "approve"
+            ? `/api/vault/sources/${s.id}/approve`
+            : `/api/vault/sources/${s.id}/reject`;
+          result = await api.post(path);
+        } catch {
+          result = { ok: false, data: { message: "This source review could not reach Kairo." } };
+        }
+        await settleVaultReview(operation, result);
+      };
+      const approve = btn("Approve", () => review("approve"));
+      const reject = btn("Reject", () => review("reject"));
+      actions.append(approve, reject);
       head.appendChild(actions);
       const preview = document.createElement("pre");
       preview.className = "block review-preview";
       preview.textContent = s.preview || "(no preview available)";  // textContent — untrusted content is never HTML
       card.append(head, preview, feedback);
+      const operation = pendingVaultReview(api, projectId, s.id);
+      if (operation) bindOperation(operation);
       q.appendChild(card);
     }
   }

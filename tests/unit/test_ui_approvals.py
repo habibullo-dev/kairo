@@ -34,9 +34,11 @@ _CONTEXT = ExecutionContext(session_id=101, project_id=None)
 class _FakeWS:
     def __init__(self) -> None:
         self.sent: list[dict] = []
+        self.delivered = asyncio.Event()
 
     async def send_json(self, message: dict) -> None:
         self.sent.append(message)
+        self.delivered.set()
 
 
 def _cm() -> ConnectionManager:
@@ -66,9 +68,7 @@ def _call(name: str = "read_file", **inp) -> ToolCall:
 
 async def _start(approvals: ApprovalManager, call: ToolCall, on_always=lambda: None):
     """Kick off request() as a task and let it register + broadcast; return the task."""
-    task = _task(
-        approvals.request(call, ASK, kind="turn", title=None, on_always=on_always)
-    )
+    task = _task(approvals.request(call, ASK, kind="turn", title=None, on_always=on_always))
     await asyncio.sleep(0)
     return task
 
@@ -82,6 +82,7 @@ async def test_approve_once_resolves_allow() -> None:
     approvals = ApprovalManager(cm)
     task = await _start(approvals, _call())
     (pending,) = approvals.pending()
+    await asyncio.wait_for(conn.ws.delivered.wait(), timeout=0.1)
     assert conn.ws.sent[0]["type"] == "approval"  # announced to the live client
     nonce = await approvals.mint_nonce(pending.decision_id, conn)
     ok, _ = approvals.resolve(pending.decision_id, nonce, "approve")
@@ -413,9 +414,7 @@ async def test_resolve_route_happy_path(tmp_path: Path) -> None:
     app = create_app(config, auth=auth)
     approvals, cm = app.state.approvals, app.state.connections
     conn = _conn(cm)
-    task = _task(
-        approvals.request(_call(), ASK, kind="turn", title=None, on_always=lambda: None)
-    )
+    task = _task(approvals.request(_call(), ASK, kind="turn", title=None, on_always=lambda: None))
     await asyncio.sleep(0)
     (pending,) = approvals.pending()
     nonce = await approvals.mint_nonce(pending.decision_id, conn)
