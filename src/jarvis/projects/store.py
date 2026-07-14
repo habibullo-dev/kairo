@@ -81,6 +81,10 @@ class ProjectResetError(RuntimeError):
     """The requested project cannot be reset from its current lifecycle state."""
 
 
+class ProjectResetBusyError(ProjectResetError):
+    """Project reset is blocked because externally consequential work is still in flight."""
+
+
 def _row_to_project(row: tuple) -> Project:
     return Project(
         id=row[0],
@@ -296,6 +300,26 @@ class ProjectStore:
             if predecessor.status == "archived":
                 raise ProjectResetError("archived projects cannot be reset")
 
+            # A reset may terminalize work that has not started, but it must never race a model,
+            # connector, task, or assessment already executing outside SQLite.  Those workers
+            # finish/stop through their ordinary lifecycle before the owner retries.
+            blockers = await (
+                await self.db.execute(
+                    "SELECT "
+                    "EXISTS(SELECT 1 FROM task_runs r JOIN tasks t ON t.id = r.task_id "
+                    "       WHERE t.project_id = ? AND r.status = 'running'), "
+                    "EXISTS(SELECT 1 FROM orchestration_runs "
+                    "       WHERE project_id = ? AND status = 'running'), "
+                    "EXISTS(SELECT 1 FROM analysis_jobs "
+                    "       WHERE project_id = ? AND state = 'running'), "
+                    "EXISTS(SELECT 1 FROM write_intents "
+                    "       WHERE project_id = ? AND state = 'approved')",
+                    (project_id, project_id, project_id, project_id),
+                )
+            ).fetchone()
+            if blockers is None or any(bool(value) for value in blockers):
+                raise ProjectResetBusyError("project has in-flight work")
+
             slug = await self._unique_slug(predecessor.name)
             preserved_settings = {
                 key: predecessor.settings[key]
@@ -328,6 +352,53 @@ class ProjectStore:
             )
             if archived.rowcount != 1:
                 raise ProjectResetError("project reset lost its lifecycle race")
+
+            # Terminalize every dormant capability that could otherwise wake against the
+            # archived predecessor. Historical successes and already-executed journals remain
+            # untouched. All of these transitions commit or roll back with the project lineage.
+            await self.db.execute(
+                "UPDATE tasks SET status = 'cancelled', next_run_at = NULL, updated_at = ? "
+                "WHERE project_id = ? AND status = 'active'",
+                (now, project_id),
+            )
+            await self.db.execute(
+                "UPDATE write_intents SET state = 'rejected', decided_at = ?, updated_at = ? "
+                "WHERE project_id = ? AND state IN ('draft', 'previewed')",
+                (now, now, project_id),
+            )
+            await self.db.execute(
+                "UPDATE graph_suggestions SET status = 'rejected', resolved_at = ?, "
+                "resolved_by = 'project_reset' WHERE project_id = ? AND status = 'pending'",
+                (now, project_id),
+            )
+            await self.db.execute(
+                "UPDATE attention_items SET state = 'expired', updated_at = ?, resolved_at = ?, "
+                "snooze_until = NULL WHERE project_id = ? AND state IN ('open', 'snoozed')",
+                (now, now, project_id),
+            )
+            await self.db.execute(
+                "UPDATE remote_operator_tokens SET consumed_at = ?, resolution = 'deny' "
+                "WHERE consumed_at IS NULL AND subject_type = 'proposal' AND subject_id IN "
+                "(SELECT id FROM remote_operator_proposals WHERE project_id = ?)",
+                (now, project_id),
+            )
+            await self.db.execute(
+                "UPDATE remote_operator_proposals SET state = 'cancelled', resolved_at = ?, "
+                "updated_at = ? WHERE project_id = ? "
+                "AND state IN ('pending', 'approved', 'queued')",
+                (now, now, project_id),
+            )
+            await self.db.execute(
+                "UPDATE analysis_jobs SET state = 'discarded', updated_at = ? "
+                "WHERE project_id = ? AND state = 'queued'",
+                (now, project_id),
+            )
+            await self.db.execute(
+                "UPDATE orchestration_runs SET resume_state = 'none', "
+                "resume_checkpoint_json = '{}' "
+                "WHERE project_id = ? AND resume_state = 'ready'",
+                (project_id,),
+            )
             await self.db.execute(
                 "INSERT INTO project_reset_events "
                 "(predecessor_project_id, successor_project_id, retained_repositories, "
