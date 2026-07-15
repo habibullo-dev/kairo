@@ -700,12 +700,18 @@ def _smoke_signature(spec: object, route: object) -> dict:
 
 
 async def run_smoke(
-    config: Config, *, providers: list[str], cassette_cfg: CassetteConfig, runs: int = 1
+    config: Config,
+    *,
+    providers: list[str],
+    cassette_cfg: CassetteConfig,
+    runs: int = 1,
+    required_providers: frozenset[str] = frozenset(),
 ) -> int:
     """A tiny per-provider smoke bench. Replay by default (cached, keyless, $0); ``--live``/
-    ``--record`` make real calls under the shared cost cap. Live mode skips a provider that is
-    not fail-closed-available (missing key / disabled / unpriced) with a printed reason — which
-    is exactly the Z.ai 'console down, no key' proof. Returns 0 iff every attempted call passed."""
+    ``--record`` make real calls under the shared cost cap. The default sweep may skip an
+    unavailable catalog provider, but it succeeds only if at least one call was attempted.
+    Explicitly requested providers must each reach an attempt. Returns 0 only when those
+    non-vacuous liveness conditions hold and every attempted call passed."""
     from jarvis.models.factory import ClientFactory
     from jarvis.models.providers import PROVIDER_CATALOG, ProviderRegistry
     from jarvis.models.roles import ModelRoute
@@ -717,6 +723,7 @@ async def run_smoke(
     cap = cassette_cfg.cost_cap(pricing)
     live = cassette_cfg.mode != "replay"
     attempted = failures = 0
+    attempted_providers: set[str] = set()
     cap_usd = cassette_cfg.max_cost_usd
     print(f"[smoke] mode={cassette_cfg.mode} providers={providers} cap=${cap_usd}")
     for provider in providers:
@@ -743,6 +750,7 @@ async def run_smoke(
         for sc in _SMOKE_SCENARIOS:
             for i in range(runs):
                 attempted += 1
+                attempted_providers.add(provider)
                 try:
                     resp = await client.create(
                         model=model, system=sc["system"],
@@ -759,8 +767,11 @@ async def run_smoke(
                 except Exception as exc:  # noqa: BLE001 - a provider error is a smoke failure
                     failures += 1
                     print(f"[smoke] {provider}/{model} {sc['name']} run{i + 1}: ERROR {exc}")
-    print(f"[smoke] attempted={attempted} failures={failures}")
-    return 1 if failures else 0
+    unmet = sorted(required_providers - attempted_providers)
+    print(f"[smoke] attempted={attempted} failures={failures} unmet_requested={unmet}")
+    if attempted == 0:
+        print("[smoke] FAIL: no provider call was attempted")
+    return 1 if failures or unmet or attempted == 0 else 0
 
 
 def project_cost(suite: str, runs: int, mode: str) -> dict:
@@ -2439,7 +2450,7 @@ def cli(argv: list[str] | None = None) -> int:
     sm = sub.add_parser("smoke", help="Tiny per-provider smoke bench (1 run, replay default).")
     sm.add_argument(
         "--provider", action="append", choices=list(_SMOKE_PROVIDERS),
-        help="Provider(s) to smoke (repeatable; default: all catalog providers).",
+        help="Provider(s) to smoke (repeatable; default: Kira's smoke-provider set).",
     )
     sm.add_argument(
         "--runs",
@@ -2621,6 +2632,7 @@ def cli(argv: list[str] | None = None) -> int:
         cassette_cfg = CassetteConfig(
             mode=mode, store_dir=CASSETTES_PATH / "smoke", max_cost_usd=max_cost
         )
+        required_providers = frozenset(args.provider or ())
         try:
             with reset_sensitive_writer(config):
                 return asyncio.run(
@@ -2629,6 +2641,7 @@ def cli(argv: list[str] | None = None) -> int:
                         providers=args.provider or list(_SMOKE_PROVIDERS),
                         cassette_cfg=cassette_cfg,
                         runs=args.runs,
+                        required_providers=required_providers,
                     )
                 )
         except (InstanceAlreadyRunning, ResetMaintenanceBusy, ResetRecoveryError) as exc:

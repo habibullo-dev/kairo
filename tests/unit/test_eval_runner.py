@@ -512,6 +512,26 @@ def test_smoke_rejects_a_nonfinite_cost_cap_before_loading_config(
     assert "requires a positive finite --max-cost-usd" in capsys.readouterr().out
 
 
+def test_smoke_cli_preserves_explicit_provider_intent(monkeypatch) -> None:
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    calls: list[tuple[list[str], frozenset[str]]] = []
+
+    async def fake_run_smoke(_config, **kwargs):
+        calls.append((kwargs["providers"], kwargs["required_providers"]))
+        return 0
+
+    monkeypatch.setattr(runner, "load_config", lambda: config)
+    monkeypatch.setattr(runner, "reset_sensitive_writer", lambda _config: contextlib.nullcontext())
+    monkeypatch.setattr(runner, "run_smoke", fake_run_smoke)
+
+    assert runner.cli(["smoke", "--provider", "zai"]) == 0
+    assert runner.cli(["smoke"]) == 0
+    assert calls == [
+        (["zai"], frozenset({"zai"})),
+        (list(runner._SMOKE_PROVIDERS), frozenset()),
+    ]
+
+
 def test_gate_exact_scenario_scopes_key_and_judge_preflight(monkeypatch) -> None:
     config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
     required_keys: list[tuple[str, ...]] = []
