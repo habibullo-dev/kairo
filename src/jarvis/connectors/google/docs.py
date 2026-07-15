@@ -1,7 +1,7 @@
 """Google Docs adapter (Phase 12): create + batchUpdate (edit-in-place) + read.
 
 Thin transport wrappers over the Docs API (``docs.googleapis.com/v1``), which accepts the narrow
-``drive.file`` scope for documents the app creates/opens — so Kairo needs NEITHER the broad
+``drive.file`` scope for documents the app creates/opens — so Kira needs NEITHER the broad
 ``documents`` scope NOR full ``drive``. Like the calendar writer, these build the request from
 primitive params, never take a model-supplied URL, and are exercised only with a fake transport
 until the Milestone-2 tool wiring adds the scope.
@@ -10,7 +10,7 @@ until the Milestone-2 tool wiring adds the scope.
 text is a subsequent ``batch_update`` with an append request — the executor composes the two, so a
 partial failure (titled-but-empty doc) is a journaled, trashable outcome rather than a silent
 half-write. The request builders (:func:`append_text_request`, :func:`replace_all_text_request`)
-map Kairo's DocAppend/DocReplace ops to Docs API requests.
+map Kira's DocAppend/DocReplace ops to Docs API requests.
 """
 
 from __future__ import annotations

@@ -8,10 +8,10 @@ tool can call them.
   / drive / UNC inputs, ``..`` escapes, symlinks pointing out, Windows ADS streams
   (``page.md:stream``), reserved device names (``CON``, ``NUL``, …), trailing
   dot/space (silently stripped by Windows), and anything but a ``.md`` suffix.
-* Front-matter is Jarvis's provenance record, so it is generated from database
+* Front-matter is Kira's provenance record, so it is generated from database
   state — never carried up from page *content*. But a page on disk is an
   Obsidian-editable file: :func:`build_front_matter` regenerates only the keys
-  Jarvis owns and **preserves every other key verbatim** (``tags``, ``aliases``,
+  Kira owns and **preserves every other key verbatim** (``tags``, ``aliases``,
   plugin keys), and never regenerates a stable ``id`` once assigned.
 """
 
@@ -24,9 +24,9 @@ import yaml
 
 from jarvis.paths import is_sensitive_path
 
-# Keys Jarvis owns and regenerates on every write. Everything else in a page's
+# Keys Kira owns and regenerates on every write. Everything else in a page's
 # front-matter (tags, aliases, cssclass, plugin keys, …) is preserved verbatim.
-JARVIS_KEYS: frozenset[str] = frozenset(
+KIRA_KEYS: frozenset[str] = frozenset(
     {"id", "title", "source_ids", "created", "updated", "created_by"}
 )
 
@@ -114,7 +114,7 @@ def build_front_matter(
     now: str,
     slug_seed: str,
 ) -> dict:
-    """Merge Jarvis-managed front-matter over ``existing`` while preserving every
+    """Merge Kira-managed front-matter over ``existing`` while preserving every
     unknown (Obsidian/plugin) key. ``id`` and ``created`` are kept if already set
     (stable across rewrites); ``updated`` is always stamped."""
     managed = {
@@ -125,5 +125,5 @@ def build_front_matter(
         "updated": now,
         "created_by": existing.get("created_by") or created_by,
     }
-    preserved = {k: v for k, v in existing.items() if k not in JARVIS_KEYS}
+    preserved = {k: v for k, v in existing.items() if k not in KIRA_KEYS}
     return {**managed, **preserved}  # managed first for readability; unknown keys kept

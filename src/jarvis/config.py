@@ -331,7 +331,7 @@ class GoogleConnectorConfig(BaseModel):
 class TelegramRemoteOperatorConfig(BaseModel):
     """Opt-in project work proposed and approved through the private Telegram channel.
 
-    The remote model never receives the ordinary Kairo registry. Approved jobs get only this
+    The remote model never receives Kira's ordinary tool registry. Approved jobs get only this
     fixed local-engineering subset, every side effect still passes through the unattended gate's
     exact-call parking flow, and optional public search remains one-query and authority-free.
     """

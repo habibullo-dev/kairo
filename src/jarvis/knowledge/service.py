@@ -10,7 +10,7 @@ Two invariants write_page upholds:
 * **Provenance is never content-derived.** Front-matter in the model-supplied
   ``content`` is dropped; the stored front-matter is generated from database state
   (validated ``source_ids``) and the on-disk page's own preserved keys.
-* **The vault stays human-first.** An Obsidian edit survives a Jarvis rewrite
+* **The vault stays human-first.** An Obsidian edit survives a Kira rewrite
   (unknown front-matter keys preserved; a stable ``id`` never regenerated), and the
   chunk/link indexes are rebuilt from the page body, never the other way round.
 """
@@ -212,7 +212,7 @@ class KnowledgeService:
         source_ids: list[int] | None = None,
         created_by: str = "agent",
     ) -> Path:
-        """Write (or rewrite) a wiki page, jailed to the wiki dir, with Jarvis-owned
+        """Write (or rewrite) a wiki page, jailed to the wiki dir, with Kira-owned
         front-matter and a rebuilt link + chunk index. Raises :class:`KnowledgeError`
         (jail violation or unknown/unreviewed source id) with a model-readable message."""
         # Validate once here so the page front-matter and the artifact index can never disagree

@@ -106,7 +106,7 @@ class TaskService:
         self.attention = attention
         self.notification_router = notification_router
         # Set by the REPL (and by the runner during a job) so tool-created tasks
-        # carry provenance — "why is Jarvis doing THAT at 3am?" must have an answer.
+        # carry provenance — "why is Kira doing THAT at 3am?" must have an answer.
         self.bound_session_id: int | None = None
 
     # --- scheduling ----------------------------------------------------------

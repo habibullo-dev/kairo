@@ -1,6 +1,6 @@
 """Tool registry: the set of tools the agent can call, and their API schemas.
 
-Adding a capability to Jarvis is meant to be one file plus one policy line — so
+Adding a capability to Kira is meant to be one file plus one policy line — so
 the registry auto-discovers concrete :class:`Tool` subclasses under a package
 (``jarvis.tools.builtin`` by default). ``specs()`` produces the ``tools`` array
 for the Anthropic request.

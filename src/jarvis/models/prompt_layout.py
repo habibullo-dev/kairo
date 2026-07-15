@@ -28,7 +28,7 @@ class SectionKind(StrEnum):
     the volatile kinds are never a cache anchor (in this order)."""
 
     # --- stable prefix (cacheable), in canonical order ---
-    SYSTEM_CONTRACT = "system_contract"  # safety contract + Kairo playbooks/skills
+    SYSTEM_CONTRACT = "system_contract"  # safety contract + Kira playbooks/skills
     TOOL_SCHEMAS = "tool_schemas"
     TEAM_PROFILES = "team_profiles"
     SERVICE_CATALOG = "service_catalog"

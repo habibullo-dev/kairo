@@ -33,7 +33,7 @@ async def connect(path: Path) -> aiosqlite.Connection:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     # A real, older database is snapshotted before any DDL. The online SQLite backup API makes
-    # this safe even if another Kairo process currently has the database open. Snapshot failure
+    # this safe even if another process currently has the database open. Snapshot failure
     # intentionally blocks migration rather than risking the only copy of user state.
     current_version = existing_database_version(path)
     target_version = latest_version()

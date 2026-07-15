@@ -142,7 +142,7 @@ def _request_token_ceiling(
         """Replace base64 image bytes with a conservative vision-token allowance.
 
         Image data is not billed as one text token per wire byte. Counting its base64 payload as
-        text would incorrectly reject every useful image before the provider call. Kairo's image
+        text would incorrectly reject every useful image before the provider call. Kira's image
         path caps images at 1568px per edge; 4096 placeholder bytes conservatively cover the
         resulting vision tokens while keeping the ordinary UTF-8 ceiling unchanged.
         """

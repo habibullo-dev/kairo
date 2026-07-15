@@ -11,7 +11,7 @@ capability. Each maps to the tools that use it:
                            ONLY — NEVER send)
 * ``drive.readonly``     → ``drive_search`` / ``drive_fetch`` (reads)
 * ``drive.file``         → the Phase 12 Docs write proposals: ``drive_create_doc`` /
-                           ``drive_update_doc`` — the NARROW scope covering ONLY files Kairo
+                           ``drive_update_doc`` — the NARROW scope covering ONLY files Kira
                            itself created/opened (NOT full ``drive``)
 
 Deliberately absent and pinned by tests/unit/test_no_gmail_send.py: the Gmail *send* scope (and

@@ -81,7 +81,7 @@ def _from_blob(blob: bytes) -> np.ndarray:
 
 @dataclass(frozen=True)
 class Provenance:
-    """Why Jarvis believes a memory — answers 'where did that come from?'."""
+    """Why Kira believes a memory — answers 'where did that come from?'."""
 
     source_session_id: int | None = None
     source_seq_start: int | None = None
@@ -223,7 +223,7 @@ class MemoryStore:
     ) -> list[Memory]:
         """All live memories, optionally scoped to a project. Default is unscoped (every
         live memory). A project scope (``project_id=P``) returns P's memories plus global
-        ones — "what Kairo knows about this project"."""
+        ones — "what Kira knows about this project"."""
         scope_sql, scope_params = _scope_clause(project_id, include_global=include_global)
         cursor = await self.db.execute(
             f"SELECT {_COLUMNS} FROM memories WHERE status='live'{scope_sql} ORDER BY id",

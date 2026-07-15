@@ -1,4 +1,4 @@
-"""Jarvis — a from-scratch agentic assistant.
+"""Kira — a from-scratch agentic assistant.
 
 The package is organized in layers with a strict dependency direction:
 interfaces (cli) -> core (agent loop) -> services (tools, permissions, memory)

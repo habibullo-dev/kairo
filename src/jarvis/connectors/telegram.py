@@ -1,9 +1,9 @@
 """Telegram connector (Phase 9): send-only message delivery.
 
-Kairo never reads Telegram — this is a one-way notification sink. Messages go out as PLAIN
-text with no ``parse_mode`` and link previews disabled: notification content can include
-untrusted email/calendar text, and it must never be interpreted as Telegram markup or
-auto-linkified into a clickable exfil URL.
+This adapter is a one-way notification sink; inbound Remote Operator traffic is handled by
+``jarvis.remote.telegram``. Messages go out as PLAIN text with no ``parse_mode`` and link
+previews disabled: notification content can include untrusted email/calendar text, and it must
+never be interpreted as Telegram markup or auto-linkified into a clickable exfil URL.
 
 This module owns the low-level send used both by ``kira connect telegram --test`` and by the
 ``TelegramNotifier`` class that wraps it in Task 5.

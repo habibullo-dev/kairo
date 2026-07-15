@@ -1,6 +1,6 @@
 """Shared path resolution and sensitive-path detection.
 
-This is foundation code (no dependencies on the rest of Jarvis) used by *both*
+This is foundation code (no dependencies on the rest of the Kira application) used by *both*
 the :class:`~jarvis.permissions.gate.PermissionGate` and the filesystem tools.
 Putting it here removes a subtle safety hole: if the gate resolved a relative
 path one way (against the project root) and the tool resolved it another (against

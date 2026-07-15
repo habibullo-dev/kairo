@@ -1,4 +1,4 @@
-"""ArtifactStore: a searchable record of the things Kairo produces (schema v9).
+"""ArtifactStore: a searchable record of the things Kira produces (schema v9).
 
 An *artifact* is a digest, an orchestration run summary, an eval report, a wiki page, a
 meeting note, a generated design — anything worth finding again. Plain SQL like the other

@@ -397,7 +397,7 @@ class ProjectStore:
 
         Historical chats, memory, knowledge, tasks, reports, ledgers, and artifacts remain scoped
         to the archived predecessor.  The successor receives only display metadata, the narrow
-        ``label``/``services`` preferences, and optionally the repository links that Kairo may
+        ``label``/``services`` preferences, and optionally the repository links that Kira may
         relearn.  No linked repository or shared content-addressed file is touched.
         """
         async with transaction(self.db, self.lock):

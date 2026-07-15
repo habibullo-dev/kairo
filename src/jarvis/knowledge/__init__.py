@@ -1,6 +1,6 @@
 """Research + Markdown knowledge base (Phase 4): the "LLM Wiki".
 
-Jarvis ingests sources (files, webpages, notes) into immutable raw artifacts +
+Kira ingests sources (files, webpages, notes) into immutable raw artifacts +
 deterministic Markdown, indexes them for retrieval, and maintains an
 Obsidian-compatible wiki of durable pages with provenance and citations.
 

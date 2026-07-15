@@ -1,6 +1,6 @@
 """External connectors (Phase 9): narrow, audited adapters to outside services.
 
-Kairo stays the reasoning layer; connectors are thin, our-code REST adapters (no
+Kira stays the reasoning layer; connectors are thin, our-code REST adapters (no
 google-api-python-client, no MCP) that expose exactly the calls we need, behind the
 existing PermissionGate and audit trail. See docs/PLAN-9-daily.md and ADR-0009.
 
