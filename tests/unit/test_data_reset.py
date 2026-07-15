@@ -93,7 +93,7 @@ async def test_reset_quarantines_old_roots_bootstraps_fresh_ownerless_instance(
     assert PASSWORD not in manifest_text and "QUARANTINED-TOKEN" not in manifest_text
 
 
-async def test_wrong_password_and_live_instance_leave_all_roots_untouched(tmp_path: Path) -> None:
+async def test_wrong_password_leaves_all_roots_untouched(tmp_path: Path) -> None:
     config = await _seed_instance(tmp_path)
     with pytest.raises(DataResetError, match="password"):
         await reset_all_data(config, "A wrong but sufficiently long reset password")
@@ -101,9 +101,23 @@ async def test_wrong_password_and_live_instance_leave_all_roots_untouched(tmp_pa
     assert not _matching(tmp_path, ".*.kairo-quarantine-*")
     assert not (tmp_path / ".kairo-reset-manifests").exists()
 
-    with InstanceLock(config.data_dir), pytest.raises(DataResetError, match="already running"):
+
+async def test_live_instance_lock_leaves_every_runtime_byte_untouched(tmp_path: Path) -> None:
+    config = await _seed_instance(tmp_path)
+    protected = (
+        config.data_dir / "jarvis.db",
+        config.data_dir / "connectors" / "google_token.json",
+        config.knowledge_dir / "project.md",
+        config.logs_dir / "kairo.log",
+    )
+    before = {path: path.read_bytes() for path in protected}
+
+    with InstanceLock(config.data_dir), pytest.raises(DataResetError, match="instance lock"):
         await reset_all_data(config, PASSWORD)
-    assert (config.data_dir / "jarvis.db").is_file()
+
+    assert {path: path.read_bytes() for path in protected} == before
+    assert not _matching(tmp_path, ".*.kairo-quarantine-*")
+    assert not (tmp_path / ".kairo-reset-manifests").exists()
 
 
 async def test_bootstrap_failure_restores_every_quarantine(

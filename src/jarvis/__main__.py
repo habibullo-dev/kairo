@@ -116,11 +116,10 @@ def main() -> None:
         console.print(f"[red]Configuration error:[/] {exc}")
         sys.exit(1)
 
-    config.ensure_dirs()
-    configure_logging(config.logs_dir, **config.logging.model_dump())
-
     try:
         with InstanceLock(config.data_dir):
+            config.ensure_dirs()
+            configure_logging(config.logs_dir, **config.logging.model_dump())
             if args.ui:
                 asyncio.run(run_ui(config, console=console))
             elif args.voice:
