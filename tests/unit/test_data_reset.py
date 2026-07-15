@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +19,11 @@ from jarvis.connectors.consent import LOCKED_PROVIDERS, locked_integrations
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
 from jarvis.persistence.instance_lock import InstanceLock
-from jarvis.ui.owner_auth import Argon2PasswordHasher, OwnerAuthService
+from jarvis.ui.owner_auth import (
+    Argon2PasswordHasher,
+    OwnerAuthService,
+    OwnerLoginThrottledError,
+)
 
 PASSWORD = "A unique reset passphrase 2026!"
 
@@ -29,7 +36,15 @@ def _entries(directory: Path) -> list[Path]:
     return list(directory.iterdir())
 
 
-async def _seed_instance(root: Path):
+def _tree_state(directory: Path) -> dict[str, tuple[bytes, int]]:
+    return {
+        path.relative_to(directory).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
+
+
+async def _seed_instance(root: Path, *, database_name: str = "kira.db"):
     (root / "config").mkdir(parents=True)
     (root / "config" / "settings.yaml").write_text("{}\n", encoding="utf-8")
     (root / ".env").write_text("TELEGRAM_BOT_TOKEN=PRESERVED-SECRET\n", encoding="utf-8")
@@ -44,7 +59,7 @@ async def _seed_instance(root: Path):
     (config.knowledge_dir / "project.md").write_text("old knowledge", encoding="utf-8")
     (config.logs_dir / "kairo.log").write_text("old log", encoding="utf-8")
 
-    db = await connect(config.data_dir / "jarvis.db")
+    db = await connect(config.data_dir / database_name)
     auth = OwnerAuthService(
         db,
         SessionStore(db).lock,
@@ -56,10 +71,13 @@ async def _seed_instance(root: Path):
     return config
 
 
+@pytest.mark.parametrize("database_name", ["kira.db", "jarvis.db"])
 async def test_reset_quarantines_old_roots_bootstraps_fresh_ownerless_instance(
-    tmp_path: Path,
+    tmp_path: Path, database_name: str
 ) -> None:
-    config = await _seed_instance(tmp_path)
+    config = await _seed_instance(tmp_path, database_name=database_name)
+    source_database = config.data_dir / database_name
+    source_state = (source_database.read_bytes(), source_database.stat().st_mtime_ns)
     result = await reset_all_data(config, PASSWORD)
 
     assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("TELEGRAM_BOT_TOKEN")
@@ -69,14 +87,19 @@ async def test_reset_quarantines_old_roots_bootstraps_fresh_ownerless_instance(
     assert not (config.knowledge_dir / "project.md").exists()
     assert not (config.logs_dir / "kairo.log").exists()
 
-    data_quarantine = next(path for path in result.quarantines if (path / "jarvis.db").exists())
+    data_quarantine = next(path for path in result.quarantines if (path / database_name).exists())
+    quarantined_database = data_quarantine / database_name
+    assert (
+        quarantined_database.read_bytes(),
+        quarantined_database.stat().st_mtime_ns,
+    ) == source_state
     assert (data_quarantine / "connectors" / "google_token.json").read_text(
         encoding="utf-8"
     ) == "QUARANTINED-TOKEN"
     assert (data_quarantine / "knowledge" / "project.md").is_file()
     assert any((path / "kairo.log").is_file() for path in result.quarantines)
 
-    fresh = await connect(config.data_dir / "jarvis.db")
+    fresh = await connect(config.data_dir / "kira.db")
     try:
         assert await (await fresh.execute("SELECT COUNT(*) FROM owner_accounts")).fetchone() == (0,)
         assert await (await fresh.execute("PRAGMA integrity_check")).fetchone() == ("ok",)
@@ -93,19 +116,129 @@ async def test_reset_quarantines_old_roots_bootstraps_fresh_ownerless_instance(
     assert PASSWORD not in manifest_text and "QUARANTINED-TOKEN" not in manifest_text
 
 
-async def test_wrong_password_leaves_all_roots_untouched(tmp_path: Path) -> None:
-    config = await _seed_instance(tmp_path)
+@pytest.mark.parametrize("database_name", ["kira.db", "jarvis.db"])
+async def test_wrong_password_leaves_all_roots_untouched(
+    tmp_path: Path, database_name: str
+) -> None:
+    config = await _seed_instance(tmp_path, database_name=database_name)
+    database = config.data_dir / database_name
+    conn = sqlite3.connect(database)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        assert conn.execute("PRAGMA journal_mode = DELETE").fetchone() == ("delete",)
+    finally:
+        conn.close()
+    database.with_name(f"{database.name}-wal").unlink(missing_ok=True)
+    database.with_name(f"{database.name}-shm").unlink(missing_ok=True)
+    before = {
+        "data": _tree_state(config.data_dir),
+        "logs": _tree_state(config.logs_dir),
+        "knowledge": _tree_state(config.knowledge_dir),
+    }
+
     with pytest.raises(DataResetError, match="password"):
         await reset_all_data(config, "A wrong but sufficiently long reset password")
+
+    assert {
+        "data": _tree_state(config.data_dir),
+        "logs": _tree_state(config.logs_dir),
+        "knowledge": _tree_state(config.knowledge_dir),
+    } == before
     assert (config.knowledge_dir / "project.md").is_file()
     assert not _matching(tmp_path, ".*.kairo-quarantine-*")
     assert not (tmp_path / ".kairo-reset-manifests").exists()
+    throttle = json.loads(reset_module._reset_auth_path(config).read_text(encoding="utf-8"))
+    assert throttle == {"failed_attempts": 1, "locked_until": None}
+
+
+async def test_reset_password_failures_are_durably_throttled(tmp_path: Path) -> None:
+    config = await _seed_instance(tmp_path)
+    database = config.data_dir / "kira.db"
+    before = (database.read_bytes(), database.stat().st_mtime_ns)
+
+    for _attempt in range(4):
+        with pytest.raises(DataResetError, match="password"):
+            await reset_all_data(config, "A wrong but sufficiently long reset password")
+    with pytest.raises(OwnerLoginThrottledError):
+        await reset_all_data(config, "A wrong but sufficiently long reset password")
+
+    throttle = json.loads(reset_module._reset_auth_path(config).read_text(encoding="utf-8"))
+    assert throttle["failed_attempts"] == 5 and throttle["locked_until"] is not None
+    assert (database.read_bytes(), database.stat().st_mtime_ns) == before
+
+
+async def test_source_login_threshold_cannot_bypass_reset_throttle(tmp_path: Path) -> None:
+    config = await _seed_instance(tmp_path)
+    database = config.data_dir / "kira.db"
+    conn = sqlite3.connect(database)
+    try:
+        conn.execute("UPDATE owner_accounts SET failed_attempts = 4, locked_until = NULL")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        assert conn.execute("PRAGMA journal_mode = DELETE").fetchone() == ("delete",)
+    finally:
+        conn.close()
+    before = _tree_state(config.data_dir)
+
+    with pytest.raises(DataResetError, match="password"):
+        await reset_all_data(config, "A wrong but sufficiently long reset password")
+
+    assert _tree_state(config.data_dir) == before
+    throttle = json.loads(reset_module._reset_auth_path(config).read_text(encoding="utf-8"))
+    assert throttle == {"failed_attempts": 1, "locked_until": None}
+
+
+async def test_reset_auth_snapshot_reads_dirty_wal_without_touching_source(tmp_path: Path) -> None:
+    config = await _seed_instance(tmp_path)
+    database = config.data_dir / "kira.db"
+    script = "\n".join(
+        [
+            "import os, sqlite3, sys",
+            "db = sqlite3.connect(sys.argv[1])",
+            "db.execute('PRAGMA journal_mode = WAL')",
+            "db.execute('PRAGMA wal_autocheckpoint = 0')",
+            'db.execute("INSERT INTO projects '
+            "(name, slug, created_at, updated_at) VALUES "
+            "('WAL project', 'wal-project', '2026-01-01', '2026-01-01')\")",
+            "db.commit()",
+            "os._exit(0)",
+        ]
+    )
+    await asyncio.to_thread(
+        subprocess.run,
+        [sys.executable, "-c", script, str(database)],
+        check=True,
+    )
+    wal = database.with_name("kira.db-wal")
+    assert wal.is_file() and wal.stat().st_size > 0
+    database.with_name("kira.db-shm").unlink(missing_ok=True)
+    before = _tree_state(config.data_dir)
+
+    with InstanceLock(config.data_dir):
+        _version, counts = await reset_module._authenticate_old_database(database, PASSWORD)
+
+    assert counts["projects"] == 1
+    assert _tree_state(config.data_dir) == before
+
+
+async def test_ambiguous_database_names_block_reset_without_moving_data(tmp_path: Path) -> None:
+    config = await _seed_instance(tmp_path)
+    canonical = config.data_dir / "kira.db"
+    legacy = config.data_dir / "jarvis.db"
+    legacy.write_bytes(canonical.read_bytes())
+    before = {path.name: path.read_bytes() for path in (canonical, legacy)}
+
+    with pytest.raises(DataResetError, match="Both Kira and legacy databases exist"):
+        await reset_all_data(config, PASSWORD)
+
+    assert {path.name: path.read_bytes() for path in (canonical, legacy)} == before
+    assert not _matching(tmp_path, ".*.kairo-quarantine-*")
 
 
 async def test_live_instance_lock_leaves_every_runtime_byte_untouched(tmp_path: Path) -> None:
     config = await _seed_instance(tmp_path)
     protected = (
-        config.data_dir / "jarvis.db",
+        config.data_dir / "kira.db",
         config.data_dir / "connectors" / "google_token.json",
         config.knowledge_dir / "project.md",
         config.logs_dir / "kairo.log",
@@ -120,10 +253,11 @@ async def test_live_instance_lock_leaves_every_runtime_byte_untouched(tmp_path: 
     assert not (tmp_path / ".kairo-reset-manifests").exists()
 
 
+@pytest.mark.parametrize("database_name", ["kira.db", "jarvis.db"])
 async def test_bootstrap_failure_restores_every_quarantine(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database_name: str
 ) -> None:
-    config = await _seed_instance(tmp_path)
+    config = await _seed_instance(tmp_path, database_name=database_name)
 
     async def fail_bootstrap(_database: Path) -> int:
         raise RuntimeError("injected bootstrap failure")
@@ -132,7 +266,9 @@ async def test_bootstrap_failure_restores_every_quarantine(
     with pytest.raises(DataResetError, match="original Kira data was restored"):
         await reset_all_data(config, PASSWORD)
 
-    assert (config.data_dir / "jarvis.db").is_file()
+    assert (config.data_dir / database_name).is_file()
+    other_name = "jarvis.db" if database_name == "kira.db" else "kira.db"
+    assert not (config.data_dir / other_name).exists()
     assert (config.knowledge_dir / "project.md").read_text(encoding="utf-8") == "old knowledge"
     assert (config.logs_dir / "kairo.log").read_text(encoding="utf-8") == "old log"
     assert not _matching(tmp_path, ".*.kairo-quarantine-*")
@@ -151,7 +287,7 @@ async def test_external_knowledge_requires_separate_explicit_consent(tmp_path: P
     with pytest.raises(DataResetError, match="separate confirmation"):
         await reset_all_data(config, PASSWORD)
     assert (external / "private-note.md").is_file()
-    assert (config.data_dir / "jarvis.db").is_file()
+    assert (config.data_dir / "kira.db").is_file()
 
     result = await reset_all_data(config, PASSWORD, include_external_knowledge=True)
     vault_quarantine = next(

@@ -90,9 +90,16 @@ class InstanceLock:
     """Non-blocking, cross-platform dual lock for Kira and legacy processes."""
 
     def __init__(self, data_dir: Path) -> None:
-        self.paths = instance_lock_paths(data_dir)
+        self.data_dir = data_dir.resolve()
+        self.paths = instance_lock_paths(self.data_dir)
         self.path = self.paths[1]
         self._handles: tuple[BinaryIO, ...] = ()
+
+    def owned_data_dir(self) -> Path:
+        """Return the protected root only while both compatibility locks are held."""
+        if len(self._handles) != len(self.paths):
+            raise RuntimeError("InstanceLock does not currently own the data directory")
+        return self.data_dir
 
     def acquire(self) -> InstanceLock:
         if self._handles:

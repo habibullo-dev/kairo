@@ -177,6 +177,17 @@ def test_release_is_idempotent(tmp_path: Path) -> None:
     lock.release()
 
 
+def test_owned_data_dir_is_available_only_while_both_locks_are_held(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    lock = InstanceLock(data)
+    with pytest.raises(RuntimeError, match="does not currently own"):
+        lock.owned_data_dir()
+    with lock:
+        assert lock.owned_data_dir() == data.resolve()
+    with pytest.raises(RuntimeError, match="does not currently own"):
+        lock.owned_data_dir()
+
+
 def test_repeated_acquire_is_rejected_without_releasing_ownership(tmp_path: Path) -> None:
     data = tmp_path / "data"
     lock = InstanceLock(data)
@@ -265,9 +276,7 @@ def test_real_legacy_process_blocks_kira_without_touching_data_or_canonical(
 
 
 @pytest.mark.parametrize("path_kind", ["legacy", "canonical"])
-def test_kira_dual_lock_blocks_real_single_lock_processes(
-    tmp_path: Path, path_kind: str
-) -> None:
+def test_kira_dual_lock_blocks_real_single_lock_processes(tmp_path: Path, path_kind: str) -> None:
     data = tmp_path / "data"
     with InstanceLock(data):
         child = _child(_RAW_CHILD, data, path_kind)
@@ -315,3 +324,57 @@ def test_blocked_entrypoint_does_not_prepare_runtime_dirs_or_logging(
     assert calls == []
     assert not config.data_dir.exists() and not config.logs_dir.exists()
     assert "Startup blocked" in capsys.readouterr().out
+
+
+def test_entrypoint_migrates_database_under_lock_before_logging_and_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import jarvis.__main__ as entry
+    import jarvis.cli.repl as repl_module
+    import jarvis.config as config_module
+    import jarvis.observability as observability
+    import jarvis.persistence.database_identity as identity_module
+
+    calls: list[str] = []
+    data = tmp_path / "data"
+    canonical = data / "kira.db"
+
+    def ensure_dirs() -> None:
+        calls.append("ensure_dirs")
+        data.mkdir(parents=True)
+
+    config = SimpleNamespace(
+        data_dir=data,
+        logs_dir=tmp_path / "logs",
+        logging=SimpleNamespace(model_dump=lambda: {}),
+        ensure_dirs=ensure_dirs,
+    )
+
+    def migrate(lock: InstanceLock) -> Path:
+        assert lock.owned_data_dir() == data.resolve()
+        calls.append("migrate")
+        return canonical
+
+    async def run_repl(
+        _config,
+        *,
+        resume: bool,
+        console,
+        database: Path,  # noqa: ANN001
+    ) -> None:
+        assert not resume and console is not None and database == canonical
+        calls.append("runtime")
+
+    monkeypatch.setattr(sys, "argv", ["kira"])
+    monkeypatch.setattr(config_module, "load_config", lambda **_kwargs: config)
+    monkeypatch.setattr(identity_module, "migrate_live_database", migrate)
+    monkeypatch.setattr(
+        observability,
+        "configure_logging",
+        lambda *_args, **_kwargs: calls.append("logging"),
+    )
+    monkeypatch.setattr(repl_module, "run_repl", run_repl)
+
+    entry.main()
+
+    assert calls == ["ensure_dirs", "migrate", "logging", "runtime"]

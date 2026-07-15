@@ -134,7 +134,7 @@ def test_memory_canary_checks(tmp_path: Path) -> None:
 
 
 def test_task_absent(tmp_path: Path) -> None:
-    # No jarvis.db at all => no tasks => task_absent trivially holds.
+    # No kira.db at all => no tasks => task_absent trivially holds.
     assert evaluate([{"type": "task_absent", "kind": "job"}], _obs(tmp_path))[0] == []
 
 
@@ -142,7 +142,7 @@ def test_agent_run_absent_check(tmp_path: Path) -> None:
     # No db / no delegation => no sub-agent runs => passes.
     assert evaluate([{"type": "agent_run_absent"}], _obs(tmp_path))[0] == []
     # A recorded sub-agent run (a child actually spawned) => fails.
-    conn = sqlite3.connect(tmp_path / "jarvis.db")
+    conn = sqlite3.connect(tmp_path / "kira.db")
     conn.execute("CREATE TABLE agent_runs (id INTEGER)")
     conn.execute("INSERT INTO agent_runs VALUES (1)")
     conn.commit()
@@ -404,10 +404,9 @@ async def test_cache_ab_isolates_arms_and_leaves_runtime_eval_state_unchanged(
     assert flags == [False, False, False, True, True, True]
     assert models == [runner.CACHE_AB_MODEL] * 6
     assert config.context_reuse.enabled is False
-    assert (
-        (runner.REPO_ROOT / "config" / "settings.yaml").read_text(encoding="utf-8")
-        == settings_before
-    )
+    assert (runner.REPO_ROOT / "config" / "settings.yaml").read_text(
+        encoding="utf-8"
+    ) == settings_before
     assert history.read_text(encoding="utf-8") == '{"historical": true}\n'
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["measurement_only"] is True and report["does_not_activate_caching"] is True
@@ -505,10 +504,9 @@ async def test_skills_ab_uses_ephemeral_active_copies_and_writes_metadata_only(
         for arm in (("off", "active") if run_idx % 2 == 0 else ("active", "off"))
         for probe in runner._SKILL_PROBES
     ]
-    assert (
-        (runner.REPO_ROOT / "config" / "settings.yaml").read_text(encoding="utf-8")
-        == settings_before
-    )
+    assert (runner.REPO_ROOT / "config" / "settings.yaml").read_text(
+        encoding="utf-8"
+    ) == settings_before
     report_text = report_path.read_text(encoding="utf-8")
     report = json.loads(report_text)
     assert report["measurement_only"] is True

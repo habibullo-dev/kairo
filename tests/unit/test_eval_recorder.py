@@ -128,9 +128,9 @@ def test_history_read_skips_unknown_schema(tmp_path: Path) -> None:
 def test_save_workdir_copies_into_results(tmp_path: Path) -> None:
     workdir = tmp_path / "wd"
     (workdir / "logs").mkdir(parents=True)
-    (workdir / "jarvis.db").write_text("db", encoding="utf-8")
+    (workdir / "kira.db").write_text("db", encoding="utf-8")
     (workdir / "logs" / "a.jsonl").write_text("log", encoding="utf-8")
     results = recorder.results_dir(tmp_path / "out", "rev", ts="t")
     rel = recorder.save_workdir(workdir, results, "kb_ingest-run0")
-    assert (results / rel / "jarvis.db").read_text(encoding="utf-8") == "db"
+    assert (results / rel / "kira.db").read_text(encoding="utf-8") == "db"
     assert (results / rel / "logs" / "a.jsonl").exists()

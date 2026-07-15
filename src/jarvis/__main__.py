@@ -107,6 +107,7 @@ def main() -> None:
     from jarvis.cli.repl import run_repl, run_ui, run_voice
     from jarvis.config import ConfigError, load_config
     from jarvis.observability import configure_logging
+    from jarvis.persistence.database_identity import DatabaseIdentityError, migrate_live_database
     from jarvis.persistence.instance_lock import InstanceAlreadyRunning, InstanceLock
 
     console = Console()
@@ -117,17 +118,23 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        with InstanceLock(config.data_dir):
+        with InstanceLock(config.data_dir) as lock:
             config.ensure_dirs()
+            database = migrate_live_database(lock)
             configure_logging(config.logs_dir, **config.logging.model_dump())
             if args.ui:
-                asyncio.run(run_ui(config, console=console))
+                asyncio.run(run_ui(config, console=console, database=database))
             elif args.voice:
-                asyncio.run(run_voice(config, console=console))
+                asyncio.run(run_voice(config, console=console, database=database))
             else:
-                asyncio.run(run_repl(config, resume=args.resume, console=console))
+                asyncio.run(
+                    run_repl(config, resume=args.resume, console=console, database=database)
+                )
     except InstanceAlreadyRunning as exc:
         console.print(f"[red]Startup blocked:[/] {exc}")
+        sys.exit(1)
+    except DatabaseIdentityError as exc:
+        console.print(f"[red]Database startup blocked:[/] {exc}")
         sys.exit(1)
     except KeyboardInterrupt:
         console.print("\nBye.")

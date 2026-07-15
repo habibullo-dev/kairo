@@ -302,7 +302,7 @@ async def run_retrieval(config, *, top_k: int = 8) -> int:
     kb_golden = load_golden("kb.yaml")
     kb_root = Path(tempfile.mkdtemp(prefix="jarvis-ret-kb-"))
     kb_config = config.model_copy(update={"root": kb_root})
-    kb_store = KnowledgeStore(await connect(kb_root / "jarvis.db"))
+    kb_store = KnowledgeStore(await connect(kb_root / "kira.db"))
     knowledge = KnowledgeService(
         kb_store, embedder, kb_config.knowledge, knowledge_dir=kb_config.knowledge_dir, root=kb_root
     )

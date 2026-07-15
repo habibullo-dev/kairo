@@ -97,7 +97,7 @@ def _symlink_or_skip(link: Path, target: Path, *, directory: bool = False) -> No
         pytest.skip(f"Symbolic links are unavailable in this environment: {exc}")
 
 
-def test_backup_manifest_and_consistent_sqlite_copy(tmp_path: Path) -> None:
+def test_legacy_live_database_creates_consistent_kira_v2_backup(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
     _database(data / "jarvis.db", version=latest_version())
@@ -150,9 +150,23 @@ def test_backup_refuses_ambiguous_live_databases(tmp_path: Path) -> None:
     _database(data / "kira.db", version=latest_version())
     _database(data / "jarvis.db", version=latest_version())
 
-    with pytest.raises(BackupError, match="refused to guess"):
+    with pytest.raises(BackupError, match="Both Kira and legacy databases exist"):
         create_backup(data)
 
+    assert not (data / "backups").exists()
+
+
+def test_backup_refuses_orphan_sidecars_from_the_other_database_identity(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    _database(data / "kira.db", version=latest_version())
+    orphan = data / "jarvis.db-wal"
+    orphan.write_bytes(b"possible-uncheckpointed-legacy-state")
+
+    with pytest.raises(BackupError, match="Orphan database sidecar"):
+        create_backup(data)
+
+    assert orphan.read_bytes() == b"possible-uncheckpointed-legacy-state"
     assert not (data / "backups").exists()
 
 
@@ -163,7 +177,7 @@ def test_backup_refuses_ambiguous_live_databases(tmp_path: Path) -> None:
 def test_backup_refuses_unsafe_reason_without_partial_output(tmp_path: Path, reason: str) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
 
     with pytest.raises(BackupError, match="reason"):
         create_backup(data, reason=reason)
@@ -176,7 +190,7 @@ def test_backup_failure_cleans_owned_temporary_directory(
 ) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
 
     def fail_copy(_source: Path, _destination: Path) -> None:
         raise sqlite3.OperationalError("injected copy failure")
@@ -195,7 +209,7 @@ def test_backup_does_not_recreate_database_that_vanishes_before_copy(
 ) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    database = data / "jarvis.db"
+    database = data / "kira.db"
     _database(database, version=latest_version())
     original_copy = backup_module._copy_sqlite
 
@@ -217,7 +231,7 @@ def test_backup_records_version_from_copied_snapshot(
 ) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    database = data / "jarvis.db"
+    database = data / "kira.db"
     _database(database, version=latest_version())
     copied_version = latest_version() + 1
     original_copy = backup_module._copy_sqlite
@@ -242,7 +256,7 @@ def test_backup_records_version_from_copied_snapshot(
 def test_backup_refuses_source_name_its_verifier_cannot_accept(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
     (data / "artifacts").mkdir()
     (data / "artifacts" / "cafe\u0301.txt").write_text("NFD name", encoding="utf-8")
 
@@ -255,13 +269,13 @@ def test_backup_refuses_source_name_its_verifier_cannot_accept(tmp_path: Path) -
 async def test_backup_captures_a_committed_wal_database(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    live = await connect(data / "jarvis.db")
+    live = await connect(data / "kira.db")
     try:
         await live.execute("CREATE TABLE backup_probe (value TEXT NOT NULL)")
         await live.execute("INSERT INTO backup_probe (value) VALUES ('live-wal-row')")
         await live.commit()
 
-        source_paths = [data / "jarvis.db", data / "jarvis.db-wal"]
+        source_paths = [data / "kira.db", data / "kira.db-wal"]
         assert all(path.is_file() for path in source_paths)
         source_before = {
             path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in source_paths
@@ -321,7 +335,7 @@ def test_backup_recovers_a_database_left_with_a_dirty_wal(tmp_path: Path) -> Non
 def test_backup_excludes_connectors_and_sensitive_names(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
     (data / "connectors").mkdir()
     (data / "connectors" / "google_token.json").write_text("TOKEN-CANARY", encoding="utf-8")
     (data / "artifacts").mkdir()
@@ -368,7 +382,7 @@ def test_backup_excludes_connectors_and_sensitive_names(tmp_path: Path) -> None:
 def test_verify_detects_tampered_backup_file(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
     (data / "artifacts").mkdir()
     (data / "artifacts" / "answer.txt").write_text("original", encoding="utf-8")
     backup = create_backup(data)
@@ -472,7 +486,7 @@ def test_verify_rejects_non_finite_manifest_number(tmp_path: Path) -> None:
 def test_verify_rejects_wrong_kira_identity(tmp_path: Path, field: str, value: str) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
     backup = create_backup(data)
     manifest = _manifest(backup)
     manifest[field] = value
@@ -495,7 +509,7 @@ def test_verify_rejects_kira_fields_mixed_into_legacy_schema(tmp_path: Path) -> 
 def test_verify_requires_database_to_be_hash_covered(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
     (data / "artifacts").mkdir()
     (data / "artifacts" / "answer.txt").write_text("keeps-list-nonempty", encoding="utf-8")
     backup = create_backup(data)
@@ -510,7 +524,7 @@ def test_verify_requires_database_to_be_hash_covered(tmp_path: Path) -> None:
 def test_verify_rejects_hash_covered_corrupt_database(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
     backup = create_backup(data)
     database = backup / "kira.db"
     database.write_bytes(b"not a SQLite database")
@@ -527,7 +541,7 @@ def test_verify_rejects_hash_covered_corrupt_database(tmp_path: Path) -> None:
 def test_verify_rejects_unlisted_sensitive_file(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
     backup = create_backup(data)
     (backup / "artifacts").mkdir()
     (backup / "artifacts" / "api_token.txt").write_text("secret", encoding="utf-8")
@@ -573,7 +587,7 @@ def test_verify_rejects_malformed_file_metadata(tmp_path: Path, field: str, valu
 def test_verify_rejects_unsafe_manifest_paths(tmp_path: Path, unsafe_path: str) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
     backup = create_backup(data)
     manifest_path = backup / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -590,7 +604,7 @@ def test_verify_rejects_disallowed_manifest_roots_and_sensitive_paths(
 ) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
     backup = create_backup(data)
     manifest = _manifest(backup)
     manifest["files"][0]["path"] = unsafe_path
@@ -615,7 +629,7 @@ def test_verify_rejects_linked_manifest(tmp_path: Path) -> None:
 def test_verify_rejects_linked_archive_member(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
     (data / "artifacts").mkdir()
     (data / "artifacts" / "answer.txt").write_text("original", encoding="utf-8")
     backup = create_backup(data)
@@ -649,7 +663,7 @@ def test_verify_normalizes_inventory_filesystem_failure(
 async def test_connect_creates_pre_migration_snapshot_for_real_older_database(
     tmp_path: Path,
 ) -> None:
-    database = tmp_path / "jarvis.db"
+    database = tmp_path / "kira.db"
     _database(database, version=latest_version() - 1)
 
     db = await connect(database)
@@ -668,7 +682,7 @@ async def test_connect_creates_pre_migration_snapshot_for_real_older_database(
 def test_backup_cli_verify_is_read_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    _database(data / "jarvis.db", version=latest_version())
+    _database(data / "kira.db", version=latest_version())
     backup = create_backup(data)
     before = _snapshot(backup)
 

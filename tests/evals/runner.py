@@ -376,11 +376,11 @@ def _check_one(check: dict, obs: RunObservation) -> str | None:  # noqa: PLR0911
     """Return a failure message, or None if the check passed. The delivery routing
     (a failed ``delivery: true`` check ⇒ INVALID) is applied by :func:`evaluate`."""
     kind = check["type"]
-    db_path = obs.workdir / "jarvis.db"
+    db_path = obs.workdir / "kira.db"
     mem_path = obs.workdir / "memory.db"
     called = [e["name"] for e in obs.executed]
 
-    # --- persistence-backed (jarvis.db) ---
+    # --- persistence-backed (kira.db) ---
     if kind == "task_matches":
         rows = _query(db_path, "SELECT kind, status, payload FROM tasks")
         pat = check.get("payload_pattern")
@@ -940,7 +940,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
             or scenario.get("needs_agents")
         )
         if needs_db:
-            session_store = SessionStore(await connect(workdir / "jarvis.db"))
+            session_store = SessionStore(await connect(workdir / "kira.db"))
         if scenario.get("needs_scheduler"):
             tasks = TaskService(
                 TaskStore(session_store.db, session_store.lock), run_config.scheduler
@@ -1093,7 +1093,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
         # Add background-run cost, then close so the sync checks can read the db.
         bg_cost = 0.0
         if session_store is not None:
-            for (run_cost,) in _query(workdir / "jarvis.db", "SELECT cost_usd FROM task_runs"):
+            for (run_cost,) in _query(workdir / "kira.db", "SELECT cost_usd FROM task_runs"):
                 bg_cost += run_cost or 0.0
             await session_store.close()
             session_store = None

@@ -17,6 +17,12 @@ from typing import TYPE_CHECKING
 import yaml
 
 from jarvis.config import ConfigError, Secrets, load_config
+from jarvis.persistence.database_identity import (
+    DATABASE_FILENAME,
+    LEGACY_DATABASE_FILENAME,
+    DatabaseIdentityError,
+    select_database,
+)
 from jarvis.persistence.migrations import latest_version
 
 if TYPE_CHECKING:
@@ -69,19 +75,27 @@ def _report_extras(*, emit=print) -> None:
 
 
 def _report_database(path: Path, *, emit=print) -> bool:
-    """Inspect an already-existing DB via SQLite's read-only URI; never migrate or repair it."""
+    """Inspect immutable main-file state without creating SQLite WAL/SHM sidecars."""
     if not path.is_file():
         state = "not created" if not path.exists() else "not a regular file"
         emit(f"Database: {state} ({path})")
         return False
     try:
-        db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        for suffix in ("-wal", "-journal"):
+            recovery = path.with_name(f"{path.name}{suffix}")
+            if recovery.exists() and recovery.stat().st_size > 0:
+                emit(
+                    "Database: active or pending recovery state; stop Kira before the "
+                    "no-change integrity check"
+                )
+                return False
+        db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
         try:
             version = int(db.execute("PRAGMA user_version").fetchone()[0])
             integrity = [row[0] for row in db.execute("PRAGMA integrity_check").fetchall()]
         finally:
             db.close()
-    except sqlite3.Error:
+    except (OSError, sqlite3.Error):
         emit("Database: unreadable or corrupt (no change made)")
         return False
 
@@ -129,7 +143,22 @@ def doctor_cli(argv: list[str], *, root: Path | None = None, emit=print) -> int:
     emit("Kira doctor (read-only; no network requests or local changes):")
     credentials_ready = _report_credentials(config, emit=emit)
     _report_extras(emit=emit)
-    database_ready = _report_database(config.data_dir / "jarvis.db", emit=emit)
+    try:
+        database = select_database(config.data_dir)
+    except DatabaseIdentityError as exc:
+        emit(f"Database identity: blocked ({exc})")
+        database_ready = False
+    else:
+        if database.name == LEGACY_DATABASE_FILENAME:
+            emit(
+                f"Database identity: legacy {LEGACY_DATABASE_FILENAME} "
+                f"(migrates to {DATABASE_FILENAME} on exclusive startup)"
+            )
+        elif database.exists():
+            emit(f"Database identity: canonical {DATABASE_FILENAME}")
+        else:
+            emit(f"Database identity: not created (next database: {DATABASE_FILENAME})")
+        database_ready = _report_database(database, emit=emit)
     disk_ready = _report_disk(config.data_dir, emit=emit)
     if credentials_ready and database_ready and disk_ready:
         emit("Doctor: ready.")

@@ -15,6 +15,7 @@ logs/
 .kairo-reset-manifests/
 .*.kairo-instance.lock
 .*.kira-instance.lock
+.*.kira-reset-auth.json
 
 # OS / editor cruft
 .DS_Store

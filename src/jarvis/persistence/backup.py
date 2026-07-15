@@ -23,6 +23,12 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from jarvis import __version__
+from jarvis.persistence.database_identity import (
+    DATABASE_FILENAME,
+    LEGACY_DATABASE_FILENAME,
+    DatabaseIdentityError,
+    select_database,
+)
 
 
 class BackupError(RuntimeError):
@@ -33,9 +39,8 @@ _MANIFEST = "manifest.json"
 _SCHEMA_VERSION = 2
 _FORMAT = "kira-backup"
 _APPLICATION = "Kira"
-_LEGACY_DATABASE = "jarvis.db"
-_BACKUP_DATABASE = "kira.db"
-_LIVE_DATABASE_NAMES = (_BACKUP_DATABASE, _LEGACY_DATABASE)
+_LEGACY_DATABASE = LEGACY_DATABASE_FILENAME
+_BACKUP_DATABASE = DATABASE_FILENAME
 _INCLUDED_DIRECTORIES = ("knowledge", "artifacts")
 _EXCLUDED_PATTERNS = (
     ".env",
@@ -248,16 +253,13 @@ def existing_database_version(path: Path) -> int | None:
 
 
 def _select_live_database(data_dir: Path) -> Path:
-    candidates = [
-        data_dir / name
-        for name in _LIVE_DATABASE_NAMES
-        if (data_dir / name).exists() or _is_link_like(data_dir / name)
-    ]
-    if len(candidates) > 1:
-        raise BackupError("Both Kira and legacy databases exist; backup refused to guess.")
-    if not candidates:
+    try:
+        database = select_database(data_dir)
+    except DatabaseIdentityError as exc:
+        raise BackupError(str(exc)) from exc
+    if not database.exists():
         raise BackupError("No existing Kira database found; nothing was backed up.")
-    return candidates[0]
+    return database
 
 
 def _create_backup(data_dir: Path, database: Path, *, reason: str) -> Path:

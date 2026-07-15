@@ -12,26 +12,34 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as _dt
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jarvis.attention import JOBS, dream_run
 from jarvis.attention.store import AttentionStore
+from jarvis.persistence.database_identity import (
+    DatabaseIdentityError,
+    migrate_live_database,
+)
 from jarvis.persistence.db import connect
+from jarvis.persistence.instance_lock import InstanceAlreadyRunning, InstanceLock
 from jarvis.scheduler.store import TaskStore
 
+if TYPE_CHECKING:
+    from jarvis.config import Config
 
-async def _run(job_name: str) -> int:
+
+async def _run(config: Config, database: Path, job_name: str) -> int:
     from rich.console import Console
 
     from jarvis.attention import NotificationRouter
     from jarvis.cli.repl import _build_cost_ledger, _utility_client
-    from jarvis.config import load_config
     from jarvis.connectors.factory import build_connectors
     from jarvis.persistence.sessions import SessionStore
 
     console = Console()
-    config = load_config(require=("anthropic",))
-    config.ensure_dirs()
-    db = await connect(config.data_dir / "jarvis.db")
+    db = await connect(database)
     try:
         store = SessionStore(db)  # shared connection + write lock
         ledger = _build_cost_ledger(config, db, store.lock)
@@ -55,8 +63,10 @@ async def _run(job_name: str) -> int:
         if res.halted:
             console.print(f"[yellow]halted[/] — {res.reason or 'budget cap'} (an alert was filed).")
             return 0
-        console.print(f"[green]proposal #{res.proposal_id}[/] filed in Notifications "
-                      f"(cost ${res.cost_usd or 0:.4f}):")
+        console.print(
+            f"[green]proposal #{res.proposal_id}[/] filed in Notifications "
+            f"(cost ${res.cost_usd or 0:.4f}):"
+        )
         console.print(res.summary, markup=False)
         return 0
     finally:
@@ -70,5 +80,18 @@ def dream_cli(argv: list[str]) -> int:
     r.add_argument("job", choices=sorted(JOBS), help="which dreaming job to run once")
     args = ap.parse_args(argv)
     if args.cmd == "run":
-        return asyncio.run(_run(args.job))
+        from jarvis.config import ConfigError, load_config
+
+        try:
+            config = load_config(require=("anthropic",))
+            with InstanceLock(config.data_dir) as lock:
+                config.ensure_dirs()
+                database = migrate_live_database(lock)
+                return asyncio.run(_run(config, database, args.job))
+        except ConfigError as exc:
+            print(f"Dream configuration error: {exc}", file=sys.stderr)
+            return 1
+        except (InstanceAlreadyRunning, DatabaseIdentityError) as exc:
+            print(f"Dream command blocked: {exc}", file=sys.stderr)
+            return 1
     return 2

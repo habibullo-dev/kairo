@@ -109,5 +109,5 @@ async def test_run_voice_disabled_prints_and_returns(tmp_path: Path) -> None:
     out = io.StringIO()
     console = Console(file=out, force_terminal=False, width=100)
     # Returns immediately: never opens the DB, never needs a mic or a key.
-    await run_voice(config, console=console)
+    await run_voice(config, database=config.data_dir / "kira.db", console=console)
     assert "not enabled" in out.getvalue().lower()

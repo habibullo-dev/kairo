@@ -1559,13 +1559,19 @@ def _build_knowledge(
     return service
 
 
-async def run_repl(config: Config, *, resume: bool = False, console: Console | None = None) -> None:
+async def run_repl(
+    config: Config,
+    *,
+    database: Path,
+    resume: bool = False,
+    console: Console | None = None,
+) -> None:
     """Open the database, resume or start a session, wire memory + scheduling, run the REPL."""
     console = console or Console()
     # One shared connection + write lock: SessionStore, MemoryStore and TaskStore all
     # use them (a second connection would deadlock; a second lock would let writes
     # interleave inside each other's transactions).
-    db = await connect(config.data_dir / "jarvis.db")
+    db = await connect(database)
     store = SessionStore(db)
     memory: MemoryService | None = None
     utility: AnthropicClient | None = None
@@ -1825,7 +1831,9 @@ def build_voice_session(
     return session, listener
 
 
-async def run_voice(config: Config, *, console: Console | None = None) -> None:
+async def run_voice(
+    config: Config, *, database: Path, console: Console | None = None
+) -> None:
     """Open the database, wire the same services the REPL uses, and run a push-to-talk
     voice loop. Read-only by default; risky actions escalate to a typed on-screen
     confirmation (never voice-only)."""
@@ -1836,7 +1844,7 @@ async def run_voice(config: Config, *, console: Console | None = None) -> None:
             "(and install the voice extra: uv sync --extra voice).[/]"
         )
         return
-    db = await connect(config.data_dir / "jarvis.db")
+    db = await connect(database)
     store = SessionStore(db)
     try:
         ledger = _build_cost_ledger(config, db, store.lock)
@@ -2285,7 +2293,9 @@ def _ui_access_urls(config: Config, auth, *, enrolled: bool) -> dict[str, str]:
     return {"setup": f"{base}/?token={auth.launch_token}"}
 
 
-async def run_ui(config: Config, *, console: Console | None = None) -> None:
+async def run_ui(
+    config: Config, *, database: Path, console: Console | None = None
+) -> None:
     """Open the database, compose the same services the REPL uses, and serve the workstation
     UI on loopback. First run prints a one-use setup link; later runs print the normal login URL
     plus a separately labeled process-bound recovery link.
@@ -2318,7 +2328,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
         console.print("[red]The workstation UI needs the ui extra:[/] uv sync --extra ui")
         return
 
-    db = await connect(config.data_dir / "jarvis.db")
+    db = await connect(database)
     store = SessionStore(db)
     runner: BackgroundRunner | None = None
     remote_control: TelegramRemoteControl | None = None

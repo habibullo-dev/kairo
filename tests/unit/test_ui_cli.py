@@ -159,5 +159,9 @@ async def test_run_ui_disabled_prints_and_returns(tmp_path: Path) -> None:
     config = load_config(root=tmp_path, env_file=None)  # ui.enabled defaults False
     out = io.StringIO()
     console = Console(file=out, force_terminal=False, width=100)
-    await run_ui(config, console=console)  # returns immediately; never opens the DB
+    await run_ui(
+        config,
+        database=config.data_dir / "kira.db",
+        console=console,
+    )  # returns immediately; never opens the DB
     assert "not enabled" in out.getvalue().lower()

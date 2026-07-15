@@ -16,15 +16,26 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from jarvis.persistence.database_identity import (
+    DatabaseIdentityError,
+    migrate_live_database,
+)
+from jarvis.persistence.instance_lock import InstanceAlreadyRunning, InstanceLock
+
+if TYPE_CHECKING:
+    from jarvis.config import Config
 
 
-async def _run_rebuild(data_dir: Path) -> int:
+async def _run_rebuild(database: Path) -> int:
     from jarvis.graph import GraphStore
     from jarvis.graph.builder import rebuild
     from jarvis.persistence.db import connect
 
-    db = await connect(data_dir / "jarvis.db")
+    db = await connect(database)
     try:
         counts = await rebuild(GraphStore(db, asyncio.Lock()))
         total = sum(counts.values())
@@ -36,19 +47,17 @@ async def _run_rebuild(data_dir: Path) -> int:
         await db.close()
 
 
-async def _run_suggest(project_id: int, limit: int) -> int:
+async def _run_suggest(config: Config, database: Path, project_id: int, limit: int) -> int:
     # Explicit-invoke extraction: gather bounded local material, run the ledgered utility model, and
     # write QUARANTINED suggestions (pending human review). Makes a live model call; adds nothing
     # durable — every proposal must be approved in the Memory tab / `kira graph review`.
     from jarvis.cli.repl import _utility_client
-    from jarvis.config import load_config
     from jarvis.graph import GraphStore
     from jarvis.graph.suggest import gather_material, suggest, utility_extractor
     from jarvis.models.registry import ModelRegistry
     from jarvis.persistence.db import connect
 
-    config = load_config()
-    db = await connect(config.data_dir / "jarvis.db")
+    db = await connect(database)
     try:
         store = GraphStore(db, asyncio.Lock())
         materials = await gather_material(store, project_id, limit=limit)
@@ -58,8 +67,10 @@ async def _run_suggest(project_id: int, limit: int) -> int:
         model = ModelRegistry(config.models.routes).route("utility").model
         extract = utility_extractor(_utility_client(config), model)
         ids = await suggest(store, materials, extract, project_id=project_id, extractor_model=model)
-        print(f"project {project_id}: proposed {len(ids)} suggestion(s) from {len(materials)} "
-              f"material item(s) — PENDING review (uv run kira graph review / Memory tab).")
+        print(
+            f"project {project_id}: proposed {len(ids)} suggestion(s) from {len(materials)} "
+            f"material item(s) — PENDING review (uv run kira graph review / Memory tab)."
+        )
         return 0
     finally:
         await db.close()
@@ -93,39 +104,48 @@ def graph_cli(argv: list[str]) -> int:
     ex.add_argument("--write", action="store_true", help="apply (default: dry-run diff summary)")
     args = ap.parse_args(argv)
 
-    if args.cmd == "rebuild":
-        from jarvis.config import load_config
+    from jarvis.config import ConfigError, load_config
 
-        return asyncio.run(_run_rebuild(load_config().data_dir))
-    if args.cmd == "suggest":
-        return asyncio.run(_run_suggest(args.project, args.limit))
-    if args.cmd == "review":
-        return asyncio.run(_run_review(args.project, args.approve, args.reject))
-    if args.cmd == "reindex":
-        return asyncio.run(_run_reindex(args.dry_run))
-    if args.cmd == "dedup":
-        return asyncio.run(_run_dedup(args.project, args.threshold))
-    if args.cmd == "merge":
-        return asyncio.run(_run_merge(args.into, args.merged))
-    if args.cmd == "split":
-        return asyncio.run(_run_split(args.node))
-    if args.cmd == "undo":
-        return asyncio.run(_run_undo(args.merge_id))
-    if args.cmd == "export":
-        return asyncio.run(_run_export(args.project, args.write))
+    try:
+        config = load_config()
+        with InstanceLock(config.data_dir) as lock:
+            config.ensure_dirs()
+            database = migrate_live_database(lock)
+            if args.cmd == "rebuild":
+                return asyncio.run(_run_rebuild(database))
+            if args.cmd == "suggest":
+                return asyncio.run(_run_suggest(config, database, args.project, args.limit))
+            if args.cmd == "review":
+                return asyncio.run(_run_review(database, args.project, args.approve, args.reject))
+            if args.cmd == "reindex":
+                return asyncio.run(_run_reindex(config, database, args.dry_run))
+            if args.cmd == "dedup":
+                return asyncio.run(_run_dedup(database, args.project, args.threshold))
+            if args.cmd == "merge":
+                return asyncio.run(_run_merge(database, args.into, args.merged))
+            if args.cmd == "split":
+                return asyncio.run(_run_split(database, args.node))
+            if args.cmd == "undo":
+                return asyncio.run(_run_undo(database, args.merge_id))
+            if args.cmd == "export":
+                return asyncio.run(_run_export(config, database, args.project, args.write))
+    except ConfigError as exc:
+        print(f"Graph configuration error: {exc}", file=sys.stderr)
+        return 1
+    except (InstanceAlreadyRunning, DatabaseIdentityError) as exc:
+        print(f"Graph command blocked: {exc}", file=sys.stderr)
+        return 1
     return 1
 
 
-async def _run_reindex(dry_run: bool) -> int:
-    from jarvis.config import load_config
+async def _run_reindex(config: Config, database: Path, dry_run: bool) -> int:
     from jarvis.graph import GraphStore
     from jarvis.graph.index import CostAwareEmbedder, reindex
     from jarvis.memory import VoyageEmbedder
     from jarvis.observability.cost import load_pricing
     from jarvis.persistence.db import connect
 
-    config = load_config()
-    db = await connect(config.data_dir / "jarvis.db")
+    db = await connect(database)
     try:
         store = GraphStore(db, asyncio.Lock())
         pricing = load_pricing(config.root / "config" / "pricing.yaml")
@@ -138,14 +158,18 @@ async def _run_reindex(dry_run: bool) -> int:
         await db.close()
 
 
-async def _run_review(project_id: int | None, approve_id: int | None, reject_id: int | None) -> int:
-    from jarvis.config import load_config
+async def _run_review(
+    database: Path,
+    project_id: int | None,
+    approve_id: int | None,
+    reject_id: int | None,
+) -> int:
     from jarvis.graph import GraphStore
     from jarvis.graph.review import approve, reject
     from jarvis.graph.service import suggestions_view
     from jarvis.persistence.db import connect
 
-    db = await connect(load_config().data_dir / "jarvis.db")
+    db = await connect(database)
     try:
         store = GraphStore(db, asyncio.Lock())
         if approve_id is not None:
@@ -165,20 +189,19 @@ async def _run_review(project_id: int | None, approve_id: int | None, reject_id:
         await db.close()
 
 
-async def _graph_db():
-    from jarvis.config import load_config
+async def _graph_db(database: Path):
     from jarvis.graph import GraphStore
     from jarvis.persistence.db import connect
 
-    db = await connect(load_config().data_dir / "jarvis.db")
+    db = await connect(database)
     return db, GraphStore(db, asyncio.Lock())
 
 
-async def _run_dedup(project_id: int | None, threshold: float) -> int:
+async def _run_dedup(database: Path, project_id: int | None, threshold: float) -> int:
     from jarvis.graph.merge import find_duplicates
     from jarvis.graph.store import ANY_PROJECT
 
-    db, store = await _graph_db()
+    db, store = await _graph_db(database)
     try:
         scope = project_id if project_id is not None else ANY_PROJECT
         cands = await find_duplicates(store, project_id=scope, threshold=threshold)
@@ -190,21 +213,26 @@ async def _run_dedup(project_id: int | None, threshold: float) -> int:
             "(confirm with `uv run kira graph merge`):"
         )
         for c in cands:
-            print(f"  [{c.kind}] #{c.a_id} {c.a_title!r} ~ #{c.b_id} {c.b_title!r} "
-                  f"({c.reason} {c.score:.3f})")
+            print(
+                f"  [{c.kind}] #{c.a_id} {c.a_title!r} ~ #{c.b_id} {c.b_title!r} "
+                f"({c.reason} {c.score:.3f})"
+            )
         return 0
     finally:
         await db.close()
 
 
-async def _run_merge(canonical_id: int, merged_id: int) -> int:
-    db, store = await _graph_db()
+async def _run_merge(database: Path, canonical_id: int, merged_id: int) -> int:
+    db, store = await _graph_db(database)
     try:
         mid = await store.merge_nodes(
-            canonical_id=canonical_id, merged_id=merged_id, created_by="user")
-        print(f"merged #{merged_id} into #{canonical_id} (journal #{mid}); "
-              f"reverse with `uv run kira graph undo {mid}` or "
-              f"`uv run kira graph split {merged_id}`.")
+            canonical_id=canonical_id, merged_id=merged_id, created_by="user"
+        )
+        print(
+            f"merged #{merged_id} into #{canonical_id} (journal #{mid}); "
+            f"reverse with `uv run kira graph undo {mid}` or "
+            f"`uv run kira graph split {merged_id}`."
+        )
         return 0
     except ValueError as e:
         print(f"merge refused: {e}")
@@ -213,10 +241,10 @@ async def _run_merge(canonical_id: int, merged_id: int) -> int:
         await db.close()
 
 
-async def _run_split(node_id: int) -> int:
+async def _run_split(database: Path, node_id: int) -> int:
     from jarvis.graph.merge import split
 
-    db, store = await _graph_db()
+    db, store = await _graph_db(database)
     try:
         mid = await split(store, node_id)
         if mid is None:
@@ -228,8 +256,8 @@ async def _run_split(node_id: int) -> int:
         await db.close()
 
 
-async def _run_undo(merge_id: int) -> int:
-    db, store = await _graph_db()
+async def _run_undo(database: Path, merge_id: int) -> int:
+    db, store = await _graph_db(database)
     try:
         ok = await store.undo_merge(merge_id)
         state = "reversed" if ok else "no-op (unknown or already undone)"
@@ -239,19 +267,21 @@ async def _run_undo(merge_id: int) -> int:
         await db.close()
 
 
-async def _run_export(project_id: int | None, write: bool) -> int:
-    from jarvis.config import load_config
+async def _run_export(config: Config, database: Path, project_id: int | None, write: bool) -> int:
     from jarvis.graph.obsidian import export
     from jarvis.graph.store import ANY_PROJECT
     from jarvis.memory import MemoryStore
 
-    config = load_config()
-    db, store = await _graph_db()
+    db, store = await _graph_db(database)
     try:
         scope = project_id if project_id is not None else ANY_PROJECT
         report = await export(
-            store, MemoryStore(db, store.lock), config.knowledge_dir / "wiki",
-            project_id=scope, write=write)
+            store,
+            MemoryStore(db, store.lock),
+            config.knowledge_dir / "wiki",
+            project_id=scope,
+            write=write,
+        )
         print(f"graph export{'' if write else ' (dry-run — no files written)'}: {report.summary()}")
         for a in report.actions:
             flag = " [redacted]" if a.redacted else ""

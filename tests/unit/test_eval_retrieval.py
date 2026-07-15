@@ -157,7 +157,7 @@ async def test_seed_kb_uses_valid_created_by(tmp_path: Path) -> None:
     # Regression: the kb_sources table CHECKs created_by IN ('user','agent'); seeding
     # with anything else raises IntegrityError only at live-run time (caught in Task 8).
     cfg = load_config(root=tmp_path, env_file=None)
-    store = KnowledgeStore(await connect(tmp_path / "jarvis.db"))
+    store = KnowledgeStore(await connect(tmp_path / "kira.db"))
     svc = KnowledgeService(
         store, FakeEmbedder(), cfg.knowledge, knowledge_dir=cfg.knowledge_dir, root=tmp_path
     )
