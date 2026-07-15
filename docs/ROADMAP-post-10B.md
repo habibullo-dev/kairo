@@ -1,5 +1,9 @@
 # Kairo roadmap — Phases 11–17 (post-10B)
 
+> **Historical design record.** This document preserves the product names, commands, paths, counts,
+> and line references used when it was written. They are evidence, not current Kira instructions;
+> see the [documentation index](README.md).
+
 *(Proposed 2026-07-08; **APPROVED 2026-07-08 with amendments R1–R7**, incorporated below.
 Baseline: Phase 10B complete through Task 19 —
 1260 passed / 1 skipped, ruff clean, migrations v8; 10B live verification + eval ratchet

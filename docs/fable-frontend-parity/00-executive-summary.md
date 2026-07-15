@@ -1,5 +1,9 @@
 # 00 — Executive Summary: Frontend↔Backend Parity Audit
 
+> **Historical design record.** This audit preserves the names, paths, counts, and line references
+> used at its recorded snapshot. It is evidence, not current Kira implementation status; see the
+> [documentation index](../README.md).
+
 Read-only audit of the working tree at historical HEAD `98c4ebc` (including uncommitted changes), 2026-07-12. Full evidence in [01](01-backend-capability-inventory.md) (capability inventory), [02](02-frontend-backend-parity-matrix.md) (parity matrix), [03](03-user-workflow-analysis.md) (workflows/IA), [04](04-implementation-roadmap.md) (roadmap), [05](05-test-and-observability-gaps.md) (test gaps). Every claim there carries `path:line`; orphan-route claims were re-verified by direct grep at that baseline.
 
 ## Current status — 2026-07-12

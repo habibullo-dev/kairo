@@ -10,7 +10,8 @@ compatibility alias for existing launch scripts during the deprecation window.
 
 Start with the [`Kira User Guide`](docs/KIRA-USER-GUIDE.md). Architecture and design history live in
 [`docs/architecture.md`](docs/architecture.md), [`docs/PLAN.md`](docs/PLAN.md), and
-[`docs/decisions/`](docs/decisions/).
+[`docs/decisions/`](docs/decisions/). The [documentation index](docs/README.md) distinguishes
+current operator guidance from preserved historical snapshots.
 
 ## Current status
 

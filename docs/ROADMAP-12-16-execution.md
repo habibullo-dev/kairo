@@ -1,5 +1,9 @@
 # Kairo — Phases 12–16 master execution plan
 
+> **Historical design record.** This document preserves the product names, commands, paths, counts,
+> and line references used when it was written. They are evidence, not current Kira instructions;
+> see the [documentation index](README.md).
+
 *(Planned 2026-07-08 by Fable 5. Supersedes nothing: `docs/ROADMAP-post-10B.md` (approved with
 R1–R7) remains the product roadmap; THIS document is the execution layer over it — dependency
 map, ordering, shared substrate, checkpoints, rituals, and the Opus handoff. Phase 17 is

@@ -2,7 +2,8 @@
 
 > **Historical design record.** Phase 11 is complete. This document preserves the rules, counts,
 > paths, and checkpoints used while building the Kira Workstation; it is evidence, not current
-> operating instruction. Current behavior is defined by code, tests, and the operator documentation.
+> operating instruction. Current behavior is defined by code, tests, and the
+> [documentation index](README.md).
 
 *Repo-local implementation guidance preserved from the Kira Workstation phase
 (`docs/PLAN-11-workstation.md`). This was not a product feature or runtime skill system.*

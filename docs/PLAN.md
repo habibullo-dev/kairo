@@ -1,5 +1,9 @@
 # Jarvis — A Real Agentic Assistant, Built From Scratch
 
+> **Historical design record.** This document preserves the product names, commands, paths, counts,
+> and line references used when it was written. They are evidence, not current Kira instructions;
+> see the [documentation index](README.md).
+
 ## Context
 
 You (an advanced engineer, new to agent architectures) want to build a Jarvis-style agentic system in `C:\Users\habib\Desktop\jarvis` — not a toy chatbot. Goals: learn agent engineering deeply while producing a genuinely useful assistant that will eventually use tools, remember things, manage tasks, read files, research the web, speak/listen, and coordinate multiple agents.

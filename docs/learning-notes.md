@@ -1,5 +1,9 @@
 # Learning Notes
 
+> **Historical design record.** These per-task notes preserve the product names, commands, paths,
+> counts, and line references used when each entry was written. They are evidence, not current Kira
+> instructions; see the [documentation index](README.md).
+
 Per-task design notes for an advanced engineer new to agent architectures.
 Each entry captures the *non-obvious* decisions and their rationale.
 

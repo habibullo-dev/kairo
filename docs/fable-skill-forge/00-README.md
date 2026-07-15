@@ -1,5 +1,9 @@
 # Fable Skill Forge — staged proposal
 
+> **Historical design record.** This directory preserves the proposal, draft packs, counts, and
+> source anchors from its recorded snapshot. It is evidence, not current Kira skill configuration;
+> see the [documentation index](../README.md).
+
 Fable's read-only architecture + skill-authoring pass, 2026-07-11, at HEAD `84e0988`. The packs in this directory remain drafts. The runtime seam and P0 fixes were implemented separately with skills disabled; promotion still requires explicit human review, a hash pin, and a committed configuration change.
 
 | Artifact | Contents |
