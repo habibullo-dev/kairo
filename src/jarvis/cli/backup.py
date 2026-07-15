@@ -1,4 +1,4 @@
-"""``jarvis backup`` — explicit local recovery rituals, never a background job."""
+"""``kira backup`` — explicit local recovery rituals, never a background job."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from jarvis.persistence.backup import BackupError, create_backup, verify_backup
 
 def backup_cli(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        prog="jarvis backup", description="Create or verify a local, secret-excluding Kairo backup."
+        prog="kira backup", description="Create or verify a local, secret-excluding Kira backup."
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("create", help="Create a timestamped backup under data/backups/.")

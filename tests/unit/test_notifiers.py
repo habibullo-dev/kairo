@@ -113,7 +113,7 @@ async def test_kakao_send_failure_is_reconnect_message(tmp_path: Path) -> None:
         n = KakaoNotifier(_kakao_store(tmp_path, http), http=http)
         with pytest.raises(ConnectorError) as exc:
             await n.send("hi")
-    assert exc.value.user_message == "Kakao needs reconnect: run jarvis connect kakao"
+    assert exc.value.user_message == "Kakao needs reconnect — use `uv run kira connect kakao`."
     assert "expired" not in str(exc.value)
 
 

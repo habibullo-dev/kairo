@@ -99,7 +99,7 @@ class WriteExecutor:
             raise ValueError(f"intent {intent_id} is {intent.state.value}, not approved")
         if self.client is None:
             return await self.intents.mark_failed(
-                intent_id, error="Google is not connected — run `jarvis connect google`."
+                intent_id, error="Google is not connected — use `uv run kira connect google`."
             )
         request = request_from_dict(intent.request)
         try:

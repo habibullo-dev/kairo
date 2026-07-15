@@ -24,13 +24,16 @@ class ConnectorError(RuntimeError):
 
 class ConnectorAuthError(ConnectorError):
     """Credentials are missing or expired and must be re-granted — the friendly default is
-    "run jarvis connect <provider>" (amendment A6)."""
+    "use `uv run kira connect <provider>`" (amendment A6)."""
 
     def __init__(self, provider: str, *, user_message: str | None = None) -> None:
         super().__init__(
             provider,
             user_message=user_message
-            or f"{provider.capitalize()} needs reconnect: run jarvis connect {provider}",
+            or (
+                f"{provider.capitalize()} needs reconnect — "
+                f"use `uv run kira connect {provider}`."
+            ),
         )
 
 

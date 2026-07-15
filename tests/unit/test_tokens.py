@@ -153,7 +153,7 @@ async def test_invalid_grant_raises_friendly(tmp_path: Path) -> None:
         store.save(_state(-10))
         with pytest.raises(ConnectorAuthError) as exc:
             await store.access_token()
-    assert exc.value.user_message == "Acme needs reconnect: run jarvis connect acme"
+    assert exc.value.user_message == "Acme needs reconnect — use `uv run kira connect acme`."
 
 
 async def test_access_token_without_state_raises(tmp_path: Path) -> None:

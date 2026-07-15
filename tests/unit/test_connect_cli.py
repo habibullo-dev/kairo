@@ -1,4 +1,4 @@
-"""`jarvis connect` internals (Phase 9 Task 3) — keyless, authorize/send monkeypatched."""
+"""`kira connect` internals (Phase 9 Task 3) — keyless, authorize/send monkeypatched."""
 
 from __future__ import annotations
 
@@ -121,6 +121,7 @@ async def test_connect_telegram_test_sends(tmp_path: Path, monkeypatch: pytest.M
     rc = await connect.connect_telegram(cfg, test=True, emit=lambda _ln: None)
     assert rc == 0
     assert sent["chat_id"] == "12345" and sent["bot_token"] == "bt"
+    assert sent["text"].startswith("Kira test — ")
 
 
 async def test_connect_telegram_missing_token_returns_1(
@@ -215,7 +216,7 @@ async def test_connect_kakao_test_expired_shows_reconnect(
         rc = await connect.connect_kakao(cfg, test=True, http=http, emit=lines.append)
     assert rc == 1
     joined = "\n".join(lines)
-    assert "Kakao needs reconnect: run jarvis connect kakao" in joined
+    assert "Kakao needs reconnect — use `uv run kira connect kakao`." in joined
     assert "LEAK" not in joined and "invalid_grant" not in joined  # provider body never shown
 
 
@@ -227,7 +228,7 @@ async def test_connect_kakao_test_without_token_shows_reconnect(
     lines: list[str] = []
     rc = await connect.connect_kakao(cfg, test=True, emit=lines.append)  # no network reached
     assert rc == 1
-    assert any("Kakao needs reconnect: run jarvis connect kakao" in ln for ln in lines)
+    assert any("Kakao needs reconnect — use `uv run kira connect kakao`." in ln for ln in lines)
 
 
 async def test_connect_kakao_test_missing_key(

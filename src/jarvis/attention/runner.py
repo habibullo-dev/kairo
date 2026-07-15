@@ -2,7 +2,7 @@
 
 Each ``dream_run`` is ONE job = ONE chunk (a single deterministic collect + one tool-less
 summarize — well under the ~14-minute background ceiling). Scheduling is a separate, deliberate
-step (Task 10, AFTER Checkpoint K); nothing here registers a scheduler task. ``jarvis dream run
+step (Task 10, AFTER Checkpoint K); nothing here registers a scheduler task. ``kira dream run
 <job>`` runs a job ATTENDED for testing. Collectors read only local, durable, reviewed data
 (tasks + cost ledger) — never quarantined suggestions, never dreaming's own prior proposals.
 """

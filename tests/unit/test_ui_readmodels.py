@@ -66,6 +66,8 @@ async def test_lab_overview_reads_history_and_baselines(tmp_path: Path) -> None:
     lab = await lab_overview(cfg, baselines_path=baselines)
     assert lab["gate_runs"] == 2 and lab["history"][-1]["git_rev"] == "def"
     assert "schema_version" in lab["baselines"]
+    assert "uv run kira eval gate" in lab["note"]
+    assert "jarvis" not in lab["note"].lower()
 
 
 # --- DB-backed read models + mutations --------------------------------------

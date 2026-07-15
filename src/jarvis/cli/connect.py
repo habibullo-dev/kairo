@@ -1,9 +1,9 @@
-"""`jarvis connect <provider>` — the deliberate terminal ritual for granting Kairo access.
+"""`kira connect <provider>` — the deliberate terminal ritual for granting Kira access.
 
 Connecting an account (mail, calendar, notifications) is a conscious act at the terminal, in
 the spirit of the eval-gate ritual (ADR-0005): never a background action, never a UI button.
 `google`/`kakao` run the OAuth flow and persist a refresh token under ``data/connectors/``;
-``--test`` sends a "Kairo test — {timestamp}" message (telegram) or a send-to-me memo (kakao)
+``--test`` sends a "Kira test — {timestamp}" message (telegram) or a send-to-me memo (kakao)
 through the SAME notifier/TokenStore path used at runtime; `status` reports presence, scopes,
 and expiry — never a token value.
 
@@ -31,7 +31,7 @@ from jarvis.connectors.tokens import TokenStore, read_token_state
 
 def _test_message(now: _dt.datetime | None = None) -> str:
     stamp = (now or _dt.datetime.now().astimezone()).strftime("%Y-%m-%d %H:%M")
-    return f"Kairo test — {stamp}"
+    return f"Kira test — {stamp}"
 
 
 def token_path(config: Config, provider: str) -> Path:
@@ -121,7 +121,7 @@ async def _kakao_test(config: Config, *, http: Any = None, now=None, emit=print)
     Never prints tokens/secrets/provider bodies; an expired grant surfaces the friendly
     reconnect message (KakaoNotifier raises ConnectorError with .user_message only)."""
     if read_token_state(token_path(config, "kakao")) is None:
-        emit("Kakao needs reconnect: run jarvis connect kakao")
+        emit("Kakao needs reconnect — use `uv run kira connect kakao`.")
         return 1
     notifier = KakaoNotifier(_kakao_store(config, http=http), http=http)
     try:
@@ -158,11 +158,11 @@ def show_status(config: Config, *, emit=print) -> int:
     emit("Connector status:")
     for provider in ("google", "kakao"):
         if integration_is_locked(config.data_dir, provider):
-            emit(f"  {provider}: locked after data reset (run: jarvis connect {provider})")
+            emit(f"  {provider}: locked after data reset (run: uv run kira connect {provider})")
             continue
         state = read_token_state(token_path(config, provider))
         if state is None:
-            emit(f"  {provider}: not connected (run: jarvis connect {provider})")
+            emit(f"  {provider}: not connected (run: uv run kira connect {provider})")
         else:
             scopes = ", ".join(state.scopes) or "(none recorded)"
             emit(f"  {provider}: connected — scopes: {scopes}; access expires {state.expires_at}")
@@ -170,7 +170,7 @@ def show_status(config: Config, *, emit=print) -> int:
     # the value (a routing id, but there's no need to print it).
     ready = bool(config.secrets.telegram_bot_token and resolve_telegram_chat_id(config))
     if integration_is_locked(config.data_dir, "telegram"):
-        emit("  telegram: locked after data reset (run: jarvis connect telegram)")
+        emit("  telegram: locked after data reset (run: uv run kira connect telegram)")
     else:
         emit(f"  telegram: {'configured' if ready else 'not configured'}")
     remote = config.connectors.telegram.remote_control
@@ -182,7 +182,7 @@ def show_status(config: Config, *, emit=print) -> int:
             emit(
                 "  telegram remote control: "
                 f"{'configured' if remote_ready else 'missing TELEGRAM_BOT_TOKEN'} "
-                "(starts only while Kairo is running)"
+                "(starts only while Kira is running)"
             )
     return 0
 
@@ -203,7 +203,7 @@ async def _dispatch(args: argparse.Namespace, config: Config) -> int:
 
 def connect_cli(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        prog="jarvis connect", description="Connect external accounts (a terminal ritual)."
+        prog="kira connect", description="Connect external accounts (a terminal ritual)."
     )
     parser.add_argument("provider", choices=["google", "kakao", "telegram", "status"])
     parser.add_argument(

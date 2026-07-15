@@ -918,7 +918,7 @@ function renderProjectKnowledge(panel, container, api, knowledge, runner, refres
   }, "chat-history-new");
   const buildGraph = historyButton("Copy: build graph", "Copy the project graph rebuild command", async () => {
     try {
-      await navigator.clipboard.writeText("uv run jarvis graph rebuild");
+      await navigator.clipboard.writeText("uv run kira graph rebuild");
       showToast("Graph rebuild command copied.");
     } catch {
       showToast("Kira couldn't copy the graph command.", "error");

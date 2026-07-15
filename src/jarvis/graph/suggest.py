@@ -10,7 +10,7 @@ Two safety rules are enforced in code (pinned by tests), not left to the model:
 * **Evidence is POINTERS only.** A suggestion stores ``{kind,id}`` references to its source
   material, never the raw body — the same bodies-free discipline as the read models.
 
-Runs ONLY when explicitly invoked (``jarvis graph suggest``); it is not wired to a scheduler this
+Runs ONLY when explicitly invoked (``kira graph suggest``); it is not wired to a scheduler this
 phase. Material is bounded (local run summaries) to cap the extractor's cost; the extractor is
 injectable so the pipeline + safety are testable without a live model.
 """

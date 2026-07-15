@@ -146,7 +146,7 @@ def test_current_static_brand_is_kira_with_only_exact_legacy_storage_bridges() -
         if path.suffix.lower() not in TEXT_ASSET_SUFFIXES:
             continue
         source = path.read_text(encoding="utf-8")
-        assert "Jarvis" not in source and "JARVIS" not in source, relative
+        assert re.search(r"\bjarvis\b", source, re.IGNORECASE) is None, relative
         assert re.search(r"\bcairo\b", source, re.IGNORECASE) is None, relative
         for lexeme in allowed_legacy_storage_lexemes.get(relative_name, ()):
             assert source.count(lexeme) == 1, f"{relative}: expected exact bridge {lexeme}"

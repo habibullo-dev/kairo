@@ -34,14 +34,14 @@ class _NotifierWithStatus(_RecordingNotifier):
 
 def test_auth_error_default_message_is_friendly_reconnect() -> None:
     err = ConnectorAuthError("google")
-    assert err.user_message == "Google needs reconnect: run jarvis connect google"
+    assert err.user_message == "Google needs reconnect — use `uv run kira connect google`."
     assert str(err) == err.user_message
     assert err.provider == "google"
 
 
 def test_auth_error_kakao_message() -> None:
     assert ConnectorAuthError("kakao").user_message == (
-        "Kakao needs reconnect: run jarvis connect kakao"
+        "Kakao needs reconnect — use `uv run kira connect kakao`."
     )
 
 

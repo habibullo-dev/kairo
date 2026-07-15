@@ -55,8 +55,8 @@ function googleCard(google = {}) {
     el("div", { class: "hub-service-list" }, services),
     el("div", { class: "hub-detail-label" }, ["Granted scopes"]), scopes,
     el("div", { class: "hub-detail-label" }, ["Connect or review status in the terminal"]),
-    copyCommand(google.command || "uv run jarvis connect google"),
-    copyCommand(google.status_command || "uv run jarvis connect status"),
+    copyCommand(google.command || "uv run kira connect google"),
+    copyCommand(google.status_command || "uv run kira connect status"),
     el("p", { class: "hub-muted" }, [google.disconnect_note ||
       "Disconnect is intentionally not a UI action. Revoke Kira in the provider account, then check status."]),
   ]);
@@ -75,7 +75,7 @@ function telegramCard(telegram = {}) {
     rule("Cannot", "Remote chat cannot approve, use tools or memory, write, schedule, run commands, or expose chat IDs.", true),
     rule("Destination", telegram.chat_id_set ? "Set" : "Not set"),
     el("div", { class: "hub-detail-label" }, ["Test from the terminal"]),
-    copyCommand(telegram.command || "uv run jarvis connect telegram --test"),
+    copyCommand(telegram.command || "uv run kira connect telegram --test"),
   ]);
 }
 
@@ -89,8 +89,8 @@ function kakaoCard(kakao = {}) {
     nodes.push(el("code", { class: "hub-inline-code" }, [kakao.redirect_uri]));
   }
   nodes.push(el("div", { class: "hub-detail-label" }, ["Reconnect or test from the terminal"]));
-  nodes.push(copyCommand(kakao.command || "uv run jarvis connect kakao"));
-  nodes.push(copyCommand(kakao.test_command || "uv run jarvis connect kakao --test"));
+  nodes.push(copyCommand(kakao.command || "uv run kira connect kakao"));
+  nodes.push(copyCommand(kakao.test_command || "uv run kira connect kakao --test"));
   return card("Kakao", kakao.state || "disabled", nodes);
 }
 

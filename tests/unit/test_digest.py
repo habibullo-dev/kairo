@@ -215,7 +215,7 @@ async def test_failed_collector_renders_friendly_not_zero(tmp_path: Path) -> Non
     sections = await builder.collect()
     email = next(s for s in sections if s.kind == "email")
     assert email.status == "failed"
-    assert email.reason == "Google needs reconnect: run jarvis connect google"
+    assert email.reason == "Google needs reconnect — use `uv run kira connect google`."
     assert email.items == []  # empty, but clearly FAILED — not "no unread email"
 
 

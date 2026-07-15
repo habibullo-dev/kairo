@@ -1,4 +1,4 @@
-"""`jarvis dream run <job>` CLI surface (Phase 16 Task 9) — arg validation only (the end-to-end
+"""`kira dream run <job>` CLI surface (Phase 16 Task 9) — arg validation only (the end-to-end
 run is covered by test_dreaming_runner). Pins: only known jobs are runnable; a subcommand is
 required; there is NO 'schedule' verb (scheduling is Task 10, post-Checkpoint-K)."""
 

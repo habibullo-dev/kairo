@@ -60,9 +60,9 @@ export async function render(container, api, ctx) {
     if (!data || !(data.nodes || []).length) {
       // A teaching empty state: WHAT the graph is + exactly HOW to populate it (copy the CLI
       // ritual). Read-only — the copy button touches only the clipboard, never the server.
-      const copy = el("button", { class: "plain-button ghost" }, ["Copy: jarvis graph rebuild"]);
+      const copy = el("button", { class: "plain-button ghost" }, ["Copy: uv run kira graph rebuild"]);
       copy.addEventListener("click", () =>
-        navigator.clipboard && navigator.clipboard.writeText("jarvis graph rebuild"));
+        navigator.clipboard && navigator.clipboard.writeText("uv run kira graph rebuild"));
       const help = el("div", { class: "dim graph-empty-help" }, [
         "The graph links this project's chats, runs, artifacts, memory, sources and people into a "
         + "calm map you can explore and search. It's read-only — exploring it never changes your "

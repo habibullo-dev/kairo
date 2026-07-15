@@ -206,7 +206,7 @@ async def test_rebuild_never_touches_asserted_edges(tmp_path: Path) -> None:
 
 
 async def test_rebuild_cli_runs_on_empty_db(tmp_path: Path) -> None:
-    # The `jarvis graph rebuild` core: a fresh DB migrates to v12 and derives 0 edges (no source
+    # The `kira graph rebuild` core: a fresh DB migrates to v12 and derives 0 edges (no source
     # rows), returning 0 — proves the CLI path wires config.data_dir -> store -> builder cleanly.
     from jarvis.cli.graph import _run_rebuild
 

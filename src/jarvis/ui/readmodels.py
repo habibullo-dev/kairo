@@ -1653,19 +1653,19 @@ def connector_hub_overview(config: Config, *, connectors: dict | None = None) ->
                     "cannot": "Kira has no broad Drive access.",
                 },
             ],
-            "command": "uv run jarvis connect google",
-            "status_command": "uv run jarvis connect status",
+            "command": "uv run kira connect google",
+            "status_command": "uv run kira connect status",
             "disconnect_note": (
                 "Disconnect is intentionally not a UI action. Revoke Kira in your Google account "
                 "permissions, then use the status command to confirm."
             ),
         },
-        "telegram": {**telegram, "command": "uv run jarvis connect telegram --test"},
+        "telegram": {**telegram, "command": "uv run kira connect telegram --test"},
         "kakao": {
             **notifier("kakao"),
             "redirect_uri": kakao_redirect_display,
-            "command": "uv run jarvis connect kakao",
-            "test_command": "uv run jarvis connect kakao --test",
+            "command": "uv run kira connect kakao",
+            "test_command": "uv run kira connect kakao --test",
         },
         "providers": [
             {
@@ -2235,7 +2235,7 @@ def _eval_freshness(config: Config, repos: list[dict]) -> dict:
         "head_rev": head,
         # stale = HEAD has moved past the last gated revision (freshness chip goes gray).
         "stale": bool(head and last_rev and head != last_rev),
-        "command": "jarvis eval gate",  # a terminal ritual — shown to copy, never a run button
+        "command": "uv run kira eval gate",  # shown to copy, never a run button
         # Cost projection (eval cost-control layer). The default eval mode is keyless replay
         # ($0, no API calls); a live gate is the phase-closeout ritual whose cost is estimated
         # from the last live run. Shown so the human sees the $ before running anything.
@@ -2243,13 +2243,13 @@ def _eval_freshness(config: Config, repos: list[dict]) -> dict:
         "last_gate_cost_usd": last_cost,
         "projected_replay_usd": 0.0,
         "cost_note": (
-            "default `jarvis eval` is keyless replay = $0; a live gate "
+            "default `uv run kira eval` is keyless replay = $0; a live gate "
             + (
                 f"last cost ${last_cost:.2f}"
                 if isinstance(last_cost, int | float)
                 else "has no prior cost recorded"
             )
-            + ". Use `jarvis eval plan --live` for a projection."
+            + ". Use `uv run kira eval plan --live` for a projection."
         ),
     }
 
@@ -2468,7 +2468,10 @@ async def lab_overview(
         "gate_runs": len(history),
         "baselines": baselines,
         "latest_report": report_text,
-        "note": "Run evals from the terminal: `jarvis eval gate` (a deliberate, recorded ritual).",
+        "note": (
+            "Run evals from the terminal: `uv run kira eval gate` "
+            "(a deliberate, recorded ritual)."
+        ),
     }
 
 

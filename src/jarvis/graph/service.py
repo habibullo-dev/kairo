@@ -328,7 +328,7 @@ async def node_card(
 
 async def suggestions_view(store: GraphStore, project_id: int, *, status: str = "pending") -> dict:
     """The review queue for a project: bodies-free suggestion rows (short preview + evidence
-    POINTERS + trust badge) for the Memory-tab 'Suggested' section / `jarvis graph review`."""
+    POINTERS + trust badge) for the Memory-tab 'Suggested' section / `kira graph review`."""
     rows = []
     for s in await store.list_suggestions(project_id=project_id, status=status):
         payload = s.payload or {}

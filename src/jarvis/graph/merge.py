@@ -17,7 +17,7 @@ import numpy as np
 from jarvis.graph.store import ANY_PROJECT, GraphStore
 
 # Cosine floor for "these two entities look like the same thing". Deliberately high — this is a
-# *suggestion* a human confirms with `jarvis graph merge`, never an auto-apply.
+# *suggestion* a human confirms with `kira graph merge`, never an auto-apply.
 DEFAULT_THRESHOLD = 0.90
 
 

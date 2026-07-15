@@ -8,7 +8,7 @@ they are reachable by semantic search. Two cost rules:
   silently spend an unmeasurable amount — the memory-graph indexer never runs unpriced. (Voyage rows
   were added to pricing.yaml this phase.)
 * **Re-embed only what changed.** Each node/memory carries a ``content_hash``; unchanged text is
-  skipped, so ``jarvis graph reindex`` is cheap to re-run and reports its projected/actual spend.
+  skipped, so ``kira graph reindex`` is cheap to re-run and reports its projected/actual spend.
 
 Voyage discards token usage, so cost is estimated from text length — good enough for the ledger +
 caps; the exact bill is Voyage's invoice.

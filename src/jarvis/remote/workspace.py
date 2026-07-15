@@ -18,8 +18,8 @@ from jarvis.connectors.base import ConnectorError, ConnectorRegistry
 from jarvis.connectors.google import calendar, gmail
 
 _GOOGLE_NOT_CONNECTED = (
-    "Google Workspace is not connected on this Kairo instance. Enable connectors.google, then "
-    "run `uv run jarvis connect google` locally."
+    "Google Workspace is not connected on this Kira instance. Enable connectors.google, then "
+    "use `uv run kira connect google` locally."
 )
 _REMOTE_INBOX_MAX_MESSAGES = 8
 _REMOTE_BODY_CHARS_PER_MESSAGE = 6_000

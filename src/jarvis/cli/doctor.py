@@ -1,4 +1,4 @@
-"""``jarvis doctor`` — a local, read-only first-run diagnostic.
+"""``kira doctor`` — a local, read-only first-run diagnostic.
 
 It intentionally checks only configuration presence, installed Python extras, an existing
 SQLite database, and local disk headroom.  It never creates directories, migrates a database,
@@ -114,7 +114,7 @@ def _report_disk(path: Path, *, emit=print) -> bool:
 def doctor_cli(argv: list[str], *, root: Path | None = None, emit=print) -> int:
     """Run the safe local diagnostic. ``1`` means setup/action is needed; ``2`` is bad config."""
     parser = argparse.ArgumentParser(
-        prog="jarvis doctor", description="Read-only local configuration and health diagnostic."
+        prog="kira doctor", description="Read-only local configuration and health diagnostic."
     )
     parser.parse_args(argv)
     try:
@@ -126,7 +126,7 @@ def doctor_cli(argv: list[str], *, root: Path | None = None, emit=print) -> int:
         emit(f"Configuration error: {kind} in config/settings.yaml (details redacted).")
         return 2
 
-    emit("Kairo doctor (read-only; no network requests or local changes):")
+    emit("Kira doctor (read-only; no network requests or local changes):")
     credentials_ready = _report_credentials(config, emit=emit)
     _report_extras(emit=emit)
     database_ready = _report_database(config.data_dir / "jarvis.db", emit=emit)

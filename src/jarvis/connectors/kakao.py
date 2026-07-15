@@ -3,7 +3,7 @@
 Kakao is a send-only "send to me" (memo) notifier. OAuth uses the REST API key as the client
 id and a **fixed, pre-registered** loopback redirect port (Kakao rejects unregistered URIs),
 so ``connectors.kakao.redirect_port`` must match the URI registered in the Kakao developer
-console. Kakao refresh tokens expire (~2 months), so a periodic ``jarvis connect kakao`` is a
+console. Kakao refresh tokens expire (~2 months), so a periodic ``kira connect kakao`` is a
 routine, friendly path (Hub flags ``needs_reconnect``).
 
 The ``KakaoNotifier`` (the actual send) arrives with the notifiers in Task 5; this module owns
@@ -75,7 +75,7 @@ class KakaoNotifier:
                 resp = await client.post(_MEMO_URL, data=data, headers=headers)
         if resp.status_code != 200:
             raise ConnectorError(
-                "kakao", user_message="Kakao needs reconnect: run jarvis connect kakao"
+                "kakao", user_message="Kakao needs reconnect — use `uv run kira connect kakao`."
             )
 
     def status(self) -> dict:

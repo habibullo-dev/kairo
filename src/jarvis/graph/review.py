@@ -1,5 +1,5 @@
 """Suggestion review (Phase 15 Task 5) — the ONLY door from a quarantined proposal to durable graph
-truth, and it requires an explicit human action (the approve/reject routes or ``jarvis graph
+truth, and it requires an explicit human action (the approve/reject routes or ``kira graph
 review``). There is no automatic path.
 
 * **reject** flips the suggestion to ``rejected`` (terminal). Nothing is materialized.
@@ -7,7 +7,7 @@ review``). There is no automatic path.
   approve is a no-op, so a proposal can never materialize twice), then materializes it:
     - ``memory`` -> a real ``memories`` row (``source='reviewed_suggestion'``). It is stored with a
       placeholder embedding + the ``unindexed`` model sentinel, so it is immediately FTS-searchable
-      but excluded from semantic recall until ``jarvis graph reindex`` (Task 6) embeds it — approve
+      but excluded from semantic recall until ``kira graph reindex`` (Task 6) embeds it — approve
       stays fast, keyless, and never makes a surprise model call.
     - ``node`` -> an asserted ``graph_nodes`` row (``created_by='user'``, trust from suggestion).
     - ``edge`` -> an asserted ``graph_edges`` row (``origin='asserted'``).

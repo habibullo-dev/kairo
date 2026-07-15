@@ -156,8 +156,8 @@ def test_hub_ui_is_copy_only_and_states_gmail_drive_notification_limits(tmp_path
     assert "telegramCard" in source and "kakaoCard" in source
     assert "Remote chat" in source and "cannot approve" in source
     for command in (
-        "uv run jarvis connect google", "uv run jarvis connect status",
-        "uv run jarvis connect telegram --test", "uv run jarvis connect kakao",
-        "uv run jarvis connect kakao --test",
+        "uv run kira connect google", "uv run kira connect status",
+        "uv run kira connect telegram --test", "uv run kira connect kakao",
+        "uv run kira connect kakao --test",
     ):
         assert command in source

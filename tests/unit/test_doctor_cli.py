@@ -1,4 +1,4 @@
-"""``jarvis doctor`` pins: local/read-only, redacted, and useful on a fresh install."""
+"""``kira doctor`` pins: local/read-only, redacted, and useful on a fresh install."""
 
 from __future__ import annotations
 

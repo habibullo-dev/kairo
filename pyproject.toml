@@ -27,6 +27,7 @@ dependencies = [
 ]
 
 [project.scripts]
+kira = "jarvis.__main__:main"
 jarvis = "jarvis.__main__:main"
 
 [project.optional-dependencies]

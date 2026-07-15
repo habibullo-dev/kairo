@@ -1,6 +1,6 @@
 """OAuth 2.0 authorization-code + PKCE, over a one-shot loopback listener.
 
-Shared by Google and Kakao. The flow is the deliberate terminal ritual `jarvis connect
+Shared by Google and Kakao. The flow is the deliberate terminal ritual `kira connect
 <provider>`: PKCE (S256) + a random ``state`` (mismatch aborts), a redirect server bound to
 ``127.0.0.1`` only that handles exactly one request, then a code→token exchange. No secret ever
 reaches a browser; the loopback listener is single-use and short-lived.

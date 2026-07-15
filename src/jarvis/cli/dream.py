@@ -1,4 +1,4 @@
-"""`jarvis dream run <job>` — run ONE dreaming job ATTENDED (Phase 16 Task 9).
+"""`kira dream run <job>` — run ONE dreaming job ATTENDED (Phase 16 Task 9).
 
 This is the human-in-the-loop way to exercise a dreaming job before Checkpoint K: it collects,
 runs the tool-less summarize under the budget, and creates the proposal in the attention queue —
@@ -64,7 +64,7 @@ async def _run(job_name: str) -> int:
 
 
 def dream_cli(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(prog="jarvis dream", description="Proposal-only dreaming jobs.")
+    ap = argparse.ArgumentParser(prog="kira dream", description="Proposal-only dreaming jobs.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="Run ONE dreaming job attended (NOT scheduled).")
     r.add_argument("job", choices=sorted(JOBS), help="which dreaming job to run once")

@@ -17,7 +17,7 @@ capability. Each maps to the tools that use it:
 Deliberately absent and pinned by tests/unit/test_no_gmail_send.py: the Gmail *send* scope (and
 any send method/tool/route). Also absent: the broad ``drive`` scope and the ``documents`` scope —
 the Docs API accepts ``drive.file`` for app-created docs. Adding the two Phase 12 write scopes
-requires a re-consent (``jarvis connect google``); until then the write adapters are exercised
+requires a re-consent (``kira connect google``); until then the write adapters are exercised
 only with a fake transport.
 """
 

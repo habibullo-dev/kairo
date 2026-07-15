@@ -15,7 +15,7 @@ export async function render(container, api) {
     <div class="card rise"><div class="card-label">Gate runs · ${lab.gate_runs || 0}</div>
       <table><tr><th>rev</th><th>verdict</th><th>suite</th></tr>${rows || '<tr><td class="dim">no runs yet</td></tr>'}</table></div>
     <div class="card rise"><div class="card-label">Run a gate from your terminal</div>
-      <pre class="block">jarvis eval gate --profile live-chunked</pre>
+      <pre class="block">uv run kira eval gate --profile live-chunked</pre>
       <div class="dim lab-note">${esc(lab.note || "")}</div></div>
     <div class="card rise debug-only"><div class="card-label">baselines.yaml</div>
       <pre class="block">${esc(lab.baselines || "(none)")}</pre></div>`;

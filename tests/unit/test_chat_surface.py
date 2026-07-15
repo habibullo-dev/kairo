@@ -229,7 +229,7 @@ def test_chat_knowledge_shelf_is_project_bound_and_metadata_only() -> None:
         "Choose a project",
         "Project files",
         "Knowledge connections",
-        "uv run jarvis graph rebuild",
+        "uv run kira graph rebuild",
         "window.location.hash",
     ):
         assert token in CHAT

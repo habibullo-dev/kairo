@@ -2301,7 +2301,7 @@ def _build_judge_client(
 
 
 def cli(argv: list[str] | None = None) -> int:
-    """The ``jarvis eval`` command surface (also `python tests/evals/runner.py`).
+    """The ``kira eval`` command surface (also `python tests/evals/runner.py`).
 
     Subcommands: ``gate`` (run + gate in one process; also ``--profile live-chunked``),
     ``run`` (stage ONE suite as a chunk), ``aggregate`` (merge chunks → one history line).
@@ -2326,7 +2326,7 @@ def cli(argv: list[str] | None = None) -> int:
         argv = ["gate", *argv]  # `runner.py --suite core` still means `gate --suite core`
 
     parser = argparse.ArgumentParser(
-        prog="jarvis eval", description="Run Jarvis smoke evals against the live API."
+        prog="kira eval", description="Run Kira evaluation suites."
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 

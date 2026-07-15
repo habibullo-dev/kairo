@@ -321,7 +321,7 @@ class UIConfig(BaseModel):
 class GoogleConnectorConfig(BaseModel):
     """Google Workspace connector (Phase 9): read Calendar/Gmail/Drive + create Gmail drafts
     (never send). Off by default; needs GOOGLE_CLIENT_ID/SECRET in .env and a one-time
-    ``jarvis connect google``. Scopes are read-only + gmail.compose (ADR-0009)."""
+    ``kira connect google``. Scopes are read-only + gmail.compose (ADR-0009)."""
 
     enabled: bool = False
     calendar_id: str = "primary"
@@ -455,7 +455,7 @@ class TelegramConfig(BaseModel):
 
 class KakaoConfig(BaseModel):
     """KakaoTalk "send to me" (memo) notifier (Phase 9). REST API key in .env
-    (KAKAO_REST_API_KEY); OAuth via ``jarvis connect kakao`` (talk_message scope). Kakao
+    (KAKAO_REST_API_KEY); OAuth via ``kira connect kakao`` (talk_message scope). Kakao
     requires a pre-registered redirect URI, so the loopback port is fixed, not ephemeral."""
 
     enabled: bool = False

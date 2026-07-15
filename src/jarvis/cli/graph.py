@@ -1,10 +1,10 @@
-"""``jarvis graph …`` — terminal rituals over the memory graph (Phase 15).
+"""``kira graph …`` — terminal rituals over the memory graph (Phase 15).
 
-    jarvis graph rebuild      delete + re-derive the derived edge cache from existing stores
-    jarvis graph dedup        report likely-duplicate entities (no writes)
-    jarvis graph merge        fold one asserted node into another (reversible, journaled)
-    jarvis graph split        pull a node back out of the canonical it was merged into
-    jarvis graph undo         reverse a journaled merge by id
+    kira graph rebuild      delete + re-derive the derived edge cache from existing stores
+    kira graph dedup        report likely-duplicate entities (no writes)
+    kira graph merge        fold one asserted node into another (reversible, journaled)
+    kira graph split        pull a node back out of the canonical it was merged into
+    kira graph undo         reverse a journaled merge by id
 
 Derive/read-only, EXCEPT the human-invoked merge/split/undo, which mutate asserted rows reversibly
 (nodes retracted never deleted; edges re-pointed and restorable) and are CLI-only — no route, so
@@ -39,7 +39,7 @@ async def _run_rebuild(data_dir: Path) -> int:
 async def _run_suggest(project_id: int, limit: int) -> int:
     # Explicit-invoke extraction: gather bounded local material, run the ledgered utility model, and
     # write QUARANTINED suggestions (pending human review). Makes a live model call; adds nothing
-    # durable — every proposal must be approved in the Memory tab / `jarvis graph review`.
+    # durable — every proposal must be approved in the Memory tab / `kira graph review`.
     from jarvis.cli.repl import _utility_client
     from jarvis.config import load_config
     from jarvis.graph import GraphStore
@@ -59,14 +59,14 @@ async def _run_suggest(project_id: int, limit: int) -> int:
         extract = utility_extractor(_utility_client(config), model)
         ids = await suggest(store, materials, extract, project_id=project_id, extractor_model=model)
         print(f"project {project_id}: proposed {len(ids)} suggestion(s) from {len(materials)} "
-              f"material item(s) — PENDING review (jarvis graph review / Memory tab).")
+              f"material item(s) — PENDING review (uv run kira graph review / Memory tab).")
         return 0
     finally:
         await db.close()
 
 
 def graph_cli(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(prog="jarvis graph", description="Memory-graph rituals.")
+    ap = argparse.ArgumentParser(prog="kira graph", description="Memory-graph rituals.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("rebuild", help="Delete + re-derive the derived edge cache (deterministic).")
     sg = sub.add_parser("suggest", help="Propose QUARANTINED memories from a project's material.")
@@ -158,7 +158,7 @@ async def _run_review(project_id: int | None, approve_id: int | None, reject_id:
             for s in view["suggestions"]:
                 print(f"  #{s['id']} [{s['kind']} · {s['trust_class']}] {s['preview']!r}")
         else:
-            print("usage: jarvis graph review --project N | --approve ID | --reject ID")
+            print("usage: uv run kira graph review --project N | --approve ID | --reject ID")
             return 2
         return 0
     finally:
@@ -185,7 +185,10 @@ async def _run_dedup(project_id: int | None, threshold: float) -> int:
         if not cands:
             print("no duplicate candidates found (report-only).")
             return 0
-        print(f"{len(cands)} candidate pair(s) — REPORT ONLY (confirm with `jarvis graph merge`):")
+        print(
+            f"{len(cands)} candidate pair(s) — REPORT ONLY "
+            "(confirm with `uv run kira graph merge`):"
+        )
         for c in cands:
             print(f"  [{c.kind}] #{c.a_id} {c.a_title!r} ~ #{c.b_id} {c.b_title!r} "
                   f"({c.reason} {c.score:.3f})")
@@ -200,7 +203,8 @@ async def _run_merge(canonical_id: int, merged_id: int) -> int:
         mid = await store.merge_nodes(
             canonical_id=canonical_id, merged_id=merged_id, created_by="user")
         print(f"merged #{merged_id} into #{canonical_id} (journal #{mid}); "
-              f"reverse with `jarvis graph undo {mid}` or `jarvis graph split {merged_id}`.")
+              f"reverse with `uv run kira graph undo {mid}` or "
+              f"`uv run kira graph split {merged_id}`.")
         return 0
     except ValueError as e:
         print(f"merge refused: {e}")

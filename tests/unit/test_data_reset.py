@@ -115,7 +115,7 @@ async def test_bootstrap_failure_restores_every_quarantine(
         raise RuntimeError("injected bootstrap failure")
 
     monkeypatch.setattr(reset_module, "_bootstrap_fresh_database", fail_bootstrap)
-    with pytest.raises(DataResetError, match="original Kairo data was restored"):
+    with pytest.raises(DataResetError, match="original Kira data was restored"):
         await reset_all_data(config, PASSWORD)
 
     assert (config.data_dir / "jarvis.db").is_file()

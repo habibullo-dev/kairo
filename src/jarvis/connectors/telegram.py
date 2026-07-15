@@ -5,7 +5,7 @@ text with no ``parse_mode`` and link previews disabled: notification content can
 untrusted email/calendar text, and it must never be interpreted as Telegram markup or
 auto-linkified into a clickable exfil URL.
 
-This module owns the low-level send used both by ``jarvis connect telegram --test`` and by the
+This module owns the low-level send used both by ``kira connect telegram --test`` and by the
 ``TelegramNotifier`` class that wraps it in Task 5.
 """
 

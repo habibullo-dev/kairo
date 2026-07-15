@@ -563,7 +563,7 @@ class Repl:
         # terminal — deferring it keeps Repl constructible in tests without a TTY.
         session: PromptSession = PromptSession(history=InMemoryHistory())
         self.console.print(
-            "[bold cyan]Jarvis[/] — ask me anything. Type [bold]exit[/] or press Ctrl-D to quit.\n"
+            "[bold cyan]Kira[/] — ask me anything. Type [bold]exit[/] or press Ctrl-D to quit.\n"
         )
         # patch_stdout routes a background notification printed while the prompt is
         # idle to *above* the prompt, so it can't corrupt the line being typed.
@@ -899,7 +899,7 @@ class Repl:
         self.console.print()
 
     async def _show_memories(self) -> None:
-        """`memories` command: list what Jarvis knows, with provenance (why it
+        """`memories` command: list what Kira knows, with provenance (why it
         believes each) — so a surprising memory is always traceable."""
         if self.memory is None:
             self.console.print("[dim]Long-term memory is not enabled.[/]\n")
@@ -927,7 +927,7 @@ class Repl:
             )
         async with self.turn_lock:
             self.renderer.reset()
-            self.console.print("[bold green]jarvis ›[/] ", end="")
+            self.console.print("[bold green]kira ›[/] ", end="")
             task = asyncio.create_task(self.loop.run_turn(self.messages, on_event=self.renderer))
             try:
                 result = await task
@@ -1054,7 +1054,7 @@ def _build_telegram_remote_control(
     if integration_is_locked(config.data_dir, "telegram"):
         console.print(
             "[yellow]Telegram remote control is locked after the data reset. "
-            "Run `jarvis connect telegram` to enable it for the new owner.[/]"
+            "Run `uv run kira connect telegram` to enable it for the new owner.[/]"
         )
         get_logger("jarvis.remote.telegram").warning(
             "telegram_remote_disabled", reason="reset_consent_required"
@@ -1862,7 +1862,7 @@ async def run_voice(config: Config, *, console: Console | None = None) -> None:
         )
         _session, listener = build_voice_session(config, repl=repl, console=console)
         console.print(
-            "[bold cyan]Jarvis voice[/] — press Enter to talk, Ctrl-C to quit. "
+            "[bold cyan]Kira voice[/] — press Enter to talk, Ctrl-C to quit. "
             "Risky actions confirm on screen.\n"
         )
         while True:  # push-to-talk: Enter arms one utterance (live; needs a mic)
@@ -2294,7 +2294,7 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
     console = console or Console()
     # Make the server self-sufficient for output encoding: force UTF-8 on the console (Windows
     # defaults to cp1252, which crashes on an emoji/em-dash in a log line) and route structured
-    # logs to the UTF-8 file. The `jarvis --ui` entry does this too; doing it here means run_ui is
+    # logs to the UTF-8 file. The `kira --ui` entry does this too; doing it here means run_ui is
     # safe however it's launched — a Unicode char in a tool input/message can never kill a turn.
     import contextlib as _ctx
     import sys as _sys
@@ -2477,13 +2477,13 @@ async def run_ui(config: Config, *, console: Console | None = None) -> None:
         urls = _ui_access_urls(config, auth, enrolled=enrolled)
         if enrolled:
             console.print(
-                "\n[bold cyan]Kairo Workstation[/]\n"
+                "\n[bold cyan]Kira Workstation[/]\n"
                 f"  Sign in: [underline]{urls['login']}[/]\n"
                 f"  [dim]Recovery only: {urls['recovery']}[/]\n"
             )
         else:
             console.print(
-                "\n[bold cyan]Kairo Workstation[/] — create the single owner account:\n"
+                "\n[bold cyan]Kira Workstation[/] — create the single owner account:\n"
                 f"  [underline]{urls['setup']}[/]\n"
                 "  [dim]This setup link is one-use and expires after 10 minutes.[/]\n"
             )

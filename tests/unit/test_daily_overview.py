@@ -81,7 +81,9 @@ async def test_daily_overview_shape_with_no_services(tmp_path: Path) -> None:
     # tmp_path isn't a git repo ⇒ the "." repo state is None (never an error).
     assert out["repos"] == [{"path": ".", "state": None}]
     assert out["evals"]["ever_run"] is False
-    assert out["evals"]["command"] == "jarvis eval gate"  # copy-command, never a run button
+    assert out["evals"]["command"] == "uv run kira eval gate"  # copy-only terminal ritual
+    assert "uv run kira eval plan --live" in out["evals"]["cost_note"]
+    assert "jarvis" not in str(out["evals"]).lower()
 
 
 async def test_daily_project_assessment_lifecycle_is_compact_and_freshness_bound(

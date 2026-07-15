@@ -22,5 +22,5 @@ Two safety properties dominate (enforced structurally, not by prompt framing):
    run silently; egress-with-agency is never unattended; connector text is framed untrusted.
 2. Least authority + honest failure: read-only scopes + gmail.compose (never send); token
    files live under the hard sensitive-path floor; auth failures surface only as a friendly
-   "run jarvis connect <provider>" — never a provider error body (ADR-0009).
+   "use `uv run kira connect <provider>`" — never a provider error body (ADR-0009).
 """

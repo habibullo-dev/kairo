@@ -23,7 +23,7 @@ def test_daily_has_an_active_project_card() -> None:
 
 def test_graph_empty_state_teaches_and_offers_rebuild() -> None:
     assert "Nothing to graph yet" in GRAPH
-    assert "jarvis graph rebuild" in GRAPH and "clipboard" in GRAPH  # copyable ritual
+    assert "uv run kira graph rebuild" in GRAPH and "clipboard" in GRAPH  # copyable ritual
     assert "read-only" in GRAPH  # explains the graph changes nothing
 
 

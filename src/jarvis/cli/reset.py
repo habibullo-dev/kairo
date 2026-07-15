@@ -28,7 +28,7 @@ from jarvis.persistence.instance_lock import InstanceAlreadyRunning, InstanceLoc
 from jarvis.persistence.migrations import latest_version
 from jarvis.ui.owner_auth import OwnerAuthService, OwnerLoginThrottledError
 
-CONFIRMATION_PHRASE = "RESET ALL KAIRO DATA"
+CONFIRMATION_PHRASE = "RESET ALL KIRA DATA"
 _DATABASE = "jarvis.db"
 _COUNT_TABLES = ("owner_accounts", "projects", "sessions", "tasks", "kb_sources")
 
@@ -87,13 +87,13 @@ def _planned_moves(
     data = _resolved_root(config.data_dir, must_exist=True)
     database = data / _DATABASE
     if not data.is_dir() or not database.is_file():
-        raise DataResetError("No initialized Kairo database was found to reset")
+        raise DataResetError("No initialized Kira database was found to reset")
     if _is_link_like(database) or database.resolve().parent != data:
-        raise DataResetError("Refusing a linked database outside the Kairo data root")
+        raise DataResetError("Refusing a linked database outside the Kira data root")
     _validate_safe_root(data, config_root=config_root)
     manifest_root = data.parent / ".kairo-reset-manifests"
     if manifest_root == data or manifest_root.is_relative_to(data):
-        raise DataResetError("Reset manifest storage must be outside the Kairo data root")
+        raise DataResetError("Reset manifest storage must be outside the Kira data root")
 
     configured = {
         "data": data,
@@ -107,7 +107,7 @@ def _planned_moves(
             grouped[data].add(role)
             continue
         if data.is_relative_to(path):
-            raise DataResetError(f"Refusing {role} root that contains the Kairo data root")
+            raise DataResetError(f"Refusing {role} root that contains the Kira data root")
         if (
             path == manifest_root
             or path.is_relative_to(manifest_root)
@@ -120,7 +120,7 @@ def _planned_moves(
                 raise DataResetError(f"Configured {role} root is not a directory: {path}")
             if role == "knowledge" and not include_external_knowledge:
                 raise DataResetError(
-                    "The configured knowledge vault is outside Kairo's data root; "
+                    "The configured knowledge vault is outside Kira's data root; "
                     "its exact path requires separate confirmation"
                 )
             grouped.setdefault(path, set()).add(role)
@@ -185,7 +185,7 @@ async def _authenticate_old_database(database: Path, password: str) -> tuple[int
     try:
         db = await connect(database)
     except Exception as exc:
-        raise DataResetError("The existing Kairo database could not be opened safely") from exc
+        raise DataResetError("The existing Kira database could not be opened safely") from exc
     try:
         lock = asyncio.Lock()
         auth = OwnerAuthService(db, lock)
@@ -303,7 +303,7 @@ async def _reset_with_lock(
         _write_manifest(manifest_path, manifest)
         if isinstance(exc, (DataResetError, OwnerLoginThrottledError)):
             raise
-        raise DataResetError("Reset failed; the original Kairo data was restored") from exc
+        raise DataResetError("Reset failed; the original Kira data was restored") from exc
 
     return DataResetResult(
         reset_id=reset_id,
@@ -327,9 +327,9 @@ async def reset_all_data(
 
 def reset_cli(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        prog="jarvis reset", description="Offline, quarantine-first Kairo data reset."
+        prog="kira reset", description="Offline, quarantine-first Kira data reset."
     )
-    parser.add_argument("target", choices=["data"], help="Reset all Kairo runtime data.")
+    parser.add_argument("target", choices=["data"], help="Reset all Kira runtime data.")
     parser.parse_args(argv)
 
     if not sys.stdin.isatty() or not sys.stdout.isatty():
@@ -351,7 +351,7 @@ def reset_cli(argv: list[str]) -> int:
         print(f"Reset refused: {exc}")
         return 1
     try:
-        print("This archives all Kairo chats, projects, tasks, knowledge, tokens, and logs.")
+        print("This archives all Kira chats, projects, tasks, knowledge, tokens, and logs.")
         print("Your source checkout, .env, and config are preserved. Nothing is hard-deleted.")
         if input(f"Type {CONFIRMATION_PHRASE} to continue: ") != CONFIRMATION_PHRASE:
             print("Reset cancelled: confirmation phrase did not match.")
@@ -388,8 +388,8 @@ def reset_cli(argv: list[str]) -> int:
     finally:
         lock.release()
 
-    print(f"Kairo data reset complete. Manifest: {result.manifest}")
+    print(f"Kira data reset complete. Manifest: {result.manifest}")
     for quarantine in result.quarantines:
         print(f"Quarantine: {quarantine}")
-    print("Start Kairo, create the new owner login, then reconnect each integration explicitly.")
+    print("Start Kira, create the new owner login, then reconnect each integration explicitly.")
     return 0

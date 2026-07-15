@@ -1,4 +1,4 @@
-"""Entry point for `python -m jarvis` and the `jarvis` console script."""
+"""Entry point for the Kira console script and the legacy ``python -m jarvis`` route."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def _force_utf8_stdio() -> None:
 def main() -> None:
     _force_utf8_stdio()
 
-    # `jarvis eval …` is the live eval gate (incl. the chunked profile). It lives under
+    # `kira eval …` is the live eval gate (incl. the chunked profile). It lives under
     # tests/evals and is a dev/CI ritual, so it's a thin delegate imported only on demand.
     # The console script runs from an editable install, so add the repo root (which holds
     # tests/) to sys.path before importing; a real wheel has no tests/ and prints the hint.
@@ -36,54 +36,54 @@ def main() -> None:
         try:
             from tests.evals.runner import cli as eval_cli
         except ModuleNotFoundError:
-            print("`jarvis eval` runs from the repo checkout (the eval harness is under tests/).")
+            print("`kira eval` runs from the repo checkout (the eval harness is under tests/).")
             sys.exit(2)
         sys.exit(eval_cli(argv[1:]))
 
-    # ``jarvis doctor`` is a local, read-only first-run diagnostic.  It never starts the REPL,
+    # ``kira doctor`` is a local, read-only first-run diagnostic. It never starts the REPL,
     # creates runtime directories, migrates SQLite, contacts a provider, or prints secret values.
     if argv and argv[0] == "doctor":
         from jarvis.cli.doctor import doctor_cli
 
         sys.exit(doctor_cli(argv[1:]))
 
-    # `jarvis connect <provider>` is the terminal ritual for granting account access (OAuth /
+    # `kira connect <provider>` is the terminal ritual for granting account access (OAuth /
     # notifier config). A thin delegate imported on demand so --version/--help stay instant.
     if argv and argv[0] == "connect":
         from jarvis.cli.connect import connect_cli
 
         sys.exit(connect_cli(argv[1:]))
 
-    # ``jarvis backup create|verify`` is an explicit local recovery ritual. It has no model,
+    # ``kira backup create|verify`` is an explicit local recovery ritual. It has no model,
     # connector, scheduler, or restore-overwrite path.
     if argv and argv[0] == "backup":
         from jarvis.cli.backup import backup_cli
 
         sys.exit(backup_cli(argv[1:]))
 
-    # ``jarvis reset data`` is an attended, offline-only, quarantine-first reset. It runs
+    # ``kira reset data`` is an attended, offline-only, quarantine-first reset. It runs
     # before provider-key validation and acquires the same exclusive lock as the workstation.
     if argv and argv[0] == "reset":
         from jarvis.cli.reset import reset_cli
 
         sys.exit(reset_cli(argv[1:]))
 
-    # `jarvis graph <cmd>` — memory-graph rituals (rebuild the derived edge cache, …). Derive/
+    # `kira graph <cmd>` — memory-graph rituals (rebuild the derived edge cache, …). Derive/
     # read-only; a thin delegate imported on demand.
     if argv and argv[0] == "graph":
         from jarvis.cli.graph import graph_cli
 
         sys.exit(graph_cli(argv[1:]))
 
-    # `jarvis dream run <job>` — run ONE proposal-only dreaming job ATTENDED (Phase 16). Never
+    # `kira dream run <job>` — run ONE proposal-only dreaming job ATTENDED (Phase 16). Never
     # schedules; the output is a proposal reviewed in the Notification Center. On-demand delegate.
     if argv and argv[0] == "dream":
         from jarvis.cli.dream import dream_cli
 
         sys.exit(dream_cli(argv[1:]))
 
-    parser = argparse.ArgumentParser(prog="jarvis", description="A from-scratch agentic assistant.")
-    parser.add_argument("--version", action="version", version=f"jarvis {__version__}")
+    parser = argparse.ArgumentParser(prog="kira", description="Kira workplace assistant.")
+    parser.add_argument("--version", action="version", version=f"kira {__version__}")
     parser.add_argument(
         "--resume", action="store_true", help="Resume the most recent session (task 10)."
     )

@@ -7,7 +7,7 @@ written atomically (temp + ``os.replace``, atomic on Windows and macOS) with bes
 ``TokenStore.access_token`` returns a valid bearer token, refreshing under an ``asyncio.Lock``
 when it is within the skew of expiry — single-flight, so two concurrent callers trigger exactly
 one refresh POST. A failed/`invalid_grant` refresh raises :class:`ConnectorAuthError` whose only
-surfaced text is the friendly "run jarvis connect <provider>" (A6).
+surfaced text is the friendly "use `uv run kira connect <provider>`" (A6).
 """
 
 from __future__ import annotations
