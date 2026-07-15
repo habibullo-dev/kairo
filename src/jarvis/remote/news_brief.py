@@ -54,7 +54,8 @@ _REQUEST_COLUMNS = (
     "max_pages, retention, destination_hash, state, artifact_id, local_path, created_at, "
     "expires_at, resolved_at, completed_at, updated_at, error"
 )
-_RENDERER_VERSION = "kairo-news-brief-v1"
+_RENDERER_VERSION = "kira-news-brief-v2"
+_RETIRED_RENDERER_ERROR = "renderer version retired"
 _MAX_RESULTS = 5
 _MAX_PDF_BYTES = 8_000_000
 _MAX_PAGES = 8
@@ -198,6 +199,16 @@ class NewsBriefStore:
         ).fetchall()
         return [_row_to_request(row) for row in rows]
 
+    async def recoverable(self) -> list[NewsBriefRequest]:
+        rows = await (
+            await self.db.execute(
+                f"SELECT {_REQUEST_COLUMNS} FROM telegram_news_brief_requests "
+                "WHERE state IN ('pending', 'approved', 'running', 'rendered', 'sending') "
+                "ORDER BY id ASC"
+            )
+        ).fetchall()
+        return [_row_to_request(row) for row in rows]
+
     async def create(
         self,
         *,
@@ -294,7 +305,11 @@ class NewsBriefStore:
                 )
             ).fetchone()
             request = _row_to_request(row) if row else None
-            if request is None or request.state != "pending":
+            if (
+                request is None
+                or request.state != "pending"
+                or request.renderer_version != _RENDERER_VERSION
+            ):
                 return None
             if dt.datetime.fromisoformat(request.expires_at) <= moment:
                 await self.db.execute(
@@ -424,9 +439,7 @@ def _topic_from_request(text: str) -> str:
         if not topic:
             return "Top news"
         topic = _safe_text(topic, 80)
-        unsafe = re.search(
-            r"(?:https?://|[/\\]|@|\b(?:token|password|secret|key)\b)", topic, re.I
-        )
+        unsafe = re.search(r"(?:https?://|[/\\]|@|\b(?:token|password|secret|key)\b)", topic, re.I)
         if not topic or unsafe:
             raise ValueError("Use a short public topic after /news-pdf, without URLs or secrets.")
         return f"{topic} news"
@@ -444,7 +457,7 @@ def render_authorization(authorization: NewsBriefAuthorization) -> str:
         f"Date: {request.local_date} ({request.timezone})\n"
         f"Research: one public search, up to {request.max_results} sources\n"
         f"Output: PDF, up to {request.max_pages} pages / {request.max_pdf_bytes // 1_000_000} MB\n"
-        "Retention: saved in Kairo Artifacts\n"
+        "Retention: saved in Kira Artifacts\n"
         "Delivery: this allowlisted Telegram chat\n\n"
         f"Approve: /approve {authorization.approval_code}\n"
         f"Deny: /deny {authorization.approval_code}\n"
@@ -468,7 +481,7 @@ def _fonts() -> tuple[str, str]:
         for regular, bold in candidates:
             if regular.is_file() and bold.is_file():
                 suffix = hashlib.sha256(str(regular).encode()).hexdigest()[:8]
-                regular_name, bold_name = f"KairoRegular{suffix}", f"KairoBold{suffix}"
+                regular_name, bold_name = f"KiraRegular{suffix}", f"KiraBold{suffix}"
                 pdfmetrics.registerFont(TTFont(regular_name, str(regular)))
                 pdfmetrics.registerFont(TTFont(bold_name, str(bold)))
                 _FONT_CACHE = (regular_name, bold_name)
@@ -511,6 +524,8 @@ def _source_label(item: PublicSearchItem) -> str:
 
 def render_news_pdf(request: NewsBriefRequest, search: PublicSearchResponse) -> bytes:
     """Render escaped public text only; no HTML, remote assets, attachments, or PDF actions."""
+    if request.renderer_version != _RENDERER_VERSION:
+        raise ValueError("The approved news renderer version is no longer available.")
     if not search.results:
         raise ValueError("No usable public news sources were returned.")
     regular, bold = _fonts()
@@ -522,7 +537,7 @@ def render_news_pdf(request: NewsBriefRequest, search: PublicSearchResponse) -> 
     muted = colors.HexColor("#617084")
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
-        "KairoTitle",
+        "KiraTitle",
         parent=styles["Title"],
         fontName=bold,
         fontSize=25,
@@ -533,7 +548,7 @@ def render_news_pdf(request: NewsBriefRequest, search: PublicSearchResponse) -> 
         wordWrap="CJK",
     )
     meta_style = ParagraphStyle(
-        "KairoMeta",
+        "KiraMeta",
         parent=styles["Normal"],
         fontName=regular,
         fontSize=9,
@@ -542,7 +557,7 @@ def render_news_pdf(request: NewsBriefRequest, search: PublicSearchResponse) -> 
         wordWrap="CJK",
     )
     overview_style = ParagraphStyle(
-        "KairoOverview",
+        "KiraOverview",
         parent=styles["BodyText"],
         fontName=regular,
         fontSize=11,
@@ -551,7 +566,7 @@ def render_news_pdf(request: NewsBriefRequest, search: PublicSearchResponse) -> 
         wordWrap="CJK",
     )
     headline_style = ParagraphStyle(
-        "KairoHeadline",
+        "KiraHeadline",
         parent=styles["Heading2"],
         fontName=bold,
         fontSize=14,
@@ -561,7 +576,7 @@ def render_news_pdf(request: NewsBriefRequest, search: PublicSearchResponse) -> 
         spaceAfter=2 * mm,
     )
     body_style = ParagraphStyle(
-        "KairoBody",
+        "KiraBody",
         parent=styles["BodyText"],
         fontName=regular,
         fontSize=10,
@@ -570,7 +585,7 @@ def render_news_pdf(request: NewsBriefRequest, search: PublicSearchResponse) -> 
         wordWrap="CJK",
     )
     source_style = ParagraphStyle(
-        "KairoSource",
+        "KiraSource",
         parent=styles["BodyText"],
         fontName=regular,
         fontSize=7.5,
@@ -589,7 +604,7 @@ def render_news_pdf(request: NewsBriefRequest, search: PublicSearchResponse) -> 
         pdf.drawString(
             18 * mm,
             10 * mm,
-            "Kairo News Brief - public sources, verify developing stories",
+            "Kira News Brief - public sources, verify developing stories",
         )
         pdf.drawRightString(width - 18 * mm, 10 * mm, f"{doc.page}")
         pdf.restoreState()
@@ -601,26 +616,39 @@ def render_news_pdf(request: NewsBriefRequest, search: PublicSearchResponse) -> 
         rightMargin=18 * mm,
         topMargin=18 * mm,
         bottomMargin=22 * mm,
-        title=f"Kairo News Brief - {request.local_date}",
-        author="Kairo",
+        title=f"Kira News Brief - {request.local_date}",
+        author="Kira",
         subject="Public news brief",
         pageCompression=1,
     )
     story: list[object] = [
         Table(
-            [[Paragraph("KAIRO / NEWS INTELLIGENCE", ParagraphStyle(
-                "Kicker", fontName=bold, fontSize=8, leading=10, textColor=colors.white,
-                alignment=TA_CENTER,
-            ))]],
+            [
+                [
+                    Paragraph(
+                        "KIRA / NEWS INTELLIGENCE",
+                        ParagraphStyle(
+                            "Kicker",
+                            fontName=bold,
+                            fontSize=8,
+                            leading=10,
+                            textColor=colors.white,
+                            alignment=TA_CENTER,
+                        ),
+                    )
+                ]
+            ],
             colWidths=[58 * mm],
-            style=TableStyle([
-                ("BACKGROUND", (0, 0), (-1, -1), blue),
-                ("BOX", (0, 0), (-1, -1), 0, blue),
-                ("LEFTPADDING", (0, 0), (-1, -1), 4 * mm),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 4 * mm),
-                ("TOPPADDING", (0, 0), (-1, -1), 2 * mm),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm),
-            ]),
+            style=TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), blue),
+                    ("BOX", (0, 0), (-1, -1), 0, blue),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4 * mm),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4 * mm),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2 * mm),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm),
+                ]
+            ),
         ),
         Spacer(1, 6 * mm),
         Paragraph("Today&apos;s News Brief", title_style),
@@ -635,21 +663,25 @@ def render_news_pdf(request: NewsBriefRequest, search: PublicSearchResponse) -> 
         story.extend(
             [
                 Table(
-                    [[
-                        Paragraph(
-                            f"<b>Executive snapshot</b><br/>{_p(search.answer)}",
-                            overview_style,
-                        )
-                    ]],
+                    [
+                        [
+                            Paragraph(
+                                f"<b>Executive snapshot</b><br/>{_p(search.answer)}",
+                                overview_style,
+                            )
+                        ]
+                    ],
                     colWidths=[A4[0] - 36 * mm],
-                    style=TableStyle([
-                        ("BACKGROUND", (0, 0), (-1, -1), pale),
-                        ("LINEBEFORE", (0, 0), (0, -1), 3, cyan),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 6 * mm),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 6 * mm),
-                        ("TOPPADDING", (0, 0), (-1, -1), 5 * mm),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5 * mm),
-                    ]),
+                    style=TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, -1), pale),
+                            ("LINEBEFORE", (0, 0), (0, -1), 3, cyan),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 6 * mm),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 6 * mm),
+                            ("TOPPADDING", (0, 0), (-1, -1), 5 * mm),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 5 * mm),
+                        ]
+                    ),
                 ),
                 Spacer(1, 8 * mm),
             ]
@@ -657,7 +689,7 @@ def render_news_pdf(request: NewsBriefRequest, search: PublicSearchResponse) -> 
     for index, item in enumerate(search.results, 1):
         if index == 4 and len(search.results) >= 5:
             continuation_style = ParagraphStyle(
-                "KairoContinuation",
+                "KiraContinuation",
                 parent=title_style,
                 fontSize=18,
                 leading=22,
@@ -769,6 +801,14 @@ class NewsBriefService:
         for request in await self.store.list(limit=20):
             if request.state != "pending":
                 continue
+            if request.renderer_version != _RENDERER_VERSION:
+                await self.store.transition(
+                    request.id,
+                    expected=("pending",),
+                    state="failed",
+                    error=_RETIRED_RENDERER_ERROR,
+                )
+                continue
             authorization = await self.store.issue_token(
                 request.id, ttl_minutes=self.approval_ttl_minutes
             )
@@ -787,9 +827,7 @@ class NewsBriefService:
             lines.append(f"N{request.id} [{request.state}] {request.scope} - {request.local_date}")
         return "\n".join(lines)
 
-    async def resolve(
-        self, code: str, *, resolution: Literal["approve", "deny"]
-    ) -> str | None:
+    async def resolve(self, code: str, *, resolution: Literal["approve", "deny"]) -> str | None:
         if not code.strip().upper().startswith("N-"):
             return None
         result = await self.store.consume(code, resolution=resolution)
@@ -798,9 +836,20 @@ class NewsBriefService:
         request = result.request
         if resolution == "deny":
             return f"Denied news brief N{request.id}. Nothing was searched, created, or sent."
+        if request.renderer_version != _RENDERER_VERSION:
+            await self.store.transition(
+                request.id,
+                expected=("approved",),
+                state="failed",
+                error=_RETIRED_RENDERER_ERROR,
+            )
+            return (
+                f"News brief N{request.id} uses a retired renderer. Nothing was searched, "
+                "created, or sent; request a fresh brief."
+            )
         self._spawn(request.id, self._generate(request.id))
         return (
-            f"Approved news brief N{request.id}. Kairo is researching and building the PDF now; "
+            f"Approved news brief N{request.id}. Kira is researching and building the PDF now; "
             "it will arrive here when ready."
         )
 
@@ -836,14 +885,22 @@ class NewsBriefService:
 
     def _paths(self, request: NewsBriefRequest) -> tuple[Path, Path]:
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"kairo-news-brief-{request.local_date}-n{request.id}.pdf"
+        filename = f"kira-news-brief-{request.local_date}-n{request.id}.pdf"
         target = (self.artifact_dir / filename).resolve()
         if target.parent != self.artifact_dir or target.name != filename:
             raise ValueError("News artifact path escaped its managed directory.")
         return target, target.with_suffix(".pdf.tmp")
 
-    def _existing_artifact_path(self, raw_path: str) -> Path | None:
-        path = Path(raw_path).resolve()
+    def _existing_artifact_path(
+        self,
+        request: NewsBriefRequest,
+        supplied: Path | None = None,
+    ) -> Path | None:
+        expected, _temp = self._paths(request)
+        recorded = Path(request.local_path or "")
+        path = supplied or recorded
+        if recorded != expected or path != expected:
+            return None
         if path.parent != self.artifact_dir or not path.is_file() or path.is_symlink():
             return None
         return path
@@ -852,32 +909,61 @@ class NewsBriefService:
     def _atomic_store(target: Path, temp: Path, raw: bytes) -> None:
         if target.exists() or target.is_symlink() or temp.exists() or temp.is_symlink():
             raise ValueError("News artifact path already exists.")
+        created_temp = False
+        linked_target = False
         try:
             with temp.open("xb") as handle:
+                created_temp = True
                 handle.write(raw)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temp, target)
+            os.link(temp, target)
+            linked_target = True
+            temp.unlink()
+            created_temp = False
         except BaseException:
-            with contextlib.suppress(OSError):
-                temp.unlink()
+            if linked_target and temp.exists() and target.exists():
+                with contextlib.suppress(OSError):
+                    if os.path.samefile(temp, target):
+                        target.unlink()
+            if created_temp:
+                with contextlib.suppress(OSError):
+                    temp.unlink()
             raise
 
     async def _generate(self, request_id: int) -> None:
         target: Path | None = None
-        temp: Path | None = None
+        stored_target = False
         try:
-            if not await self.store.transition(
-                request_id, expected=("approved",), state="running"
-            ):
+            request = await self.store.get(request_id)
+            if request is None or request.state != "approved":
+                return
+            if request.renderer_version != _RENDERER_VERSION:
+                await self.store.transition(
+                    request.id,
+                    expected=("approved",),
+                    state="failed",
+                    error=_RETIRED_RENDERER_ERROR,
+                )
+                return
+            if not await self.store.transition(request_id, expected=("approved",), state="running"):
                 return
             request = await self.store.get(request_id)
             if request is None:
+                return
+            if request.renderer_version != _RENDERER_VERSION:
+                await self.store.transition(
+                    request.id,
+                    expected=("running",),
+                    state="failed",
+                    error=_RETIRED_RENDERER_ERROR,
+                )
                 return
             search = await self.search(request.query, request.max_results)
             raw = await asyncio.to_thread(render_news_pdf, request, search)
             target, temp = self._paths(request)
             await asyncio.to_thread(self._atomic_store, target, temp, raw)
+            stored_target = True
             digest = hashlib.sha256(raw).hexdigest()
             artifact_id = (
                 await self.register_artifact(request, target, digest)
@@ -903,10 +989,7 @@ class NewsBriefService:
                 )
             raise
         except Exception as exc:
-            if temp is not None:
-                with contextlib.suppress(OSError):
-                    temp.unlink()
-            if target is not None:
+            if stored_target and target is not None:
                 current = await self.store.get(request_id)
                 if current is None or current.state == "running":
                     with contextlib.suppress(OSError):
@@ -928,9 +1011,15 @@ class NewsBriefService:
         request = await self.store.get(request_id)
         if request is None or request.state != "rendered" or request.local_path is None:
             return
-        path = target or await asyncio.to_thread(
-            self._existing_artifact_path, request.local_path
-        )
+        if request.renderer_version != _RENDERER_VERSION:
+            await self.store.transition(
+                request.id,
+                expected=("rendered",),
+                state="failed",
+                error=_RETIRED_RENDERER_ERROR,
+            )
+            return
+        path = await asyncio.to_thread(self._existing_artifact_path, request, target)
         if path is None:
             await self.store.transition(
                 request_id,
@@ -966,7 +1055,7 @@ class NewsBriefService:
             await self.send_document(
                 path.name,
                 content,
-                f"Kairo news brief N{request.id} - {request.local_date}",
+                f"Kira news brief N{request.id} - {request.local_date}",
             )
         except asyncio.CancelledError:
             await self.store.transition(
@@ -985,13 +1074,26 @@ class NewsBriefService:
             )
             await self._safe_text(
                 f"News brief N{request_id} was created, but Telegram delivery is uncertain. "
-                "Kairo will not auto-resend it and risk a duplicate."
+                "Kira will not auto-resend it and risk a duplicate."
             )
             return
         await self.store.transition(request_id, expected=("sending",), state="sent")
 
     async def start(self) -> None:
-        for request in reversed(await self.store.list(limit=100)):
+        for request in await self.store.recoverable():
+            if request.renderer_version != _RENDERER_VERSION and request.state in {
+                "pending",
+                "approved",
+                "running",
+                "rendered",
+            }:
+                await self.store.transition(
+                    request.id,
+                    expected=(request.state,),
+                    state="failed",
+                    error=_RETIRED_RENDERER_ERROR,
+                )
+                continue
             if request.state == "approved":
                 self._spawn(request.id, self._generate(request.id))
             elif request.state == "rendered":
