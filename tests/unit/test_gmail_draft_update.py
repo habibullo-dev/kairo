@@ -1,7 +1,7 @@
 """Gmail draft edit-in-place (Phase 12 Task 6) — MockTransport, no network.
 
 update_draft edits an existing draft (users.drafts.update, PUT) within the gmail.compose scope.
-The load-bearing pin: it targets /drafts/{id} and NEVER a send path — Kairo remains drafts-only.
+The load-bearing pin: it targets /drafts/{id} and NEVER a send path — Kira remains drafts-only.
 """
 
 from __future__ import annotations

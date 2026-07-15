@@ -397,7 +397,7 @@ def _draft_create(req: DraftCreateRequest) -> Preview:
         kind=req.kind.value,
         title=f"Draft email: {req.subject or '(no subject)'}",
         fields=tuple(fields),
-        notes=("This creates a DRAFT only — Kairo never sends mail.",),
+        notes=("This creates a DRAFT only — Kira never sends mail.",),
         warnings=tuple(warnings),
     )
 
@@ -412,7 +412,7 @@ def _draft_update(req: DraftUpdateRequest) -> Preview:
         kind=req.kind.value,
         title=f"Update draft: {req.subject or '(no subject)'}",
         fields=tuple(fields),
-        notes=("This updates a DRAFT only — Kairo never sends mail.",),
+        notes=("This updates a DRAFT only — Kira never sends mail.",),
     )
 
 

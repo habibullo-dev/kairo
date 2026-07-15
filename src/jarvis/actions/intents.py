@@ -49,7 +49,7 @@ class IntentState(StrEnum):
 
 
 class IntentKind(StrEnum):
-    """The outward-write verb. One value per (provider, operation) Kairo can perform. New
+    """The outward-write verb. One value per (provider, operation) Kira can perform. New
     verbs are added here AND allowed by the tool layer — the store treats ``kind`` as opaque."""
 
     CALENDAR_CREATE = "calendar_create"

@@ -1,6 +1,6 @@
 """Drafts-only, forever (Phase 9 clarification): no Gmail send surface may exist in src/.
 
-Kairo may create drafts (users.drafts.create via gmail.compose) but must never send. This grep
+Kira may create drafts (users.drafts.create via gmail.compose) but must never send. This grep
 pin fails if any Gmail send endpoint, scope, or path appears anywhere in the source tree — a
 standing guard against a future task quietly adding one.
 """

@@ -196,7 +196,7 @@ def test_doc_create_and_update() -> None:
 
 def test_draft_create_is_drafts_only_and_warns() -> None:
     prev = build_preview(DraftCreateRequest(to="", subject="", body="hi"))
-    assert "This creates a DRAFT only — Kairo never sends mail." in prev.notes
+    assert "This creates a DRAFT only — Kira never sends mail." in prev.notes
     assert "The draft has no recipient." in prev.warnings
     assert "The draft has no subject." in prev.warnings
 
@@ -206,7 +206,7 @@ def test_draft_update_is_drafts_only() -> None:
         DraftUpdateRequest(draft_id="d1", to="bob@x.com", subject="Re: hi", body="updated")
     )
     assert prev.title == "Update draft: Re: hi"
-    assert "This updates a DRAFT only — Kairo never sends mail." in prev.notes
+    assert "This updates a DRAFT only — Kira never sends mail." in prev.notes
 
 
 def test_timezone_is_resolved_for_offset_input() -> None:

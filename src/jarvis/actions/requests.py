@@ -1,4 +1,4 @@
-"""Typed write-request shapes: Kairo's internal representation of one proposed outward write.
+"""Typed write-request shapes: Kira's internal representation of one proposed outward write.
 
 These are deliberately provider-agnostic value objects. The preview builder
 (:mod:`jarvis.actions.preview`) renders them for human approval; the executor (Milestone 2)
