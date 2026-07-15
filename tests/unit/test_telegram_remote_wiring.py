@@ -32,7 +32,7 @@ class _Runner:
     def __init__(self) -> None:
         self.task_notify = None
         self.kicks = 0
-        self.in_flight = False
+        self.in_flight: str | None = None
 
     def kick(self) -> None:
         self.kicks += 1
@@ -240,6 +240,10 @@ async def test_remote_wiring_uses_utility_model_and_exposes_no_tools_on_first_tu
         assert call["tools"] == []
         assert call["messages"] == [{"role": "user", "content": "what should I focus on?"}]
         assert call["max_tokens"] == 500
+        assert "replying through Kira's narrow Telegram remote-control channel" in call["system"]
+        assert "owner clearly asks Kira to" in call["system"]
+        assert "checked Kira's live state" in call["system"]
+        assert "Kairo" not in call["system"]
         assert "no direct execution authority" in call["system"]
         assert "ideally under 280 characters" in call["system"]
         assert "work in this same Telegram chat" in call["system"]
@@ -376,7 +380,7 @@ async def test_remote_photo_question_reaches_vision_model_without_attachment_too
         await db.close()
 
 
-async def test_natural_project_work_question_reads_live_host_state(tmp_path: Path) -> None:
+async def test_host_state_commands_use_canonical_kira_copy(tmp_path: Path) -> None:
     config = load_config(root=tmp_path, env_file=None)
     config.connectors.telegram.remote_control.enabled = True
     config.connectors.telegram.remote_control.allowed_chat_id = "123"
@@ -388,13 +392,12 @@ async def test_natural_project_work_question_reads_live_host_state(tmp_path: Pat
         lock = asyncio.Lock()
         session_store = SessionStore(db, lock)
         project_store = ProjectStore(db, lock)
-        await project_store.create(name="Jarvis", repos=[str(tmp_path)])
+        await project_store.create(name="Kira", repos=[str(tmp_path)])
         projects = ProjectService(project_store)
-        task_service = TaskService(TaskStore(db, lock), config.scheduler)
         runner = _Runner()
         fake = FakeClient([])
         repl = SimpleNamespace(
-            tasks=task_service,
+            tasks=None,
             projects=projects,
             turn_lock=asyncio.Lock(),
             registry=ToolRegistry(),
@@ -416,16 +419,36 @@ async def test_natural_project_work_question_reads_live_host_state(tmp_path: Pat
         )
         assert controller is not None
         http = _TelegramHttp(
-            [[], [_update(1, text="Is Kairo working on any projects now?")]]
+            [
+                [],
+                [
+                    _update(1, text="Is Kira working on any projects now?"),
+                    _update(2, text="/tasks"),
+                    _update(3, text="/briefing"),
+                ],
+            ]
         )
         await controller.poll_once(http=http)
-        assert await controller.poll_once(http=http) == 1
+        assert await controller.poll_once(http=http) == 3
 
         assert fake.calls == []
-        assert http.sent[-1]["text"] == (
-            "No—Kairo is online, but no project work is running right now.\n"
+        status_text, tasks_text, briefing_text = [message["text"] for message in http.sent]
+        assert status_text == (
+            "No—Kira is online, but no project work is running right now.\n"
             "Scheduled tasks: 0. Registered projects: 1.\n"
-            "Remote Operator: enabled."
+            "Remote Operator: read-only."
+        )
+        assert tasks_text == "The scheduler is off on this Kira instance."
+        assert briefing_text.startswith("Kira briefing\n\nNo—Kira is online")
+        assert "Kairo" not in "\n".join((status_text, tasks_text, briefing_text))
+
+        runner.in_flight = "Repair frontend wiring"
+        http.batches.append([_update(4, text="/status")])
+        assert await controller.poll_once(http=http) == 1
+        assert http.sent[-1]["text"] == (
+            'Yes—Kira is working now: background job "Repair frontend wiring".\n'
+            "Scheduled tasks: 0. Registered projects: 1.\n"
+            "Remote Operator: read-only."
         )
     finally:
         if controller is not None:
@@ -447,7 +470,7 @@ async def test_remote_operator_exposes_only_proposal_then_host_approval_queues_j
         lock = asyncio.Lock()
         session_store = SessionStore(db, lock)
         project_store = ProjectStore(db, lock)
-        project_id = await project_store.create(name="Jarvis", repos=[str(tmp_path)])
+        project_id = await project_store.create(name="Kira", repos=[str(tmp_path)])
         task_store = TaskStore(db, lock)
         task_service = TaskService(task_store, config.scheduler)
         fake = FakeClient(
@@ -461,7 +484,7 @@ async def test_remote_operator_exposes_only_proposal_then_host_approval_queues_j
                                 "kind": "job",
                                 "title": "Repair frontend wiring",
                                 "instruction": "Inspect and repair the frontend API wiring.",
-                                "project": "jarvis",
+                                "project": "kira",
                                 "status_interval_minutes": 15,
                             },
                         )
@@ -493,7 +516,7 @@ async def test_remote_operator_exposes_only_proposal_then_host_approval_queues_j
         )
         assert controller is not None
         http = _TelegramHttp(
-            [[], [_update(1, text="Kairo, repair the frontend wiring in Jarvis")]]
+            [[], [_update(1, text="Kira, repair the frontend wiring in Kira")]]
         )
         await controller.poll_once(http=http)
         assert await controller.poll_once(http=http) == 1
@@ -503,6 +526,7 @@ async def test_remote_operator_exposes_only_proposal_then_host_approval_queues_j
         assert exposed == ["remote_propose_work"]
         preview = http.sent[-1]["text"]
         assert "Remote proposal #" in preview
+        assert "Project: kira" in preview
         assert "Approve: /approve" in preview
         assert await task_store.list() == []
 
