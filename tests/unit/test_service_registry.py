@@ -36,6 +36,7 @@ def test_catalog_rows_fully_classified() -> None:
         assert spec.stages <= {"council", "review", "execution"}
         assert isinstance(spec.context_policy, ContextPolicy)
         assert isinstance(spec.output_trust, OutputTrust)
+        assert "Kairo" not in spec.note and "Jarvis" not in spec.note
 
 
 def test_only_planned_adapters_are_priority_now() -> None:

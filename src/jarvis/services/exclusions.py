@@ -22,7 +22,7 @@ from jarvis.paths import _SENSITIVE_DIRS, _SENSITIVE_PATTERNS, is_sensitive_path
 
 #: Glob patterns handed to a scanner's ``--exclude`` so it skips secret/credential/token files.
 #: Derived from the sensitive floor: the always-denied filename/path patterns plus the
-#: all-secret directories and the Kairo token store (``data/connectors/``).
+#: all-secret directories and the Kira token store (``data/connectors/``).
 def exclude_globs() -> list[str]:
     globs: list[str] = []
     for pat in _SENSITIVE_PATTERNS:

@@ -160,7 +160,7 @@ def test_google_stitch_service_classification() -> None:
     from jarvis.services.catalog import SERVICE_CATALOG, ContextPolicy, OutputTrust
 
     s = SERVICE_CATALOG["google_stitch"]
-    assert s.kind == "mcp"  # official Stitch MCP; wired when Kairo's MCP-client layer exists
+    assert s.kind == "mcp"  # official Stitch MCP; wired when Kira's MCP-client layer exists
     assert s.priority == "later"  # disabled by default (no MCP client yet)
     assert s.hosted is True and s.egress is True  # prompts/design context go to Google
     assert s.write is False and s.dangerous is False

@@ -10,7 +10,7 @@ returns a friendly error, never a crash. Results are framed ``untrusted_external
 Jina Reader (``jina_read``) was evaluated for this task and DEFERRED (stays priority=later): with
 ``firecrawl_scrape`` (Task 3) already providing hosted JS-rendered URL->markdown and the free
 ``web_fetch`` covering basic extraction, a third URL-to-markdown tool clears no material value bar
-for Kairo (its only edge — a rate-limited free tier — is irrelevant to a quality-first assistant).
+for Kira (its only edge — a rate-limited free tier — is irrelevant to a quality-first assistant).
 See the plan §M1 Task 5 and the jina_reader catalog note.
 """
 
