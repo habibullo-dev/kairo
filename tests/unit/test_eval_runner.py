@@ -14,6 +14,7 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from tests.evals import recorder, runner
 from tests.evals.runner import RunObservation, evaluate, make_approver
 
@@ -386,9 +387,11 @@ async def test_unknown_child_model_is_error(tmp_path: Path) -> None:
 # --- isolated Fable cache A/B probe ----------------------------------------
 
 
-def test_cache_ab_cli_requires_explicit_live_cap(capsys) -> None:
-    assert runner.cli(["cache-ab"]) == 2
-    assert "requires --live and a positive --max-cost-usd" in capsys.readouterr().out
+@pytest.mark.parametrize("cap", [None, "nan", "inf", "0"])
+def test_cache_ab_cli_requires_explicit_finite_live_cap(cap: str | None, capsys) -> None:
+    argv = ["cache-ab"] if cap is None else ["cache-ab", "--live", "--max-cost-usd", cap]
+    assert runner.cli(argv) == 2
+    assert "requires --live and a positive finite --max-cost-usd" in capsys.readouterr().out
 
 
 def test_eval_plan_remains_read_only_and_does_not_acquire_reset_barrier(
@@ -398,8 +401,65 @@ def test_eval_plan_remains_read_only_and_does_not_acquire_reset_barrier(
         raise AssertionError("read-only planning must not acquire the reset writer barrier")
 
     monkeypatch.setattr(runner, "reset_sensitive_writer", unexpected_barrier)
-    assert runner.cli(["plan", "--suite", "core", "--runs", "1"]) == 0
+    assert runner.cli(["plan", "--suite", "core", "--runs", "1", "--live"]) == 0
     assert "projected live cost" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("command", "mode", "cap"),
+    [
+        ("gate", "--live", None),
+        ("gate", "--record", "0"),
+        ("gate", "--live", "nan"),
+        ("run", "--record", "inf"),
+    ],
+)
+def test_paid_eval_modes_require_a_finite_positive_cost_cap_before_loading_config(
+    command: str,
+    mode: str,
+    cap: str | None,
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    def unexpected_config_load(*_args, **_kwargs):
+        raise AssertionError("invalid paid eval arguments must fail before config is loaded")
+
+    monkeypatch.setattr(runner, "load_config", unexpected_config_load)
+    argv = [command]
+    if command == "run":
+        argv.extend(["--suite", "core", "--stage", str(tmp_path)])
+    argv.append(mode)
+    if cap is not None:
+        argv.extend(["--max-cost-usd", cap])
+
+    assert runner.cli(argv) == 2
+    output = capsys.readouterr().out
+    assert "requires a positive finite --max-cost-usd" in output
+    assert "no call was made" in output
+
+
+def test_paid_eval_modes_are_mutually_exclusive(monkeypatch) -> None:
+    def unexpected_config_load(*_args, **_kwargs):
+        raise AssertionError("conflicting paid eval modes must fail before config is loaded")
+
+    monkeypatch.setattr(runner, "load_config", unexpected_config_load)
+    with pytest.raises(SystemExit) as exc_info:
+        runner.cli(["gate", "--live", "--record", "--max-cost-usd", "1"])
+
+    assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize("mode", ["--live", "--record"])
+def test_smoke_rejects_a_nonfinite_cost_cap_before_loading_config(
+    mode: str, monkeypatch, capsys
+) -> None:
+    def unexpected_config_load(*_args, **_kwargs):
+        raise AssertionError("invalid smoke cost cap must fail before config is loaded")
+
+    monkeypatch.setattr(runner, "load_config", unexpected_config_load)
+    assert runner.cli(["smoke", mode, "--max-cost-usd", "nan"]) == 2
+    assert "requires a positive finite --max-cost-usd" in capsys.readouterr().out
 
 
 async def test_cache_ab_isolates_arms_and_leaves_runtime_eval_state_unchanged(
@@ -501,9 +561,11 @@ async def test_cache_ab_reports_not_eligible_when_the_provider_never_reads_cache
 # --- isolated Fable skill-pack A/B probe -----------------------------------
 
 
-def test_skills_ab_cli_requires_explicit_live_cap(capsys) -> None:
-    assert runner.cli(["skills-ab"]) == 2
-    assert "requires --live and a positive --max-cost-usd" in capsys.readouterr().out
+@pytest.mark.parametrize("cap", [None, "nan", "inf", "0"])
+def test_skills_ab_cli_requires_explicit_finite_live_cap(cap: str | None, capsys) -> None:
+    argv = ["skills-ab"] if cap is None else ["skills-ab", "--live", "--max-cost-usd", cap]
+    assert runner.cli(argv) == 2
+    assert "requires --live and a positive finite --max-cost-usd" in capsys.readouterr().out
 
 
 async def test_skills_ab_uses_ephemeral_active_copies_and_writes_metadata_only(

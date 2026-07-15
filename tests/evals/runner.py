@@ -29,6 +29,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -609,6 +610,10 @@ def _cassette_config_from_args(args: object) -> CassetteConfig:
     )
 
 
+def _has_positive_finite_cost_cap(value: float | None) -> bool:
+    return value is not None and math.isfinite(value) and value > 0
+
+
 def _apply_cassette(
     config: Config,
     cassette_cfg: CassetteConfig,
@@ -774,11 +779,12 @@ def _print_plan(p: dict) -> None:
 
 def _add_cassette_args(p: object) -> None:
     """Cost-control flags shared by `gate` and `run`. Default (no flag) = keyless replay."""
-    p.add_argument(
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument(
         "--live", action="store_true",
         help="Call the real API and record cassettes (default: keyless replay).",
     )
-    p.add_argument(
+    mode.add_argument(
         "--record", action="store_true",
         help="Fill MISSING cassettes via live calls, reuse existing ones (cheap top-up).",
     )
@@ -2454,6 +2460,17 @@ def cli(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    if (
+        args.cmd in {"gate", "run"}
+        and (args.live or args.record)
+        and not _has_positive_finite_cost_cap(args.max_cost_usd)
+    ):
+        print(
+            f"[{args.cmd}] --live/--record requires a positive finite "
+            "--max-cost-usd USD; no call was made"
+        )
+        return 2
+
     # E6b: pin a deterministic eval clock for every agent loop (main / sub-agent / unattended
     # job) so the system-prompt time context is stable across record and replay (same cassette
     # key). Harmless for live/record runs — the model just sees a fixed date.
@@ -2481,8 +2498,11 @@ def cli(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "cache-ab":
-        if not args.live or args.max_cost_usd is None or args.max_cost_usd <= 0:
-            print("[cache-ab] requires --live and a positive --max-cost-usd USD; no call was made")
+        if not args.live or not _has_positive_finite_cost_cap(args.max_cost_usd):
+            print(
+                "[cache-ab] requires --live and a positive finite "
+                "--max-cost-usd USD; no call was made"
+            )
             return 2
         if args.runs < 3:
             print("[cache-ab] requires --runs >= 3; no call was made")
@@ -2520,8 +2540,11 @@ def cli(argv: list[str] | None = None) -> int:
         return exit_code
 
     if args.cmd == "skills-ab":
-        if not args.live or args.max_cost_usd is None or args.max_cost_usd <= 0:
-            print("[skills-ab] requires --live and a positive --max-cost-usd USD; no call was made")
+        if not args.live or not _has_positive_finite_cost_cap(args.max_cost_usd):
+            print(
+                "[skills-ab] requires --live and a positive finite "
+                "--max-cost-usd USD; no call was made"
+            )
             return 2
         if args.runs < 3:
             print("[skills-ab] requires --runs >= 3; no call was made")
@@ -2548,9 +2571,15 @@ def cli(argv: list[str] | None = None) -> int:
         return exit_code
 
     if args.cmd == "smoke":
-        config = load_config()  # models/providers come from the catalog; replay needs no key
         max_cost = args.max_cost_usd if args.max_cost_usd is not None else 3.0
         mode = "live" if args.live else ("record" if args.record else "replay")
+        if mode != "replay" and not _has_positive_finite_cost_cap(max_cost):
+            print(
+                "[smoke] --live/--record requires a positive finite "
+                "--max-cost-usd USD; no call was made"
+            )
+            return 2
+        config = load_config()  # models/providers come from the catalog; replay needs no key
         cassette_cfg = CassetteConfig(
             mode=mode, store_dir=CASSETTES_PATH / "smoke", max_cost_usd=max_cost
         )
