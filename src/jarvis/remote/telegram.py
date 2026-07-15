@@ -1,7 +1,7 @@
 """Allowlisted, proposal-first Telegram remote control.
 
 This is intentionally *not* a general Telegram bot integration.  It long-polls only while
-Kairo is running locally, ignores every chat except one configured private owner chat, and
+Kira is running locally, ignores every chat except one configured private owner chat, and
 offers deterministic status/task commands plus a bounded, ephemeral model conversation.  When
 Remote Operator is explicitly enabled, that model may prepare one inert proposal and the host
 may resolve expiring approval codes; the model itself never receives execution authority.
@@ -9,7 +9,7 @@ may resolve expiring approval codes; the model itself never receives execution a
 The durable cursor is advanced before a message is handled.  A crash can therefore lose one
 reply (the owner may resend), but never replay a model request or an accidental future effect.
 On first enable, retained Telegram updates are discarded and the owner must send a fresh message;
-historical bot traffic must not become work merely because Kairo was started.
+historical bot traffic must not become work merely because Kira was started.
 """
 
 from __future__ import annotations
@@ -232,7 +232,7 @@ def compact_remote_model_reply(text: str, *, max_chars: int = 600) -> str:
     Deterministic command/proposal replies bypass this helper. Model prose loses common Markdown
     markers and is sentence-bounded so a style miss cannot turn into a wall of generic text.
     """
-    value = (text or "Kairo did not return a response.").strip()
+    value = (text or "Kira did not return a response.").strip()
     value = re.sub(r"```(?:[A-Za-z0-9_+-]+)?\s*", "", value)
     value = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", value)
     value = re.sub(r"\*\*(.+?)\*\*", r"\1", value, flags=re.DOTALL)
@@ -442,7 +442,7 @@ class TelegramRemoteControlStore:
     ) -> bool:
         """Reserve one model turn under a durable rolling one-hour budget.
 
-        The counter is intentionally global to this Kairo instance; there is only one allowed
+        The counter is intentionally global to this Kira instance; there is only one allowed
         owner chat, so retaining a chat identifier would add sensitive linkage without value.
         """
         return await self._reserve_hourly(
@@ -620,7 +620,7 @@ class TelegramRemoteControl:
     def _queue_conversation_turn(self, user: str, assistant: str) -> None:
         current = self._active_conversation_context()
         turns = list(current.turns if current is not None else ())
-        delivered = (assistant or "Kairo did not return a response.").strip()[:_MAX_REPLY_CHARS]
+        delivered = (assistant or "Kira did not return a response.").strip()[:_MAX_REPLY_CHARS]
         turns.append(
             RemoteConversationTurn(
                 user=user.strip()[: self._config.max_input_chars],
@@ -752,7 +752,7 @@ class TelegramRemoteControl:
         )
         if attachment.file_size is not None and attachment.file_size > cap:
             raise RemoteAttachmentError(
-                f"That {attachment.kind} is over Kairo's {cap // 1_000_000} MB limit."
+                f"That {attachment.kind} is over Kira's {cap // 1_000_000} MB limit."
             )
         try:
             metadata_response = await http.post(
@@ -761,11 +761,11 @@ class TelegramRemoteControl:
             )
         except httpx.HTTPError as exc:
             raise ConnectorError(
-                "telegram", user_message="Kairo could not download that Telegram attachment."
+                "telegram", user_message="Kira could not download that Telegram attachment."
             ) from exc
         if metadata_response.status_code != 200:
             raise ConnectorError(
-                "telegram", user_message="Kairo could not download that Telegram attachment."
+                "telegram", user_message="Kira could not download that Telegram attachment."
             )
         try:
             metadata = metadata_response.json()
@@ -792,16 +792,16 @@ class TelegramRemoteControl:
             )
         except httpx.HTTPError as exc:
             raise ConnectorError(
-                "telegram", user_message="Kairo could not download that Telegram attachment."
+                "telegram", user_message="Kira could not download that Telegram attachment."
             ) from exc
         if response.status_code != 200:
             raise ConnectorError(
-                "telegram", user_message="Kairo could not download that Telegram attachment."
+                "telegram", user_message="Kira could not download that Telegram attachment."
             )
         raw = bytes(response.content)
         if len(raw) > cap:
             raise RemoteAttachmentError(
-                f"That {attachment.kind} is over Kairo's {cap // 1_000_000} MB limit."
+                f"That {attachment.kind} is over Kira's {cap // 1_000_000} MB limit."
             )
         return raw
 
@@ -848,7 +848,7 @@ class TelegramRemoteControl:
         )
         if not initialized:
             # Never act on a retained pre-enable backlog.  A newly enabled owner sends /start
-            # after Kairo announces that the channel is up.
+            # after Kira announces that the channel is up.
             highest = max((update_id for update_id, _message in received), default=offset - 1)
             await self._store.bootstrap(highest + 1)
             return 0
@@ -879,7 +879,7 @@ class TelegramRemoteControl:
                 self._log.warning("telegram_remote_message_failed", error_class=type(exc).__name__)
                 with contextlib.suppress(Exception):
                     await self._send(
-                        "Kairo could not answer that message. Please try again.", http=client
+                        "Kira could not answer that message. Please try again.", http=client
                     )
             finally:
                 self._discard_reference_update()
@@ -889,7 +889,7 @@ class TelegramRemoteControl:
         attachment = message.attachment
         assert attachment is not None
         if not self._config.attachments.enabled or self._attachment_handler is None:
-            return "Telegram attachments are not enabled on this Kairo instance."
+            return "Telegram attachments are not enabled on this Kira instance."
         if len(message.text) > self._config.max_input_chars:
             return (
                 "That attachment caption is too long for remote chat "
@@ -948,8 +948,8 @@ class TelegramRemoteControl:
                 else ""
             )
             return (
-                "Kairo remote control is online.\n\n"
-                "/status — Kairo and scheduler state\n"
+                "Kira remote control is online.\n\n"
+                "/status — Kira and scheduler state\n"
                 "/tasks — active task summary\n"
                 "/inbox [filter] — today's recent sender, subject, and snippet summary\n"
                 "/clear — forget recent conversation and reference context\n"
@@ -1059,7 +1059,7 @@ class TelegramRemoteControl:
 
     async def _send(self, text: str, *, http: Any) -> None:
         # Keep response formatting plain and bounded even if a model emits a very long answer.
-        reply = (text or "Kairo did not return a response.").strip()[:_MAX_REPLY_CHARS]
+        reply = (text or "Kira did not return a response.").strip()[:_MAX_REPLY_CHARS]
         await send_telegram_message(
             bot_token=self._bot_token,
             chat_id=self._config.allowed_chat_id,

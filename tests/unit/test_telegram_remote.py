@@ -86,6 +86,10 @@ async def _controller(
     clock=None,
     fail_sends: int = 0,
     news_brief_handler=None,
+    operator_enabled: bool = False,
+    attachments: dict | None = None,
+    attachment_handler=None,
+    chat_handler=None,
 ) -> tuple[TelegramRemoteControl, _TelegramHttp, dict[str, list[str]], object]:
     db = await connect(tmp_path / "remote.db")
     calls: dict[str, list[str]] = {
@@ -124,6 +128,9 @@ async def _controller(
         calls["chat"].append(text)
         return f"reply: {text}"
 
+    async def resolve_operator(_code: str, _resolution: str) -> str:
+        return "resolved"
+
     http = _TelegramHttp(batches, fail_sends=fail_sends)
     controller = TelegramRemoteControl(
         bot_token="BOT-CANARY",
@@ -135,6 +142,7 @@ async def _controller(
             max_input_chars=max_input_chars,
             conversation_context_turns=conversation_turns,
             conversation_context_max_chars=conversation_max_chars,
+            attachments=attachments or {},
         ),
         store=TelegramRemoteControlStore(db, asyncio.Lock()),
         status_handler=status,
@@ -142,7 +150,9 @@ async def _controller(
         inbox_handler=inbox,
         calendar_handler=calendar,
         briefing_handler=briefing,
-        chat_handler=chat,
+        chat_handler=chat_handler or chat,
+        attachment_handler=attachment_handler,
+        operator_resolution_handler=resolve_operator if operator_enabled else None,
         news_brief_handler=news_brief_handler,
         http=http,
         clock=clock,
@@ -315,12 +325,110 @@ def test_model_reply_is_plain_compact_and_clips_at_a_sentence_boundary() -> None
     )
     assert "**" not in reply and "`" not in reply
     assert reply == "Seoul weather\n\nTemperature: 35°C\nConditions: Mostly sunny."
+    assert compact_remote_model_reply("") == "Kira did not return a response."
+
+
+async def test_help_uses_canonical_kira_branding(tmp_path: Path) -> None:
+    controller, http, _calls, db = await _controller(
+        tmp_path,
+        batches=[[], [_update(1, text="/help")]],
+        operator_enabled=True,
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 1
+        help_text = http.sent[-1]["text"]
+        assert help_text.startswith("Kira remote control is online.")
+        assert "/status — Kira and scheduler state" in help_text
+        assert "/projects — registered project aliases" in help_text
+        assert "Kairo" not in help_text
+    finally:
+        await db.close()
+
+
+async def test_attachment_refusals_use_canonical_kira_branding(tmp_path: Path) -> None:
+    async def attachment_handler(_attachment, _raw: bytes, _caption: str) -> str:
+        return "unused"
+
+    def photo(update_id: int, file_id: str, file_size: int) -> dict:
+        return {
+            "update_id": update_id,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "photo": [
+                    {
+                        "file_id": file_id,
+                        "file_size": file_size,
+                        "width": 10,
+                        "height": 10,
+                    }
+                ],
+            },
+        }
+
+    controller, http, _calls, db = await _controller(
+        tmp_path,
+        batches=[[], [photo(1, "too-big", 1_000_001), photo(2, "missing", 4)]],
+        attachments={"enabled": True, "max_image_bytes": 1_000_000},
+        attachment_handler=attachment_handler,
+    )
+    try:
+        await controller.poll_once()
+        assert await controller.poll_once() == 2
+        assert [message["text"] for message in http.sent] == [
+            "That image is over Kira's 1 MB limit.",
+            "Kira could not download that Telegram attachment.",
+        ]
+    finally:
+        await db.close()
+
+
+async def test_disabled_attachments_and_handler_failures_use_kira_branding(
+    tmp_path: Path,
+) -> None:
+    disabled_update = {
+        "update_id": 1,
+        "message": {
+            "chat": {"id": 123, "type": "private"},
+            "photo": [{"file_id": "photo", "file_size": 4, "width": 10, "height": 10}],
+        },
+    }
+    disabled, disabled_http, _calls, disabled_db = await _controller(
+        tmp_path / "disabled",
+        batches=[[], [disabled_update]],
+    )
+    try:
+        await disabled.poll_once()
+        assert await disabled.poll_once() == 1
+        assert disabled_http.sent[-1]["text"] == (
+            "Telegram attachments are not enabled on this Kira instance."
+        )
+    finally:
+        await disabled_db.close()
+
+    async def fail_chat(_text: str, _history) -> str:
+        raise RuntimeError("provider failed")
+
+    failed, failed_http, _calls, failed_db = await _controller(
+        tmp_path / "failed",
+        batches=[[], [_update(2, text="hello")]],
+        chat_handler=fail_chat,
+    )
+    try:
+        await failed.poll_once()
+        assert await failed.poll_once() == 0
+        assert failed_http.sent[-1]["text"] == (
+            "Kira could not answer that message. Please try again."
+        )
+    finally:
+        await failed_db.close()
 
 
 def test_natural_read_intents_route_to_verified_host_commands() -> None:
     assert natural_remote_read_command("Is Kira working on any projects now?") == "/status"
     assert natural_remote_read_command("Is Kairo working on any projects now?") == "/status"
     assert natural_remote_read_command("Kira status") == "/status"
+    assert natural_remote_read_command("kairo status") == "/status"
     assert natural_remote_read_command("Check Kira") == "/status"
     assert natural_remote_read_command("Kairo status") == "/status"
     assert natural_remote_read_command("Check Kairo") == "/status"
