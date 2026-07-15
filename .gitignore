@@ -28,5 +28,6 @@ Thumbs.db
 .idea/
 .vscode/
 
-# User Obsidian vault (not part of Kairo; future Obsidian-MCP research target)
+# User Obsidian vaults (not part of Kira; legacy name retained for migration safety)
+/kira/
 kairo/
