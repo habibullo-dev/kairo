@@ -41,10 +41,12 @@ _ACTION_VERBS = (
     r"email|fix|forward|launch|mark|move|open|remind|repair|reply|respond|run|schedule|send|"
     r"start|update|work on|write)"
 )
+_ACCEPTED_ASSISTANT_NAMES = r"(?:kira|kairo)"
 _ACTION_REQUEST = re.compile(
-    rf"^(?:(?:hey )?kairo )?(?:please )?{_ACTION_VERBS}\b|"
-    rf"^(?:kairo )?(?:can|could|would|will) (?:you|kairo) (?:please )?{_ACTION_VERBS}\b|"
-    rf"\b(?:i need|i want) (?:you|kairo) to {_ACTION_VERBS}\b"
+    rf"^(?:(?:hey )?{_ACCEPTED_ASSISTANT_NAMES} )?(?:please )?{_ACTION_VERBS}\b|"
+    rf"^(?:{_ACCEPTED_ASSISTANT_NAMES} )?(?:can|could|would|will) "
+    rf"(?:you|{_ACCEPTED_ASSISTANT_NAMES}) (?:please )?{_ACTION_VERBS}\b|"
+    rf"\b(?:i need|i want) (?:you|{_ACCEPTED_ASSISTANT_NAMES}) to {_ACTION_VERBS}\b"
 )
 
 
@@ -60,7 +62,7 @@ def natural_remote_read_command(text: str) -> str | None:
         return None
 
     if re.search(
-        r"\b(?:kairo|you)\b.*\b(?:busy|doing|running|working)\b|"
+        rf"\b(?:{_ACCEPTED_ASSISTANT_NAMES}|you)\b.*\b(?:busy|doing|running|working)\b|"
         r"\b(?:busy|running|working)\b.*\b(?:jobs?|projects?|tasks?|work)\b",
         value,
     ):
@@ -96,7 +98,9 @@ def natural_remote_read_command(text: str) -> str | None:
     ):
         return "/tasks"
     if re.search(
-        r"\b(?:are you online|check kairo|kairo status|system status|what's kairo doing)\b",
+        rf"\b(?:are you online|check {_ACCEPTED_ASSISTANT_NAMES}|"
+        rf"{_ACCEPTED_ASSISTANT_NAMES} status|system status|"
+        rf"what's {_ACCEPTED_ASSISTANT_NAMES} doing)\b",
         value,
     ):
         return "/status"
@@ -109,11 +113,18 @@ _INBOX_FILTER_FILLER = re.compile(
     r"recent|related|show|status|summarize|summary|tell me|the|today'?s?|unread)\b",
     re.IGNORECASE,
 )
+_LEADING_ASSISTANT_VOCATIVE = re.compile(
+    rf"^\s*(?:(?:hey\s+){_ACCEPTED_ASSISTANT_NAMES}\b(?:\s*[,;:!?])?|"
+    rf"{_ACCEPTED_ASSISTANT_NAMES}\b(?:\s*[,;:!?]|\s+(?=(?:please\s+)?"
+    r"(?:check|find|get|give|list|read|show|summarize|tell)\b)))\s*",
+    re.IGNORECASE,
+)
 
 
 def natural_inbox_filter(text: str) -> str:
     """Extract owner-supplied search terms from a natural inbox read request."""
-    value = _INBOX_FILTER_FILLER.sub(" ", text)
+    value = _LEADING_ASSISTANT_VOCATIVE.sub("", text, count=1)
+    value = _INBOX_FILTER_FILLER.sub(" ", value)
     value = re.sub(r"[^\w@.+-]+", " ", value, flags=re.UNICODE)
     return " ".join(value.split())[:160]
 

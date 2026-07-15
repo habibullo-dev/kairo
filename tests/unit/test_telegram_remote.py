@@ -318,9 +318,16 @@ def test_model_reply_is_plain_compact_and_clips_at_a_sentence_boundary() -> None
 
 
 def test_natural_read_intents_route_to_verified_host_commands() -> None:
+    assert natural_remote_read_command("Is Kira working on any projects now?") == "/status"
     assert natural_remote_read_command("Is Kairo working on any projects now?") == "/status"
+    assert natural_remote_read_command("Kira status") == "/status"
+    assert natural_remote_read_command("Check Kira") == "/status"
+    assert natural_remote_read_command("Kairo status") == "/status"
+    assert natural_remote_read_command("Check Kairo") == "/status"
     assert natural_remote_read_command("What's the status of my inbox?") == "/inbox"
     assert natural_remote_read_command("Tell me about today's emails") == "/inbox"
+    assert natural_remote_read_command("Kira, show my emails from today") == "/inbox"
+    assert natural_remote_read_command("Kairo, show my emails from today") == "/inbox"
     assert natural_remote_read_command("Read today's emails") == "/inbox"
     assert natural_remote_read_command("Show me my emails from today") == "/inbox"
     assert natural_remote_read_command("Do I have email today?") == "/inbox"
@@ -329,6 +336,13 @@ def test_natural_read_intents_route_to_verified_host_commands() -> None:
     assert natural_inbox_filter("Get only YGP related emails") == "YGP"
     assert natural_inbox_filter("Show emails from DaeYoung PARK") == "DaeYoung PARK"
     assert natural_inbox_filter("Gimme summary of my todays inbox emails") == ""
+    assert natural_inbox_filter("Kira, show my emails from today") == ""
+    assert natural_inbox_filter("Kairo, show my emails from today") == ""
+    assert natural_inbox_filter("Kira show my emails from today") == ""
+    assert natural_inbox_filter("Hey Kira show my emails from today") == ""
+    assert natural_inbox_filter("Show emails about Kira") == "Kira"
+    assert natural_inbox_filter("Show emails about Kairo") == "Kairo"
+    assert natural_inbox_filter("Kira alerts emails") == "Kira alerts"
     assert natural_inbox_followup("Gimme summary for each of them") is not None
     assert natural_inbox_followup("Reply to each of them") is None
     assert natural_remote_read_command("What meetings are on my calendar today?") == "/calendar"
@@ -338,6 +352,10 @@ def test_natural_read_intents_route_to_verified_host_commands() -> None:
 
     # Natural action requests must reach Remote Operator instead of being mistaken for reads.
     assert natural_remote_read_command("Create a task to check the project status") is None
+    assert natural_remote_read_command("Kira, create a task to check task status") is None
+    assert natural_remote_read_command("Kairo, create a task to check task status") is None
+    assert natural_remote_read_command("Kira, reply to today's email") is None
+    assert natural_remote_read_command("Kairo, forward that email to Alex") is None
     assert natural_remote_read_command("Draft an email to Alex") is None
     assert natural_remote_read_command("Reply to today's email") is None
 
