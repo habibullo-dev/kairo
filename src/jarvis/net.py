@@ -1,6 +1,6 @@
 """Network-address safety: an SSRF guard shared by web fetch and knowledge ingest.
 
-Foundation code (no dependencies on the rest of Jarvis) so both ``tools/builtin/web``
+Foundation code (no dependencies on the rest of Kira) so both ``tools/builtin/web``
 and ``knowledge/converters`` can use it without coupling those service subtrees.
 
 Even a single-user local assistant shouldn't let an approved *public* URL — or a
@@ -20,7 +20,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
-_USER_AGENT = "Jarvis/0.1 (+assistant)"
+_USER_AGENT = "Kira/0.1 (+assistant)"
 
 
 def _is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:

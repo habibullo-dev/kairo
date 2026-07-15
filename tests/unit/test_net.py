@@ -51,7 +51,11 @@ def test_non_http_schemes_rejected(url: str) -> None:
 
 
 async def test_safe_get_returns_public_response() -> None:
-    transport = httpx.MockTransport(lambda _req: httpx.Response(200, text="hello"))
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.headers["User-Agent"] == "Kira/0.1 (+assistant)"
+        return httpx.Response(200, text="hello")
+
+    transport = httpx.MockTransport(handler)
     resp = await net.safe_get("http://1.1.1.1/", timeout_seconds=5, transport=transport)
     assert resp.text == "hello"
 
