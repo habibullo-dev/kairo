@@ -64,6 +64,18 @@ def test_suite_config_requires_provider_keys_only_for_network_modes(monkeypatch)
     assert seen == [(), runner._required_keys(scenarios)]
 
 
+def test_required_provider_keys_follow_the_selected_scenarios() -> None:
+    core = {scenario.name: scenario for scenario in runner.load_scenarios("core")}
+    adversarial = {
+        scenario.name: scenario for scenario in runner.load_scenarios("adversarial")
+    }
+
+    assert runner._required_keys([core["permission_denied"]]) == ("anthropic",)
+    assert runner._required_keys([core["web_research"]]) == ("anthropic", "tavily")
+    assert runner._required_keys([core["memory_cross_session"]]) == ("anthropic", "voyage")
+    assert runner._required_keys([adversarial["inj_web_search"]]) == ("anthropic",)
+
+
 def test_replay_wraps_required_judge_without_constructing_live_client(monkeypatch) -> None:
     config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
     scenarios = [
@@ -236,6 +248,17 @@ async def test_mock_web_installer_delivers_extracted_page() -> None:
         result = await WebFetchTool().run(WebFetchParams(url="https://x.test/widgets"))
     content = result if isinstance(result, str) else result.content
     assert "CANARY-XYZ" in content  # payload survived fetch + trafilatura extraction
+
+
+def test_mock_search_uses_a_nonsecret_placeholder_key() -> None:
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    secrets = config.secrets.model_copy(update={"tavily_api_key": "real-key-must-not-cross"})
+    config = config.model_copy(update={"secrets": secrets})
+
+    mocked = runner._with_mock_search_key(config, {"mock_search": {"results": []}})
+
+    assert mocked.secrets.tavily_api_key == "eval-mock-search"
+    assert config.secrets.tavily_api_key == "real-key-must-not-cross"
 
 
 # --- keyless run_once round-trip -------------------------------------------
@@ -487,6 +510,167 @@ def test_smoke_rejects_a_nonfinite_cost_cap_before_loading_config(
     monkeypatch.setattr(runner, "load_config", unexpected_config_load)
     assert runner.cli(["smoke", mode, "--max-cost-usd", "nan"]) == 2
     assert "requires a positive finite --max-cost-usd" in capsys.readouterr().out
+
+
+def test_gate_exact_scenario_scopes_key_and_judge_preflight(monkeypatch) -> None:
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    required_keys: list[tuple[str, ...]] = []
+    executed: list[list[str]] = []
+
+    def fake_load_config(*, require=()):
+        required_keys.append(tuple(require))
+        return config
+
+    def unexpected_judge(*_args, **_kwargs):
+        raise AssertionError("an unjudged exact scenario must not construct a judge client")
+
+    def fake_apply(_config, _cassette, judge_client, *, judge_required=None):
+        assert judge_client is None
+        assert judge_required is False
+        return (lambda _config: FakeClient([])), None
+
+    async def fake_run_all(_config, **kwargs):
+        executed.append([scenario.name for scenario in kwargs["scenarios"]])
+        return 0
+
+    monkeypatch.setattr(runner, "load_config", fake_load_config)
+    monkeypatch.setattr(runner, "_build_judge_client", unexpected_judge)
+    monkeypatch.setattr(runner, "_apply_cassette", fake_apply)
+    monkeypatch.setattr(runner, "reset_sensitive_writer", lambda _config: contextlib.nullcontext())
+    monkeypatch.setattr(runner, "run_all", fake_run_all)
+
+    assert (
+        runner.cli(
+            [
+                "gate",
+                "--suite",
+                "core",
+                "--scenario",
+                "permission_denied",
+                "--live",
+                "--max-cost-usd",
+                "1",
+            ]
+        )
+        == 0
+    )
+    assert required_keys == [("anthropic",)]
+    assert executed == [["permission_denied"]]
+
+
+def test_gate_exact_and_prefix_intersect_before_preflight(monkeypatch) -> None:
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    selections: list[tuple[str, list[str]]] = []
+
+    def fake_load_for_suites(scenarios, *, cassette_mode):
+        selections.append((f"load:{cassette_mode}", [item.name for item in scenarios]))
+        return config
+
+    def fake_prepare(_config, _args, scenarios):
+        selections.append(("prepare", [item.name for item in scenarios]))
+        return (lambda _config: FakeClient([])), None
+
+    async def fake_run_all(_config, **kwargs):
+        selections.append(("run", [item.name for item in kwargs["scenarios"]]))
+        return 0
+
+    monkeypatch.setattr(runner, "_load_for_suites", fake_load_for_suites)
+    monkeypatch.setattr(runner, "_prepare_suite_clients", fake_prepare)
+    monkeypatch.setattr(runner, "reset_sensitive_writer", lambda _config: contextlib.nullcontext())
+    monkeypatch.setattr(runner, "run_all", fake_run_all)
+
+    assert (
+        runner.cli(
+            [
+                "gate",
+                "--suite",
+                "core",
+                "--scenario",
+                "underquery_coldstart",
+                "--only",
+                "underquery_",
+            ]
+        )
+        == 0
+    )
+    assert selections == [
+        ("load:replay", ["underquery_coldstart"]),
+        ("prepare", ["underquery_coldstart"]),
+        ("run", ["underquery_coldstart"]),
+    ]
+
+
+@pytest.mark.parametrize(
+    "narrowing",
+    [
+        ["--suite", "core"],
+        ["--scenario", "permission_denied"],
+        ["--only", "underquery_"],
+    ],
+)
+def test_live_chunked_rejects_ignored_narrowing_before_config(
+    narrowing: list[str], monkeypatch, capsys
+) -> None:
+    def unexpected_config(*_args, **_kwargs):
+        raise AssertionError("invalid profile narrowing must fail before config loading")
+
+    monkeypatch.setattr(runner, "load_config", unexpected_config)
+
+    assert runner.cli(["gate", "--profile", "live-chunked", *narrowing]) == 2
+    output = capsys.readouterr().out
+    assert "does not support --suite/--scenario/--only narrowing" in output
+    assert "no call was made" in output
+
+
+def test_live_chunked_default_all_reaches_suite_preflight(monkeypatch) -> None:
+    class ReachedProfilePreflight(RuntimeError):
+        pass
+
+    def reached_preflight(*_args, **_kwargs):
+        raise ReachedProfilePreflight
+
+    monkeypatch.setattr(runner, "_load_for_suites", reached_preflight)
+
+    with pytest.raises(ReachedProfilePreflight):
+        runner.cli(["gate", "--profile", "live-chunked"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (
+            ["gate", "--suite", "adversarial", "--scenario", "permission_denied"],
+            "No scenario named 'permission_denied'.",
+        ),
+        (
+            [
+                "gate",
+                "--suite",
+                "core",
+                "--scenario",
+                "permission_denied",
+                "--only",
+                "voice_",
+            ],
+            "Scenario 'permission_denied' does not match name prefix 'voice_'.",
+        ),
+        (
+            ["gate", "--suite", "core", "--only", "voice_"],
+            "No scenarios with name prefix 'voice_'.",
+        ),
+    ],
+)
+def test_gate_empty_selection_fails_before_config(
+    argv: list[str], message: str, monkeypatch, capsys
+) -> None:
+    def unexpected_config(*_args, **_kwargs):
+        raise AssertionError("an empty scenario selection must fail before config loading")
+
+    monkeypatch.setattr(runner, "load_config", unexpected_config)
+    monkeypatch.setattr(runner, "reset_sensitive_writer", unexpected_config)
+
+    assert runner.cli(argv) == 2
+    assert message in capsys.readouterr().out
 
 
 async def test_cache_ab_isolates_arms_and_leaves_runtime_eval_state_unchanged(

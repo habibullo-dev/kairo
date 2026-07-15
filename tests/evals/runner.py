@@ -338,6 +338,18 @@ def _install_mock_web(stack: contextlib.ExitStack, scenario: dict) -> None:
         stack.enter_context(mock.patch("jarvis.tools.builtin.web._tavily_search", fake_search))
 
 
+def _with_mock_search_key(config: Config, scenario: dict) -> Config:
+    """Use a non-secret placeholder for a fully mocked search adapter.
+
+    ``WebSearchTool`` checks that a key is non-empty before it reaches the patched transport.
+    Replacing any real key also ensures a mocked eval never carries that secret.
+    """
+    if "mock_search" not in scenario:
+        return config
+    secrets = config.secrets.model_copy(update={"tavily_api_key": "eval-mock-search"})
+    return config.model_copy(update={"secrets": secrets})
+
+
 # --- the check evaluator (pure; unit-tested keyless) -----------------------
 
 
@@ -944,6 +956,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
             update={"main": main_model or EVAL_MAIN_MODEL, "utility": EVAL_UTILITY_MODEL}
         )
         run_config = config.model_copy(update={"root": workdir, "models": eval_models})
+        run_config = _with_mock_search_key(run_config, scenario)
 
         utility = factory(run_config)
         memory = None
@@ -1805,27 +1818,14 @@ async def run_all(
     *,
     runs: int,
     suite: str,
-    only: str | None,
+    scenarios: list[LoadedScenario],
     no_judge: bool,
     judge_client: LLMClient | None,
     report_md: bool = False,
     compare_rev: str | None = None,
     propose: bool = False,
-    only_prefix: str | None = None,
     client_factory: Callable[[Config], LLMClient] | None = None,
 ) -> int:
-    scenarios = load_scenarios(suite)
-    if only:
-        scenarios = [s for s in scenarios if s.name == only]
-        if not scenarios:
-            print(f"No scenario named {only!r}.")
-            return 2
-    if only_prefix:  # a name-prefix filter (e.g. --only voice_ for a small, cap-safe run)
-        scenarios = [s for s in scenarios if s.name.startswith(only_prefix)]
-        if not scenarios:
-            print(f"No scenarios with name prefix {only_prefix!r}.")
-            return 2
-
     judge_valid, calibration_failures, effective_no_judge = await _calibrate(
         config, scenarios, judge_client, no_judge
     )
@@ -2296,8 +2296,20 @@ async def run_profile_chunked(
 
 
 def _required_keys(scenarios: list[LoadedScenario]) -> tuple[str, ...]:
-    """Voyage is only required if a scenario exercises memory or the knowledge base."""
-    required = ["anthropic", "tavily"]
+    """Require only providers reachable from the selected live/record scenarios."""
+    declared = {
+        key
+        for scenario in scenarios
+        for key in scenario.data.get("required_provider_keys", [])
+    }
+    unsupported = declared - {"tavily"}
+    if unsupported:
+        raise ValueError(
+            "unsupported eval required_provider_keys: " + ", ".join(sorted(unsupported))
+        )
+    required = ["anthropic"]
+    if "tavily" in declared:
+        required.append("tavily")
     if any(s.data.get("needs_memory") or s.data.get("needs_knowledge") for s in scenarios):
         required.append("voyage")
     return tuple(required)
@@ -2485,6 +2497,15 @@ def cli(argv: list[str] | None = None) -> int:
         print(
             f"[{args.cmd}] --live/--record requires a positive finite "
             "--max-cost-usd USD; no call was made"
+        )
+        return 2
+
+    if getattr(args, "profile", None) == "live-chunked" and (
+        args.suite != "all" or args.scenario or args.only
+    ):
+        print(
+            "[gate] --profile live-chunked does not support --suite/--scenario/--only "
+            "narrowing; no call was made"
         )
         return 2
 
@@ -2682,8 +2703,22 @@ def cli(argv: list[str] | None = None) -> int:
             return 1
 
     scenarios = load_scenarios(args.suite)
-    if args.only:  # narrow the key requirements + judge client to the filtered set
-        scenarios = [s for s in scenarios if s.name.startswith(args.only)]
+    if args.scenario:
+        scenarios = [s for s in scenarios if s.name == args.scenario]
+        if not scenarios:
+            print(f"No scenario named {args.scenario!r}.")
+            return 2
+    if args.only:
+        narrowed = [s for s in scenarios if s.name.startswith(args.only)]
+        if not narrowed:
+            if args.scenario:
+                print(
+                    f"Scenario {args.scenario!r} does not match name prefix {args.only!r}."
+                )
+            else:
+                print(f"No scenarios with name prefix {args.only!r}.")
+            return 2
+        scenarios = narrowed
     cassette_cfg = _cassette_config_from_args(args)
     config = _load_for_suites(scenarios, cassette_mode=cassette_cfg.mode)
     client_factory, judge_client = _prepare_suite_clients(config, args, scenarios)
@@ -2694,14 +2729,13 @@ def cli(argv: list[str] | None = None) -> int:
                     config,
                     runs=args.runs,
                     suite=args.suite,
-                    only=args.scenario,
+                    scenarios=scenarios,
                     no_judge=args.no_judge,
                     judge_client=judge_client,
                     report_md=args.report,
                     compare_rev=args.compare,
                     propose=args.propose,
                     client_factory=client_factory,
-                    only_prefix=args.only,
                 )
             )
     except (InstanceAlreadyRunning, ResetMaintenanceBusy, ResetRecoveryError) as exc:

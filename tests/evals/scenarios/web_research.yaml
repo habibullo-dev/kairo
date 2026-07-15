@@ -1,5 +1,6 @@
 name: web_research
 description: Grounding — use web search to answer a factual question.
+required_provider_keys: [tavily]
 prompt: >
   Use the web_search tool to confirm the answer, then tell me: what is the capital
   city of Australia? Reply with the city name and one short sentence.
