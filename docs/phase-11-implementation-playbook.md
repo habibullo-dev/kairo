@@ -1,18 +1,19 @@
-# Phase 11 — Implementation Playbook (for Opus / worker agents)
+# Phase 11 — Implementation Playbook (historical)
 
-*Repo-local implementation guidance for the Kairo Workstation phase (`docs/PLAN-11-workstation.md`).
-This is **not** a product feature and **not** a runtime Kairo skill system — it is the set of rules
-an implementation agent must follow while building Phase 11. Read it before touching a Phase 11
-task; re-read it whenever you resume. If a rule here conflicts with a task you were handed, stop and
-raise it rather than guessing.*
+> **Historical design record.** Phase 11 is complete. This document preserves the rules, counts,
+> paths, and checkpoints used while building the Kira Workstation; it is evidence, not current
+> operating instruction. Current behavior is defined by code, tests, and the operator documentation.
 
-The working rhythm for every task stays: **understand → implement in strict order → adversarially
-review (subagents) → verify (suite + ruff + keyless replay gate) → commit with explicit paths.**
-Never commit red. Never commit the forbidden files (bottom of this doc).
+*Repo-local implementation guidance preserved from the Kira Workstation phase
+(`docs/PLAN-11-workstation.md`). This was not a product feature or runtime skill system.*
+
+The phase used this working rhythm: **understand → implement in strict order → adversarially review
+(subagents) → verify (suite + ruff + keyless replay gate) → commit with explicit paths.** It required
+green commits and excluded the phase-specific forbidden files listed at the bottom.
 
 ---
 
-## 1. Phase discipline
+## 1. Phase discipline (historical)
 
 - **Stop at checkpoints.** Checkpoint E (after T4, backend safety) and Checkpoint F (after T10,
   visual sign-off) are mandatory STOPs — report evidence and WAIT for Habib. Do not roll past a
@@ -25,19 +26,20 @@ Never commit red. Never commit the forbidden files (bottom of this doc).
   (migration v9 + search/artifacts) is done and behind Checkpoint E; later tasks should ride it,
   not reopen it.
 - **Per-task commits, explicit paths.** One task = one focused commit (plus a separate cassette
-  commit only if a legitimate scenario-adjacent change forces a re-record). End messages with the
-  `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer.
+  commit only if a legitimate scenario-adjacent change forces a re-record). Phase 11 also used a
+  Claude co-author trailer; that phase-specific convention is not current policy.
 
-## 2. Safety invariants (non-negotiable — pinned by tests)
+## 2. Phase 11 safety invariants (snapshot)
 
 - **The UI adds NO new authority.** It reads and navigates. Every write / generation / action goes
   through the **existing** Gate/turn/mutation routes. A new screen never reaches a tool, executor,
   or file write directly.
-- **Reads/navigation are immediate; writes/generation/actions go through the Gate/turn path.** The
-  command palette and search **navigate and GET only — never POST** (a "write" entry navigates to
-  the surface that owns the write).
-- **The mutation-route closed set is a pin.** It is currently **30** (`test_ui_readmodels.py::
-  test_mutation_route_closed_set`). Any new mutation must be metadata-class, mirror an existing one
+- **Reads/navigation are immediate; writes/generation/actions go through the Gate/turn path.** At
+  Phase 11 close, the command palette and search **navigated and used GET only**. Later phases
+  superseded that palette rule with a test-pinned, exact mutation allowlist.
+- **The mutation-route closed set is a pin.** Phase 11 closed at **30**
+  (`test_ui_readmodels.py::test_mutation_route_closed_set`); the current value lives only in that
+  test. Any new mutation must be metadata-class, mirror an existing one
   (e.g. `sessions/{id}/pin`), and be added to that set in the same commit. No generic key-value or
   "run anything" route. No eval-run route (the eval chip stays copy-command — ADR-0005).
 - **The secret sweep stays intact.** `test_no_secret_crosses_the_wire_on_any_get` auto-covers new
@@ -72,9 +74,9 @@ Never commit red. Never commit the forbidden files (bottom of this doc).
 
 ## 4. UI / UX discipline
 
-- **`design/` is READ-ONLY visual direction.** Use `design/kairo-uiux-v2-prototype.html`, the notes,
-  and `design/assets/*` as reference. Never modify or commit `design/`. Do not ship its heavy PNGs —
-  backgrounds are CSS gradient veils; fonts are the system stack (no Inter, no external resources).
+- **`design/` was READ-ONLY visual direction.** Phase 11 used a transient external prototype and
+  design assets that are no longer present in this repository. They were reference-only and their
+  heavy PNGs were never shipped; backgrounds use CSS gradient veils and system fonts.
 - **Premium but calm.** One primary attention surface per screen, ordered by priority. Amber only for
   decisions; cost is teal monitoring (present, not stressful). Motion is subtle and respects
   reduce-motion.
@@ -96,7 +98,7 @@ Never commit red. Never commit the forbidden files (bottom of this doc).
 - Load-bearing shell pieces (approval modal + nonce flow, `setSurface` tracking, `renderRunnerState`,
   the WebSocket heartbeat) keep their semantics — refactor around them, don't rewrite them.
 
-## 6. Eval / cost discipline
+## 6. Phase 11 eval / cost discipline
 
 - **Keyless replay is the default gate.** `uv run kira eval gate --suite core` is $0 and must be
   green after every task. A missing cassette fails closed (never a silent live call).
@@ -108,7 +110,7 @@ Never commit red. Never commit the forbidden files (bottom of this doc).
 - No eval scenario changes are expected in Phase 11; the live judged gate is a terminal ritual on
   Habib's machine (chunked; background runs die ~14 min).
 
-## 7. Subagent / orchestration discipline
+## 7. Phase 11 subagent / orchestration discipline
 
 - **Use subagents for scoped review and discovery**, not for editing the working tree in parallel.
   Good uses: a parallel "understand" pass that maps the exact code a task will touch; an adversarial
@@ -120,7 +122,9 @@ Never commit red. Never commit the forbidden files (bottom of this doc).
 - Adversarially verify findings (independent reviewers, default-to-refute) before trusting them; fix
   every confirmed finding before the commit.
 
-## 8. Forbidden files — never modify or commit
+## 8. Phase 11 forbidden files (historical)
+
+During Phase 11 work, agents were instructed never to modify or commit:
 
 `docs/PLAN.md` · `docs/PLAN-7-voice-consent-checkpoint.md` · `mcp_sample.json` ·
 `config/settings.yaml` · `config/permissions.yaml` · `design/`
