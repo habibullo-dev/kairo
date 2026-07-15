@@ -111,7 +111,40 @@ async def test_gmail_search_and_read_are_framed(tmp_path: Path) -> None:
     search = _content(await GmailSearchTool(ctx).run(GmailSearchTool.Params(query="is:unread")))
     assert "untrusted" in search and "[DEMO]" in search
     read = _content(await GmailReadTool(ctx).run(GmailReadTool.Params(message_id="demo-m1")))
-    assert "untrusted" in read and "demo@kairo.local" in read
+    assert "untrusted" in read and "demo@kira.local" in read
+    assert "kairo" not in read.lower()
+
+
+async def test_demo_google_uses_kira_identity_for_fixture_fallbacks() -> None:
+    client = DemoGoogleClient(
+        emails=[
+            {"id": "demo-no-sender", "subject": "[DEMO] No sender"},
+            {
+                "id": "demo-custom-sender",
+                "sender": "custom@example.com",
+                "subject": "[DEMO] Custom sender",
+            },
+        ]
+    )
+    message = await client.get_json(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/demo-no-sender"
+    )
+    headers = {header["name"]: header["value"] for header in message["payload"]["headers"]}
+    assert headers["From"] == "demo@kira.local"
+
+    custom = await client.get_json(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/demo-custom-sender"
+    )
+    custom_headers = {
+        header["name"]: header["value"] for header in custom["payload"]["headers"]
+    }
+    assert custom_headers["From"] == "custom@example.com"
+    assert custom_headers["From"] != "demo@kira.local"
+
+    calendar = await DemoGoogleClient().get_json(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+    )
+    assert calendar["items"][0]["organizer"]["email"] == "demo@kira.local"
 
 
 async def test_drive_fetch_is_framed(tmp_path: Path) -> None:

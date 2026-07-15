@@ -16,6 +16,8 @@ from typing import Any
 
 from jarvis.connectors.google import GOOGLE_SCOPES
 
+_DEMO_EMAIL = "demo@kira.local"
+
 
 def _b64url(text: str) -> str:
     return base64.urlsafe_b64encode(text.encode("utf-8")).rstrip(b"=").decode("ascii")
@@ -32,7 +34,7 @@ def _message_payload(msg: dict) -> dict:
         "payload": {
             "mimeType": "text/plain",
             "headers": [
-                {"name": "From", "value": msg.get("sender", "demo@kairo.local")},
+                {"name": "From", "value": msg.get("sender", _DEMO_EMAIL)},
                 {"name": "Subject", "value": subject},
                 {"name": "Date", "value": msg.get("date", "Mon, 6 Jul 2026 09:00:00 +0000")},
             ],
@@ -47,14 +49,14 @@ _DEFAULT_EMAILS = [
         "subject": "[DEMO] Standup at 10",
         "body": "Reminder: standup at 10am.",
         "snippet": "[DEMO] standup reminder",
-        "sender": "demo@kairo.local",
+        "sender": _DEMO_EMAIL,
     },
     {
         "id": "demo-m2",
         "subject": "[DEMO] Invoice due Friday",
         "body": "Please review the invoice.",
         "snippet": "[DEMO] invoice due",
-        "sender": "demo@kairo.local",
+        "sender": _DEMO_EMAIL,
     },
 ]
 _DEFAULT_EVENTS = [
@@ -63,7 +65,7 @@ _DEFAULT_EVENTS = [
         "summary": "[DEMO] Standup",
         "start": {"dateTime": "2026-07-06T10:00:00+00:00"},
         "end": {"dateTime": "2026-07-06T10:15:00+00:00"},
-        "organizer": {"email": "demo@kairo.local"},
+        "organizer": {"email": _DEMO_EMAIL},
         "location": "[DEMO] Zoom",
     },
     {
