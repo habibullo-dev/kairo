@@ -9,8 +9,8 @@ through the existing enumerated routes only.
 
 from __future__ import annotations
 
-from jarvis.ui.readmodels import UiServices, activity_feed
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.readmodels import UiServices, activity_feed
+from kira.ui.server import STATIC_DIR
 
 APP_JS = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 WS_JS = (STATIC_DIR / "screens" / "workspace.js").read_text(encoding="utf-8")

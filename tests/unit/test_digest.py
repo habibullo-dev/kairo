@@ -17,17 +17,17 @@ from types import SimpleNamespace
 import aiosqlite
 import pytest
 
-from jarvis.config import SchedulerConfig, load_config
-from jarvis.connectors.base import ConnectorAuthError, ConnectorRegistry
-from jarvis.connectors.demo import DemoGoogleClient
-from jarvis.core import FakeClient, text_message
-from jarvis.digest import DigestBuilder, DigestStore, ensure_digest_task
-from jarvis.digest.builder import Section
-from jarvis.persistence.db import connect
-from jarvis.persistence.migrations import MIGRATIONS, latest_version, migrate
-from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
-from jarvis.scheduler.service import TaskService
-from jarvis.scheduler.store import TaskStore
+from kira.config import SchedulerConfig, load_config
+from kira.connectors.base import ConnectorAuthError, ConnectorRegistry
+from kira.connectors.demo import DemoGoogleClient
+from kira.core import FakeClient, text_message
+from kira.digest import DigestBuilder, DigestStore, ensure_digest_task
+from kira.digest.builder import Section
+from kira.persistence.db import connect
+from kira.persistence.migrations import MIGRATIONS, latest_version, migrate
+from kira.scheduler.runner import BackgroundRunner, JobOutcome
+from kira.scheduler.service import TaskService
+from kira.scheduler.store import TaskStore
 
 _OPEN: list = []
 
@@ -156,7 +156,7 @@ def test_schedule_task_tool_rejects_digest_kind() -> None:
     # is Literal["reminder","job"], so a model attempting kind='digest' fails validation.
     from pydantic import ValidationError
 
-    from jarvis.tools.builtin.tasks import ScheduleTaskParams
+    from kira.tools.builtin.tasks import ScheduleTaskParams
 
     ScheduleTaskParams(kind="reminder", title="t", payload="p", once_at="2030-01-01T00:00:00")
     with pytest.raises(ValidationError):
@@ -321,7 +321,7 @@ async def test_demo_digest_is_badged(tmp_path: Path) -> None:
 
 
 async def test_delivery_is_ui_first_then_notifier_with_egress(tmp_path: Path, monkeypatch) -> None:
-    import jarvis.digest.builder as builder_mod
+    import kira.digest.builder as builder_mod
 
     events: list[dict] = []
     monkeypatch.setattr(builder_mod, "log_egress", lambda **kw: events.append(kw))

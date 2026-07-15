@@ -12,12 +12,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
-from jarvis.config import load_config
-from jarvis.observability.ledger import ServiceLedger
-from jarvis.persistence.db import connect
-from jarvis.services.firecrawl import FirecrawlScrapeTool
-from jarvis.tools.base import ToolContext
+import kira.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
+from kira.config import load_config
+from kira.observability.ledger import ServiceLedger
+from kira.persistence.db import connect
+from kira.services.firecrawl import FirecrawlScrapeTool
+from kira.tools.base import ToolContext
 
 _OPEN: list = []
 _SCRAPE_URL = "https://api.firecrawl.dev/v1/scrape"
@@ -91,8 +91,8 @@ def test_available_only_when_flag_key_and_pricing(tmp_path: Path) -> None:
 
 
 def test_policy_derived_from_spec(tmp_path: Path) -> None:
-    from jarvis.services.catalog import SERVICE_CATALOG, ContextPolicy, OutputTrust
-    from jarvis.tools.base import Permission
+    from kira.services.catalog import SERVICE_CATALOG, ContextPolicy, OutputTrust
+    from kira.tools.base import Permission
 
     spec = SERVICE_CATALOG["firecrawl"]
     assert FirecrawlScrapeTool.egress is spec.egress is True

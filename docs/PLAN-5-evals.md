@@ -32,7 +32,7 @@ tests/evals/
 └── scenarios/            # 12 existing core yamls (unchanged, backward compatible)
     └── **adversarial/**  # inj_* scenarios + underquery_* probes
 
-src/jarvis (instrumentation + hardening only):
+src/kira (instrumentation + hardening only):
   core/client.py + anthropic_client.py   # latency_ms, temperature kwarg
   core/events.py + core/agent.py         # **ToolDecision event** (the attempts tap)
   tools/builtin/web.py                    # untrusted-content framing (Task 9 hardening)

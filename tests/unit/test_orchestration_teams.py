@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.orchestration import (
+from kira.orchestration import (
     TEAM_PROFILES,
     WORKFLOWS,
     Capability,
@@ -19,11 +19,11 @@ from jarvis.orchestration import (
     resolve_team,
     validate_workflow,
 )
-from jarvis.orchestration.context import Provenance
-from jarvis.orchestration.roles import READ_ONLY_SPAWNABLE, RosterError, validate_role
-from jarvis.orchestration.teams import TeamError, validate_team
-from jarvis.orchestration.workflows import WorkflowError
-from jarvis.services.catalog import ContextPolicy
+from kira.orchestration.context import Provenance
+from kira.orchestration.roles import READ_ONLY_SPAWNABLE, RosterError, validate_role
+from kira.orchestration.teams import TeamError, validate_team
+from kira.orchestration.workflows import WorkflowError
+from kira.services.catalog import ContextPolicy
 
 # --- read-only floor --------------------------------------------------------
 
@@ -122,7 +122,7 @@ def test_no_member_holds_spawn_agent() -> None:
 
 
 def test_team_services_reference_real_catalog_entries() -> None:
-    from jarvis.services.catalog import SERVICE_CATALOG
+    from kira.services.catalog import SERVICE_CATALOG
 
     for team in TEAM_PROFILES.values():
         for m in team.members:
@@ -132,7 +132,7 @@ def test_team_services_reference_real_catalog_entries() -> None:
 def test_read_only_members_hold_no_egress_or_write_service() -> None:
     # Checkpoint-D invariant (iii): a council/review (read-only) member may hold only non-egress,
     # non-write local services. Enforced statically for every built-in team...
-    from jarvis.services.catalog import SERVICE_CATALOG
+    from kira.services.catalog import SERVICE_CATALOG
 
     for team in TEAM_PROFILES.values():
         for m in team.members:
@@ -144,7 +144,7 @@ def test_read_only_members_hold_no_egress_or_write_service() -> None:
 
 def test_read_only_member_with_egress_service_is_rejected() -> None:
     # ...and a hand-built team that violates it is refused (exa is an egress research service).
-    from jarvis.orchestration.teams import TeamProfile
+    from kira.orchestration.teams import TeamProfile
 
     bad_member = RosterRole(
         "leak", "Leak", "researcher",
@@ -156,8 +156,8 @@ def test_read_only_member_with_egress_service_is_rejected() -> None:
 
 
 def test_google_stitch_service_classification() -> None:
-    from jarvis.orchestration.teams import TEAM_PROFILES
-    from jarvis.services.catalog import SERVICE_CATALOG, ContextPolicy, OutputTrust
+    from kira.orchestration.teams import TEAM_PROFILES
+    from kira.services.catalog import SERVICE_CATALOG, ContextPolicy, OutputTrust
 
     s = SERVICE_CATALOG["google_stitch"]
     assert s.kind == "mcp"  # official Stitch MCP; wired when Kira's MCP-client layer exists
@@ -180,7 +180,7 @@ def test_google_stitch_service_classification() -> None:
 def test_google_stitch_key_never_exposed_in_availability_view() -> None:
     # The Stitch API key must never appear as a VALUE in the services read model — only its
     # env-var NAME + a presence boolean (the 10B secret-sweep discipline, extended to Stitch).
-    from jarvis.services.registry import ServiceRegistry
+    from kira.services.registry import ServiceRegistry
 
     reg = ServiceRegistry(enabled=[], env={"GOOGLE_STITCH_API_KEY": "SECRET-STITCH-KEY"})
     view = reg.availability()
@@ -200,7 +200,7 @@ def test_resolve_team_applies_budget_override() -> None:
 
 
 def test_second_writer_rejected() -> None:
-    from jarvis.orchestration.teams import TeamProfile
+    from kira.orchestration.teams import TeamProfile
 
     w = RosterRole(
         "w1",
@@ -249,7 +249,7 @@ def test_project_assessment_is_analysis_only() -> None:
 
 
 def test_workflow_rejects_two_execution_stages() -> None:
-    from jarvis.orchestration.workflows import StageSpec, WorkflowTemplate
+    from kira.orchestration.workflows import StageSpec, WorkflowTemplate
 
     bad = WorkflowTemplate(
         "x",

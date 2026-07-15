@@ -73,7 +73,7 @@ stays lean and CI stays keyless.
 ## Architecture (new pieces in bold)
 
 ```
-src/jarvis/voice/                         # PLAN.md §7 reserved this package
+src/kira/voice/                         # PLAN.md §7 reserved this package
 ├── **protocols.py**   STTProvider / TTSProvider protocols + Transcript/AudioChunk types
 │                      + FakeTranscriber / FakeSynthesizer (keyless test doubles)
 ├── **framing.py**     transcript untrusted-content framing (mirrors web.py _FETCH_HEADER)
@@ -93,14 +93,14 @@ src/jarvis/voice/                         # PLAN.md §7 reserved this package
 ├── **tts_eleven.py**                      live TTS adapter (behind TTSProvider)
 └── **meeting.py**     meeting-capture mode → KB ingest (unreviewed), separate consent
 
-src/jarvis (integration seams):
+src/kira (integration seams):
   config.py            **VoiceConfig** + STT/TTS keys in Secrets
   core/prompts.py      **build_system(voice=True)** — voice-mode framing block
-  cli/__main__.py      **jarvis --voice** entry composing VoiceSession + terminal screen
+  cli/__main__.py      **kira --voice** entry composing VoiceSession + terminal screen
   observability        audio-egress + listening-state events on the audit log
 tests/evals/
   runner.py            **voice: true** scenario support (scripted transcript vector)
-  scenarios/adversarial/**voice_*.yaml** + **jarvis eval gate --profile live-chunked**
+  scenarios/adversarial/**voice_*.yaml** + **kira eval gate --profile live-chunked**
 ```
 
 Reused seams: `Approver` (the whole escalation model plugs in here — same seam that took
@@ -287,7 +287,7 @@ keyless-testable and adds them to the live gate:
   never an answer ban), a mandatory delivery assertion, and the dual metric (side effects
   gated all-N; attempts tracked, not gated).
 
-The **chunked eval profile** (`jarvis eval gate --profile live-chunked`) is built here so
+The **chunked eval profile** (`kira eval gate --profile live-chunked`) is built here so
 the phase's own live gate fits the runtime's ~14-min background cap: it runs the suites as
 sub-runs and **aggregates them into a single `GateRunRecord`** (one history line, so
 `--compare` / FLAKY-promotion / cumulative-clean accounting stay intact) — the real work
@@ -365,13 +365,13 @@ or STT (task 6).
    `unreviewed` KB source; no task/reminder is auto-created; proposals require approval;
    no unattended capture.
 
-8. **CLI wiring: `jarvis --voice`.** Compose `VoiceSession` with the real providers + the
+8. **CLI wiring: `kira --voice`.** Compose `VoiceSession` with the real providers + the
    terminal `ScreenApprover` (the screen is the same TTY), sharing the turn lock/session
    store with the REPL. *Tests*: composition; `voice.enabled: false` ⇒ no voice surface,
    REPL unchanged; the screen approver is the terminal confirm.
 
-9. **Chunked eval profile (`jarvis eval gate --profile live-chunked`).** Promote eval
-   invocation to a `jarvis eval` subcommand; a profile that runs suites as sub-runs and
+9. **Chunked eval profile (`kira eval gate --profile live-chunked`).** Promote eval
+   invocation to a `kira eval` subcommand; a profile that runs suites as sub-runs and
    **aggregates into one `GateRunRecord` + one history line** (guards: same rev, merged
    totals, merged per-scenario summaries). *Tests* (synthetic sub-run records): aggregation
    produces one correct gate record; `--compare` and cumulative counts see one entry.
@@ -422,10 +422,10 @@ or STT (task 6).
 1. `uv run pytest` — all green, keyless (fakes for STT/TTS/capture/client); voice disabled
    ⇒ byte-identical to Phase 6.
 2. The checkpoint §3.1 pins pass; a scripted "spoken yes" cannot commit a risky action.
-3. `jarvis --voice`: a read-only spoken request is answered aloud with no prompt; a risky
+3. `kira --voice`: a read-only spoken request is answered aloud with no prompt; a risky
    spoken request is *drafted*, escalates to a typed on-screen confirm, and commits only
    on the keystroke; no screen ⇒ denied.
-4. `jarvis eval gate --profile live-chunked` — GATE PASS in one history entry; the 30
+4. `kira eval gate --profile live-chunked` — GATE PASS in one history entry; the 30
    existing scenarios PASS→PASS; the 6 voice scenarios pass (side effects clean all-N,
    attempts tracked); baseline ratcheted with the report.
 5. A meeting recording ingests as an `unreviewed` KB source with no auto-actions; no

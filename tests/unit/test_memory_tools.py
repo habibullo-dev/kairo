@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.config import MemoryConfig
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.memory.service import MemoryService
-from jarvis.memory.store import MemoryStore
-from jarvis.persistence.db import connect
-from jarvis.tools import Permission, ToolContext, ToolRegistry, ToolResult
-from jarvis.tools.builtin.memory import ForgetTool, RecallTool, RememberTool
+from kira.config import MemoryConfig
+from kira.memory.embeddings import FakeEmbedder
+from kira.memory.service import MemoryService
+from kira.memory.store import MemoryStore
+from kira.persistence.db import connect
+from kira.tools import Permission, ToolContext, ToolRegistry, ToolResult
+from kira.tools.builtin.memory import ForgetTool, RecallTool, RememberTool
 
 MEMORY_TOOLS = ("remember", "recall", "forget")
 
@@ -88,7 +88,7 @@ def test_memory_tools_available_with_service() -> None:
 
 def test_registry_skips_memory_tools_without_service() -> None:
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=None, memory=None))
+    reg.discover("kira.tools.builtin", ToolContext(config=None, memory=None))
     for name in MEMORY_TOOLS:
         assert name not in reg
     assert "read_file" in reg  # phase-1 tools still register
@@ -98,7 +98,7 @@ async def test_registry_registers_memory_tools_with_service(tmp_path: Path) -> N
     ctx, svc = await _ctx(tmp_path)
     try:
         reg = ToolRegistry()
-        reg.discover("jarvis.tools.builtin", ctx)
+        reg.discover("kira.tools.builtin", ctx)
         for name in MEMORY_TOOLS:
             assert name in reg
     finally:
@@ -119,7 +119,7 @@ def test_memory_tool_permission_defaults() -> None:
 
 
 def test_system_prompt_gains_memory_guidance_only_when_enabled() -> None:
-    from jarvis.core.prompts import MEMORY_GUIDANCE, build_system
+    from kira.core.prompts import MEMORY_GUIDANCE, build_system
 
     assert MEMORY_GUIDANCE not in build_system()  # Phase-1 identity unchanged
     assert MEMORY_GUIDANCE in build_system(memory_enabled=True)

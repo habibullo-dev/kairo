@@ -57,7 +57,7 @@ Soft edges (recommended, not required):
 - 15 before 16: could technically ship 16's attention center without graph proposals, but it
   would launch half-empty.
 
-Phase 17 dependencies to note (NOT planned here): 17 grows 11's `jarvis backup` MVP into full
+Phase 17 dependencies to note (NOT planned here): 17 grows 11's `kira backup` MVP into full
 restore/migrate; 17's diagnostics screen wants 12's write journal + 13's egress/settings
 surfaces + 16's scheduler-liveness signals. Nothing in 12–16 may assume 17 exists.
 
@@ -125,7 +125,7 @@ checkpoint; only the plumbing is shared.
 
 | # | Substrate | Owner | Reused by | Shape |
 |---|---|---|---|---|
-| S1 | **WriteIntent two-phase state machine** (`src/jarvis/actions/intents.py`): draft → previewed(diff) → approved → executed / failed → undone; idempotency key; per-intent preview renderer | **12** | 16 routes intent approvals into attention items; 15's export "apply" reuses the preview→approve shape | migration v10 `write_intents` table |
+| S1 | **WriteIntent two-phase state machine** (`src/kira/actions/intents.py`): draft → previewed(diff) → approved → executed / failed → undone; idempotency key; per-intent preview renderer | **12** | 16 routes intent approvals into attention items; 15's export "apply" reuses the preview→approve shape | migration v10 `write_intents` table |
 | S2 | **Write journal / outbox** (`connector_writes`): metadata-only row per executed write — remote id, verb, scope, rollback info, egress-log link | **12** | 16's briefings/ROI read it; 17 (noted only) diagnostics read it | same v10 migration |
 | S3 | **Pending-decision read model** (approval-queue MVP in the Gate screen): kind, project, source, preview pointer, state, priority | **12** (MVP) | **16 absorbs it** into `attention_items` — evolve the one-attention-surface pin, never duplicate it | GET read model now; table in 16 (v13) |
 | S4 | **Proposal/review queue** (`proposals` table: payload, evidence links, state accept/reject/bulk-reject, provenance) | **15** | 16's dreaming writes ONLY proposals; graph suggestions and dreaming proposals are the same row kind with different `source` | migration v12 |
@@ -242,7 +242,7 @@ commits.
 ## 5. Phase-by-phase execution plans
 
 Discipline for every task in every phase (unchanged from 10B/11): keyless green
-(`uv run pytest` + `uv run ruff check .` + `uv run jarvis eval gate --suite core` replay/$0)
+(`uv run pytest` + `uv run ruff check .` + `uv run kira eval gate --suite core` replay/$0)
 before each commit; per-task commits with explicit paths ending
 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; adversarial review
 before commit; never commit red; forbidden files untouched.
@@ -532,7 +532,7 @@ the previous phase's ritual.
 
 Common tail for every phase:
 ```bash
-uv run jarvis eval gate --profile live-chunked --live --max-cost-usd <cap>   # chunked; ~14-min rule
+uv run kira eval gate --profile live-chunked --live --max-cost-usd <cap>   # chunked; ~14-min rule
 # green + intended ⇒ baseline ratchet in a DEDICATED commit; otherwise no ratchet
 ```
 
@@ -581,7 +581,7 @@ uv run jarvis eval gate --profile live-chunked --live --max-cost-usd <cap>   # c
 
 ## 10. Cost discipline (default $0)
 
-- Every task verifies with `uv run pytest` + `ruff` + `uv run jarvis eval gate --suite core`
+- Every task verifies with `uv run pytest` + `ruff` + `uv run kira eval gate --suite core`
   (replay, keyless, $0). NEVER bare `gate` in CI paths (defaults to `--suite all` ⇒
   intentional `CassetteMissError` on adversarial).
 - New eval scenarios: record cassettes ONCE (`--record`, capped), replay forever. Fake
@@ -610,9 +610,9 @@ Search (FTS5) indexes it all as it lands (journal/attention/graph metadata ride 
 
 ## 12. Shared modules / tables / APIs (likely full list)
 
-- `src/jarvis/actions/` — `intents.py` (S1), `journal.py` (S2), preview builders (12).
-- `src/jarvis/graph/` — store, extraction job, proposal store (S4) (15).
-- `src/jarvis/attention/` — store, routing, dreaming runner (16).
+- `src/kira/actions/` — `intents.py` (S1), `journal.py` (S2), preview builders (12).
+- `src/kira/graph/` — store, extraction job, proposal store (S4) (15).
+- `src/kira/attention/` — store, routing, dreaming runner (16).
 - Context Reuse (S7, §4A): capability metadata on `ProviderSpec` / ModelRegistry; a client-layer
   `ContextReusePolicy` + per-provider adapters; the stable-first prompt assembler + prefix hashes;
   normalized cache columns on `model_calls`. Cross-cutting — touches the client / registry layer,
@@ -708,7 +708,7 @@ Search (FTS5) indexes it all as it lands (journal/attention/graph metadata ride 
 > current). Read `docs/ROADMAP-12-16-execution.md` fully — §5 Phase 12, §6 Checkpoint G, §7
 > invariants, §13 shared tests, §15 commit rules are binding. Also read
 > `docs/phase-11-implementation-playbook.md` (working discipline),
-> `src/jarvis/permissions/` (Gate/UnattendedGate seams), the Phase 9 connector adapters
+> `src/kira/permissions/` (Gate/UnattendedGate seams), the Phase 9 connector adapters
 > (transport + scope patterns), and ADR-0015/0017.
 >
 > Binding for M1: WriteIntent fields include the Phase-16-ready columns (priority, source,
@@ -721,7 +721,7 @@ Search (FTS5) indexes it all as it lands (journal/attention/graph metadata ride 
 >
 > Discipline: per-task commits with explicit paths (never `git add -A`) ending
 > `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; every commit green
-> (`uv run pytest`, `uv run ruff check .`, `uv run jarvis eval gate --suite core` — replay,
+> (`uv run pytest`, `uv run ruff check .`, `uv run kira eval gate --suite core` — replay,
 > $0; never bare `gate`); adversarial review before each commit; extract the §13 shared test
 > helpers (route-pin growth, two-phase harness, fake Google transport) as you first need
 > them; never touch or commit `docs/PLAN.md`, `docs/PLAN-7-voice-consent-checkpoint.md`,

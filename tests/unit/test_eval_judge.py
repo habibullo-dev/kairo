@@ -16,8 +16,8 @@ from tests.evals.judge import (
     parse_verdict,
 )
 
-from jarvis.core import FakeClient, ModelResponse
-from jarvis.observability.cost import Usage
+from kira.core import FakeClient, ModelResponse
+from kira.observability.cost import Usage
 
 JUDGE = "claude-opus-4-8"
 

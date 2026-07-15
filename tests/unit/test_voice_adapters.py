@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.config import VoiceConfig
-from jarvis.voice import (
+from kira.config import VoiceConfig
+from kira.voice import (
     ElevenLabsSynthesizer,
     LocalTranscriber,
     OpenAISynthesizer,

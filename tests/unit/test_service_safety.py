@@ -12,23 +12,23 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context cycle in isolation)
-from jarvis.config import load_config
-from jarvis.core.client import FakeClient
-from jarvis.orchestration import (
+import kira.core  # noqa: F401 - load core first (ledger<->core.context cycle in isolation)
+from kira.config import load_config
+from kira.core.client import FakeClient
+from kira.orchestration import (
     READ_ONLY_SPAWNABLE,
     TEAM_PROFILES,
     OrchestrationEngine,
     resolve_team,
 )
-from jarvis.orchestration.context import ContextBundle, ContextItem, Provenance
-from jarvis.orchestration.engine import SERVICE_TOOLS
-from jarvis.orchestration.roles import Capability, RosterRole
-from jarvis.permissions.gate import Decision
-from jarvis.permissions.modes import AUTO_NEVER, PLAN_SAFE, Mode, auto_approves, plan_blocks
-from jarvis.services.catalog import SERVICE_CATALOG
-from jarvis.services.semgrep import SemgrepScanTool
-from jarvis.tools.base import Permission, ToolContext
+from kira.orchestration.context import ContextBundle, ContextItem, Provenance
+from kira.orchestration.engine import SERVICE_TOOLS
+from kira.orchestration.roles import Capability, RosterRole
+from kira.permissions.gate import Decision
+from kira.permissions.modes import AUTO_NEVER, PLAN_SAFE, Mode, auto_approves, plan_blocks
+from kira.services.catalog import SERVICE_CATALOG
+from kira.services.semgrep import SemgrepScanTool
+from kira.tools.base import Permission, ToolContext
 
 _SERVICE_TOOL_NAMES = ("semgrep_scan", "gitleaks_scan", "playwright_inspect")
 _EGRESS_OR_WRITE = frozenset({"web_search", "web_fetch", "write_file", "run_shell"})
@@ -128,7 +128,7 @@ def test_scanner_and_inspect_services_are_non_egress() -> None:
 def test_research_service_derives_egress_true() -> None:
     # Phase 13: a hosted research "now" service (firecrawl) IS an egress sink — the derived
     # egress=True is what makes the existing, tested taint logic demote it after a private read.
-    from jarvis.services.firecrawl import FirecrawlScrapeTool
+    from kira.services.firecrawl import FirecrawlScrapeTool
 
     assert SERVICE_CATALOG["firecrawl"].egress is True
     assert FirecrawlScrapeTool.egress is True  # derived from the spec, not hand-set
@@ -150,7 +150,7 @@ async def test_scanner_confined_to_project_root(tmp_path: Path) -> None:
 def test_service_tools_are_delegatable_but_not_spawn() -> None:
     # Service tools may be scoped into a child (they're in SPAWNABLE), but none is spawn_agent —
     # a member can never spawn (depth-1; teams are groups, not swarms).
-    from jarvis.agents import SPAWNABLE
+    from kira.agents import SPAWNABLE
 
     assert set(SERVICE_TOOLS.values()) <= SPAWNABLE
     assert "spawn_agent" not in SPAWNABLE

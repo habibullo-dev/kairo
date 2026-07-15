@@ -52,7 +52,7 @@ saved views, project scopes, progressive disclosure — never a whole-corpus hai
   runs (role/stage/status/cost, bodies-free read models); teams/services as code constants
   (`teams.py`, `SERVICE_CATALOG`).
 - **UI shell**: workspace tab allowlist (10 tabs incl. `office`), per-tab error boundary,
-  `el()`/textContent discipline, token CSS, screenshot DoD machinery (`jarvis.ui.screenshots`,
+  `el()`/textContent discipline, token CSS, screenshot DoD machinery (`kira.ui.screenshots`,
   Phase-14 self-contained `tests/ui/office_dod.py` pattern), mutation pin **35**.
 - **Determinism lesson (Phase 14, commit `7bb5f4f`)**: wall-clock leaking into derived
   content breaks replay/rebuild determinism — derived graph rows must carry their SOURCE rows'
@@ -96,7 +96,7 @@ connector taint), `sensitivity` (reused artifact vocabulary), `source_kind`, `cr
 underlying row at build time** — the graph can never hold a HIGHER trust than its source.
 
 ```
-src/jarvis/graph/
+src/kira/graph/
 ├── __init__.py
 ├── store.py        # GraphStore over graph_nodes/edges/suggestions/merges (asserted never-DELETE)
 ├── builder.py      # deterministic derive: existing stores -> derived edge cache (+ FTS entities)
@@ -147,13 +147,13 @@ src/jarvis/graph/
   byte-for-byte the Vault approve/reject pattern (session-auth, project-checked, idempotent,
   journaled). Approve materializes: memory-suggestion → a real `memories` row (source =
   `reviewed_suggestion`); node/edge-suggestion → asserted `graph_nodes`/`graph_edges`.
-  Merge/split apply is **CLI-first this phase** (`jarvis graph merge/split/undo`) — no route, so
+  Merge/split apply is **CLI-first this phase** (`kira graph merge/split/undo`) — no route, so
   the graph UI stays read+review-only. Saved graph views reuse the EXISTING `/api/views/save`
   (new `scope="graph"` value; subset-validated) — no new route.
 
 ## 5. Suggestion pipeline (how entities/memories are proposed — never trusted)
 
-`graph/suggest.py` runs **only when explicitly invoked** (CLI `jarvis graph suggest`, or the
+`graph/suggest.py` runs **only when explicitly invoked** (CLI `kira graph suggest`, or the
 existing reflection hook extended — NOT a new scheduler job this phase):
 
 - Extractors scan **bounded, already-local** material: chat session summaries, run
@@ -178,7 +178,7 @@ existing reflection hook extended — NOT a new scheduler job this phase):
   the standard warning frame so the human sees WHY it needs scrutiny.
 - Approved memory suggestions become normal `memories` rows (retrievable next session); approved
   entities/edges appear in the graph as `asserted · reviewed`.
-- CLI parity: `jarvis graph review` (list/approve/reject) mirrors `kb review`.
+- CLI parity: `kira graph review` (list/approve/reject) mirrors `kb review`.
 - Edit-before-approve: v1 allows title/content trimming on approve (validated length caps);
   anything more is reject-and-recreate. (Keeps the route payload narrow.)
 
@@ -197,7 +197,7 @@ existing reflection hook extended — NOT a new scheduler job this phase):
     per-run/day); the EXISTING KB-ingest call sites keep working unchanged but now produce ledger
     rows too (observability only — no new blocking on the legacy path this phase, explicitly
     noted in the ADR as a ratchet candidate).
-  - Re-embedding is content-hash keyed: unchanged text is never re-embedded; `jarvis graph
+  - Re-embedding is content-hash keyed: unchanged text is never re-embedded; `kira graph
     reindex` reports skipped/embedded/spend before running (plan → confirm for large batches).
 - Eval determinism: eval runs replay embeddings through the existing cassette embedder — no live
   Voyage in the gate.
@@ -277,7 +277,7 @@ lines, CSP-clean, zero external assets):
   becomes a derived edge on rebuild (delightful, free). Bulk-importing an EXTERNAL Obsidian vault
   routes through the existing `kb ingest` + review quarantine — no new trust door. A live
   file-watcher/two-way merge engine is **deferred**.
-- CLI: `jarvis graph export [--project]`, dry-run by default with a diff summary; `--write` to
+- CLI: `kira graph export [--project]`, dry-run by default with a diff summary; `--write` to
   apply.
 
 ## 11. Tests / evals (beyond per-task units)
@@ -310,7 +310,7 @@ lines, CSP-clean, zero external assets):
    merges` + FTS `entities` domain + version pins 11→12; store with never-DELETE/retract
    invariants.
 2. **Deterministic builder + rebuild CLI.** Derive the full edge set from existing stores;
-   `jarvis graph rebuild`; determinism + asserted-survival pins.
+   `kira graph rebuild`; determinism + asserted-survival pins.
 
 **M1 — read models + review**
 3. **GraphService read models + routes (GET).** Subgraph/node-card/counts; scoping, clamps,
@@ -318,11 +318,11 @@ lines, CSP-clean, zero external assets):
 4. **Suggestion pipeline** (`graph/suggest.py`, explicit-invoke only; budgeted utility route;
    worst-evidence trust; quarantine invariants).
 5. **Review workflow.** Queue read model + the two approve/reject routes (**pin 35→37**) +
-   Memory-tab "Suggested" section + `jarvis graph review` CLI.
+   Memory-tab "Suggested" section + `kira graph review` CLI.
 
 **M2 — search + indexing**
 6. **Unified semantic+graph search + palette integration.** Voyage pricing rows; ledgered,
-   capped, fail-closed indexer; content-hash re-embedding; `jarvis graph reindex`.
+   capped, fail-closed indexer; content-hash re-embedding; `kira graph reindex`.
 
 **M3 — visualization**
 7. **graphview.js canvas module + workspace `graph` tab** (allowlist 10→11). Focus+expand, caps,
@@ -344,7 +344,7 @@ lines, CSP-clean, zero external assets):
 
 **M4 — merge + Obsidian (post-checkpoint)**
 9. **Dedup + merge/split (CLI-first).** Candidate detection (exact-key + embedding similarity,
-   report-only); `jarvis graph merge/split/undo` — journaled, reversible; no UI mutation.
+   report-only); `kira graph merge/split/undo` — journaled, reversible; no UI mutation.
 10. **Obsidian export + staged import.** `graph/obsidian.py` per §10; dry-run default;
     marker-guard + namespace containment + secret/private canary pins.
 11. **Adversarial pins + evals.** Record the two core scenarios (frozen clock); keyless
@@ -369,7 +369,7 @@ plugin parity beyond the calm canvas.
 Execute Tasks 1–12 in order; **MANDATORY full stop at ⛔ Checkpoint J** (after Task 8) with the
 ten-bullet evidence — Tasks 9–12 only on approval. Per-task commits with EXPLICIT paths (never
 `git add -A`) ending `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`;
-adversarial self-review before each commit; suite + ruff + `uv run jarvis eval gate --suite core`
+adversarial self-review before each commit; suite + ruff + `uv run kira eval gate --suite core`
 (keyless replay) green every task; never commit red; never commit the NEVER-touch list. Reuse,
 never fork: the kb_sources/kb_chunks primary-vs-derived pattern, ADR-0004 quarantine + the Vault
 approve/reject route shape, `persistence/fts.py` domains, the saved-views routes, the artifact

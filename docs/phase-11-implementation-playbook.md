@@ -98,7 +98,7 @@ Never commit red. Never commit the forbidden files (bottom of this doc).
 
 ## 6. Eval / cost discipline
 
-- **Keyless replay is the default gate.** `uv run jarvis eval gate --suite core` is $0 and must be
+- **Keyless replay is the default gate.** `uv run kira eval gate --suite core` is $0 and must be
   green after every task. A missing cassette fails closed (never a silent live call).
 - **No unnecessary live/record runs.** `--live` / `--record` cost real money and are explicit,
   capped (`--max-cost-usd`), and reserved for a legitimate scenario change or the phase-closeout

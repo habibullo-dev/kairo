@@ -10,10 +10,10 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from jarvis.knowledge.store import KnowledgeStore, NewChunk, WikiLink
-from jarvis.persistence.db import connect
-from jarvis.persistence.fts import integrity_check_all, query_domain
-from jarvis.projects import ProjectStore
+from kira.knowledge.store import KnowledgeStore, NewChunk, WikiLink
+from kira.persistence.db import connect
+from kira.persistence.fts import integrity_check_all, query_domain
+from kira.projects import ProjectStore
 
 MODEL = "voyage-3-large"
 _OPEN_DBS: list = []

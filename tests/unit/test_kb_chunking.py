@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from jarvis.knowledge.chunking import Chunk, chunk_markdown, embed_text
+from kira.knowledge.chunking import Chunk, chunk_markdown, embed_text
 
 
 def test_heading_path_stack() -> None:

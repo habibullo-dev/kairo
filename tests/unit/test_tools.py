@@ -8,7 +8,7 @@ from types import ModuleType
 import pytest
 from pydantic import BaseModel
 
-from jarvis.tools import Permission, Tool, ToolExecutor, ToolRegistry, ToolResult
+from kira.tools import Permission, Tool, ToolExecutor, ToolRegistry, ToolResult
 
 
 class EchoParams(BaseModel):
@@ -133,7 +133,7 @@ def test_register_from_module_finds_defined_tools_only() -> None:
 
 def test_discover_builtin_package() -> None:
     reg = ToolRegistry()
-    n = reg.discover("jarvis.tools.builtin")
+    n = reg.discover("kira.tools.builtin")
     assert n >= 7
     for name in (
         "read_file",

@@ -5,7 +5,7 @@ Each entry captures the *non-obvious* decisions and their rationale.
 
 ## Task 1 — Scaffold
 
-- **src layout (`src/jarvis/`), not flat.** With a flat layout, `import jarvis`
+- **src layout (`src/kira/`), not flat.** With a flat layout, `import kira`
   can accidentally resolve to the source tree in the CWD instead of the installed
   package, so tests can pass against uninstalled/stale code. The src layout forces
   an install step (`uv sync` installs editable), guaranteeing tests exercise the
@@ -21,8 +21,8 @@ Each entry captures the *non-obvious* decisions and their rationale.
 - **`asyncio_mode = "auto"` in pytest.** The agent core is async; auto mode lets
   `async def test_*` run without decorating every test, keeping the loop's tests
   readable.
-- **Console script points at `jarvis.__main__:main`.** One entry function backs
-  both `python -m jarvis` and the `jarvis` command, so there's a single place the
+- **Console script points at `kira.__main__:main`.** One entry function backs
+  both `python -m kira` and the `jarvis` command, so there's a single place the
   REPL gets wired in at task 8.
 
 ## Task 2 — Config
@@ -52,7 +52,7 @@ Each entry captures the *non-obvious* decisions and their rationale.
 ## Task 3 — Observability
 
 - **The JSONL log is the audit trail, not the UI.** structlog renders one JSON
-  object per line to `logs/jarvis-YYYY-MM-DD.jsonl`. User-facing output is the
+  object per line to `logs/kira-YYYY-MM-DD.jsonl`. User-facing output is the
   REPL's job (rich, task 8); conflating the two would make the machine-parseable
   record depend on terminal formatting. So logging writes structured events only.
 - **`trace_id` is a contextvar + a processor, not a parameter threaded everywhere.**
@@ -335,12 +335,12 @@ the agent could exceed what a human actually approved.
 - **The gate and the tool must resolve a path the same way, or the check is a
   lie.** The gate approved `root/notes/x` while the tool wrote `cwd/notes/x` — a
   classic check-here-act-there gap (harmless only because they usually coincide).
-  Now a single `jarvis.paths.resolve_path(raw, root)` is the *one* resolver both
+  Now a single `kira.paths.resolve_path(raw, root)` is the *one* resolver both
   call, always against `config.root`. `.resolve()` also collapses `..` and
   follows symlinks, so neither can be used to escape the write allowlist.
 - **The secret denylist is a code floor, not a config setting.** `.env`, SSH/GPG
   keys, `.aws/credentials`, `.npmrc`, `*.pem` … are denied for read *and* write in
-  `jarvis.paths.is_sensitive_path`, which policy can extend (`read_denylist`) but
+  `kira.paths.is_sensitive_path`, which policy can extend (`read_denylist`) but
   never disable. Reasons: (1) a foot-gun edit to `permissions.yaml` shouldn't be
   able to expose credentials; (2) the write side blocks a real attack —
   `write_file(~/.ssh/authorized_keys)` is persistence, not a file save. Committed
@@ -999,7 +999,7 @@ non-obvious *implementation* decisions per task.
   `wait_for` cancels the *await*, not the OS thread — a pathological PDF or a
   decompression bomb keeps burning CPU/RAM after "timed out". Real cancellation
   needs a real process boundary: `convert_file_sandboxed` spawns
-  `python -m jarvis.knowledge.convert_worker` and `proc.kill()`s it at the deadline.
+  `python -m kira.knowledge.convert_worker` and `proc.kill()`s it at the deadline.
   Pinned by an env-gated self-test hook that makes the worker sleep, then asserting
   the parent reports "exceeded/terminated".
 - **Reserve stdout for the result; redirect library chatter to stderr.** Converter
@@ -1185,7 +1185,7 @@ non-obvious *implementation* decisions per task.
 - **Eval infra lives in `tests/evals/` as an importable package, not `src/`.** A root
   `conftest.py` puts the repo root on `sys.path` so unit tests can
   `from tests.evals.recorder import ...` (namespace `tests` + regular `tests.evals`
-  package) alongside the pip-installed `jarvis`. The runner will be invoked as
+  package) alongside the pip-installed `kira`. The runner will be invoked as
   `python -m tests.evals.runner`. This keeps test infrastructure out of the shipped
   package while still unit-testable — the `src/` layering rule stays intact.
 - **Fail-closed pricing is a one-function fix for a silent-$0 trap.** `cost_of` returns
@@ -2317,7 +2317,7 @@ replay. A second subtlety: replay must build no live client at all (inner=None),
 AnthropicClient.from_config calls config.require("anthropic") — otherwise "keyless replay" would
 still demand a key.
 
-Making replay the DEFAULT changes what `jarvis eval gate` means: with no cassettes it fails closed
+Making replay the DEFAULT changes what `kira eval gate` means: with no cassettes it fails closed
 telling you to --record. That's the intended cost ladder (record once → replay free forever), but
 it's a real behavior change, so the fail-closed message prints the exact record command and the
 Daily screen shows a projected-cost note ($0 replay by default). The cost cap guards before each

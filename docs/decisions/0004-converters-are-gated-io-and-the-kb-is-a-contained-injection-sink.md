@@ -24,7 +24,7 @@ qualitatively more dangerous than anything in Phases 1–3 and drive the whole d
 
 **Conversion is gated like a read, twice, and sandboxed.**
 - `ingest_source`'s file parameter is named `path`, and `ingest_source` is in the
-  gate's default `read_tools`, so the sensitive-path floor (`jarvis.paths`) fires
+  gate's default `read_tools`, so the sensitive-path floor (`kira.paths`) fires
   before any converter opens the file. A gate self-consistency test asserts every
   path-checked tool actually has a `path` field — a rename to `source` would silently
   disable the floor and pass every functional test.
@@ -37,7 +37,7 @@ qualitatively more dangerous than anything in Phases 1–3 and drive the whole d
 - MarkItDown is constructed `enable_plugins=False` with no LLM client — plugins, OCR,
   and image description are off and are a future *explicit* config, never a silent
   default (pinned by a test on the constructor kwargs).
-- The URL leg is SSRF-guarded (`jarvis.net`): http/https only, no UNC/`file://`, and
+- The URL leg is SSRF-guarded (`kira.net`): http/https only, no UNC/`file://`, and
   loopback/private/link-local addresses are rejected on the initial URL *and every
   redirect hop*. `web_fetch` was retrofitted onto the same guard for parity.
 

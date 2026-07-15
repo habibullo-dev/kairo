@@ -11,18 +11,18 @@ from pathlib import Path
 import httpx
 import pytest
 
-from jarvis.connectors.base import ConnectorError
-from jarvis.connectors.telegram import send_telegram_document
-from jarvis.persistence.db import connect
-from jarvis.remote import news_brief as news_brief_module
-from jarvis.remote.news_brief import (
+from kira.connectors.base import ConnectorError
+from kira.connectors.telegram import send_telegram_document
+from kira.persistence.db import connect
+from kira.remote import news_brief as news_brief_module
+from kira.remote.news_brief import (
     NewsBriefAuthorization,
     NewsBriefRequest,
     NewsBriefService,
     NewsBriefStore,
     render_news_pdf,
 )
-from jarvis.tools.builtin.web import PublicSearchItem, PublicSearchResponse
+from kira.tools.builtin.web import PublicSearchItem, PublicSearchResponse
 
 
 @dataclass

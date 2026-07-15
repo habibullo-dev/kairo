@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.config import (
+from kira.config import (
     Config,
     ConfigError,
     LimitsConfig,
@@ -16,7 +16,7 @@ from jarvis.config import (
     PathsConfig,
     Secrets,
 )
-from jarvis.core.anthropic_client import AnthropicClient, _serialize_block, to_model_response
+from kira.core.anthropic_client import AnthropicClient, _serialize_block, to_model_response
 
 
 @pytest.fixture(autouse=True)

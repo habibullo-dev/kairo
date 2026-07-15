@@ -7,8 +7,8 @@ from pathlib import Path
 
 import aiosqlite
 
-from jarvis.persistence import migrations as M
-from jarvis.persistence.migrations import migrate
+from kira.persistence import migrations as M
+from kira.persistence.migrations import migrate
 
 _LATEST = M.MIGRATIONS[-1][0]
 

@@ -11,7 +11,7 @@ the two positive-path core cassettes. No `config/*.yaml`, `.env`, connector/toke
 ## A. Keyless suite + screenshot DoD — GREEN
 
 Full suite **1916 passed / 2 skipped** (expected skips: playwright-installed degradation path;
-Windows symlink privilege), ruff clean (src + tests), `jarvis eval gate --suite core` **19/19 PASS
+Windows symlink privilege), ruff clean (src + tests), `kira eval gate --suite core` **19/19 PASS
 3/3** (keyless cassette replay, **$0**), across all eight Phase-15 commits.
 
 ### Screenshot DoD — GREEN (36/36)
@@ -29,7 +29,7 @@ motion), `analyze_overlap` across **4 states × 3 themes × 3 viewports**:
 
 Zero layout violations across all 36. Spot-checked visually: the expanded/noir/1440 graph (run
 centered by degree, the untrusted `http://x` source drawn with its distinct dashed trust ring, kind-
-count filter chips, side inspect panel) and the empty/light state (the calm empty message + `jarvis
+count filter chips, side inspect panel) and the empty/light state (the calm empty message + `kira
 graph rebuild` hint).
 
 ### Safety walls (each with its named test)
@@ -53,11 +53,11 @@ graph rebuild` hint).
 Each step is safe (read/reason-only + local writes gated to the wiki tree); costs are bounded and
 land in the ledger.
 
-1. **Deterministic rebuild on the real DB.** `jarvis graph rebuild` twice — the derived-edge counts
+1. **Deterministic rebuild on the real DB.** `kira graph rebuild` twice — the derived-edge counts
    match exactly (source-row timestamps ⇒ byte-identical), and asserted rows are untouched.
-2. **One real suggest → review → approve cycle.** `jarvis graph suggest --project <P>` (a budgeted
-   utility call; proposals land PENDING), `jarvis graph review --project <P>` (lists the queue),
-   `jarvis graph review --approve <ID>` — confirm the approved memory/node appears with its trust
+2. **One real suggest → review → approve cycle.** `kira graph suggest --project <P>` (a budgeted
+   utility call; proposals land PENDING), `kira graph review --project <P>` (lists the queue),
+   `kira graph review --approve <ID>` — confirm the approved memory/node appears with its trust
    **unchanged** (an untrusted-sourced proposal stays `untrusted_external`), and the pending ones
    never appeared in search until approved.
 3. **Unified search spot checks.** In the workstation, query a term that exists as an entity + in a
@@ -65,12 +65,12 @@ land in the ledger.
    the FTS-only degrade (no crash) and that an unpriced embedder is refused.
 4. **Graph tab on real data.** Open `#workspace/<P>/graph`: confirm it is calm at scale (node cap,
    filters, focus/expand), that clicking a node inspects it (GET), and that nothing mutates.
-5. **Obsidian export.** `jarvis graph export` (dry-run — read the plan), then `jarvis graph export
+5. **Obsidian export.** `kira graph export` (dry-run — read the plan), then `kira graph export
    --write`; open `knowledge/wiki/` in Obsidian and confirm the `_graph/` + `_memory/` pages render
    and cross-link, that a hand-authored page at a `_graph/` path is skipped (not clobbered), and that
    no secret/private content is present.
-6. **Embedding spend under cap.** `jarvis graph reindex --dry-run` (reports what would embed + est.
-   spend), then `jarvis graph reindex`; confirm the Voyage spend appears in the cost ledger and stays
+6. **Embedding spend under cap.** `kira graph reindex --dry-run` (reports what would embed + est.
+   spend), then `kira graph reindex`; confirm the Voyage spend appears in the cost ledger and stays
    under the configured cap (unpriced ⇒ refused).
 7. **Adversarial suggestion live proof.** Live-run `inj_graph_suggestion_poison` (the injection-proof
    ritual, `--suite adversarial` or the live-chunked runner): confirm the assistant reports the real
@@ -90,7 +90,7 @@ land in the ledger.
 
 ## Orthogonal: adversarial replay is red because cassettes are MISSING (unchanged from Phase 14)
 
-`jarvis eval gate --suite adversarial` (and `--suite all`) remains red at HEAD — now **24** adversarial
+`kira eval gate --suite adversarial` (and `--suite all`) remains red at HEAD — now **24** adversarial
 scenarios (the Phase-15 `inj_graph_suggestion_poison` included) MISS at call #1 because **no
 adversarial cassettes were ever recorded/committed**. This is a missing-baseline condition, not a
 behavior failure. **`--suite core` (19, keyless, $0) stays the per-task gate.** Follow-up (out of

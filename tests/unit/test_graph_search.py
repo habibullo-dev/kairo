@@ -10,14 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.graph import GraphStore
-from jarvis.graph.index import CostAwareEmbedder, reindex
-from jarvis.graph.search import unified_search
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.memory.store import MemoryStore
-from jarvis.observability.cost import load_pricing
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
+from kira.graph import GraphStore
+from kira.graph.index import CostAwareEmbedder, reindex
+from kira.graph.search import unified_search
+from kira.memory.embeddings import FakeEmbedder
+from kira.memory.store import MemoryStore
+from kira.observability.cost import load_pricing
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
 
 _OPEN: list = []
 _FAKE = FakeEmbedder(model="voyage-3-large")  # priced model so the indexer runs

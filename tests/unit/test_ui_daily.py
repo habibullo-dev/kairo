@@ -9,7 +9,7 @@ linkifies untrusted content. The load-bearing WS contract is unchanged.
 
 from __future__ import annotations
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 DAILY_JS = (STATIC_DIR / "screens" / "daily.js").read_text(encoding="utf-8")
 CONVERSATION_JS = (STATIC_DIR / "screens" / "conversation.js").read_text(encoding="utf-8")

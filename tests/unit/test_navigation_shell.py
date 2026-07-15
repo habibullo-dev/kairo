@@ -1,6 +1,6 @@
 """Slice 5 navigation shell: clear route hierarchy, mobile labels, and Debug route gating."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 APP = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")

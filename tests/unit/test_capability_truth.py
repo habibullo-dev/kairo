@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.config import load_config
-from jarvis.ui.readmodels import capability_truth
+from kira.config import load_config
+from kira.ui.readmodels import capability_truth
 
 
 def _cfg(tmp_path: Path):
@@ -85,13 +85,13 @@ def test_resilient_to_provider_registry_failure(tmp_path: Path, monkeypatch) -> 
     # A pricing/provider hiccup must NEVER blank the grid or 500 the surface (the Checkpoint-J2
     # root cause: a throwing read model → empty Hub / empty selector). The connector rows + voice +
     # MCP always render; providers degrade to just anthropic.
-    import jarvis.models.providers as prov
+    import kira.models.providers as prov
 
     def boom(*_a, **_k):
         raise RuntimeError("pricing table exploded")
 
     monkeypatch.setattr(prov.ProviderRegistry, "from_config", classmethod(boom))
-    monkeypatch.setattr("jarvis.ui.readmodels.services_status", boom)
+    monkeypatch.setattr("kira.ui.readmodels.services_status", boom)
     cap = capability_truth(_cfg(tmp_path), connectors=None, voice={"enabled": False})
     assert len(cap["connectors"]) == 5  # ALWAYS the five connector rows
     assert cap["providers"][0]["name"] == "Anthropic"  # anthropic still shown (the main chat)

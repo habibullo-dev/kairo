@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from jarvis.core.prompts import (
+from kira.core.prompts import (
     COLLABORATION_GUIDANCE,
     DEFAULT_IDENTITY,
     SUBAGENT_GUIDANCE,

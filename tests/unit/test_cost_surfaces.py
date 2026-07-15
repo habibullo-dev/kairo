@@ -13,14 +13,14 @@ from pathlib import Path
 
 import pytest
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context cycle in isolation)
-from jarvis.config import BudgetsConfig
-from jarvis.observability.budget import BudgetService
-from jarvis.observability.cost import Usage, load_pricing
-from jarvis.observability.ledger import CostContext, CostLedger, ServiceLedger, cost_context
-from jarvis.orchestration import OrchestrationStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
+import kira.core  # noqa: F401 - load core first (ledger<->core.context cycle in isolation)
+from kira.config import BudgetsConfig
+from kira.observability.budget import BudgetService
+from kira.observability.cost import Usage, load_pricing
+from kira.observability.ledger import CostContext, CostLedger, ServiceLedger, cost_context
+from kira.orchestration import OrchestrationStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
 
 _OPEN: list = []
 
@@ -153,7 +153,7 @@ def test_roi_arithmetic() -> None:
 
 
 async def test_orchestration_roi_read_model(tmp_path: Path) -> None:
-    from jarvis.ui.readmodels import (
+    from kira.ui.readmodels import (
         orchestration_estimate_accuracy,
         orchestration_outcome_accounting,
         orchestration_roi,
@@ -188,7 +188,7 @@ async def test_orchestration_roi_read_model(tmp_path: Path) -> None:
 
 
 async def test_estimate_accuracy_exposes_unknown_and_unusable_samples(tmp_path: Path) -> None:
-    from jarvis.ui.readmodels import orchestration_estimate_accuracy
+    from kira.ui.readmodels import orchestration_estimate_accuracy
 
     _db, _lock, store, first = await _seed(tmp_path)
     await store.complete_run(first, status="ok", actual_cost_usd=1.5)
@@ -235,7 +235,7 @@ async def test_estimate_accuracy_exposes_unknown_and_unusable_samples(tmp_path: 
 async def test_orchestration_roi_never_credits_nonaccepted_outcomes() -> None:
     from types import SimpleNamespace
 
-    from jarvis.ui.readmodels import orchestration_outcome_accounting, orchestration_roi
+    from kira.ui.readmodels import orchestration_outcome_accounting, orchestration_roi
 
     class Store:
         async def list(self, **_kwargs):
@@ -313,7 +313,7 @@ async def test_orchestration_roi_never_credits_nonaccepted_outcomes() -> None:
 
 
 async def test_costs_overview_includes_team_and_service(tmp_path: Path) -> None:
-    from jarvis.ui.readmodels import costs_overview
+    from kira.ui.readmodels import costs_overview
 
     db, lock, _s, _r = await _seed(tmp_path)
     budgets = BudgetService(db, lock, BudgetsConfig())
@@ -323,7 +323,7 @@ async def test_costs_overview_includes_team_and_service(tmp_path: Path) -> None:
 
 
 async def test_model_request_health_separates_completed_and_failed_attempts(tmp_path: Path) -> None:
-    from jarvis.ui.readmodels import model_request_health_overview
+    from kira.ui.readmodels import model_request_health_overview
 
     db = await connect(tmp_path / "health.db")
     _OPEN.append(db)
@@ -378,7 +378,7 @@ async def test_model_request_health_separates_completed_and_failed_attempts(tmp_
 async def test_model_request_health_is_fail_closed_after_telemetry_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jarvis.ui.readmodels import model_request_health_overview
+    from kira.ui.readmodels import model_request_health_overview
 
     db = await connect(tmp_path / "incomplete-health.db")
     _OPEN.append(db)
@@ -428,7 +428,7 @@ async def test_model_request_health_is_fail_closed_after_telemetry_loss(
 async def test_model_request_health_groups_provider_model_percentiles_by_utc_day(
     tmp_path: Path,
 ) -> None:
-    from jarvis.ui.readmodels import model_request_health_overview
+    from kira.ui.readmodels import model_request_health_overview
 
     db = await connect(tmp_path / "daily-health.db")
     _OPEN.append(db)

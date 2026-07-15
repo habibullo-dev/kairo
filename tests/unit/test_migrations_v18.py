@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import aiosqlite
 
-from jarvis.persistence import migrations as M
-from jarvis.persistence.fts import integrity_check_all
+from kira.persistence import migrations as M
+from kira.persistence.fts import integrity_check_all
 
 
 async def _build_v17() -> aiosqlite.Connection:

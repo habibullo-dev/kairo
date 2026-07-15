@@ -31,7 +31,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from jarvis.observability.cost import Usage, cost_of, price_for
+from kira.observability.cost import Usage, cost_of, price_for
 
 SCHEMA_VERSION = 1
 

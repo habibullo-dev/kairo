@@ -1,6 +1,6 @@
 """Operator-guide pins: commands are real and safety/recovery claims stay conservative."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 REPOSITORY_ROOT = STATIC_DIR.parents[3]
 GUIDE = (REPOSITORY_ROOT / "docs" / "KIRA-USER-GUIDE.md").read_text(encoding="utf-8")

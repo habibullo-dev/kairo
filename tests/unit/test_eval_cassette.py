@@ -16,8 +16,8 @@ from tests.evals.cassette import (
     wrap,
 )
 
-from jarvis.core.client import ModelResponse, ToolCall, text_message, tool_use_message
-from jarvis.observability.cost import Price, PricingTable, Usage
+from kira.core.client import ModelResponse, ToolCall, text_message, tool_use_message
+from kira.observability.cost import Price, PricingTable, Usage
 
 
 def _pricing() -> PricingTable:
@@ -94,9 +94,10 @@ def test_key_normalizes_random_temp_workdir() -> None:
             tools=[], max_tokens=10, tool_choice=None, temperature=None,
         )
 
-    a = _k("C:\\Users\\h\\AppData\\Local\\Temp\\jarvis-eval-aaaa111")
-    b = _k("C:\\Users\\h\\AppData\\Local\\Temp\\jarvis-eval-bbbb222")
+    a = _k("C:\\Users\\h\\AppData\\Local\\Temp\\kira-eval-aaaa111")
+    b = _k("C:\\Users\\h\\AppData\\Local\\Temp\\kira-eval-bbbb222")
     assert a == b  # random workdir normalized ⇒ deterministic replay key
+    assert a == "880632d18a254a173e1d7f805c99ef08a4d42dff662c5a0116e726f72a2c67d9"
 
 
 # --- replay fails closed on a miss ------------------------------------------
@@ -357,7 +358,7 @@ async def test_web_tool_replay_fails_closed(tmp_path: Path) -> None:
 async def test_web_tool_record_then_replay(tmp_path: Path) -> None:
     from tests.evals.cassette import wrap_web_tool
 
-    from jarvis.tools.base import ToolResult
+    from kira.tools.base import ToolResult
 
     calls = {"n": 0}
 
@@ -386,20 +387,20 @@ async def test_web_tool_record_then_replay(tmp_path: Path) -> None:
 
 
 def test_eval_clock_is_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
-    from jarvis.core.agent import _default_now
+    from kira.core.agent import _default_now
 
-    monkeypatch.setenv("JARVIS_EVAL_CLOCK", "2026-01-01T12:00:00+00:00")
+    monkeypatch.setenv("KIRA_EVAL_CLOCK", "2026-01-01T12:00:00+00:00")
     a, b = _default_now(), _default_now()
     assert a == b and a.year == 2026 and a.hour == 12
-    monkeypatch.delenv("JARVIS_EVAL_CLOCK")
+    monkeypatch.delenv("KIRA_EVAL_CLOCK")
     assert _default_now().year >= 2026  # unset ⇒ real wall clock
 
 
 def test_scheduler_clock_respects_eval_clock(monkeypatch: pytest.MonkeyPatch) -> None:
-    from jarvis.scheduler.service import utc_now
+    from kira.scheduler.service import utc_now
 
-    monkeypatch.setenv("JARVIS_EVAL_CLOCK", "2026-01-01T12:00:00+00:00")
+    monkeypatch.setenv("KIRA_EVAL_CLOCK", "2026-01-01T12:00:00+00:00")
     t = utc_now()
     assert (t.year, t.month, t.day, t.hour) == (2026, 1, 1, 12) and t.tzinfo is not None
-    monkeypatch.delenv("JARVIS_EVAL_CLOCK")
+    monkeypatch.delenv("KIRA_EVAL_CLOCK")
     assert utc_now().year >= 2026  # unset ⇒ real wall clock

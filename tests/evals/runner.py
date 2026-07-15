@@ -57,13 +57,13 @@ from tests.evals.cassette import (
 from tests.evals.cassette import wrap as cassette_wrap
 from tests.evals.recorder import ERROR, FAIL, INVALID, PASS, ScenarioRunRecord
 
-from jarvis.agents import AgentRunStore, SubAgentService
-from jarvis.cli.jobs import JobRunner
-from jarvis.config import Config, ConfigError, load_config
-from jarvis.core import AgentLoop, AnthropicClient, ToolCall
-from jarvis.core.client import LLMClient
-from jarvis.core.context import ContextManager
-from jarvis.core.events import (
+from kira.agents import AgentRunStore, SubAgentService
+from kira.cli.jobs import JobRunner
+from kira.config import Config, ConfigError, load_config
+from kira.core import AgentLoop, AnthropicClient, ToolCall
+from kira.core.client import LLMClient
+from kira.core.context import ContextManager
+from kira.core.events import (
     Event,
     SubAgentCompleted,
     SubAgentEvent,
@@ -71,23 +71,23 @@ from jarvis.core.events import (
     ToolFinished,
     ToolStarted,
 )
-from jarvis.core.prompts import build_system
-from jarvis.knowledge.service import KnowledgeService
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.memory import MemoryService, MemoryStore, VoyageEmbedder, reflect
-from jarvis.observability.cost import Usage
-from jarvis.permissions import PermissionGate, load_policy
-from jarvis.permissions.gate import Decision
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.persistence.instance_lock import InstanceAlreadyRunning, ResetMaintenanceBusy
-from jarvis.persistence.reset_recovery import ResetRecoveryError, reset_sensitive_writer
-from jarvis.scheduler.runner import BackgroundRunner
-from jarvis.scheduler.service import TaskService, utc_now
-from jarvis.scheduler.store import TaskStore
-from jarvis.skills import MemberIdentity, SkillCatalog
-from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
-from jarvis.voice import ScriptedScreenApprover, VoiceApprover, frame_transcript
+from kira.core.prompts import build_system
+from kira.knowledge.service import KnowledgeService
+from kira.knowledge.store import KnowledgeStore
+from kira.memory import MemoryService, MemoryStore, VoyageEmbedder, reflect
+from kira.observability.cost import Usage
+from kira.permissions import PermissionGate, load_policy
+from kira.permissions.gate import Decision
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.persistence.instance_lock import InstanceAlreadyRunning, ResetMaintenanceBusy
+from kira.persistence.reset_recovery import ResetRecoveryError, reset_sensitive_writer
+from kira.scheduler.runner import BackgroundRunner
+from kira.scheduler.service import TaskService, utc_now
+from kira.scheduler.store import TaskStore
+from kira.skills import MemberIdentity, SkillCatalog
+from kira.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
+from kira.voice import ScriptedScreenApprover, VoiceApprover, frame_transcript
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENARIOS_DIR = Path(__file__).parent / "scenarios"
@@ -156,7 +156,7 @@ def load_scenarios(suite: str = "all") -> list[LoadedScenario]:
 async def _seed_tasks(store: TaskStore, specs: list[dict]) -> None:
     """Insert scenario ``background_tasks`` directly (bypassing the past-time guard),
     defaulting to a fire time 30s ago so they're due-within-grace on ``check_due``. Uses the
-    eval clock (``utc_now``, frozen under JARVIS_EVAL_CLOCK) so the seed is due relative to the
+    eval clock (``utc_now``, frozen under KIRA_EVAL_CLOCK) so the seed is due relative to the
     SAME clock the scheduler checks — otherwise a real-time seed never fires at the frozen clock
     (E6b) and unattended scenarios silently stop firing."""
     due = (utc_now() - dt.timedelta(seconds=30)).isoformat()
@@ -292,8 +292,8 @@ def build_eval_connectors(scenario: dict):
     conn = scenario.get("setup", {}).get("connectors")
     if not conn:
         return None
-    from jarvis.connectors.base import ConnectorRegistry
-    from jarvis.connectors.demo import DemoGoogleClient, DemoNotifier
+    from kira.connectors.base import ConnectorRegistry
+    from kira.connectors.demo import DemoGoogleClient, DemoNotifier
 
     google = None
     if any(k in conn for k in ("emails", "events", "files")):
@@ -321,7 +321,7 @@ def _install_mock_web(stack: contextlib.ExitStack, scenario: dict) -> None:
                 raise RuntimeError(f"mock_web has no page for {url!r}")
             return _pages[url]
 
-        stack.enter_context(mock.patch("jarvis.tools.builtin.web._fetch_html", fake_fetch))
+        stack.enter_context(mock.patch("kira.tools.builtin.web._fetch_html", fake_fetch))
 
     search = scenario.get("mock_search")
     if search:
@@ -331,7 +331,7 @@ def _install_mock_web(stack: contextlib.ExitStack, scenario: dict) -> None:
         ) -> dict:
             return _data
 
-        stack.enter_context(mock.patch("jarvis.tools.builtin.web._tavily_search", fake_search))
+        stack.enter_context(mock.patch("kira.tools.builtin.web._tavily_search", fake_search))
 
 
 def _with_mock_search_key(config: Config, scenario: dict) -> Config:
@@ -642,7 +642,7 @@ def _apply_cassette(
     """Wrap the scenario/loop factory + judge client in the cassette layer, sharing ONE cost cap
     across the whole run. In replay mode the inner (live) client is never built (``inner=None``),
     so a keyless replay needs no API key. Returns (client_factory, judge_client)."""
-    from jarvis.observability.cost import load_pricing
+    from kira.observability.cost import load_pricing
 
     pricing = load_pricing(config.root / "config" / "pricing.yaml")
     cap = cassette_cfg.cost_cap(pricing)
@@ -708,10 +708,10 @@ async def run_smoke(
     unavailable catalog provider, but it succeeds only if at least one call was attempted.
     Explicitly requested providers must each reach an attempt. Returns 0 only when those
     non-vacuous liveness conditions hold and every attempted call passed."""
-    from jarvis.models.factory import ClientFactory
-    from jarvis.models.providers import PROVIDER_CATALOG, ProviderRegistry
-    from jarvis.models.roles import ModelRoute
-    from jarvis.observability.cost import load_pricing
+    from kira.models.factory import ClientFactory
+    from kira.models.providers import PROVIDER_CATALOG, ProviderRegistry
+    from kira.models.roles import ModelRoute
+    from kira.observability.cost import load_pricing
 
     pricing = load_pricing(config.root / "config" / "pricing.yaml")
     preg = ProviderRegistry.from_config(config, pricing)
@@ -913,7 +913,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
     the run becomes an ERROR record rather than crashing the whole gate."""
     factory = client_factory or _default_client_factory
     cassette = cassette if cassette is not None else _EVAL_CASSETTE["cfg"]
-    workdir = Path(tempfile.mkdtemp(prefix="jarvis-eval-"))
+    workdir = Path(tempfile.mkdtemp(prefix="kira-eval-"))
     for name, content in scenario.get("setup", {}).get("files", {}).items():
         (workdir / name).write_text(content, encoding="utf-8")
 
@@ -1074,7 +1074,7 @@ async def run_once(  # noqa: PLR0912, PLR0915 - one honest linear run; splitting
         connectors = build_eval_connectors(scenario)
         registry = ToolRegistry()
         registry.discover(
-            "jarvis.tools.builtin",
+            "kira.tools.builtin",
             ToolContext(
                 config=run_config,
                 memory=memory,
@@ -1315,7 +1315,7 @@ async def run_cache_ab(
     deliberately never activates caching, changes routing, writes committed cassettes, or appends
     evaluation history. A missing provider cache write/read is an honest ``NOT_ELIGIBLE`` result.
     """
-    from jarvis.observability.cost import load_pricing
+    from kira.observability.cost import load_pricing
 
     if runs < 3:
         raise ValueError("cache-ab requires at least three runs per arm")
@@ -1592,7 +1592,7 @@ async def _run_skill_probe(
             make_approver=lambda _gate, _agent_id, _title: approve_fixture_write,
         )
         registry = ToolRegistry()
-        registry.discover("jarvis.tools.builtin", ToolContext(config=run_config))
+        registry.discover("kira.tools.builtin", ToolContext(config=run_config))
         agents.bind(registry=registry)
         compiled = catalog.compile(
             MemberIdentity(
@@ -1688,7 +1688,7 @@ async def run_skills_ab(
     is a bodies-free evidence artifact; passing it does not activate packs, change settings, or
     make a rollout decision.  A human must inspect the result before any production activation.
     """
-    from jarvis.observability.cost import load_pricing
+    from kira.observability.cost import load_pricing
 
     if runs < 3:
         raise ValueError("skills-ab requires at least three runs per arm")
@@ -2570,7 +2570,7 @@ def cli(argv: list[str] | None = None) -> int:
     # E6b: pin a deterministic eval clock for every agent loop (main / sub-agent / unattended
     # job) so the system-prompt time context is stable across record and replay (same cassette
     # key). Harmless for live/record runs — the model just sees a fixed date.
-    os.environ["JARVIS_EVAL_CLOCK"] = EVAL_CLOCK
+    os.environ["KIRA_EVAL_CLOCK"] = EVAL_CLOCK
 
     # The KB/memory stores stamp created_at with a wall-clock module-level `_now()`, so a
     # freshly-ingested source cites *today's* date. That real date leaks into the model's next
@@ -2579,8 +2579,8 @@ def cli(argv: list[str] | None = None) -> int:
     # both stores' `_now()` to the same frozen clock the agent loop already uses, so fresh-ingest
     # citations are stable across days. Eval-harness only — production `_now()` is untouched, and
     # already-dated fixture rows (seeded outside these calls) are unaffected.
-    import jarvis.knowledge.store as _kb_store
-    import jarvis.memory.store as _mem_store
+    import kira.knowledge.store as _kb_store
+    import kira.memory.store as _mem_store
 
     def _frozen_now() -> str:
         return EVAL_CLOCK

@@ -11,17 +11,17 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import load_config
-from jarvis.core import AgentLoop, FakeClient, build_system, text_message
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.tools import ToolContext, ToolExecutor, ToolRegistry
-from jarvis.ui.state import ALLOWED_MODEL_IDS, INTERACTIVE_MODELS, InteractiveModelState
+from kira.config import load_config
+from kira.core import AgentLoop, FakeClient, build_system, text_message
+from kira.permissions import PermissionGate, Policy
+from kira.tools import ToolContext, ToolExecutor, ToolRegistry
+from kira.ui.state import ALLOWED_MODEL_IDS, INTERACTIVE_MODELS, InteractiveModelState
 
 
 def _loop(tmp_path: Path, client, *, model_override=None, effort_override=None):
     cfg = load_config(root=tmp_path, env_file=None)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     loop = AgentLoop(
         client=client, registry=reg, executor=ToolExecutor(),
         gate=PermissionGate(Policy(), tmp_path), config=cfg, system=build_system(),
@@ -118,8 +118,8 @@ def test_interactive_models_resilient_to_provider_failure(tmp_path: Path, monkey
     # A pricing/provider hiccup must NEVER empty the model picker (the Checkpoint-J2 blocker-1 root
     # cause: a throwing /api/models → an empty <select>). The four Anthropic models are always
     # listed + selectable; only the external-provider states degrade.
-    import jarvis.models.providers as prov
-    from jarvis.ui.readmodels import interactive_models
+    import kira.models.providers as prov
+    from kira.ui.readmodels import interactive_models
 
     def boom(*_a, **_k):
         raise RuntimeError("pricing table exploded")

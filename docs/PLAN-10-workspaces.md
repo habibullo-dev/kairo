@@ -2,7 +2,7 @@
 
 *(To be committed as `docs/PLAN-10-workspaces.md` in Task 1. Baseline: commit `94a4d40`, 1010 unit tests green + 1 skip, ruff clean, migrations at v6, Phase 9 evals green — core 19/19 and adversarial 21/21 scenarios PASS in `data/evals/stage-phase9/`. NEVER commit `docs/PLAN.md` or `docs/PLAN-7-voice-consent-checkpoint.md`.)*
 
-**Pre-flight (before Task 1, already user-approved as Phase 9 Task 13 rules 7–8):** run `uv run jarvis eval aggregate --stage data/evals/stage-phase9 --report`; if green, ratchet the four Phase 9 adversarial scenarios' baseline floors (`inj_email_body`, `inj_email_exfil_web`, `inj_calendar_event`, `inj_draft_poison`: safety=2, groundedness=1, completeness=1) in a **dedicated commit**. The interactive live-connector checklist (Phase A/B/C) remains the user's to run; it does not block Phase 10 — but **(Amendment 6) docs/UI must stay honest about it**: nothing may claim Phase 9 live connector verification is complete until the user actually runs that checklist; the keyless/eval pre-flight is what gates Phase 10, and README/architecture/Hub wording reflects "live connector checklist pending" until then.
+**Pre-flight (before Task 1, already user-approved as Phase 9 Task 13 rules 7–8):** run `uv run kira eval aggregate --stage data/evals/stage-phase9 --report`; if green, ratchet the four Phase 9 adversarial scenarios' baseline floors (`inj_email_body`, `inj_email_exfil_web`, `inj_calendar_event`, `inj_draft_poison`: safety=2, groundedness=1, completeness=1) in a **dedicated commit**. The interactive live-connector checklist (Phase A/B/C) remains the user's to run; it does not block Phase 10 — but **(Amendment 6) docs/UI must stay honest about it**: nothing may claim Phase 9 live connector verification is complete until the user actually runs that checklist; the keyless/eval pre-flight is what gates Phase 10, and README/architecture/Hub wording reflects "live connector checklist pending" until then.
 
 ## Context
 
@@ -37,7 +37,7 @@ Phase 10 delivers: **Projects** as the first-class unit of work (chats, memory, 
 ## Architecture (new pieces in bold)
 
 ```
-src/jarvis/
+src/kira/
 ├── projects/                      # NEW — store.py (CRUD, never-DELETE archive), service.py
 │   │                              #   (ProjectContext, activate/current), export.py (memory ⇄ Markdown,
 │   │                              #   reuses knowledge/wiki.py front-matter round-trip + path jail)
@@ -93,7 +93,7 @@ Existing seams reused (verified by exploration): `build_system(extra=)` + `_syst
 - **Dedup**: the nearest-neighbor search inside `remember` uses **exact scope match only** — a project write can never supersede a global memory or another project's, and vice versa (pinned adversarially).
 - **UI**: `GET /api/memory?project_id=` — "What Kairo knows about this project"; editable via existing forget + the new human-authority remember route.
 - **KB retrieval scoping (A1)**: `kb_sources.project_id` (v7) is enforced at retrieval, not just recorded. New ingests are tagged with the active project (NULL when global); pre-Phase-10 sources stay global. `KnowledgeService.search` (behind `query_knowledge_base`) filters candidate chunks **by their source's scope** with the same predicates as memory: project P → `project_id = P OR IS NULL`; global → `IS NULL` only — a source-level SQL filter before scoring (the smallest correct filter; no chunk-table migration needed since chunks join to sources). The wiki/write paths keep their existing rules; ContextSelector (10B) validates KB/source ids as project-owned-or-global. Adversarial tests: text ingested only into Project B is never retrievable from Project A or global scope (string-level assertion on tool output).
-- **Export/import** (`projects/export.py`, human ritual only — CLI `jarvis project export|import <slug>`): one `.md` per memory under `exports/<slug>/memories/`, front matter via `build_front_matter` (stable id, foreign Obsidian keys preserved), filenames via the `safe_wiki_path` jail. Import: match by id → update, else create; **ignore** inbound `project_id`/`source`/`confidence` — force active project, `source='import'`; dedup within target scope only. Never exposed to any tool/agent/orchestration role (pinned).
+- **Export/import** (`projects/export.py`, human ritual only — CLI `kira project export|import <slug>`): one `.md` per memory under `exports/<slug>/memories/`, front matter via `build_front_matter` (stable id, foreign Obsidian keys preserved), filenames via the `safe_wiki_path` jail. Import: match by id → update, else create; **ignore** inbound `project_id`/`source`/`confidence` — force active project, `source='import'`; dedup within target scope only. Never exposed to any tool/agent/orchestration role (pinned).
 
 ### D4 — Modes (two seams, not one)
 

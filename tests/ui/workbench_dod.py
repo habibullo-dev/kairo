@@ -28,14 +28,14 @@ import tempfile
 import threading
 from pathlib import Path
 
-from jarvis.ui.screenshots import (
+from kira.ui.screenshots import (
     OVERLAP_PROBE_JS,
     THEMES,
     VIEWPORTS,
     analyze_overlap,
     screenshot_name,
 )
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "screenshots" / "workbench"

@@ -21,12 +21,12 @@ tokened session) is a manual step at the ⛔ mandatory checkpoint before Phase 1
 | **No secret leaks on any GET** | `test_routing_ui.test_no_secret_on_models_route` + the Phase-15.5 secret-absence sweep over all GETs |
 | **No router ⇒ REPL/sub-agents/evals byte-identical** | `test_routing_dispatch.test_no_router_is_byte_identical`; the eval core gate (opus/sonnet) still 19/19 $0 |
 
-Gates: full unit suite green; `jarvis eval gate --suite core` 19/19 $0 (replay, decoupled from the
+Gates: full unit suite green; `kira eval gate --suite core` 19/19 $0 (replay, decoupled from the
 daily model); `ruff check` clean. Migrations at v14. Mutation-route closed set unchanged.
 
 ## Live ritual (manual, at the checkpoint — needs a real GEMINI_API_KEY + a tokened session)
 
-1. `providers.enabled` includes `gemini`; `jarvis --ui`. Composer shows **Auto — recommended** as the
+1. `providers.enabled` includes `gemini`; `kira --ui`. Composer shows **Auto — recommended** as the
    default; the effort control reads "Auto-managed".
 2. Ask a tool-free simple thing ("explain X in one line") → the "→" caption shows **Gemini 2.5
    Flash**; the trace shows `route_selected tier=simple`, and the turn ran with NO tools.

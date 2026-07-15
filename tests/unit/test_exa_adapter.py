@@ -12,12 +12,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
-from jarvis.config import load_config
-from jarvis.observability.ledger import ServiceLedger
-from jarvis.persistence.db import connect
-from jarvis.services.exa import ExaSearchTool
-from jarvis.tools.base import ToolContext
+import kira.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
+from kira.config import load_config
+from kira.observability.ledger import ServiceLedger
+from kira.persistence.db import connect
+from kira.services.exa import ExaSearchTool
+from kira.tools.base import ToolContext
 
 _OPEN: list = []
 _SEARCH_URL = "https://api.exa.ai/search"

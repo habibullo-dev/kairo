@@ -7,9 +7,9 @@ URL path/query where an exfiltration payload would ride.
 
 from __future__ import annotations
 
-import jarvis.tools.builtin.web as web
-from jarvis.observability.egress import EGRESS_CATEGORIES, log_egress
-from jarvis.tools.builtin.web import WebFetchParams, WebFetchTool, WebSearchParams, WebSearchTool
+import kira.tools.builtin.web as web
+from kira.observability.egress import EGRESS_CATEGORIES, log_egress
+from kira.tools.builtin.web import WebFetchParams, WebFetchTool, WebSearchParams, WebSearchTool
 
 
 class _CapturingLogger:

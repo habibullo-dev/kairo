@@ -15,11 +15,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from jarvis.connectors.base import ConnectorError
-from jarvis.connectors.google import docs, drive
-from jarvis.connectors.google.client import GoogleClient
-from jarvis.connectors.oauth import OAuthProvider
-from jarvis.connectors.tokens import TokenState, TokenStore
+from kira.connectors.base import ConnectorError
+from kira.connectors.google import docs, drive
+from kira.connectors.google.client import GoogleClient
+from kira.connectors.oauth import OAuthProvider
+from kira.connectors.tokens import TokenState, TokenStore
 
 FIXED = _dt.datetime(2026, 1, 1, 12, 0, 0, tzinfo=_dt.UTC)
 _P = OAuthProvider(

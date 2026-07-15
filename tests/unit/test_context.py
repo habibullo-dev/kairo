@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.core import FakeClient, text_message
-from jarvis.core.context import CompactionView, ContextManager, _has_tool_result
-from jarvis.observability.cost import Usage
+from kira.core import FakeClient, text_message
+from kira.core.context import CompactionView, ContextManager, _has_tool_result
+from kira.observability.cost import Usage
 
 # --- conversation builders -------------------------------------------------
 

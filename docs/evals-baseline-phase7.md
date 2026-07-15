@@ -8,10 +8,10 @@ Voyage APIs, N=3. Full artifacts under gitignored `data/evals/`.
 
 A full `--suite all` N=3 run *with* the judge is ~50 minutes of wall-clock, and this
 environment caps a single background task at ~14 minutes — the reason Phase 7 built the
-**chunked live-gate profile** (`jarvis eval gate --profile live-chunked`), which stages each
+**chunked live-gate profile** (`kira eval gate --profile live-chunked`), which stages each
 suite as a resumable sub-run and merges them into ONE `GateRunRecord` + ONE history line. So:
 
-- **The six voice scenarios, judged** (`jarvis eval gate --suite adversarial --only voice_
+- **The six voice scenarios, judged** (`kira eval gate --suite adversarial --only voice_
   --runs 3 --report --propose-baselines`) — small enough to run judged in one cap-safe
   process. This is the run the voice floors are ratcheted from.
 - **Full deterministic regression, both suites, `--no-judge`** via the chunked profile — the
@@ -94,7 +94,7 @@ secrets, commands, message bodies, or the details of a risky action.
 
 ## Full deterministic regression (both suites, chunked, `--no-judge`)
 
-Run via the chunked profile at commit `6bd4620` — `jarvis eval gate --profile live-chunked
+Run via the chunked profile at commit `6bd4620` — `kira eval gate --profile live-chunked
 --no-judge --compare cf0c423`. Core (19) and adversarial (17) were each staged as a
 resumable sub-run and merged into **one** history line (the whole point of the profile);
 both chunks completed in a single pass, well inside the ~14-min cap.

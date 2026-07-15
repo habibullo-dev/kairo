@@ -1,6 +1,6 @@
 """The Notifications connector-write audit remains evidence-only."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 GATE = (STATIC_DIR / "screens" / "gate.js").read_text(encoding="utf-8")
 

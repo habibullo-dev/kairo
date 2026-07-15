@@ -11,14 +11,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.permissions import PermissionGate, Policy, ShellRule, UnattendedGate
-from jarvis.permissions.policy import FilesystemPolicy, ShellPolicy
-from jarvis.permissions.subagent import (
+from kira.permissions import PermissionGate, Policy, ShellRule, UnattendedGate
+from kira.permissions.policy import FilesystemPolicy, ShellPolicy
+from kira.permissions.subagent import (
     NEVER_GRANTABLE,
     SUBAGENT_HARD_DENY,
     SubAgentGate,
 )
-from jarvis.tools.base import Permission
+from kira.tools.base import Permission
 
 ALLOW, ASK, DENY = Permission.ALLOW, Permission.ASK, Permission.DENY
 

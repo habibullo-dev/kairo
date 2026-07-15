@@ -15,21 +15,21 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile
 
-from jarvis.attention import AttentionStore
-from jarvis.config import KnowledgeConfig, load_config
-from jarvis.core.execution import ExecutionContext
-from jarvis.graph import GraphStore
-from jarvis.graph.builder import rebuild as rebuild_graph
-from jarvis.knowledge.service import KnowledgeService
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.persistence.db import connect
-from jarvis.persistence.sessions import SessionStore
-from jarvis.projects import ProjectStore
-from jarvis.projects.service import ProjectService
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.readmodels import UiServices, vault_overview
-from jarvis.ui.server import WORKSPACE_HEADER, create_app
+from kira.attention import AttentionStore
+from kira.config import KnowledgeConfig, load_config
+from kira.core.execution import ExecutionContext
+from kira.graph import GraphStore
+from kira.graph.builder import rebuild as rebuild_graph
+from kira.knowledge.service import KnowledgeService
+from kira.knowledge.store import KnowledgeStore
+from kira.memory.embeddings import FakeEmbedder
+from kira.persistence.db import connect
+from kira.persistence.sessions import SessionStore
+from kira.projects import ProjectStore
+from kira.projects.service import ProjectService
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.readmodels import UiServices, vault_overview
+from kira.ui.server import WORKSPACE_HEADER, create_app
 
 _OPEN: list = []
 
@@ -665,7 +665,7 @@ async def test_ingest_route_requires_exactly_one(tmp_path: Path) -> None:
 
 
 def test_vault_js_has_ingest_box_and_text_preview() -> None:
-    from jarvis.ui.server import STATIC_DIR
+    from kira.ui.server import STATIC_DIR
 
     js = (STATIC_DIR / "screens" / "vault.js").read_text(encoding="utf-8")
     assert "/api/vault/ingest" in js  # the ingest box posts here

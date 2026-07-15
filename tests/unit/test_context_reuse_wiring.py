@@ -18,14 +18,14 @@ from types import SimpleNamespace
 
 import pytest
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
-from jarvis.core.anthropic_client import AnthropicClient
-from jarvis.core.client import FakeClient, ModelResponse, text_message
-from jarvis.models.context_reuse import anthropic_cache_control, capability, plan_for_prefix
-from jarvis.observability.cost import Usage, load_pricing
-from jarvis.observability.ledger import CostContext, CostLedger, LedgeredClient, cost_context
-from jarvis.persistence.db import connect
-from jarvis.ui.readmodels import cache_reuse_overview
+import kira.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
+from kira.core.anthropic_client import AnthropicClient
+from kira.core.client import FakeClient, ModelResponse, text_message
+from kira.models.context_reuse import anthropic_cache_control, capability, plan_for_prefix
+from kira.observability.cost import Usage, load_pricing
+from kira.observability.ledger import CostContext, CostLedger, LedgeredClient, cost_context
+from kira.persistence.db import connect
+from kira.ui.readmodels import cache_reuse_overview
 
 _OPEN: list = []
 

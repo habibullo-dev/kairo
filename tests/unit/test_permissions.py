@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import load_config
-from jarvis.core import ToolCall
-from jarvis.permissions import (
+from kira.config import load_config
+from kira.core import ToolCall
+from kira.permissions import (
     PermissionGate,
     Policy,
     ShellRule,
@@ -16,8 +16,8 @@ from jarvis.permissions import (
     persist_always,
     save_policy,
 )
-from jarvis.permissions.policy import FilesystemPolicy, ShellPolicy
-from jarvis.tools.base import Permission
+from kira.permissions.policy import FilesystemPolicy, ShellPolicy
+from kira.tools.base import Permission
 
 ALLOW, ASK, DENY = Permission.ALLOW, Permission.ASK, Permission.DENY
 
@@ -103,10 +103,10 @@ def test_gate_read_write_tools_have_correct_path_fields() -> None:
     # Self-consistency: every tool the gate does path-checking for must actually have a
     # `path` param, or the check silently reads None and the floor never runs. This
     # class of misconfiguration passes every functional test otherwise.
-    from jarvis.tools import ToolContext, ToolRegistry
+    from kira.tools import ToolContext, ToolRegistry
 
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext())  # phase-1 tools always register
+    reg.discover("kira.tools.builtin", ToolContext())  # phase-1 tools always register
     g = PermissionGate(Policy(), Path("."))
     for name in g.path_tools:
         tool = reg.get(name)

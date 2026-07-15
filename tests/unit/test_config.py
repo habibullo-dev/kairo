@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import Config, ConfigError, Secrets, load_config
+from kira.config import Config, ConfigError, Secrets, load_config
 
 KEYS = (
     "ANTHROPIC_API_KEY",

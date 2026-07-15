@@ -10,15 +10,15 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.graph import GraphStore
-from jarvis.graph.suggest import Material, gather_material, suggest, utility_extractor
-from jarvis.orchestration import OrchestrationStore
-from jarvis.persistence.db import connect
-from jarvis.persistence.fts import query_domain
-from jarvis.projects import ProjectStore
-from jarvis.ui.server import STATIC_DIR  # noqa: F401 - ensures package import path is set
+from kira.graph import GraphStore
+from kira.graph.suggest import Material, gather_material, suggest, utility_extractor
+from kira.orchestration import OrchestrationStore
+from kira.persistence.db import connect
+from kira.persistence.fts import query_domain
+from kira.projects import ProjectStore
+from kira.ui.server import STATIC_DIR  # noqa: F401 - ensures package import path is set
 
-SUGGEST_SRC = (Path(__file__).resolve().parents[2] / "src/jarvis/graph/suggest.py").read_text(
+SUGGEST_SRC = (Path(__file__).resolve().parents[2] / "src/kira/graph/suggest.py").read_text(
     encoding="utf-8"
 )
 

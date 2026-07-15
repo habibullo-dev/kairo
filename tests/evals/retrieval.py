@@ -46,12 +46,12 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from jarvis.config import ConfigError, load_config
-from jarvis.knowledge.service import KnowledgeService
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.memory import MemoryStore, VoyageEmbedder
-from jarvis.memory.embeddings import Embedder
-from jarvis.persistence.db import connect
+from kira.config import ConfigError, load_config
+from kira.knowledge.service import KnowledgeService
+from kira.knowledge.store import KnowledgeStore
+from kira.memory import MemoryStore, VoyageEmbedder
+from kira.memory.embeddings import Embedder
+from kira.persistence.db import connect
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 KS = (1, 3, 5, 8)

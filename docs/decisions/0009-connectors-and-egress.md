@@ -87,7 +87,7 @@ instructions; (b) every read logs `tool_call` under the turn's trace id; (c) the
 Every egress action logs one structured `egress` event (`log_egress`) with a category and a
 coarse destination type — never a token, bot token, chat_id, full recipient, URL query, or body
 (pinned canary-absent). It is the "what left the box" ledger, surfaced in the Gate audit view.
-Provider auth failures surface **only** as a friendly `"<Provider> needs reconnect: run jarvis
+Provider auth failures surface **only** as a friendly `"<Provider> needs reconnect: run kira
 connect <provider>"` (`ConnectorAuthError.user_message`); the provider's raw error body is never
 carried into a tool result, UI, or API response (it can echo tokens/addresses). The
 secret-absence sweep is extended with a real on-disk token file exercised through the connector

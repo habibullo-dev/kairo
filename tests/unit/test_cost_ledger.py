@@ -13,16 +13,16 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.core.client import FakeClient, text_message
-from jarvis.observability.cost import Usage, load_pricing
-from jarvis.observability.ledger import (
+from kira.core.client import FakeClient, text_message
+from kira.observability.cost import Usage, load_pricing
+from kira.observability.ledger import (
     CostContext,
     CostLedger,
     LedgeredClient,
     cost_context,
     cost_scope,
 )
-from jarvis.persistence.db import connect
+from kira.persistence.db import connect
 
 _OPEN: list = []
 
@@ -40,7 +40,7 @@ async def _ledger(tmp_path: Path) -> CostLedger:
     lock = asyncio.Lock()
     # model_calls.project_id has a FK to projects — create a few so scoped rows resolve
     # (the FK enforcement is the point: a ledger row can't reference a nonexistent project).
-    from jarvis.projects import ProjectStore
+    from kira.projects import ProjectStore
 
     projects = ProjectStore(db, lock)
     for name in ("One", "Two", "Three"):  # ids 1, 2, 3
@@ -144,7 +144,7 @@ async def test_cost_scope_overrides_purpose_and_resets(tmp_path: Path) -> None:
 
 
 async def test_tool_call_count_recorded(tmp_path: Path) -> None:
-    from jarvis.core.client import ToolCall, tool_use_message
+    from kira.core.client import ToolCall, tool_use_message
 
     ledger = await _ledger(tmp_path)
     inner = FakeClient([tool_use_message([ToolCall("t1", "read_file", {"path": "x"})])])
@@ -269,9 +269,9 @@ async def test_repl_turn_records_ledger_row(tmp_path: Path) -> None:
 
     from rich.console import Console
 
-    from jarvis.cli.repl import Repl
-    from jarvis.config import load_config
-    from jarvis.persistence import SessionStore
+    from kira.cli.repl import Repl
+    from kira.config import load_config
+    from kira.persistence import SessionStore
 
     db = await connect(tmp_path / "repl.db")
     _OPEN.append(db)

@@ -13,12 +13,12 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.persistence.artifacts import ArtifactStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectService, ProjectStore
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.readmodels import UiServices
-from jarvis.ui.server import create_app
+from kira.persistence.artifacts import ArtifactStore
+from kira.persistence.db import connect
+from kira.projects import ProjectService, ProjectStore
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.readmodels import UiServices
+from kira.ui.server import create_app
 
 _OPEN: list = []
 _TS = "2026-01-01T00:00:00+00:00"
@@ -32,7 +32,7 @@ async def _close():
 
 
 async def _setup(tmp_path: Path, *, auth_token: str = "tok", secret_update: dict | None = None):
-    from jarvis.config import load_config
+    from kira.config import load_config
 
     cfg = load_config(root=tmp_path, env_file=None)
     if secret_update:
@@ -319,8 +319,8 @@ async def test_no_secret_on_parameterized_gets(tmp_path: Path) -> None:
 async def test_lab_overview_registers_latest_report_idempotently(tmp_path: Path) -> None:
     # The eval-report producer hook lives in the (read-only) Lab path: registering the latest
     # report as an artifact, idempotently + fail-soft + confined to the evals managed root.
-    from jarvis.config import load_config
-    from jarvis.ui.readmodels import lab_overview
+    from kira.config import load_config
+    from kira.ui.readmodels import lab_overview
 
     cfg = load_config(root=tmp_path, env_file=None)
     run_dir = cfg.evals_dir / "20260101-abc"

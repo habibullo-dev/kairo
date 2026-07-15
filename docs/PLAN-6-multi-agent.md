@@ -14,12 +14,12 @@ The pre-mortem found five ways the obvious design would betray the project's con
 4. **Runtime traps.** The executor's 60s `wait_for` would kill any real child run; `asyncio.gather` + contextvars means a child's `bind_trace()` could leak its trace id into parent logs; two parallel children prompting the human concurrently would interleave `input()` calls; Ctrl+C must cancel children cleanly and still record what happened. Each has a specific fix (D6) and a pinned test.
 5. **The migration trap.** `sessions.kind` has a `CHECK (kind IN ('interactive','task'))` — SQLite cannot alter a CHECK, so adding `'subagent'` requires the full table-rebuild dance with foreign keys handled correctly (D7). Getting this wrong corrupts the one database that holds every session, memory, and task.
 
-Everything ships repo-native: a small `src/jarvis/agents/` package, one gate wrapper, one tool, one migration, REPL wiring, and eval coverage — in that order, keyless-first.
+Everything ships repo-native: a small `src/kira/agents/` package, one gate wrapper, one tool, one migration, REPL wiring, and eval coverage — in that order, keyless-first.
 
 ## Architecture (new pieces in bold)
 
 ```
-src/jarvis/
+src/kira/
 ├── agents/                      # the new package (master plan reserved it for Phase 6)
 │   ├── **service.py**           # SubAgentService: builds + runs one child AgentLoop
 │   │                            #   (scoped registry, SubAgentGate, fresh context manager,
@@ -167,7 +167,7 @@ The proposed names map cleanly onto the architecture, and the plan adopts them a
 
 (**Naming collision resolved**: "Hub" was originally floated for this phase, but Hub is already earmarked for the connectors/MCP layer — a hub is where external spokes attach. The multi-agent subsystem is the **Orchestrator**; do not reuse Hub for it.)
 
-**Recommendation: do not rename the code or product identity inside Phase 6.** A `jarvis`→`kairo` package rename touches every import, the entry point (`uv run jarvis`), `data/jarvis.db`, the log-file prefix, the system-prompt identity ("You are Jarvis" — which changes *agent behavior* and therefore invalidates the live eval baseline's comparability), memory contents that reference the name, and the eval history's config fingerprint. None of that belongs in a feature phase, and mixing a mass rename into delegation commits would destroy `--compare`'s usefulness exactly when it's needed to prove delegation didn't regress anything. If the product rename is wanted, it is a **dedicated standalone milestone** after Phase 6: one mechanical commit sequence (package → entry point → identity prompt → data/log paths with back-compat reads → docs), followed by a fresh live baseline run that re-anchors `baselines.yaml` under the new identity. Task 10 records this decision (docs naming adopted, code rename deferred with the checklist above) in ADR-0006 so it isn't relitigated ad hoc.
+**Recommendation: do not rename the code or product identity inside Phase 6.** A `jarvis`→`kairo` package rename touches every import, the entry point (`uv run kira`), `data/jarvis.db`, the log-file prefix, the system-prompt identity ("You are Jarvis" — which changes *agent behavior* and therefore invalidates the live eval baseline's comparability), memory contents that reference the name, and the eval history's config fingerprint. None of that belongs in a feature phase, and mixing a mass rename into delegation commits would destroy `--compare`'s usefulness exactly when it's needed to prove delegation didn't regress anything. If the product rename is wanted, it is a **dedicated standalone milestone** after Phase 6: one mechanical commit sequence (package → entry point → identity prompt → data/log paths with back-compat reads → docs), followed by a fresh live baseline run that re-anchors `baselines.yaml` under the new identity. Task 10 records this decision (docs naming adopted, code rename deferred with the checklist above) in ADR-0006 so it isn't relitigated ad hoc.
 
 ## 2. Task list — Milestone 6 (for Opus 4.8, in order)
 

@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import load_config
-from jarvis.core import (
+from kira.config import load_config
+from kira.core import (
     AgentLoop,
     FakeClient,
     ToolCall,
@@ -23,15 +23,15 @@ from jarvis.core import (
     text_message,
     tool_use_message,
 )
-from jarvis.core.context import ContextManager
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.persistence.sessions import INTERACTIVE_ONLY
-from jarvis.projects import ProjectStore
-from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
-from jarvis.ui.connections import ConnectionManager
-from jarvis.ui.session import UiSession, initial_chat_title
+from kira.core.context import ContextManager
+from kira.permissions import PermissionGate, Policy
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.persistence.sessions import INTERACTIVE_ONLY
+from kira.projects import ProjectStore
+from kira.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
+from kira.ui.connections import ConnectionManager
+from kira.ui.session import UiSession, initial_chat_title
 
 _OPEN: list = []
 
@@ -50,7 +50,7 @@ async def _deny(_call, _decision) -> Permission:
 def _loop(tmp_path: Path, client) -> AgentLoop:
     cfg = load_config(root=tmp_path, env_file=None)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     return AgentLoop(
         client=client,
         registry=reg,

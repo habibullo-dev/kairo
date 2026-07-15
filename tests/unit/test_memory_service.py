@@ -9,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import MemoryConfig
-from jarvis.core import FakeClient, text_message
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.memory.service import MemoryService
-from jarvis.memory.store import MemoryStore
-from jarvis.persistence.db import connect
+from kira.config import MemoryConfig
+from kira.core import FakeClient, text_message
+from kira.memory.embeddings import FakeEmbedder
+from kira.memory.service import MemoryService
+from kira.memory.store import MemoryStore
+from kira.persistence.db import connect
 
 
 async def _service(tmp_path: Path, *, responses: list | None = None) -> MemoryService:

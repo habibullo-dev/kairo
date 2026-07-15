@@ -14,12 +14,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.config import load_config
-from jarvis.core import AgentLoop, FakeClient, build_system, text_message, tool_use_message
-from jarvis.core.client import ToolCall
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.permissions.gate import Decision
-from jarvis.permissions.modes import (
+from kira.config import load_config
+from kira.core import AgentLoop, FakeClient, build_system, text_message, tool_use_message
+from kira.core.client import ToolCall
+from kira.permissions import PermissionGate, Policy
+from kira.permissions.gate import Decision
+from kira.permissions.modes import (
     AUTO_NEVER,
     PLAN_SAFE,
     Mode,
@@ -27,7 +27,7 @@ from jarvis.permissions.modes import (
     auto_approves,
     plan_blocks,
 )
-from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
+from kira.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
 
 # --- PLAN_SAFE pin (adding a tool forces a deliberate classification) -------
 
@@ -153,7 +153,7 @@ def _loop(tmp_path: Path, client, *, mode: ModeState, auto_allow=(), approver=No
     cfg = load_config(root=tmp_path, env_file=None)
     cfg.modes.auto_allow_tools = list(auto_allow)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     return AgentLoop(
         client=client,
         registry=reg,
@@ -250,7 +250,7 @@ async def test_background_loop_without_mode_is_approval(tmp_path: Path) -> None:
     )
     cfg = load_config(root=tmp_path, env_file=None)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     loop = AgentLoop(
         client=client,
         registry=reg,
@@ -271,8 +271,8 @@ async def test_background_loop_without_mode_is_approval(tmp_path: Path) -> None:
 def test_mode_route_sets_and_reports(tmp_path: Path) -> None:
     from fastapi.testclient import TestClient
 
-    from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-    from jarvis.ui.server import create_app
+    from kira.ui.auth import SESSION_COOKIE, AuthManager
+    from kira.ui.server import create_app
 
     cfg = load_config(root=tmp_path, env_file=None)
     auth = AuthManager(token="tok")
@@ -303,8 +303,8 @@ def test_runner_reports_conversation_and_model_truth(tmp_path: Path) -> None:
     # client can rehydrate the transcript it is in and render honest composer chips.
     from fastapi.testclient import TestClient
 
-    from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-    from jarvis.ui.server import create_app
+    from kira.ui.auth import SESSION_COOKIE, AuthManager
+    from kira.ui.server import create_app
 
     cfg = load_config(root=tmp_path, env_file=None)
     auth = AuthManager(token="tok")

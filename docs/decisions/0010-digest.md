@@ -31,7 +31,7 @@ notifiers), "no tool loop" is necessary but not sufficient — see (3)/(4).
 ### 2. Failure is visible, never "zero results"
 
 Each collector returns an explicit status — `ok` / `degraded` / `failed(reason)`. A 3am OAuth
-expiry renders "⚠ Gmail unavailable — jarvis connect google", never "no unread email". Conflating
+expiry renders "⚠ Gmail unavailable — kira connect google", never "no unread email". Conflating
 a failed fetch with zero results would quietly tell the user "all clear" when it isn't. The
 failure `reason` is the friendly reconnect string (ADR-0009), never a provider error body.
 

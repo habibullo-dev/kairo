@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.config import MemoryConfig
-from jarvis.core import FakeClient, ToolCall, tool_use_message
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.memory.reflection import reflect
-from jarvis.memory.service import MemoryService
-from jarvis.memory.store import MemoryStore
-from jarvis.persistence.db import connect
+from kira.config import MemoryConfig
+from kira.core import FakeClient, ToolCall, tool_use_message
+from kira.memory.embeddings import FakeEmbedder
+from kira.memory.reflection import reflect
+from kira.memory.service import MemoryService
+from kira.memory.store import MemoryStore
+from kira.persistence.db import connect
 
 
 async def _service_with_session(tmp_path: Path) -> tuple[MemoryService, int]:

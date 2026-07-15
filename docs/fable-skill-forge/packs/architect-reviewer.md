@@ -39,7 +39,7 @@ In council you turn the task into architectural constraints the synthesis can re
 
 1. Read the framed task. Identify the target modules by actually opening them (`glob_search` + `read_file`) — name files and line ranges, not vibes.
 2. Check the change surface against the standing invariants and flag every one the task will touch:
-   - permission gate & floors (`src/jarvis/permissions/`), mutation-route closed set (pinned test), one-writer/orchestration floors (`src/jarvis/orchestration/roles.py`, `teams.py`), untrusted framing (`context.py`, per-surface framers), egress/taint (`core/agent.py` taint block), provider authority (`models/registry.py` validate_route), migrations (`persistence/migrations.py` — append-only, versioned), bodies-free stores (`orchestration/store.py`).
+   - permission gate & floors (`src/kira/permissions/`), mutation-route closed set (pinned test), one-writer/orchestration floors (`src/kira/orchestration/roles.py`, `teams.py`), untrusted framing (`context.py`, per-surface framers), egress/taint (`core/agent.py` taint block), provider authority (`models/registry.py` validate_route), migrations (`persistence/migrations.py` — append-only, versioned), bodies-free stores (`orchestration/store.py`).
 3. Locate the existing tests that pin the affected behavior (`tests/unit/test_*`); list them so the writer knows what must stay green and where new pins belong.
 4. Emit constraints in the Deliverable format: must-not-break invariants (with anchors), files expected to change, files that must NOT change, and the specific test commands that define done.
 
@@ -60,8 +60,8 @@ In council you turn the task into architectural constraints the synthesis can re
 
 - [RUN] `read_file` every path in the writer's FILES-CHANGED; `glob_search` every test file the writer names.
 - [RECOMMEND] `uv run pytest -q` and `uv run ruff check` — if the writer's report lacks their verbatim output, that absence is itself a GAP finding.
-- [RECOMMEND] `uv run pytest tests/unit/test_ui_readmodels.py::test_mutation_route_closed_set` when any `src/jarvis/ui/` file appears in the diff.
-- [RECOMMEND] `uv run jarvis eval gate --suite core` when the change touches agent/tool/prompt/permission behavior.
+- [RECOMMEND] `uv run pytest tests/unit/test_ui_readmodels.py::test_mutation_route_closed_set` when any `src/kira/ui/` file appears in the diff.
+- [RECOMMEND] `uv run kira eval gate --suite core` when the change touches agent/tool/prompt/permission behavior.
 
 ## Stop and escalation conditions
 
@@ -102,8 +102,8 @@ Good review GAP: `[GAP] Report claims "full suite green" but TESTS shows only te
 
 ## Source evidence
 
-- Review stage receives only execution output: `src/jarvis/orchestration/engine.py:552`.
-- Architect is read-only, reviewer route: `src/jarvis/orchestration/teams.py:90-102`; floor `roles.py:23-32`.
+- Review stage receives only execution output: `src/kira/orchestration/engine.py:552`.
+- Architect is read-only, reviewer route: `src/kira/orchestration/teams.py:90-102`; floor `roles.py:23-32`.
 - Verdict is head-rendered from records; member text can't steer: `engine.py:555-567`; `tests/unit/test_orchestration_engine.py:239`.
 - Silent no-op execution path (review the void): `engine.py:520-543` with `writers=[]`.
-- Invariant anchors: gate `src/jarvis/permissions/gate.py:117-136`; route pin `tests/unit/test_ui_readmodels.py:136`; one-writer `teams.py:173-177`; taint `src/jarvis/core/agent.py:624-722`; provider authority `src/jarvis/models/registry.py:63-71`.
+- Invariant anchors: gate `src/kira/permissions/gate.py:117-136`; route pin `tests/unit/test_ui_readmodels.py:136`; one-writer `teams.py:173-177`; taint `src/kira/core/agent.py:624-722`; provider authority `src/kira/models/registry.py:63-71`.

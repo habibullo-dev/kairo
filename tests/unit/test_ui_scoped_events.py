@@ -11,17 +11,17 @@ import asyncio
 
 import pytest
 
-from jarvis.core.client import ToolCall
-from jarvis.core.execution import ExecutionContext, bind_execution_context
-from jarvis.orchestration.context import ContextBundle
-from jarvis.permissions.gate import Decision
-from jarvis.projects.context import ProjectContext
-from jarvis.tools import Permission
-from jarvis.ui.approver import ApprovalManager
-from jarvis.ui.connections import ConnectionManager
-from jarvis.ui.orchestration import OrchestrationController
-from jarvis.ui.voice import UiVoice, UiVoiceRenderer
-from jarvis.voice import FakeSynthesizer
+from kira.core.client import ToolCall
+from kira.core.execution import ExecutionContext, bind_execution_context
+from kira.orchestration.context import ContextBundle
+from kira.permissions.gate import Decision
+from kira.projects.context import ProjectContext
+from kira.tools import Permission
+from kira.ui.approver import ApprovalManager
+from kira.ui.connections import ConnectionManager
+from kira.ui.orchestration import OrchestrationController
+from kira.ui.voice import UiVoice, UiVoiceRenderer
+from kira.voice import FakeSynthesizer
 
 _A = ExecutionContext(session_id=101, project_id=1)
 _B = ExecutionContext(session_id=202, project_id=2)

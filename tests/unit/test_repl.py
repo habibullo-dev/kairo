@@ -8,14 +8,14 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from jarvis.cli.render import ConsoleRenderer
-from jarvis.cli.repl import Repl
-from jarvis.config import load_config
-from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
-from jarvis.core.events import TextDelta, ToolFinished, ToolStarted, TurnCompleted
-from jarvis.paths import resolve_path
-from jarvis.permissions.gate import Decision
-from jarvis.tools import Permission
+from kira.cli.render import ConsoleRenderer
+from kira.cli.repl import Repl
+from kira.config import load_config
+from kira.core import FakeClient, ToolCall, text_message, tool_use_message
+from kira.core.events import TextDelta, ToolFinished, ToolStarted, TurnCompleted
+from kira.paths import resolve_path
+from kira.permissions.gate import Decision
+from kira.tools import Permission
 
 ASK = Decision(Permission.ASK, "needs approval")
 

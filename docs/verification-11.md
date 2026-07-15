@@ -10,7 +10,7 @@ running UI + the `browser` extra) and the terminal judged eval ritual.
 - **Full suite green.** `uv run pytest` — the frontend pins (no external resources, CSP, no inline
   handlers, no `innerHTML` of untrusted content), the route-closed-set pin (mutations unchanged),
   the secret-absence sweep over every non-parameterised GET, and the per-screen content pins.
-- **Core replay eval gate green.** `uv run jarvis eval gate --suite core` → 19/19 keyless/$0 (the
+- **Core replay eval gate green.** `uv run kira eval gate --suite core` → 19/19 keyless/$0 (the
   UI phase changed no agent code; the gate is a regression backstop). NOTE the bare `gate` defaults
   to `--suite all`, and the **adversarial** suite has no committed cassettes on purpose — it
   fail-closes with `CassetteMissError` (that is the cost ladder, not a regression). Use
@@ -24,7 +24,7 @@ running UI + the `browser` extra) and the terminal judged eval ritual.
 
 ```bash
 uv sync --extra browser --extra ui && uv run playwright install chromium
-uv run jarvis            # launch the workstation UI; it prints the one-shot token + URL
+uv run kira            # launch the workstation UI; it prints the one-shot token + URL
 # (settings.yaml keeps ui.enabled: false by default; a small driver can override it for headless
 #  capture — see the Phase 11 session notes — or set it true locally to browse.)
 uv run python -m tests.ui.capture --token <TOKEN> --themes noir,light,neon \
@@ -47,7 +47,7 @@ The judged, live, chunked eval gate stays a terminal ritual (ADR-0005) — a UI 
 baselines:
 
 ```bash
-uv run jarvis eval gate --profile live-chunked --live --max-cost-usd <cap>
+uv run kira eval gate --profile live-chunked --live --max-cost-usd <cap>
 ```
 
 Only ratchet baselines in a dedicated commit if this comes back green AND you intend to. No ratchet

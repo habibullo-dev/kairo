@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.cli import connect as connect_cli
-from jarvis.config import load_config
-from jarvis.connectors.consent import (
+from kira.cli import connect as connect_cli
+from kira.config import load_config
+from kira.connectors.consent import (
     LOCKED_PROVIDERS,
     integration_consent_path,
     integration_is_locked,
@@ -17,7 +17,7 @@ from jarvis.connectors.consent import (
     locked_integrations,
     unlock_integration,
 )
-from jarvis.connectors.factory import build_connectors
+from kira.connectors.factory import build_connectors
 
 
 def test_consent_marker_is_provider_scoped_and_invalid_content_fails_closed(

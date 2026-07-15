@@ -15,36 +15,36 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.actions.intents import IntentStore
-from jarvis.actions.journal import ConnectorWriteJournal
-from jarvis.agents import AgentRunStore
-from jarvis.attention.store import AttentionKind, AttentionStore
-from jarvis.config import KnowledgeConfig, load_config
-from jarvis.core.client import ToolCall
-from jarvis.core.events import TextDelta
-from jarvis.core.execution import (
+from kira.actions.intents import IntentStore
+from kira.actions.journal import ConnectorWriteJournal
+from kira.agents import AgentRunStore
+from kira.attention.store import AttentionKind, AttentionStore
+from kira.config import KnowledgeConfig, load_config
+from kira.core.client import ToolCall
+from kira.core.events import TextDelta
+from kira.core.execution import (
     ExecutionContext,
     bind_execution_context,
     current_execution_context,
 )
-from jarvis.graph import GraphStore
-from jarvis.knowledge.service import KnowledgeService
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.memory.store import MemoryStore
-from jarvis.permissions.gate import Decision
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectService, ProjectStore
-from jarvis.scheduler.service import TaskService
-from jarvis.scheduler.store import TaskStore
-from jarvis.tools import Permission
-from jarvis.ui.approver import ApprovalManager
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.connections import ConnectionManager
-from jarvis.ui.notices import NoticeBoard
-from jarvis.ui.readmodels import UiServices
-from jarvis.ui.server import (
+from kira.graph import GraphStore
+from kira.knowledge.service import KnowledgeService
+from kira.knowledge.store import KnowledgeStore
+from kira.memory.embeddings import FakeEmbedder
+from kira.memory.store import MemoryStore
+from kira.permissions.gate import Decision
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.projects import ProjectService, ProjectStore
+from kira.scheduler.service import TaskService
+from kira.scheduler.store import TaskStore
+from kira.tools import Permission
+from kira.ui.approver import ApprovalManager
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.connections import ConnectionManager
+from kira.ui.notices import NoticeBoard
+from kira.ui.readmodels import UiServices
+from kira.ui.server import (
     EXPECTED_CONTEXT_REVISION_HEADER,
     EXPECTED_PROJECT_HEADER,
     EXPECTED_SESSION_HEADER,
@@ -55,8 +55,8 @@ from jarvis.ui.server import (
     WORKSPACE_HEADER,
     create_app,
 )
-from jarvis.ui.session import UiSession
-from jarvis.ui.workspaces import UiWorkspaceRegistry
+from kira.ui.session import UiSession
+from kira.ui.workspaces import UiWorkspaceRegistry
 
 _OPEN: list = []
 

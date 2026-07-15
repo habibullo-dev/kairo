@@ -1,6 +1,6 @@
 """Chat feedback and Gate approval presentation stay custom, quiet, and informed."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 CHAT = (STATIC_DIR / "screens" / "chat.js").read_text(encoding="utf-8")
 FEEDBACK = (STATIC_DIR / "ui" / "feedback.js").read_text(encoding="utf-8")

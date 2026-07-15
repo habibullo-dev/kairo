@@ -8,7 +8,7 @@ playback, which can't be exercised keyless in CI. No `config/settings.yaml`, `co
 ## A. Keyless suite + screenshot DoD — GREEN
 
 Full suite **1960 passed / 2 skipped** (expected skips: playwright-installed degradation; Windows
-symlink privilege), ruff clean (src + tests), `jarvis eval gate --suite core` **19/19 PASS 3/3**
+symlink privilege), ruff clean (src + tests), `kira eval gate --suite core` **19/19 PASS 3/3**
 (keyless replay, **$0**), across all ten Phase-15.5 commits.
 
 ### Screenshot DoD — GREEN (81/81)

@@ -9,12 +9,12 @@ All keyless/$0 except where marked:
 | Metric | How | Current reference |
 |---|---|---|
 | Unit suite | `uv run pytest -q` | ~2060+ passed at HEAD `84e0988` (verify at capture) |
-| Core eval gate | `uv run jarvis eval gate --suite core` | 19/19, 3/3 runs, $0 |
+| Core eval gate | `uv run kira eval gate --suite core` | 19/19, 3/3 runs, $0 |
 | Mutation-route pin | `test_mutation_route_closed_set` | 47 routes (test literal) |
 | Ruff | `uv run ruff check` | clean |
 | Orchestration cost/tokens per run | `orchestration_runs` ledger rows over N=10 attended Studio runs (backend×implement, backend×review_diff, security×security_review) | record mean input/output tokens + cost per stage |
 | Report quality baseline | archive the raw member reports from those same N runs (they're in child session transcripts) | scored later against the same rubric as post-skill runs |
-| Adversarial (live, human ritual, budgeted) | `jarvis eval plan --suite adversarial --live` then chunked live run | side-effect gate all-N green; injection_attempt_rate recorded |
+| Adversarial (live, human ritual, budgeted) | `kira eval plan --suite adversarial --live` then chunked live run | side-effect gate all-N green; injection_attempt_rate recorded |
 
 The N=10 attended-run archive is the critical new baseline: today no metric captures member-report quality at all.
 
@@ -64,7 +64,7 @@ G1 off-mode byte-identity · G2 hash pin refusal · G3 loader fail-closed · G4 
 
 - **Stage 0 — land inert**: skills module + loader + lint + G-tests + P0 fixes (F1–F4), `skills.mode: off` default. Entire existing suite + core gate green; G1 byte-identity proves zero behavior change. No checkpoint needed (adds no authority, changes no behavior).
 - **Stage 1 — shadow**: after human review, copy the selected drafts into the runtime directory, change their status to `shadow`, pin their hashes, and set `skills.mode: shadow`. Run ≥10 attended orchestration runs across the 3 pairs. Exit evidence: manifests correct (right packs bound to right members/stages), compiled sizes within budget, zero prompt-bytes changed (G1 still green in shadow — shadow never injects).
-- **Stage 2 — ⛔ CHECKPOINT (full stop, Habib)**: present the audit (01), shadow evidence, A/B plan, and cost projection (`jarvis eval plan` where applicable). No activation without sign-off — same class of switch as ROADMAP's "strictly sequential" list, since this changes model-facing text for agents that can reach a writer.
+- **Stage 2 — ⛔ CHECKPOINT (full stop, Habib)**: present the audit (01), shadow evidence, A/B plan, and cost projection (`kira eval plan` where applicable). No activation without sign-off — same class of switch as ROADMAP's "strictly sequential" list, since this changes model-facing text for agents that can reach a writer.
 - **Stage 3 — pilot activation (Backend Implementer + Architect Reviewer only)**: `skills.mode: active` with exactly `core-engineering`, `backend-implementer`, `architect-reviewer` enabled. Attended runs only. Run the A/B of §3. QA/security packs stay shadow — one team's behavioral change at a time.
 - **Stage 4 — evaluate & ratchet**: score D/J metrics; if promotion criteria met, activate `qa-eval` + `security-review` (second flip, own commit); record the adversarial additions live. Baseline-ratchet any floors only in a dedicated commit with the report quoted (ADR-0005 discipline).
 - **Stage 5 — steady state**: pack edits follow the lifecycle (03 §2 status + version bump + re-pin + shadow re-check for material changes). Main-loop/head-stage packs, if ever, are a NEW proposal with their own checkpoint — not a scope creep of this one.

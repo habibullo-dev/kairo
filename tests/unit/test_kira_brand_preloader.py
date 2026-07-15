@@ -7,7 +7,7 @@ import re
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 ASSETS = STATIC_DIR / "assets"
 INDEX = STATIC_DIR / "index.html"

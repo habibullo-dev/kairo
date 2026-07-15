@@ -13,10 +13,10 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from jarvis.memory.store import MemoryStore
-from jarvis.persistence.artifacts import ArtifactStore
-from jarvis.persistence.db import connect
-from jarvis.persistence.fts import (
+from kira.memory.store import MemoryStore
+from kira.persistence.artifacts import ArtifactStore
+from kira.persistence.db import connect
+from kira.persistence.fts import (
     ANY_PROJECT,
     DOMAINS,
     FTS_TABLES,
@@ -25,8 +25,8 @@ from jarvis.persistence.fts import (
     query_domain,
     rebuild_all,
 )
-from jarvis.persistence.sessions import SessionStore
-from jarvis.projects.store import ProjectStore
+from kira.persistence.sessions import SessionStore
+from kira.projects.store import ProjectStore
 
 _OPEN: list = []
 _EMB = [1.0, 2.0, 3.0]  # any non-zero vector; FTS indexes content, not the embedding
@@ -315,7 +315,7 @@ async def test_orchestration_digest_artifact_search_paths(tmp_path: Path) -> Non
 
 
 async def test_v8_to_v9_backfill_indexes_preexisting_rows(tmp_path: Path) -> None:
-    from jarvis.persistence import migrations as M
+    from kira.persistence import migrations as M
 
     db = await aiosqlite.connect(tmp_path / "bf.db")
     _OPEN.append(db)
@@ -371,7 +371,7 @@ async def test_v8_to_v9_backfill_indexes_preexisting_rows(tmp_path: Path) -> Non
 
 async def test_v9_migration_is_rerunnable(tmp_path: Path) -> None:
     # A partial-failure re-run must be a clean no-op — every v9 statement is idempotent.
-    from jarvis.persistence import migrations as M
+    from kira.persistence import migrations as M
 
     db = await connect(tmp_path / "rerun.db")  # connect() already migrated to v9
     _OPEN.append(db)

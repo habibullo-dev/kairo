@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 INDEX = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 APP_JS = (STATIC_DIR / "app.js").read_text(encoding="utf-8")

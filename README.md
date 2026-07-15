@@ -210,7 +210,7 @@ marker; the old marker is accepted solely for safe migration.
 ## Project layout
 
 ```text
-src/jarvis/       temporary internal Python namespace; canonical command/product is Kira
+src/kira/       canonical Kira Python package
   actions/        previewed connector/write intents
   agents/         scoped sub-agent runs and audit records
   attention/      Notification Center, routing, dreaming cage/builders

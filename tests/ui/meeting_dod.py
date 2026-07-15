@@ -13,7 +13,7 @@ from pathlib import Path
 
 from workbench_dod import HARNESS, _free_port, _QuietHandler, _seed_for
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 _INTERCEPT = r"""() => {
   window.__meetingPosts = [];

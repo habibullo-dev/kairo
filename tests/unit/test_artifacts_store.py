@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.persistence.artifacts import ArtifactPathError, ArtifactStore
-from jarvis.persistence.db import connect
-from jarvis.projects.store import ProjectStore
+from kira.persistence.artifacts import ArtifactPathError, ArtifactStore
+from kira.persistence.db import connect
+from kira.projects.store import ProjectStore
 
 _OPEN: list = []
 

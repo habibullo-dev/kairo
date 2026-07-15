@@ -1370,104 +1370,6 @@ wheels = [
 ]
 
 [[package]]
-name = "jarvis"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "aiosqlite" },
-    { name = "anthropic" },
-    { name = "apscheduler" },
-    { name = "argon2-cffi" },
-    { name = "httpx" },
-    { name = "markitdown", extra = ["docx", "pdf", "pptx", "xlsx"] },
-    { name = "numpy" },
-    { name = "prompt-toolkit" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pyyaml" },
-    { name = "reportlab" },
-    { name = "rich" },
-    { name = "structlog" },
-    { name = "trafilatura" },
-    { name = "tzlocal" },
-    { name = "voyageai" },
-]
-
-[package.optional-dependencies]
-browser = [
-    { name = "playwright" },
-]
-docling = [
-    { name = "docling" },
-]
-ui = [
-    { name = "fastapi" },
-    { name = "python-multipart" },
-    { name = "uvicorn" },
-]
-voice = [
-    { name = "elevenlabs" },
-    { name = "faster-whisper" },
-    { name = "openai" },
-    { name = "sounddevice" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "elevenlabs" },
-    { name = "fastapi" },
-    { name = "mypy" },
-    { name = "openai" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "python-multipart" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.22.1" },
-    { name = "anthropic", specifier = ">=0.116.0" },
-    { name = "apscheduler", specifier = ">=3.11,<4" },
-    { name = "argon2-cffi", specifier = ">=25.1.0" },
-    { name = "docling", marker = "extra == 'docling'", specifier = ">=2.92" },
-    { name = "elevenlabs", marker = "extra == 'voice'", specifier = ">=1.0" },
-    { name = "fastapi", marker = "extra == 'ui'", specifier = ">=0.115" },
-    { name = "faster-whisper", marker = "extra == 'voice'", specifier = ">=1.2,<2" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "markitdown", extras = ["docx", "pdf", "pptx", "xlsx"], specifier = ">=0.1.6,<0.2" },
-    { name = "numpy", specifier = ">=2.5.1" },
-    { name = "openai", marker = "extra == 'voice'", specifier = ">=1.0" },
-    { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.4" },
-    { name = "prompt-toolkit", specifier = ">=3.0.52" },
-    { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "pydantic-settings", specifier = ">=2.14.2" },
-    { name = "python-multipart", marker = "extra == 'ui'", specifier = ">=0.0.20,<0.1" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "reportlab", specifier = ">=4.4,<5" },
-    { name = "rich", specifier = ">=15.0.0" },
-    { name = "sounddevice", marker = "extra == 'voice'", specifier = ">=0.4" },
-    { name = "structlog", specifier = ">=26.1.0" },
-    { name = "trafilatura", specifier = ">=2.1.0" },
-    { name = "tzlocal", specifier = ">=5" },
-    { name = "uvicorn", marker = "extra == 'ui'", specifier = ">=0.30" },
-    { name = "voyageai", specifier = ">=0.4.1" },
-]
-provides-extras = ["docling", "voice", "ui", "browser"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "elevenlabs", specifier = ">=1.0" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "mypy", specifier = ">=1.15" },
-    { name = "openai", specifier = ">=1.0" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-    { name = "python-multipart", specifier = ">=0.0.20,<0.1" },
-    { name = "ruff", specifier = ">=0.9" },
-]
-
-[[package]]
 name = "jinja2"
 version = "3.1.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1626,6 +1528,104 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/49/f3/45890c1b314f0d04e19c1c83d534e611513150939a7cf039664d9ab1e649/justext-3.0.2.tar.gz", hash = "sha256:13496a450c44c4cd5b5a75a5efcd9996066d2a189794ea99a49949685a0beb05", size = 828521, upload-time = "2025-02-25T20:21:49.934Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f2/ac/52f4e86d1924a7fc05af3aeb34488570eccc39b4af90530dd6acecdf16b5/justext-3.0.2-py2.py3-none-any.whl", hash = "sha256:62b1c562b15c3c6265e121cc070874243a443bfd53060e869393f09d6b6cc9a7", size = 837940, upload-time = "2025-02-25T20:21:44.179Z" },
+]
+
+[[package]]
+name = "kira"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "aiosqlite" },
+    { name = "anthropic" },
+    { name = "apscheduler" },
+    { name = "argon2-cffi" },
+    { name = "httpx" },
+    { name = "markitdown", extra = ["docx", "pdf", "pptx", "xlsx"] },
+    { name = "numpy" },
+    { name = "prompt-toolkit" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyyaml" },
+    { name = "reportlab" },
+    { name = "rich" },
+    { name = "structlog" },
+    { name = "trafilatura" },
+    { name = "tzlocal" },
+    { name = "voyageai" },
+]
+
+[package.optional-dependencies]
+browser = [
+    { name = "playwright" },
+]
+docling = [
+    { name = "docling" },
+]
+ui = [
+    { name = "fastapi" },
+    { name = "python-multipart" },
+    { name = "uvicorn" },
+]
+voice = [
+    { name = "elevenlabs" },
+    { name = "faster-whisper" },
+    { name = "openai" },
+    { name = "sounddevice" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "elevenlabs" },
+    { name = "fastapi" },
+    { name = "mypy" },
+    { name = "openai" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "python-multipart" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.22.1" },
+    { name = "anthropic", specifier = ">=0.116.0" },
+    { name = "apscheduler", specifier = ">=3.11,<4" },
+    { name = "argon2-cffi", specifier = ">=25.1.0" },
+    { name = "docling", marker = "extra == 'docling'", specifier = ">=2.92" },
+    { name = "elevenlabs", marker = "extra == 'voice'", specifier = ">=1.0" },
+    { name = "fastapi", marker = "extra == 'ui'", specifier = ">=0.115" },
+    { name = "faster-whisper", marker = "extra == 'voice'", specifier = ">=1.2,<2" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "markitdown", extras = ["docx", "pdf", "pptx", "xlsx"], specifier = ">=0.1.6,<0.2" },
+    { name = "numpy", specifier = ">=2.5.1" },
+    { name = "openai", marker = "extra == 'voice'", specifier = ">=1.0" },
+    { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.4" },
+    { name = "prompt-toolkit", specifier = ">=3.0.52" },
+    { name = "pydantic", specifier = ">=2.13.4" },
+    { name = "pydantic-settings", specifier = ">=2.14.2" },
+    { name = "python-multipart", marker = "extra == 'ui'", specifier = ">=0.0.20,<0.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "reportlab", specifier = ">=4.4,<5" },
+    { name = "rich", specifier = ">=15.0.0" },
+    { name = "sounddevice", marker = "extra == 'voice'", specifier = ">=0.4" },
+    { name = "structlog", specifier = ">=26.1.0" },
+    { name = "trafilatura", specifier = ">=2.1.0" },
+    { name = "tzlocal", specifier = ">=5" },
+    { name = "uvicorn", marker = "extra == 'ui'", specifier = ">=0.30" },
+    { name = "voyageai", specifier = ">=0.4.1" },
+]
+provides-extras = ["docling", "voice", "ui", "browser"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "elevenlabs", specifier = ">=1.0" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "mypy", specifier = ">=1.15" },
+    { name = "openai", specifier = ">=1.0" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "python-multipart", specifier = ">=0.0.20,<0.1" },
+    { name = "ruff", specifier = ">=0.9" },
 ]
 
 [[package]]

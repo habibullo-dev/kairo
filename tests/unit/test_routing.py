@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.core import FakeClient, text_message
-from jarvis.models.providers import provider_spec
-from jarvis.routing import ALL_TIERS, RoutingMode
-from jarvis.routing.classifier import Classifier, _extract_json
-from jarvis.routing.policy import (
+from kira.core import FakeClient, text_message
+from kira.models.providers import provider_spec
+from kira.routing import ALL_TIERS, RoutingMode
+from kira.routing.classifier import Classifier, _extract_json
+from kira.routing.policy import (
     DEEP,
     JUDGMENT,
     PLANNING,
@@ -25,7 +25,7 @@ from jarvis.routing.policy import (
     provider_for_model,
     resolve_route,
 )
-from jarvis.routing.router import Router, RoutingState
+from kira.routing.router import Router, RoutingState
 
 _ALL = lambda _p: True  # noqa: E731 - everything available
 _NO_GEMINI = lambda p: p != "gemini"  # noqa: E731

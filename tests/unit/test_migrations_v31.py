@@ -3,7 +3,7 @@
 import aiosqlite
 import pytest
 
-from jarvis.persistence import migrations as M
+from kira.persistence import migrations as M
 
 
 async def _build_v30() -> aiosqlite.Connection:

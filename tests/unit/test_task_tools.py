@@ -10,12 +10,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from jarvis.config import SchedulerConfig
-from jarvis.persistence.db import connect
-from jarvis.scheduler.service import TaskService
-from jarvis.scheduler.store import TaskStore
-from jarvis.tools import Permission, ToolContext, ToolRegistry, ToolResult
-from jarvis.tools.builtin.tasks import CancelTaskTool, ListTasksTool, ScheduleTaskTool
+from kira.config import SchedulerConfig
+from kira.persistence.db import connect
+from kira.scheduler.service import TaskService
+from kira.scheduler.store import TaskStore
+from kira.tools import Permission, ToolContext, ToolRegistry, ToolResult
+from kira.tools.builtin.tasks import CancelTaskTool, ListTasksTool, ScheduleTaskTool
 
 TASK_TOOLS = ("schedule_task", "list_tasks", "cancel_task")
 START = dt.datetime(2026, 7, 6, 8, 0, tzinfo=dt.UTC)
@@ -151,7 +151,7 @@ def test_task_tools_unavailable_without_service() -> None:
 
 def test_registry_skips_task_tools_without_service() -> None:
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=None, tasks=None))
+    reg.discover("kira.tools.builtin", ToolContext(config=None, tasks=None))
     for name in TASK_TOOLS:
         assert name not in reg
     assert "read_file" in reg  # earlier-phase tools still register
@@ -160,7 +160,7 @@ def test_registry_skips_task_tools_without_service() -> None:
 async def test_registry_registers_task_tools_with_service(tmp_path: Path) -> None:
     ctx, _ = await _ctx(tmp_path)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ctx)
+    reg.discover("kira.tools.builtin", ctx)
     for name in TASK_TOOLS:
         assert name in reg
 
@@ -178,7 +178,7 @@ def test_task_tool_permission_defaults() -> None:
 def test_policy_defaults_schedule_task_asks() -> None:
     # The shipped policy must gate schedule_task (belt-and-suspenders with the
     # tool default) — a live-loaded policy is what actually runs.
-    from jarvis.permissions import load_policy
+    from kira.permissions import load_policy
 
     policy = load_policy(Path("config/permissions.yaml"))
     assert policy.tools["schedule_task"] is Permission.ASK
@@ -187,7 +187,7 @@ def test_policy_defaults_schedule_task_asks() -> None:
 
 
 def test_system_prompt_gains_tasks_guidance_only_when_enabled() -> None:
-    from jarvis.core.prompts import TASKS_GUIDANCE, build_system
+    from kira.core.prompts import TASKS_GUIDANCE, build_system
 
     assert TASKS_GUIDANCE not in build_system()  # earlier-phase prompt unchanged
     assert TASKS_GUIDANCE in build_system(tasks_enabled=True)
@@ -197,8 +197,8 @@ def test_system_prompt_gains_tasks_guidance_only_when_enabled() -> None:
 
 
 def test_call_summary_shows_full_payload_and_fire_time() -> None:
-    from jarvis.cli.repl import _call_summary
-    from jarvis.core import ToolCall
+    from kira.cli.repl import _call_summary
+    from kira.core import ToolCall
 
     long_payload = "do the thing; " + "x" * 900 + " END"
     summary = _call_summary(
@@ -220,8 +220,8 @@ def test_call_summary_shows_full_payload_and_fire_time() -> None:
 
 
 def test_call_summary_shows_full_expected_output_contract() -> None:
-    from jarvis.cli.repl import _call_summary
-    from jarvis.core import ToolCall
+    from kira.cli.repl import _call_summary
+    from kira.core import ToolCall
 
     summary = _call_summary(
         ToolCall(
@@ -247,9 +247,9 @@ def test_schedule_task_is_never_always_allowed(tmp_path: Path) -> None:
 
     from rich.console import Console
 
-    from jarvis.cli.repl import Repl
-    from jarvis.config import load_config
-    from jarvis.core import FakeClient, ToolCall, text_message
+    from kira.cli.repl import Repl
+    from kira.config import load_config
+    from kira.core import FakeClient, ToolCall, text_message
 
     config = load_config(root=tmp_path, env_file=None)
     console = Console(file=io.StringIO(), force_terminal=False, width=100)

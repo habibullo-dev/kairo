@@ -8,11 +8,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from jarvis.config import load_config
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.readmodels import interactive_models
-from jarvis.ui.server import create_app
-from jarvis.ui.state import InteractiveModelState
+from kira.config import load_config
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.readmodels import interactive_models
+from kira.ui.server import create_app
+from kira.ui.state import InteractiveModelState
 
 
 def _hdr(auth: AuthManager, *, post: bool = False) -> dict[str, str]:
@@ -26,7 +26,7 @@ def _client(tmp_path: Path):
     cfg = load_config(root=tmp_path, env_file=None)
     auth = AuthManager(token="tok")
     app = create_app(cfg, auth=auth)
-    from jarvis.routing import RoutingState
+    from kira.routing import RoutingState
 
     app.state.interactive_models = InteractiveModelState(cfg.models.main)
     app.state.routing = RoutingState()  # default AUTO
@@ -89,7 +89,7 @@ def test_no_secret_on_models_route(tmp_path: Path) -> None:
     auth = AuthManager(token="tok")
     app = create_app(cfg, auth=auth)
     app.state.interactive_models = InteractiveModelState(cfg.models.main)
-    from jarvis.routing import RoutingState
+    from kira.routing import RoutingState
 
     app.state.routing = RoutingState()
     app.state.last_route = None

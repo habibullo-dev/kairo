@@ -18,14 +18,14 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import MemoryConfig
-from jarvis.core import FakeClient, text_message
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.memory.reflection import reflect
-from jarvis.memory.service import MemoryService
-from jarvis.memory.store import MemoryStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
+from kira.config import MemoryConfig
+from kira.core import FakeClient, text_message
+from kira.memory.embeddings import FakeEmbedder
+from kira.memory.reflection import reflect
+from kira.memory.service import MemoryService
+from kira.memory.store import MemoryStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
 
 _OPEN: list = []
 
@@ -124,9 +124,9 @@ async def test_dedup_within_same_project_still_works(tmp_path: Path) -> None:
 
 
 async def test_reflection_attributes_to_session_project(tmp_path: Path) -> None:
-    from jarvis.core import tool_use_message
-    from jarvis.core.client import ToolCall
-    from jarvis.persistence import SessionStore
+    from kira.core import tool_use_message
+    from kira.core.client import ToolCall
+    from kira.persistence import SessionStore
 
     svc = await _service(tmp_path, responses=[])
     # A real session bound to project B (memories.source_session_id has a FK to sessions).

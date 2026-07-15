@@ -13,23 +13,23 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.cli import reset as reset_module
-from jarvis.cli.reset import DataResetError, reset_all_data
-from jarvis.config import load_config
-from jarvis.connectors.consent import (
+from kira.cli import reset as reset_module
+from kira.cli.reset import DataResetError, reset_all_data
+from kira.config import load_config
+from kira.connectors.consent import (
     LOCKED_PROVIDERS,
     integration_consent_path,
     locked_integrations,
 )
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.persistence.instance_lock import InstanceLock, ResetBarrier
-from jarvis.persistence.reset_recovery import (
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.persistence.instance_lock import InstanceLock, ResetBarrier
+from kira.persistence.reset_recovery import (
     ResetRecoveryError,
     interrupted_reset_diagnostic,
     recover_interrupted_reset,
 )
-from jarvis.ui.owner_auth import (
+from kira.ui.owner_auth import (
     Argon2PasswordHasher,
     OwnerAuthService,
     OwnerLoginThrottledError,
@@ -357,9 +357,9 @@ async def test_crashed_external_reset_remains_visible_after_config_anchor_change
         [
             "import asyncio, os, sys",
             "from pathlib import Path",
-            "from jarvis.cli import reset as reset_module",
-            "from jarvis.cli.reset import reset_all_data",
-            "from jarvis.config import load_config",
+            "from kira.cli import reset as reset_module",
+            "from kira.cli.reset import reset_all_data",
+            "from kira.config import load_config",
             "real_bootstrap = reset_module._bootstrap_fresh_database",
             "async def crash(database):",
             "    await real_bootstrap(database)",
@@ -909,7 +909,7 @@ def test_reset_cli_refuses_noninteractive_input(
 def test_main_dispatches_reset_before_provider_key_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import jarvis.__main__ as entry
+    import kira.__main__ as entry
 
     monkeypatch.setattr(sys, "argv", ["jarvis", "reset", "data"])
     monkeypatch.setattr(reset_module, "reset_cli", lambda argv: 9 if argv == ["data"] else 1)

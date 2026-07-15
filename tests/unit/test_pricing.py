@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.observability.cost import Usage, load_pricing
+from kira.observability.cost import Usage, load_pricing
 
 
 def test_anthropic_prefix_matches_dated_snapshot() -> None:
@@ -66,7 +66,7 @@ def test_missing_file_falls_back_to_code(tmp_path: Path) -> None:
 
 def test_real_pricing_yaml_loads() -> None:
     # The shipped config/pricing.yaml parses and prices the default models.
-    from jarvis.config import project_root
+    from kira.config import project_root
 
     table = load_pricing(project_root() / "config" / "pricing.yaml")
     assert table.price_for("anthropic", "claude-fable-5") is not None

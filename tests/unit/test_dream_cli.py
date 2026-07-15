@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.attention import JOBS
-from jarvis.cli.dream import dream_cli
+from kira.attention import JOBS
+from kira.cli.dream import dream_cli
 
 
 def test_unknown_job_is_rejected() -> None:

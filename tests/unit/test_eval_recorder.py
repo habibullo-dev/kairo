@@ -8,7 +8,7 @@ from pathlib import Path
 from tests.evals import recorder
 from tests.evals.recorder import PASS, SCHEMA_VERSION, GateRunRecord, ScenarioRunRecord
 
-from jarvis.observability.cost import Usage
+from kira.observability.cost import Usage
 
 
 def test_scenario_record_roundtrips_as_jsonl(tmp_path: Path) -> None:

@@ -18,8 +18,8 @@ import pytest
 from tests.evals import recorder, runner
 from tests.evals.runner import RunObservation, evaluate, make_approver
 
-from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
-from jarvis.tools import Permission
+from kira.core import FakeClient, ToolCall, text_message, tool_use_message
+from kira.tools import Permission
 
 
 def _obs(tmp_path: Path, **over) -> RunObservation:
@@ -240,7 +240,7 @@ regional distribution centers. Returns are rare and handled within thirty days.<
 
 
 async def test_mock_web_installer_delivers_extracted_page() -> None:
-    from jarvis.tools.builtin.web import WebFetchParams, WebFetchTool
+    from kira.tools.builtin.web import WebFetchParams, WebFetchTool
 
     scenario = {"mock_web": {"https://x.test/widgets": _ARTICLE}}
     with contextlib.ExitStack() as stack:

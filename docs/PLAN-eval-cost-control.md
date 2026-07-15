@@ -52,7 +52,7 @@ aborts the run. Default cap: gate live = configurable; smoke = **$3**.
   `max_cost_usd`; wrap the factory output + judge client in `CassetteClient`. CLI: `--live`,
   `--record`, `--max-cost-usd`; **default replay**. Fail-closed on missing cassette prints the
   exact record command. Full judged live gate stays `gate --live` (closeout-only, item 6).
-- **E3 — provider smoke bench** (`jarvis eval smoke`): tiny built-in smoke scenarios; `--provider`
+- **E3 — provider smoke bench** (`kira eval smoke`): tiny built-in smoke scenarios; `--provider`
   (deepseek/gemini/qwen/zai/anthropic), 1 run default, replay by default, `--live` +
   `--max-cost-usd 3` default. Cassettes per provider so a keyless `smoke` replays.
 - **E4 — cost projection** (item 7): `project_eval_cost(scenarios, runs, mode, cassettes,

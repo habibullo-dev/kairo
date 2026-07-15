@@ -10,14 +10,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.actions.intents import IntentState, IntentStore
-from jarvis.connectors.base import ConnectorRegistry
-from jarvis.connectors.google import GOOGLE_SCOPES
-from jarvis.permissions.modes import AUTO_NEVER, PLAN_SAFE
-from jarvis.permissions.unattended import HARD_DENY
-from jarvis.persistence.db import connect
-from jarvis.tools.base import Permission, ToolContext
-from jarvis.tools.builtin.connectors_write import (
+from kira.actions.intents import IntentState, IntentStore
+from kira.connectors.base import ConnectorRegistry
+from kira.connectors.google import GOOGLE_SCOPES
+from kira.permissions.modes import AUTO_NEVER, PLAN_SAFE
+from kira.permissions.unattended import HARD_DENY
+from kira.persistence.db import connect
+from kira.tools.base import Permission, ToolContext
+from kira.tools.builtin.connectors_write import (
     WRITE_TOOL_NAMES,
     CalendarCreateEventTool,
     CalendarCreateParams,
@@ -184,7 +184,7 @@ async def test_calendar_update_proposes_with_a_diff(tmp_path: Path) -> None:
 async def test_doc_update_requires_operations(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     tool = DriveUpdateDocTool(_ctx(store, _FakeGoogle()))
-    from jarvis.tools.builtin.connectors_write import DocUpdateParams
+    from kira.tools.builtin.connectors_write import DocUpdateParams
 
     result = await tool.run(DocUpdateParams(document_id="d1"))  # no append, no replacements
     assert result.is_error and await store.list() == []

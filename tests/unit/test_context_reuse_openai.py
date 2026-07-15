@@ -15,11 +15,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.config import load_config
-from jarvis.models.context_reuse import plan_for_prefix
-from jarvis.models.factory import ClientFactory
-from jarvis.models.openai_client import OpenAIChatClient
-from jarvis.models.roles import ModelRoute
+from kira.config import load_config
+from kira.models.context_reuse import plan_for_prefix
+from kira.models.factory import ClientFactory
+from kira.models.openai_client import OpenAIChatClient
+from kira.models.roles import ModelRoute
 
 
 @pytest.fixture(autouse=True)

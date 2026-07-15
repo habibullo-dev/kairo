@@ -13,14 +13,14 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-from jarvis.core.client import ToolCall
-from jarvis.core.execution import ExecutionContext, bind_execution_context
-from jarvis.permissions.gate import Decision
-from jarvis.tools import Permission
-from jarvis.ui.approver import ApprovalManager, UIScreenApprover
-from jarvis.ui.connections import ConnectionManager
-from jarvis.ui.voice import UiVoice
-from jarvis.voice import FakeCapture, FakeTranscriber, MeetingCapture, VoiceApprover
+from kira.core.client import ToolCall
+from kira.core.execution import ExecutionContext, bind_execution_context
+from kira.permissions.gate import Decision
+from kira.tools import Permission
+from kira.ui.approver import ApprovalManager, UIScreenApprover
+from kira.ui.connections import ConnectionManager
+from kira.ui.voice import UiVoice
+from kira.voice import FakeCapture, FakeTranscriber, MeetingCapture, VoiceApprover
 
 ASK = Decision(Permission.ASK, "risky")
 _CONTEXT = ExecutionContext(session_id=101, project_id=None)

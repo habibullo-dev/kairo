@@ -6,7 +6,7 @@ binds the eventual submit to the workspace context that was reviewed. The server
 
 from __future__ import annotations
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 DRAFT = (STATIC_DIR / "ui" / "task-draft.js").read_text(encoding="utf-8")
 TASKS = (STATIC_DIR / "screens" / "tasks.js").read_text(encoding="utf-8")

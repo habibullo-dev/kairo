@@ -1,6 +1,6 @@
 """The Notifications screen exposes the durable, read-only notice feed."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 
 def test_gate_reads_and_safely_renders_notice_history() -> None:

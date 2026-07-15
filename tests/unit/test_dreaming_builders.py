@@ -12,15 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.attention import (
+from kira.attention import (
     JOBS,
     AttentionState,
     AttentionStore,
     DreamingBudget,
     run_dreaming_job,
 )
-from jarvis.core.client import FakeClient, text_message
-from jarvis.persistence.db import connect
+from kira.core.client import FakeClient, text_message
+from kira.persistence.db import connect
 
 _OPEN: list = []
 

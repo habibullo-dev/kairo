@@ -6,7 +6,7 @@ import datetime as dt
 
 import pytest
 
-from jarvis.scheduler.triggers import compute_next, validate
+from kira.scheduler.triggers import compute_next, validate
 
 UTC = dt.UTC
 

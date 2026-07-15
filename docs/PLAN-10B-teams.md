@@ -58,7 +58,7 @@ LedgeredClient + budgets.
 ## 1. Revised architecture (new pieces in bold)
 
 ```
-src/jarvis/
+src/kira/
 ├── orchestration/                 # 10B core (as approved, now team-aware)
 │   ├── roles.py                   #   RosterRole + READ_ONLY_SPAWNABLE floor (no shell/write/web)
 │   ├── teams.py                   # NEW — TeamProfile code constants (8 teams): members
@@ -400,7 +400,7 @@ generic Browser MCP (until an MCP layer exists).
 
 ## 9. Live verification (Task 19)
 
-1. Enable `services.enabled: [semgrep, gitleaks, playwright_local]`; `jarvis` UI: Hub/Studio
+1. Enable `services.enabled: [semgrep, gitleaks, playwright_local]`; Kira UI: Hub/Studio
    show the three available, others disabled/missing-creds/deferred with reasons; no key text.
 2. Security team `security_review` on this repo: council (semgrep+gitleaks findings framed,
    OWASP checklist context) → synthesis by Fable → verdict; findings show file:line, never a

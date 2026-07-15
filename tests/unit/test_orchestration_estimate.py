@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import BudgetsConfig
-from jarvis.core.client import FakeClient, ToolCall, tool_use_message
-from jarvis.models.registry import ModelRegistry
-from jarvis.observability.cost import Price, PricingTable
-from jarvis.orchestration import (
+from kira.config import BudgetsConfig
+from kira.core.client import FakeClient, ToolCall, tool_use_message
+from kira.models.registry import ModelRegistry
+from kira.observability.cost import Price, PricingTable
+from kira.orchestration import (
     WORKFLOWS,
     ConfirmationRequired,
     ContextBundle,
@@ -29,10 +29,10 @@ from jarvis.orchestration import (
     estimate_run,
     resolve_team,
 )
-from jarvis.orchestration.context import ContextItem, Provenance
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
-from jarvis.tools.base import ToolResult
+from kira.orchestration.context import ContextItem, Provenance
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
+from kira.tools.base import ToolResult
 
 _OPEN: list = []
 
@@ -130,8 +130,8 @@ def _team_with_writer_service(service: str) -> object:
     # A writer legitimately may hold an egress/metered service (execution-stage authority). Build
     # one directly so the estimate sees an unpriced metered service without violating the
     # read-only service floor.
-    from jarvis.orchestration.roles import Capability, RosterRole
-    from jarvis.orchestration.teams import TeamProfile
+    from kira.orchestration.roles import Capability, RosterRole
+    from kira.orchestration.teams import TeamProfile
 
     writer = RosterRole(
         "impl", "Impl", "coder",

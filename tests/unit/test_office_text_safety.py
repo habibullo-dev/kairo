@@ -15,14 +15,14 @@ from pathlib import Path
 
 import pytest
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
-from jarvis.agents import AgentRunStore
-from jarvis.config import load_config
-from jarvis.orchestration import OrchestrationStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
-from jarvis.ui.readmodels import UiServices, office_overview
-from jarvis.ui.server import STATIC_DIR
+import kira.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
+from kira.agents import AgentRunStore
+from kira.config import load_config
+from kira.orchestration import OrchestrationStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
+from kira.ui.readmodels import UiServices, office_overview
+from kira.ui.server import STATIC_DIR
 
 OFFICE_JS = (STATIC_DIR / "screens" / "workspace" / "office.js").read_text(encoding="utf-8")
 

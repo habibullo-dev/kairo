@@ -8,18 +8,18 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.attention import AttentionStore
-from jarvis.graph import GraphStore
-from jarvis.intelligence import (
+from kira.attention import AttentionStore
+from kira.graph import GraphStore
+from kira.intelligence import (
     AnalysisJobState,
     AnalysisJobStore,
     ProjectReportStore,
     publish_assessment,
 )
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.orchestration import OrchestrationStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore, seal_snapshot
+from kira.knowledge.store import KnowledgeStore
+from kira.orchestration import OrchestrationStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore, seal_snapshot
 
 _OPEN: list = []
 

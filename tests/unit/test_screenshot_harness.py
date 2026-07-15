@@ -1,20 +1,20 @@
 """Keyless tests for the screenshot DoD machinery (Phase 11 T2): the pure browser-free helpers
-in jarvis.ui.screenshots, and the Playwright driver's graceful degradation via the injectable
+in kira.ui.screenshots, and the Playwright driver's graceful degradation via the injectable
 seam (no browser install required)."""
 
 from __future__ import annotations
 
 import pytest
 
-from jarvis.services.playwright_driver import (
+from kira.services.playwright_driver import (
     PlaywrightInspectDriver,
     _safe_shot_name,
     _summarize_a11y,
     install_if_available,
     playwright_available,
 )
-from jarvis.services.playwright_local import _NotInstalledDriver, set_driver
-from jarvis.ui.screenshots import (
+from kira.services.playwright_local import _NotInstalledDriver, set_driver
+from kira.ui.screenshots import (
     THEMES,
     VIEWPORTS,
     analyze_overlap,

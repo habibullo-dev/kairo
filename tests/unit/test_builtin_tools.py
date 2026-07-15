@@ -7,18 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets, load_config
-from jarvis.paths import resolve_path
-from jarvis.tools import Permission, ToolContext, ToolResult
-from jarvis.tools.builtin import web
-from jarvis.tools.builtin.filesystem import (
+from kira.config import Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets, load_config
+from kira.paths import resolve_path
+from kira.tools import Permission, ToolContext, ToolResult
+from kira.tools.builtin import web
+from kira.tools.builtin.filesystem import (
     GlobSearchTool,
     ListDirTool,
     ReadFileTool,
     WriteFileTool,
 )
-from jarvis.tools.builtin.shell import RunShellTool
-from jarvis.tools.builtin.web import WebFetchTool, WebSearchTool
+from kira.tools.builtin.shell import RunShellTool
+from kira.tools.builtin.web import WebFetchTool, WebSearchTool
 
 pwsh = shutil.which("pwsh")
 

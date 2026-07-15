@@ -13,10 +13,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.attention import AttentionState, AttentionStore, collect, dream_run
-from jarvis.config import load_config
-from jarvis.core.client import FakeClient, text_message
-from jarvis.persistence.db import connect
+from kira.attention import AttentionState, AttentionStore, collect, dream_run
+from kira.config import load_config
+from kira.core.client import FakeClient, text_message
+from kira.persistence.db import connect
 
 _NOW = _dt.datetime(2026, 7, 10, 21, 0, tzinfo=_dt.UTC)
 _OPEN: list = []

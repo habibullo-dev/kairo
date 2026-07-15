@@ -15,11 +15,11 @@ from pathlib import Path
 
 from rich.console import Console
 
-from jarvis.cli.repl import Repl, build_voice_session, run_voice
-from jarvis.config import VoiceConfig, load_config
-from jarvis.core import FakeClient
-from jarvis.core.prompts import VOICE_GUIDANCE
-from jarvis.voice import (
+from kira.cli.repl import Repl, build_voice_session, run_voice
+from kira.config import VoiceConfig, load_config
+from kira.core import FakeClient
+from kira.core.prompts import VOICE_GUIDANCE
+from kira.voice import (
     LocalTranscriber,
     OpenAITranscriber,
     PrintSynthesizer,

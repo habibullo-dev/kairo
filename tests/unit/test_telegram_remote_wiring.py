@@ -13,19 +13,19 @@ from pydantic import BaseModel
 from rich.console import Console
 from tests.unit.test_telegram_remote import _TelegramHttp, _update
 
-from jarvis.cli.repl import _build_telegram_remote_control, _start_runtime_services
-from jarvis.config import load_config
-from jarvis.connectors.consent import lock_all_integrations
-from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
-from jarvis.observability.cost import load_pricing
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.projects.service import ProjectService
-from jarvis.projects.store import ProjectStore
-from jarvis.scheduler.service import TaskService
-from jarvis.scheduler.store import TaskStore
-from jarvis.tools import Tool, ToolRegistry
-from jarvis.tools.executor import ToolExecutor
+from kira.cli.repl import _build_telegram_remote_control, _start_runtime_services
+from kira.config import load_config
+from kira.connectors.consent import lock_all_integrations
+from kira.core import FakeClient, ToolCall, text_message, tool_use_message
+from kira.observability.cost import load_pricing
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.projects.service import ProjectService
+from kira.projects.store import ProjectStore
+from kira.scheduler.service import TaskService
+from kira.scheduler.store import TaskStore
+from kira.tools import Tool, ToolRegistry
+from kira.tools.executor import ToolExecutor
 
 
 class _Runner:

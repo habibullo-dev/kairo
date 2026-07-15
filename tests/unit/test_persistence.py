@@ -10,12 +10,12 @@ import aiosqlite
 import pytest
 from rich.console import Console
 
-from jarvis.cli.repl import Repl
-from jarvis.config import load_config
-from jarvis.core import FakeClient, text_message
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect, transaction
-from jarvis.persistence.migrations import (
+from kira.cli.repl import Repl
+from kira.config import load_config
+from kira.core import FakeClient, text_message
+from kira.persistence import SessionStore
+from kira.persistence.db import connect, transaction
+from kira.persistence.migrations import (
     _SCHEMA_V1,
     _SCHEMA_V2,
     _SCHEMA_V3,
@@ -23,7 +23,7 @@ from jarvis.persistence.migrations import (
     latest_version,
     migrate,
 )
-from jarvis.persistence.sessions import REFLECTABLE_KINDS, reflectable_kinds
+from kira.persistence.sessions import REFLECTABLE_KINDS, reflectable_kinds
 
 MIXED_MESSAGES = [
     {"role": "user", "content": "summarize the file"},

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from jarvis.knowledge.links import PageRef, RawLink, extract_links, resolve_target
+from kira.knowledge.links import PageRef, RawLink, extract_links, resolve_target
 
 
 def _kinds(md: str) -> list[tuple[str, str]]:

@@ -11,17 +11,17 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
-from jarvis.agents import AgentRunStore
-from jarvis.config import load_config
-from jarvis.graph import GraphStore
-from jarvis.graph.builder import rebuild
-from jarvis.orchestration import OrchestrationStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectService, ProjectStore
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.readmodels import UiServices
-from jarvis.ui.server import create_app
+import kira.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
+from kira.agents import AgentRunStore
+from kira.config import load_config
+from kira.graph import GraphStore
+from kira.graph.builder import rebuild
+from kira.orchestration import OrchestrationStore
+from kira.persistence.db import connect
+from kira.projects import ProjectService, ProjectStore
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.readmodels import UiServices
+from kira.ui.server import create_app
 
 _OPEN: list = []
 _TS = "2026-03-15T00:00:00+00:00"

@@ -136,7 +136,7 @@ def test_incremental_append_then_meta_completes_chunk(tmp_path: Path) -> None:
 async def test_run_chunk_is_a_noop_when_already_complete(tmp_path: Path) -> None:
     # An already-complete chunk returns immediately — before load_scenarios/calibration or
     # any network — so re-invoking the profile never re-runs a finished suite.
-    from jarvis.config import load_config
+    from kira.config import load_config
 
     stage = tmp_path / "stage"
     runner.write_chunk(
@@ -219,7 +219,7 @@ def test_merge_judge_valid_false_wins(tmp_path: Path) -> None:
 
 
 def test_aggregate_produces_one_history_line(tmp_path: Path) -> None:
-    from jarvis.config import load_config
+    from kira.config import load_config
 
     stage = tmp_path / "stage"
     _stage_two_chunks(stage)
@@ -239,7 +239,7 @@ def test_aggregate_produces_one_history_line(tmp_path: Path) -> None:
 
 
 def test_compare_and_cumulative_see_one_entry(tmp_path: Path) -> None:
-    from jarvis.config import load_config
+    from kira.config import load_config
 
     stage = tmp_path / "stage"
     _stage_two_chunks(stage)
@@ -256,7 +256,7 @@ def test_compare_and_cumulative_see_one_entry(tmp_path: Path) -> None:
 
 
 def test_aggregate_missing_chunk_returns_usage_error(tmp_path: Path) -> None:
-    from jarvis.config import load_config
+    from kira.config import load_config
 
     stage = tmp_path / "stage"  # nothing staged
     config = load_config(root=tmp_path, env_file=None)

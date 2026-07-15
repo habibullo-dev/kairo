@@ -10,13 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.graph import GraphStore
-from jarvis.graph.index import CostAwareEmbedder, UnpricedEmbedderError, reindex
-from jarvis.graph.review import UNINDEXED, approve
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.memory.store import MemoryStore
-from jarvis.observability.cost import load_pricing
-from jarvis.persistence.db import connect
+from kira.graph import GraphStore
+from kira.graph.index import CostAwareEmbedder, UnpricedEmbedderError, reindex
+from kira.graph.review import UNINDEXED, approve
+from kira.memory.embeddings import FakeEmbedder
+from kira.memory.store import MemoryStore
+from kira.observability.cost import load_pricing
+from kira.persistence.db import connect
 
 _OPEN: list = []
 # The REAL pricing table (has the Phase-15 Voyage rows); load_pricing() with no path is the

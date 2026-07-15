@@ -11,14 +11,14 @@ Method: full reads of the orchestration, models, routing, core-prompt, agent-ser
 
 | Surface | Mechanism | Key anchors |
 |---|---|---|
-| Main AgentLoop | single interactive loop; system prompt from `build_system(...)` | `src/jarvis/core/prompts.py:124-169`, `src/jarvis/core/agent.py:159,208-220` |
-| Ephemeral sub-agents | depth-1, scoped, doubly gated, spawned by `SubAgentService.spawn` | `src/jarvis/agents/service.py:216-296,298-465` |
-| Orchestration teams | `OrchestrationEngine` drives council→synthesis→(execution)→review→verdict over `SubAgentService.spawn` | `src/jarvis/orchestration/engine.py:499-567` |
-| Unattended jobs | same loop under `UnattendedGate` (ALLOW→DENY demotion, hard-denies) | `src/jarvis/permissions/unattended.py:110-142`, `src/jarvis/cli/jobs.py:95-116` |
+| Main AgentLoop | single interactive loop; system prompt from `build_system(...)` | `src/kira/core/prompts.py:124-169`, `src/kira/core/agent.py:159,208-220` |
+| Ephemeral sub-agents | depth-1, scoped, doubly gated, spawned by `SubAgentService.spawn` | `src/kira/agents/service.py:216-296,298-465` |
+| Orchestration teams | `OrchestrationEngine` drives council→synthesis→(execution)→review→verdict over `SubAgentService.spawn` | `src/kira/orchestration/engine.py:499-567` |
+| Unattended jobs | same loop under `UnattendedGate` (ALLOW→DENY demotion, hard-denies) | `src/kira/permissions/unattended.py:110-142`, `src/kira/cli/jobs.py:95-116` |
 
 ### 1.2 Teams: 8 templates, 21 roster slots (confirmed)
 
-`TEAM_PROFILES` at `src/jarvis/orchestration/teams.py:55-168`. Slot math: 3+3+3+3+3+3+2+1 = 21.
+`TEAM_PROFILES` at `src/kira/orchestration/teams.py:55-168`. Slot math: 3+3+3+3+3+3+2+1 = 21.
 
 | Team | Members (id → route_role) | Writer | default_workflows |
 |---|---|---|---|
@@ -35,7 +35,7 @@ Only 3 of 8 teams have a writer. `default_workflows` is UI display/defaulting on
 
 ### 1.3 Workflows: 10 templates, 2 shapes
 
-`WORKFLOWS` (`src/jarvis/orchestration/workflows.py:82-96`):
+`WORKFLOWS` (`src/kira/orchestration/workflows.py:82-96`):
 - `_analysis` = Council → Synthesis → Verdict (`workflows.py:52-63`): review_diff, security_review, ux_critique, research, release_notes, debug_eval, refactor_proposal, council_review.
 - `_building` = Council → Synthesis → Execution → Review → Verdict (`workflows.py:66-79`): plan_feature, implement.
 
@@ -43,7 +43,7 @@ Only 3 of 8 teams have a writer. `default_workflows` is UI display/defaulting on
 
 ### 1.4 Model roles: 10 registry roles (no "main" role)
 
-`ROLES` (`src/jarvis/models/roles.py:19-30`): planner, coder, reviewer, security, ux, qa, researcher, docs, judge, utility. `models.main` is a separate flat config field for the interactive chat (`config/settings.yaml:6`, `src/jarvis/config.py:105`), not a registry role.
+`ROLES` (`src/kira/models/roles.py:19-30`): planner, coder, reviewer, security, ux, qa, researcher, docs, judge, utility. `models.main` is a separate flat config field for the interactive chat (`config/settings.yaml:6`, `src/kira/config.py:105`), not a registry role.
 
 Effective routes (code defaults `roles.py:66-77` merged with `settings.yaml:13-19`):
 
@@ -142,11 +142,11 @@ Conclusion: **there is no role-specific instruction text anywhere in the runtime
 
 - `uv run pytest` — full keyless unit suite.
 - `uv run ruff check` — lint (`pyproject.toml:76-84`).
-- `uv run jarvis eval gate --suite core` — 19/19 keyless replay, $0 (`docs/evals-cost-control.md:11`).
-- `uv run jarvis eval plan --suite core [--live]` — cost preview before spend.
+- `uv run kira eval gate --suite core` — 19/19 keyless replay, $0 (`docs/evals-cost-control.md:11`).
+- `uv run kira eval plan --suite core [--live]` — cost preview before spend.
 - `uv run pytest tests/unit/test_ui_readmodels.py::test_mutation_route_closed_set` — route pin.
 - Screenshot DoD (standalone, needs `uv sync --extra browser` + playwright chromium): `uv run python tests/ui/{message,office,graph,workbench}_dod.py`.
-- Live judged gate (phase closeout, human-run, real spend): `uv run jarvis eval gate --profile live-chunked --live`.
+- Live judged gate (phase closeout, human-run, real spend): `uv run kira eval gate --profile live-chunked --live`.
 
 ---
 

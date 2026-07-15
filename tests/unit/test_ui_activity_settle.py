@@ -19,11 +19,11 @@ from pathlib import Path
 
 from rich.console import Console
 
-from jarvis.cli.repl import Repl, build_ui_app
-from jarvis.config import load_config
-from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
-from jarvis.core.execution import ExecutionContext, bind_execution_context
-from jarvis.ui.server import STATIC_DIR
+from kira.cli.repl import Repl, build_ui_app
+from kira.config import load_config
+from kira.core import FakeClient, ToolCall, text_message, tool_use_message
+from kira.core.execution import ExecutionContext, bind_execution_context
+from kira.ui.server import STATIC_DIR
 
 
 class _FakeWS:
@@ -87,7 +87,7 @@ async def test_denied_gated_turn_settles_to_idle(tmp_path: Path) -> None:
     assert session.busy is False  # Daily activity returns to idle — NOT working
 
     # and the route the status bar + Daily card both read reports the settled state
-    from jarvis.ui.server import _runner_status
+    from kira.ui.server import _runner_status
 
     assert _runner_status(app.state.runner, session)["turn_busy"] is False
 

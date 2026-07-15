@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
-from jarvis.observability.cost import Usage, load_pricing
-from jarvis.observability.ledger import CostContext, CostLedger
-from jarvis.persistence.db import connect
-from jarvis.ui.readmodels import cache_reuse_overview
+import kira.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
+from kira.observability.cost import Usage, load_pricing
+from kira.observability.ledger import CostContext, CostLedger
+from kira.persistence.db import connect
+from kira.ui.readmodels import cache_reuse_overview
 
 _OPEN: list = []
 
@@ -73,7 +73,7 @@ async def test_aggregates_and_hit_rate(tmp_path: Path) -> None:
 
 async def test_read_model_is_project_scoped(tmp_path: Path) -> None:
     ledger = await _ledger(tmp_path)
-    from jarvis.projects import ProjectStore
+    from kira.projects import ProjectStore
 
     ps = ProjectStore(ledger.db, ledger.lock)
     pid = await ps.create(name="P")

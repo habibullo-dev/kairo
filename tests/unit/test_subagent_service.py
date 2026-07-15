@@ -13,22 +13,22 @@ import asyncio
 import contextvars
 from pathlib import Path
 
-from jarvis.agents import AgentRunStore, SubAgentService
-from jarvis.agents.service import _IN_SUBAGENT
-from jarvis.config import load_config
-from jarvis.core.client import ToolCall, text_message, tool_use_message
-from jarvis.core.events import SubAgentCompleted, SubAgentEvent
-from jarvis.core.execution import (
+from kira.agents import AgentRunStore, SubAgentService
+from kira.agents.service import _IN_SUBAGENT
+from kira.config import load_config
+from kira.core.client import ToolCall, text_message, tool_use_message
+from kira.core.events import SubAgentCompleted, SubAgentEvent
+from kira.core.execution import (
     ExecutionContext,
     bind_execution_context,
     current_project_scope,
 )
-from jarvis.observability import bind_trace, clear_trace, get_trace_id
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
-from jarvis.tools import ToolContext, ToolExecutor, ToolRegistry
+from kira.observability import bind_trace, clear_trace, get_trace_id
+from kira.permissions import PermissionGate, Policy
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
+from kira.tools import ToolContext, ToolExecutor, ToolRegistry
 
 # --- fake clients ------------------------------------------------------------
 
@@ -95,7 +95,7 @@ async def _service(
     sessions = SessionStore(db, lock)
     runs = AgentRunStore(db, lock)
     registry = ToolRegistry()
-    registry.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    registry.discover("kira.tools.builtin", ToolContext(config=cfg))
     svc = SubAgentService(
         session_store=sessions,
         run_store=runs,

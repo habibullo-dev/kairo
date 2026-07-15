@@ -1,7 +1,7 @@
 [project]
-name = "jarvis"
+name = "kira"
 version = "0.1.0"
-description = "A from-scratch Jarvis-style agentic assistant"
+description = "Kira, a local-first agentic workplace"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -27,8 +27,8 @@ dependencies = [
 ]
 
 [project.scripts]
-kira = "jarvis.__main__:main"
-jarvis = "jarvis.__main__:main"
+kira = "kira.__main__:main"
+jarvis = "kira.__main__:main"
 
 [project.optional-dependencies]
 docling = [
@@ -57,7 +57,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/jarvis"]
+packages = ["src/kira"]
 
 [dependency-groups]
 dev = [
@@ -81,11 +81,11 @@ dev = [
 [tool.mypy]
 python_version = "3.13"
 files = [
-    "src/jarvis/permissions",
-    "src/jarvis/actions",
-    "src/jarvis/models/providers.py",
-    "src/jarvis/models/registry.py",
-    "src/jarvis/models/roles.py",
+    "src/kira/permissions",
+    "src/kira/actions",
+    "src/kira/models/providers.py",
+    "src/kira/models/registry.py",
+    "src/kira/models/roles.py",
 ]
 follow_imports = "skip"
 ignore_missing_imports = true

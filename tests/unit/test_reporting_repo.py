@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.reporting.repo import RepoReader, _hardened_env, _parse_log
+from kira.reporting.repo import RepoReader, _hardened_env, _parse_log
 
 _HAS_GIT = subprocess.run(["git", "--version"], capture_output=True).returncode == 0
 requires_git = pytest.mark.skipif(not _HAS_GIT, reason="git not available")

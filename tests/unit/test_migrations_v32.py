@@ -5,7 +5,7 @@ from __future__ import annotations
 import aiosqlite
 import pytest
 
-from jarvis.persistence import migrations as M
+from kira.persistence import migrations as M
 
 
 async def _columns(db: aiosqlite.Connection, table: str) -> set[str]:

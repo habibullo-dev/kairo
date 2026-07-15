@@ -20,12 +20,12 @@ from tests.evals.retrieval import (
     sweep_min_similarity,
 )
 
-from jarvis.config import load_config
-from jarvis.knowledge.service import KnowledgeService
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.memory import MemoryStore
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.persistence.db import connect
+from kira.config import load_config
+from kira.knowledge.service import KnowledgeService
+from kira.knowledge.store import KnowledgeStore
+from kira.memory import MemoryStore
+from kira.memory.embeddings import FakeEmbedder
+from kira.persistence.db import connect
 
 
 def _qr(ranked: list[str], relevant: list[str], kind: str = "normal") -> retrieval.QueryResult:

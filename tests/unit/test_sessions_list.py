@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
 
 _OPEN: list = []
 

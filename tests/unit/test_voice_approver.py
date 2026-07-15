@@ -13,10 +13,10 @@ import io
 import pytest
 from rich.console import Console
 
-from jarvis.core.client import ToolCall
-from jarvis.permissions.gate import Decision
-from jarvis.tools.base import Permission
-from jarvis.voice import (
+from kira.core.client import ToolCall
+from kira.permissions.gate import Decision
+from kira.tools.base import Permission
+from kira.voice import (
     ScriptedScreenApprover,
     TerminalScreenApprover,
     VoiceApprover,

@@ -6,7 +6,7 @@ import dataclasses
 
 import pytest
 
-from jarvis.knowledge.secrets import scan_text
+from kira.knowledge.secrets import scan_text
 
 
 def _metadata(result) -> str:

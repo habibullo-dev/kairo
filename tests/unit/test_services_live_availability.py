@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.services import ServiceRegistry
-from jarvis.services.registry import ServiceState
+from kira.services import ServiceRegistry
+from kira.services.registry import ServiceState
 
 # The four shipped "now" services: (credential env var or None, metered?)
 _NOW: dict[str, tuple[str | None, bool]] = {

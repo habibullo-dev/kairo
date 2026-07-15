@@ -27,21 +27,21 @@ import tempfile
 import threading
 from pathlib import Path
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
-from jarvis.agents import AgentRunStore
-from jarvis.config import load_config
-from jarvis.orchestration import OrchestrationStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectService, ProjectStore
-from jarvis.ui.readmodels import UiServices, office_overview
-from jarvis.ui.screenshots import (
+import kira.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
+from kira.agents import AgentRunStore
+from kira.config import load_config
+from kira.orchestration import OrchestrationStore
+from kira.persistence.db import connect
+from kira.projects import ProjectService, ProjectStore
+from kira.ui.readmodels import UiServices, office_overview
+from kira.ui.screenshots import (
     OVERLAP_PROBE_JS,
     THEMES,
     VIEWPORTS,
     analyze_overlap,
     screenshot_name,
 )
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "screenshots" / "office"  # gitignored

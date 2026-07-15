@@ -1,6 +1,6 @@
 """Static contract for the shell's async route ownership and recovery boundary."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 APP = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")

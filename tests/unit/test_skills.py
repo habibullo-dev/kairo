@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import SkillActivationConfig, SkillsConfig, load_config
-from jarvis.core.prompts import SUBAGENT_GUIDANCE, build_system
-from jarvis.skills import MemberIdentity, SkillCatalog, SkillPackError
+from kira.config import SkillActivationConfig, SkillsConfig, load_config
+from kira.core.prompts import SUBAGENT_GUIDANCE, build_system
+from kira.skills import MemberIdentity, SkillCatalog, SkillPackError
 
 _IDENTITY = MemberIdentity(
     team="backend",
@@ -86,9 +86,9 @@ Revise when source contracts change.
 
 ## Source evidence
 
-- src/jarvis/orchestration/engine.py:1
-- src/jarvis/agents/service.py:1
-- src/jarvis/core/prompts.py:1
+- src/kira/orchestration/engine.py:1
+- src/kira/agents/service.py:1
+- src/kira/core/prompts.py:1
 """
 
 

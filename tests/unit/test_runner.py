@@ -13,20 +13,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.attention import AttentionStore
-from jarvis.cli.jobs import JobRunner
-from jarvis.config import SchedulerConfig, load_config
-from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.persistence.db import connect
-from jarvis.persistence.sessions import SessionStore
-from jarvis.projects import ProjectService, ProjectStore
-from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
-from jarvis.scheduler.service import TaskService
-from jarvis.scheduler.store import TaskStore
-from jarvis.tools import Permission, ToolContext
-from jarvis.tools.executor import ToolExecutor
-from jarvis.tools.registry import ToolRegistry
+from kira.attention import AttentionStore
+from kira.cli.jobs import JobRunner
+from kira.config import SchedulerConfig, load_config
+from kira.core import FakeClient, ToolCall, text_message, tool_use_message
+from kira.permissions import PermissionGate, Policy
+from kira.persistence.db import connect
+from kira.persistence.sessions import SessionStore
+from kira.projects import ProjectService, ProjectStore
+from kira.scheduler.runner import BackgroundRunner, JobOutcome
+from kira.scheduler.service import TaskService
+from kira.scheduler.store import TaskStore
+from kira.tools import Permission, ToolContext
+from kira.tools.executor import ToolExecutor
+from kira.tools.registry import ToolRegistry
 
 UTC = dt.UTC
 START = dt.datetime(2026, 7, 6, 8, 0, tzinfo=UTC)
@@ -631,7 +631,7 @@ async def _job_runner(tmp_path: Path, client, policy: Policy | None = None) -> J
     store = SessionStore(await connect(tmp_path / "sessions.db"))
     _OPEN_DBS.append(store.db)
     registry = ToolRegistry()
-    registry.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    registry.discover("kira.tools.builtin", ToolContext(config=cfg))
     executor = ToolExecutor(
         timeout=cfg.limits.tool_timeout_seconds, max_result_chars=cfg.limits.max_tool_result_chars
     )
@@ -657,7 +657,7 @@ async def _parkable_job_runner(
     cfg = load_config(root=tmp_path, env_file=None)
     session_store = SessionStore(task_store.db, task_store.lock)
     registry = ToolRegistry()
-    registry.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    registry.discover("kira.tools.builtin", ToolContext(config=cfg))
     executor = ToolExecutor(
         timeout=cfg.limits.tool_timeout_seconds, max_result_chars=cfg.limits.max_tool_result_chars
     )

@@ -8,12 +8,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import jarvis.config as config_module
-from jarvis.cli import dream as dream_module
-from jarvis.cli import graph as graph_module
-from jarvis.persistence.instance_lock import InstanceLock
-from jarvis.persistence.migrations import latest_version
-from jarvis.persistence.reset_recovery import ResetRecoveryError
+import kira.config as config_module
+from kira.cli import dream as dream_module
+from kira.cli import graph as graph_module
+from kira.persistence.instance_lock import InstanceLock
+from kira.persistence.migrations import latest_version
+from kira.persistence.reset_recovery import ResetRecoveryError
 
 
 def _config(data: Path):

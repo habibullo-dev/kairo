@@ -10,12 +10,12 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from jarvis.config import load_config
-from jarvis.core import AgentLoop, FakeClient, build_system, text_message, tool_use_message
-from jarvis.core.client import ToolCall
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.tools import ToolContext, ToolExecutor, ToolRegistry
-from jarvis.voice import FakeTranscriber, Transcript, VoiceApprover, VoiceSession
+from kira.config import load_config
+from kira.core import AgentLoop, FakeClient, build_system, text_message, tool_use_message
+from kira.core.client import ToolCall
+from kira.permissions import PermissionGate, Policy
+from kira.tools import ToolContext, ToolExecutor, ToolRegistry
+from kira.voice import FakeTranscriber, Transcript, VoiceApprover, VoiceSession
 
 
 class _Output:
@@ -39,7 +39,7 @@ class _Output:
 def _loop(tmp_path: Path, client, approver, project=None) -> AgentLoop:
     cfg = load_config(root=tmp_path, env_file=None)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     return AgentLoop(
         client=client,
         registry=reg,
@@ -176,7 +176,7 @@ async def test_cancel_resets_state_and_reraises(tmp_path: Path) -> None:
 async def test_voice_announces_active_project_at_turn_start(tmp_path: Path) -> None:
     # A3: a voice turn announces its scope (project name, or None for global) before acting,
     # carrying ONLY the name — never content.
-    from jarvis.projects import GLOBAL, ProjectContext
+    from kira.projects import GLOBAL, ProjectContext
 
     announced: list = []
     ctx = ProjectContext(project_id=5, name="Beacon", repos=(), system_extra="x")
@@ -202,7 +202,7 @@ async def test_voice_writes_bind_to_turn_project_not_post_switch(tmp_path: Path)
     # A3: the loop snapshots the active project per turn, so a switch between turns applies
     # to the NEXT turn — a memory/tool write can't land in a project selected after the turn
     # it ran in. We assert via the system prompt the loop actually used each turn.
-    from jarvis.projects import ProjectContext
+    from kira.projects import ProjectContext
 
     systems: list[str] = []
 

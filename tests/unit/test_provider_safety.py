@@ -16,11 +16,11 @@ import asyncio
 
 import pytest
 
-from jarvis.models.providers import ProviderRegistry
-from jarvis.models.registry import ModelRegistry, RouteError
-from jarvis.orchestration import ContextBundle, OrchestrationEngine, resolve_team
-from jarvis.orchestration.context import ContextItem, Provenance
-from jarvis.orchestration.engine import ProviderContextError
+from kira.models.providers import ProviderRegistry
+from kira.models.registry import ModelRegistry, RouteError
+from kira.orchestration import ContextBundle, OrchestrationEngine, resolve_team
+from kira.orchestration.context import ContextItem, Provenance
+from kira.orchestration.engine import ProviderContextError
 
 # --- authority pins ---------------------------------------------------------
 
@@ -236,7 +236,7 @@ def test_zai_state_matrix() -> None:
 
 
 def test_zai_stays_in_catalog_and_is_authority_pinned() -> None:
-    from jarvis.models.providers import PROVIDER_CATALOG
+    from kira.models.providers import PROVIDER_CATALOG
 
     assert "zai" in PROVIDER_CATALOG  # kept in the catalog despite no live access
     assert not PROVIDER_CATALOG["zai"].trusted_authority  # worker only

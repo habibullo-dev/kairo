@@ -33,7 +33,7 @@ the prior contract wins.
 
 ### 1. The UI is an interface, not a new authority — one approval path
 
-`jarvis --ui` is a host process and peer of the REPL/voice. It drives the same `AgentLoop`
+`kira --ui` is a host process and peer of the REPL/voice. It drives the same `AgentLoop`
 through the same two public seams — the event stream out, the injected `Approver` in — and
 reaches nothing else (not the gate internals, not the tools, not the executor). The safety
 consequence is structural, identical to voice's: **there is exactly one approval path**, so

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.attention.routing import (
+from kira.attention.routing import (
     NotificationRouter,
     in_quiet_hours,
     minimized_push,
@@ -19,7 +19,7 @@ from jarvis.attention.routing import (
     notify_open_attention_item,
     route_notification,
 )
-from jarvis.config import load_config
+from kira.config import load_config
 
 
 def _route(priority, **kw):
@@ -236,7 +236,7 @@ def test_config_rejects_unknown_urgent_channel() -> None:
     # channel is refused ⇒ no accidental egress to an unsupported sink.
     from pydantic import ValidationError
 
-    from jarvis.config import AttentionConfig
+    from kira.config import AttentionConfig
 
     AttentionConfig(normal_channels=["telegram", "kakao"])  # the allowed set is fine
     with pytest.raises(ValidationError):

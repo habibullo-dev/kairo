@@ -3,15 +3,15 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-STUDIO = (ROOT / "src/jarvis/ui/static/screens/studio.js").read_text(encoding="utf-8")
-OVERVIEW = (ROOT / "src/jarvis/ui/static/screens/workspace/overview.js").read_text(encoding="utf-8")
-WORKSPACE_ARTIFACTS = (ROOT / "src/jarvis/ui/static/screens/workspace/artifacts.js").read_text(
+STUDIO = (ROOT / "src/kira/ui/static/screens/studio.js").read_text(encoding="utf-8")
+OVERVIEW = (ROOT / "src/kira/ui/static/screens/workspace/overview.js").read_text(encoding="utf-8")
+WORKSPACE_ARTIFACTS = (ROOT / "src/kira/ui/static/screens/workspace/artifacts.js").read_text(
     encoding="utf-8"
 )
-ARTIFACTS = (ROOT / "src/jarvis/ui/static/screens/artifacts.js").read_text(encoding="utf-8")
-READMODELS = (ROOT / "src/jarvis/ui/readmodels.py").read_text(encoding="utf-8")
-TASKS = (ROOT / "src/jarvis/ui/static/screens/workspace/tasks.js").read_text(encoding="utf-8")
-TASK_DRAFT = (ROOT / "src/jarvis/ui/static/ui/task-draft.js").read_text(encoding="utf-8")
+ARTIFACTS = (ROOT / "src/kira/ui/static/screens/artifacts.js").read_text(encoding="utf-8")
+READMODELS = (ROOT / "src/kira/ui/readmodels.py").read_text(encoding="utf-8")
+TASKS = (ROOT / "src/kira/ui/static/screens/workspace/tasks.js").read_text(encoding="utf-8")
+TASK_DRAFT = (ROOT / "src/kira/ui/static/ui/task-draft.js").read_text(encoding="utf-8")
 
 
 def test_orchestration_artifacts_open_the_existing_read_only_run_detail() -> None:

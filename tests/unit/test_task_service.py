@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.attention import AttentionStore
-from jarvis.config import SchedulerConfig
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
-from jarvis.scheduler.service import ScheduleError, TaskService
-from jarvis.scheduler.store import TaskStore
+from kira.attention import AttentionStore
+from kira.config import SchedulerConfig
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
+from kira.scheduler.service import ScheduleError, TaskService
+from kira.scheduler.store import TaskStore
 
 UTC = dt.UTC
 START = dt.datetime(2026, 7, 6, 8, 0, tzinfo=UTC)

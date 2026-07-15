@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pathlib
 
-_SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "jarvis"
+_SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "kira"
 
 #: Gmail-specific send surfaces. Deliberately narrow so it can't false-positive on unrelated
 #: "send" identifiers (send_notification, send_telegram_message, ws.send_json, ...).
@@ -34,7 +34,7 @@ def test_no_gmail_send_surface_in_src() -> None:
 
 def test_gmail_compose_is_the_only_gmail_write_scope() -> None:
     # The compose scope (drafts.create/update) is allowed; the send scope is not.
-    from jarvis.connectors.google import GOOGLE_SCOPES
+    from kira.connectors.google import GOOGLE_SCOPES
 
     assert any(s.endswith("gmail.compose") for s in GOOGLE_SCOPES)
     assert not any(s.endswith("gmail.send") for s in GOOGLE_SCOPES)
@@ -44,7 +44,7 @@ def test_gmail_compose_is_the_only_gmail_write_scope() -> None:
 def test_gmail_adapter_surface_has_no_send() -> None:
     # Re-asserted as the draft write surface grows (Phase 12 adds update_draft): the gmail
     # adapter exposes ONLY draft writes, and nothing whose name suggests a send.
-    from jarvis.connectors.google import gmail
+    from kira.connectors.google import gmail
 
     public = [n for n in dir(gmail) if not n.startswith("_")]
     assert "create_draft" in public and "update_draft" in public

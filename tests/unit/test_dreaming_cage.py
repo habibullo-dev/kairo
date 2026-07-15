@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.attention import (
+from kira.attention import (
     DREAMING_TOOLS,
     FORBIDDEN_TOOLS,
     AttentionState,
@@ -23,9 +23,9 @@ from jarvis.attention import (
     build_dreaming_registry,
     emit_budget_halt_alert,
 )
-from jarvis.config import load_config
-from jarvis.persistence.db import connect
-from jarvis.tools import ToolContext, ToolRegistry
+from kira.config import load_config
+from kira.persistence.db import connect
+from kira.tools import ToolContext, ToolRegistry
 
 
 def _context(tmp_path: Path) -> ToolContext:
@@ -62,7 +62,7 @@ def test_assert_caged_rejects_a_smuggled_forbidden_tool(tmp_path: Path) -> None:
     # If a forbidden tool were somehow registered, assert_caged must catch it (the belt).
     ctx = _context(tmp_path)
     full = ToolRegistry()
-    full.discover("jarvis.tools.builtin", ctx)
+    full.discover("kira.tools.builtin", ctx)
     reg = build_dreaming_registry(ctx)
     smuggled = full.get("run_shell")
     if smuggled is not None:  # register it directly, bypassing build_dreaming_registry
@@ -86,17 +86,17 @@ def test_zero_cap_disables_dreaming() -> None:
 
 
 def test_dreaming_model_policy_haiku_default_sonnet_escalation() -> None:
-    from jarvis.attention import (
+    from kira.attention import (
         DREAMING_DEFAULT_MODEL,
         DREAMING_ESCALATION_MODEL,
         dreaming_model,
     )
-    from jarvis.routing.policy import provider_for_model
+    from kira.routing.policy import provider_for_model
 
     assert dreaming_model(escalate=False) == DREAMING_DEFAULT_MODEL == "claude-haiku-4-5-20251001"
     assert dreaming_model(escalate=True) == DREAMING_ESCALATION_MODEL == "claude-sonnet-5"
     # SAFETY PIN: dreaming reads the user's private data, so BOTH tiers must be private_ok.
-    from jarvis.models.providers import provider_spec
+    from kira.models.providers import provider_spec
 
     for model in (DREAMING_DEFAULT_MODEL, DREAMING_ESCALATION_MODEL):
         spec = provider_spec(provider_for_model(model))

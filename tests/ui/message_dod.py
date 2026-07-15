@@ -16,8 +16,8 @@ import tempfile
 import threading
 from pathlib import Path
 
-from jarvis.ui.screenshots import OVERLAP_PROBE_JS, analyze_overlap
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.screenshots import OVERLAP_PROBE_JS, analyze_overlap
+from kira.ui.server import STATIC_DIR
 
 
 class _QuietHandler(http.server.SimpleHTTPRequestHandler):

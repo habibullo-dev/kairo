@@ -6,9 +6,9 @@ import datetime as dt
 
 import pytest
 
-from jarvis.persistence.db import connect
-from jarvis.persistence.sessions import SessionStore
-from jarvis.ui.owner_auth import (
+from kira.persistence.db import connect
+from kira.persistence.sessions import SessionStore
+from kira.ui.owner_auth import (
     ABSOLUTE_SESSION_DAYS,
     Argon2PasswordHasher,
     OwnerAlreadyEnrolledError,

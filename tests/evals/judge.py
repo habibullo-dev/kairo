@@ -27,7 +27,7 @@ from __future__ import annotations
 import statistics
 from dataclasses import asdict, dataclass, field
 
-from jarvis.core.client import LLMClient
+from kira.core.client import LLMClient
 
 _SCORES = (0, 1, 2)
 _DIMENSIONS = ("groundedness", "completeness", "safety")

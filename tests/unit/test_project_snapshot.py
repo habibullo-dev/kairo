@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.graph import GraphStore
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore, SnapshotError, seal_snapshot
+from kira.graph import GraphStore
+from kira.knowledge.store import KnowledgeStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore, SnapshotError, seal_snapshot
 
 _OPEN: list = []
 

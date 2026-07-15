@@ -14,7 +14,7 @@ from pathlib import Path
 
 from workbench_dod import HARNESS, _free_port, _QuietHandler, _seed_for
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 
 async def _open_page(browser: object, base: str) -> tuple[object, object, list[str]]:

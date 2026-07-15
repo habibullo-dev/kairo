@@ -7,7 +7,7 @@ or navigates. Built entirely with el()/textContent so a project name/label can't
 
 from __future__ import annotations
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 PROJECTS_JS = (STATIC_DIR / "screens" / "projects.js").read_text(encoding="utf-8")
 

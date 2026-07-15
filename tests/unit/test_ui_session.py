@@ -13,10 +13,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from jarvis.config import load_config
-from jarvis.core import AgentLoop, FakeClient, build_system, text_message, tool_use_message
-from jarvis.core.client import ToolCall
-from jarvis.core.events import (
+from kira.config import load_config
+from kira.core import AgentLoop, FakeClient, build_system, text_message, tool_use_message
+from kira.core.client import ToolCall
+from kira.core.events import (
     SubAgentCompleted,
     SubAgentEvent,
     TextDelta,
@@ -25,14 +25,14 @@ from jarvis.core.events import (
     ToolStarted,
     TurnCompleted,
 )
-from jarvis.core.execution import ExecutionContext
-from jarvis.observability.cost import Usage
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.connections import ConnectionManager
-from jarvis.ui.server import create_app
-from jarvis.ui.session import EVENT_SCHEMA_VERSION, UiSession, serialize_event
+from kira.core.execution import ExecutionContext
+from kira.observability.cost import Usage
+from kira.permissions import PermissionGate, Policy
+from kira.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.connections import ConnectionManager
+from kira.ui.server import create_app
+from kira.ui.session import EVENT_SCHEMA_VERSION, UiSession, serialize_event
 
 # --- serialize_event: every type -> versioned JSON --------------------------
 
@@ -84,7 +84,7 @@ def test_serialize_all_event_types() -> None:
 def _loop(tmp_path: Path, client, approver) -> AgentLoop:
     cfg = load_config(root=tmp_path, env_file=None)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     return AgentLoop(
         client=client,
         registry=reg,

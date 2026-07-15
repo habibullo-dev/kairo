@@ -12,14 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import load_config
-from jarvis.core import AgentLoop, build_system
-from jarvis.core.client import ModelResponse
-from jarvis.observability.cost import Usage
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.persistence.db import connect
-from jarvis.projects import GLOBAL, ProjectService, ProjectStore, build_project_context
-from jarvis.tools import ToolContext, ToolExecutor, ToolRegistry
+from kira.config import load_config
+from kira.core import AgentLoop, build_system
+from kira.core.client import ModelResponse
+from kira.observability.cost import Usage
+from kira.permissions import PermissionGate, Policy
+from kira.persistence.db import connect
+from kira.projects import GLOBAL, ProjectService, ProjectStore, build_project_context
+from kira.tools import ToolContext, ToolExecutor, ToolRegistry
 
 _OPEN: list = []
 
@@ -57,7 +57,7 @@ async def _service(tmp_path: Path) -> ProjectService:
 def _loop(tmp_path: Path, client, project) -> AgentLoop:
     cfg = load_config(root=tmp_path, env_file=None)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     return AgentLoop(
         client=client,
         registry=reg,
@@ -78,7 +78,7 @@ def test_build_context_global_is_empty() -> None:
 
 
 def test_build_context_frames_as_data(tmp_path: Path) -> None:
-    from jarvis.projects.store import Project
+    from kira.projects.store import Project
 
     p = Project(
         id=3,

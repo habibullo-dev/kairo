@@ -5,7 +5,7 @@ are stable. Structural (keyless) reads of the shipped JS."""
 
 from __future__ import annotations
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 WS_JS = (STATIC_DIR / "screens" / "workspace.js").read_text(encoding="utf-8")
 GRAPH_JS = (STATIC_DIR / "screens" / "workspace" / "graph.js").read_text(encoding="utf-8")

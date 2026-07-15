@@ -44,7 +44,7 @@ paths, no new unattended behavior.
 ## Architecture (new pieces in bold)
 
 ```
-src/jarvis/
+src/kira/
 ├── ui/                          # the workstation (optional `ui` extra: fastapi + uvicorn)
 │   ├── **server.py**            # app factory, 127.0.0.1-only, auth middleware, CSP
 │   ├── **auth.py**              # per-launch token, cookie exchange, Host/Origin guards
@@ -57,7 +57,7 @@ src/jarvis/
 │   └── **approvals.py**         # extracted persist-always rules (REPL + UI share one truth)
 └── cli/repl.py                  # _persist_always → delegates to permissions/approvals.py
 
-jarvis --ui                       # host process, peer of `jarvis` (REPL) and `jarvis --voice`
+kira --ui                       # host process, peer of `kira` (REPL) and `kira --voice`
 ```
 
 Existing seams reused, unchanged: `AgentLoop.run_turn(on_event)` and its typed events
@@ -72,7 +72,7 @@ protocol; the REPL's turn lock shared with `BackgroundRunner`;
 
 ### D1 — Process & composition model: a host, not an attachment
 
-`jarvis --ui` is a **host process** exactly like `jarvis --voice`: it opens the database,
+`kira --ui` is a **host process** exactly like `kira --voice`: it opens the database,
 composes the same collaborators via the same helpers the REPL uses, and serves until
 shutdown (with the REPL's shutdown discipline — runner stopped, in-flight job finished,
 reflection on exit). SQLite's single-connection/one-write-lock design means **one host at
@@ -316,12 +316,12 @@ surfaces before capability**: auth (2) and approvals/Gate (3) land before turns 
 8. **Frontend advanced screens + Debug Mode.** Vault/Tasks/Memory/Hub/Lab/Meetings/Trace;
    Debug toggle. *Tests*: **Debug-reveals-never-enables** (route/capability parity);
    review/cancel/forget through the real endpoints (integration, keyless).
-9. **CLI wiring + shutdown + docs.** `jarvis --ui` (prints tokened URL once; `ui.enabled`
+9. **CLI wiring + shutdown + docs.** `kira --ui` (prints tokened URL once; `ui.enabled`
    gate mirrors `--voice`); REPL-parity graceful shutdown; README + architecture.md;
    settings comments. *Tests*: disabled path prints hint and touches nothing; composition
    test (approver is `UIApprover`, lock shared) mirroring `test_voice_cli.py`.
 10. **No-regression certification (LIVE, cheap).** Full `pytest` + `ruff`; live gate via
-    `jarvis eval gate --profile live-chunked --no-judge --compare 6ab6995` — **all 36
+    `kira eval gate --profile live-chunked --no-judge --compare 6ab6995` — **all 36
     scenarios PASS→PASS**; one history line; short note appended to the baseline doc.
 11. **Live demo verification ritual + learning notes.** Documented walkthrough against the
     real server: risky ask → Gate approve (audit verified); voice push-to-talk →
@@ -384,7 +384,7 @@ surfaces before capability**: auth (2) and approvals/Gate (3) land before turns 
 Executed against the real server + real model at commit `0a9a023` (workstation UI on
 `127.0.0.1:8787`):
 
-- **Server boots + auth flow (real HTTP).** `jarvis --ui` prints the tokened loopback URL;
+- **Server boots + auth flow (real HTTP).** `kira --ui` prints the tokened loopback URL;
   `GET /api/health` → `{"status":"ok","app":"kairo"}`; `GET /?token=…` → `303 → /` with an
   `HttpOnly; SameSite=Strict` session cookie (clean URL, no token in history).
 - **Gate approve/deny + audit (real model, deterministic in-loop harness).** A real

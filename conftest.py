@@ -1,7 +1,7 @@
 """Pytest root conftest.
 
 Puts the repo root on ``sys.path`` so tests can import the eval infrastructure at
-``tests.evals.*`` (a namespace package) alongside the pip-installed ``jarvis``
+``tests.evals.*`` (a namespace package) alongside the pip-installed ``kira``
 package. The eval modules live under ``tests/`` — not shipped in ``src/`` — because
 they are test infrastructure, and the runner is invoked as ``python -m
 tests.evals.runner``.

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.persistence.db import connect
-from jarvis.projects import Project, ProjectStore, slugify
+from kira.persistence.db import connect
+from kira.projects import Project, ProjectStore, slugify
 
 _OPEN: list = []
 

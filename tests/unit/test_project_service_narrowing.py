@@ -13,16 +13,16 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
-from jarvis.config import load_config
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectService, ProjectStore
-from jarvis.projects.context import ProjectContext
-from jarvis.services.exa import ExaSearchTool
-from jarvis.tools.base import ToolContext
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.orchestration import OrchestrationController
-from jarvis.ui.server import create_app
+import kira.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
+from kira.config import load_config
+from kira.persistence.db import connect
+from kira.projects import ProjectService, ProjectStore
+from kira.projects.context import ProjectContext
+from kira.services.exa import ExaSearchTool
+from kira.tools.base import ToolContext
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.orchestration import OrchestrationController
+from kira.ui.server import create_app
 
 _OPEN: list = []
 

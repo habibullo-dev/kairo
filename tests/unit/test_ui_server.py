@@ -15,15 +15,15 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from jarvis.config import load_config
-from jarvis.ui.auth import (
+from kira.config import load_config
+from kira.ui.auth import (
     DEFAULT_SESSION_TTL_SECONDS,
     LEGACY_SESSION_COOKIE,
     SESSION_COOKIE,
     AuthManager,
 )
-from jarvis.ui.connections import ConnectionManager
-from jarvis.ui.server import _handle_ws_message, create_app
+from kira.ui.connections import ConnectionManager
+from kira.ui.server import _handle_ws_message, create_app
 
 TOKEN = "tok-GOOD-canary"
 

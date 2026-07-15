@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 MEETINGS_JS = (STATIC_DIR / "screens" / "meetings.js").read_text(encoding="utf-8")
 APP_JS = (STATIC_DIR / "app.js").read_text(encoding="utf-8")

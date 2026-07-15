@@ -1,6 +1,6 @@
 """All HTML-interpolating screens use the shared text escaper."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 
 def test_no_screen_keeps_a_local_escaper_or_imports_one_from_vault() -> None:

@@ -9,22 +9,22 @@ from types import SimpleNamespace
 
 import httpx
 
-from jarvis.config import load_config
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectService, ProjectStore
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.connections import ConnectionManager
-from jarvis.ui.owner_auth import Argon2PasswordHasher, OwnerAuthService
-from jarvis.ui.server import (
+from kira.config import load_config
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.projects import ProjectService, ProjectStore
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.connections import ConnectionManager
+from kira.ui.owner_auth import Argon2PasswordHasher, OwnerAuthService
+from kira.ui.server import (
     EXPECTED_CONTEXT_REVISION_HEADER,
     EXPECTED_PROJECT_HEADER,
     EXPECTED_SESSION_HEADER,
     WORKSPACE_HEADER,
     create_app,
 )
-from jarvis.ui.session import UiSession
-from jarvis.ui.workspaces import UiWorkspaceRegistry
+from kira.ui.session import UiSession
+from kira.ui.workspaces import UiWorkspaceRegistry
 
 PASSWORD = "A unique owner passphrase 2026!"
 ORIGIN = {"origin": "http://127.0.0.1"}

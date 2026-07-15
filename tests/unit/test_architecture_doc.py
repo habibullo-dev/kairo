@@ -2,46 +2,46 @@
 
 import re
 
-from jarvis import __version__
-from jarvis.attention.builders import JOBS
-from jarvis.attention.dreaming import DREAMING_TOOLS
-from jarvis.attention.readmodel import attention_queue
-from jarvis.cli.reset import CONFIRMATION_PHRASE
-from jarvis.config import (
+from kira import __version__
+from kira.attention.builders import JOBS
+from kira.attention.dreaming import DREAMING_TOOLS
+from kira.attention.readmodel import attention_queue
+from kira.cli.reset import CONFIRMATION_PHRASE
+from kira.config import (
     ChatConfig,
     LoggingConfig,
     ProjectIntelligenceConfig,
     TelegramRemoteControlConfig,
     TelegramRemoteOperatorConfig,
 )
-from jarvis.models.providers import PROVIDER_CATALOG, TRUSTED_AUTHORITY_PROVIDERS
-from jarvis.models.registry import ModelRegistry
-from jarvis.models.roles import (
+from kira.models.providers import PROVIDER_CATALOG, TRUSTED_AUTHORITY_PROVIDERS
+from kira.models.registry import ModelRegistry
+from kira.models.roles import (
     DEFAULT_ROUTES,
     FINAL_AUTHORITY_ROLES,
     PRIVATE_CONTEXT_ROLES,
     TOOL_CAPABLE_ROLES,
 )
-from jarvis.observability.logging import CANONICAL_LOG_PREFIX, LEGACY_LOG_PREFIXES
-from jarvis.permissions.approvals import NEVER_PERSIST
-from jarvis.permissions.modes import Mode, ModeState
-from jarvis.permissions.unattended import HARD_DENY
-from jarvis.persistence import backup as backup_module
-from jarvis.persistence.database_identity import DATABASE_FILENAME, LEGACY_DATABASE_FILENAME
-from jarvis.persistence.migrations import latest_version
-from jarvis.persistence.sessions import REFLECTABLE_KINDS
-from jarvis.remote.operator import RemoteLiveSearchTool, RemoteProposalTool
-from jarvis.routing.policy import ALL_TIERS, SAFE_DEFAULT, RoutingMode
-from jarvis.routing.router import RoutingState
-from jarvis.ui.owner_auth import (
+from kira.observability.logging import CANONICAL_LOG_PREFIX, LEGACY_LOG_PREFIXES
+from kira.permissions.approvals import NEVER_PERSIST
+from kira.permissions.modes import Mode, ModeState
+from kira.permissions.unattended import HARD_DENY
+from kira.persistence import backup as backup_module
+from kira.persistence.database_identity import DATABASE_FILENAME, LEGACY_DATABASE_FILENAME
+from kira.persistence.migrations import latest_version
+from kira.persistence.sessions import REFLECTABLE_KINDS
+from kira.remote.operator import RemoteLiveSearchTool, RemoteProposalTool
+from kira.routing.policy import ALL_TIERS, SAFE_DEFAULT, RoutingMode
+from kira.routing.router import RoutingState
+from kira.ui.owner_auth import (
     ABSOLUTE_SESSION_DAYS,
     AUTH_GRANT_MINUTES,
     IDLE_SESSION_DAYS,
     SESSION_TOUCH_HOURS,
     STEP_UP_MINUTES,
 )
-from jarvis.ui.server import STATIC_DIR
-from jarvis.ui.state import ALLOWED_MODEL_IDS
+from kira.ui.server import STATIC_DIR
+from kira.ui.state import ALLOWED_MODEL_IDS
 
 REPOSITORY_ROOT = STATIC_DIR.parents[3]
 ARCHITECTURE_PATH = REPOSITORY_ROOT / "docs" / "architecture.md"
@@ -88,12 +88,15 @@ def test_architecture_reports_the_current_kira_baseline() -> None:
 
 
 def test_architecture_keeps_deliberate_compatibility_identity_explicit() -> None:
-    assert "lowercase `jarvis` import namespace" in NORMALIZED
-    assert "`jarvis/paths.py`" in ARCHITECTURE
+    canonical_identity = (
+        "canonical import namespace, product, and CLI identity are all Kira / `kira`"
+    )
+    assert canonical_identity in NORMALIZED
+    assert "`kira/paths.py`" in ARCHITECTURE
     assert f"data/{LEGACY_DATABASE_FILENAME}" in ARCHITECTURE
     assert "`jarvis-YYYY-MM-DD.jsonl`" in ARCHITECTURE
     assert "leave a small compatibility guard" in NORMALIZED
-    assert len(re.findall(r"\bjarvis\b", ARCHITECTURE, flags=re.IGNORECASE)) == 4
+    assert len(re.findall(r"\bjarvis\b", ARCHITECTURE, flags=re.IGNORECASE)) == 2
 
 
 def test_architecture_pins_current_authority_and_session_boundaries() -> None:

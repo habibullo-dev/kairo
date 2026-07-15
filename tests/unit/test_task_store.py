@@ -7,8 +7,8 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from jarvis.persistence.db import connect
-from jarvis.scheduler.store import ParkedContinuation, TaskAdvance, TaskStore
+from kira.persistence.db import connect
+from kira.scheduler.store import ParkedContinuation, TaskAdvance, TaskStore
 
 T0 = "2026-07-06T09:00:00+00:00"
 T1 = "2026-07-06T10:00:00+00:00"
@@ -183,7 +183,7 @@ async def test_parked_run_is_coalesced_restart_safe_and_claimed_once(tmp_path: P
 async def test_pending_approval_count_uses_only_durable_pending_rows(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     try:
-        from jarvis.projects import ProjectStore
+        from kira.projects import ProjectStore
 
         projects = ProjectStore(store.db, store.lock)
         alpha = await projects.create(name="Alpha")

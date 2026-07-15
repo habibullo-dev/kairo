@@ -16,10 +16,10 @@ from pathlib import Path
 
 import httpx
 
-from jarvis.connectors.google import gmail
-from jarvis.connectors.google.client import GoogleClient
-from jarvis.connectors.oauth import OAuthProvider
-from jarvis.connectors.tokens import TokenState, TokenStore
+from kira.connectors.google import gmail
+from kira.connectors.google.client import GoogleClient
+from kira.connectors.oauth import OAuthProvider
+from kira.connectors.tokens import TokenState, TokenStore
 
 FIXED = _dt.datetime(2026, 1, 1, 12, 0, 0, tzinfo=_dt.UTC)
 _P = OAuthProvider(

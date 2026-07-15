@@ -7,7 +7,7 @@ scope; the browser must never select a project in the request body.
 
 from __future__ import annotations
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 DRAFT = (STATIC_DIR / "ui" / "memory-draft.js").read_text(encoding="utf-8")
 GLOBAL_MEMORY = (STATIC_DIR / "screens" / "memory.js").read_text(encoding="utf-8")

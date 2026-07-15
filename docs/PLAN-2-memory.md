@@ -152,7 +152,7 @@ Same discipline as Milestone 1: each task ends green (ruff + pytest), commits, a
 
 1. `uv run pytest` — all green, keyless (FakeEmbedder + FakeClient throughout).
 2. `uv run ruff check` / `format --check` — clean.
-3. Live: `uv run jarvis` → "remember that my favorite editor is Neovim" → exit (watch `reflected:` line) → fresh `uv run jarvis` → "what's my favorite editor?" → answered from memory.
+3. Live: `uv run kira` → "remember that my favorite editor is Neovim" → exit (watch `reflected:` line) → fresh `uv run kira` → "what's my favorite editor?" → answered from memory.
 4. `uv run python tests/evals/runner.py` — original 3 scenarios still pass + memory scenarios 3/3.
 5. Compaction smoke: temporarily lower `context_token_budget`, run a long multi-tool session past it; the turn completes, the summary appears in the audit log, `--resume` restores the same summary, and the saved transcript is the full uncompacted history.
 

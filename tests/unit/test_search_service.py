@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.memory.store import MemoryStore
-from jarvis.persistence.artifacts import ArtifactStore
-from jarvis.persistence.db import connect
-from jarvis.persistence.sessions import SessionStore
-from jarvis.projects.store import ProjectStore
-from jarvis.search import search
+from kira.memory.store import MemoryStore
+from kira.persistence.artifacts import ArtifactStore
+from kira.persistence.db import connect
+from kira.persistence.sessions import SessionStore
+from kira.projects.store import ProjectStore
+from kira.search import search
 
 _OPEN: list = []
 _EMB = [1.0, 2.0, 3.0]

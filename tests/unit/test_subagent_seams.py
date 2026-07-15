@@ -15,16 +15,16 @@ import io
 from pydantic import BaseModel
 from rich.console import Console
 
-from jarvis.cli.render import ConsoleRenderer
-from jarvis.core.events import (
+from kira.cli.render import ConsoleRenderer
+from kira.core.events import (
     Event,
     SubAgentCompleted,
     SubAgentEvent,
     ToolDecision,
     ToolStarted,
 )
-from jarvis.observability.cost import Usage
-from jarvis.tools import (
+from kira.observability.cost import Usage
+from kira.tools import (
     DEFAULT_TIMEOUT,
     Permission,
     ScopedRegistry,

@@ -11,16 +11,16 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
-from jarvis.config import Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets
-from jarvis.core import AgentLoop, FakeClient, ToolCall, text_message, tool_use_message
-from jarvis.permissions.gate import Decision, PermissionGate
-from jarvis.permissions.policy import Policy
-from jarvis.services.firecrawl import FirecrawlScrapeTool
-from jarvis.tools import Permission
-from jarvis.tools.base import Tool, ToolContext
-from jarvis.tools.executor import ToolExecutor
-from jarvis.tools.registry import ToolRegistry
+import kira.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
+from kira.config import Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets
+from kira.core import AgentLoop, FakeClient, ToolCall, text_message, tool_use_message
+from kira.permissions.gate import Decision, PermissionGate
+from kira.permissions.policy import Policy
+from kira.services.firecrawl import FirecrawlScrapeTool
+from kira.tools import Permission
+from kira.tools.base import Tool, ToolContext
+from kira.tools.executor import ToolExecutor
+from kira.tools.registry import ToolRegistry
 
 
 @pytest.fixture(autouse=True)

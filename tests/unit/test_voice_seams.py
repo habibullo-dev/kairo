@@ -4,8 +4,8 @@ and the voice-mode system prompt. Keyless; nothing here does audio or network.
 
 from __future__ import annotations
 
-from jarvis.core.prompts import VOICE_GUIDANCE, build_system
-from jarvis.voice import (
+from kira.core.prompts import VOICE_GUIDANCE, build_system
+from kira.voice import (
     FakeSynthesizer,
     FakeTranscriber,
     STTProvider,

@@ -12,14 +12,14 @@ from typing import Any
 
 import pytest
 
-import jarvis.config as config_module
-import jarvis.persistence.backup as backup_module
-from jarvis.cli.backup import backup_cli
-from jarvis.config import ConfigError
-from jarvis.persistence.backup import BackupError, create_backup, verify_backup
-from jarvis.persistence.db import connect
-from jarvis.persistence.instance_lock import ResetBarrier
-from jarvis.persistence.migrations import latest_version
+import kira.config as config_module
+import kira.persistence.backup as backup_module
+from kira.cli.backup import backup_cli
+from kira.config import ConfigError
+from kira.persistence.backup import BackupError, create_backup, verify_backup
+from kira.persistence.db import connect
+from kira.persistence.instance_lock import ResetBarrier
+from kira.persistence.migrations import latest_version
 
 EXCLUDED_PATTERNS = [
     ".env",
@@ -714,7 +714,7 @@ def test_backup_create_barrier_contention_prevents_data_directory_creation(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from jarvis.config import load_config
+    from kira.config import load_config
 
     config = load_config(root=tmp_path, env_file=None)
     monkeypatch.setattr(config_module, "load_config", lambda **_kwargs: config)

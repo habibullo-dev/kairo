@@ -12,11 +12,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.config import load_config
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectService, ProjectStore
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.server import create_app
+from kira.config import load_config
+from kira.persistence.db import connect
+from kira.projects import ProjectService, ProjectStore
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.server import create_app
 
 _OPEN: list = []
 

@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 
-from jarvis.config import TelegramRemoteControlConfig, TelegramRemoteOperatorConfig
+from kira.config import TelegramRemoteControlConfig, TelegramRemoteOperatorConfig
 
 ROOT = Path(__file__).resolve().parents[2]
 DOC = (ROOT / "docs" / "REMOTE-OPERATOR.md").read_text(encoding="utf-8")

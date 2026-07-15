@@ -18,24 +18,24 @@ import asyncio
 import json
 from pathlib import Path
 
-# `jarvis.core` is imported first (below) to resolve a pre-existing ledger<->core.context import
+# `kira.core` is imported first (below) to resolve a pre-existing ledger<->core.context import
 # cycle that only bites when this file is collected in isolation — the app always imports a core
 # module before the ledger.
-import jarvis.core  # noqa: F401
-from jarvis.config import load_config
-from jarvis.services import exclusions, tooling
-from jarvis.services.catalog import SERVICE_CATALOG, OutputTrust
-from jarvis.services.gitleaks import GitleaksScanTool
-from jarvis.services.gitleaks import parse_findings as gitleaks_parse
-from jarvis.services.playwright_local import (
+import kira.core  # noqa: F401
+from kira.config import load_config
+from kira.services import exclusions, tooling
+from kira.services.catalog import SERVICE_CATALOG, OutputTrust
+from kira.services.gitleaks import GitleaksScanTool
+from kira.services.gitleaks import parse_findings as gitleaks_parse
+from kira.services.playwright_local import (
     INSPECT_VERBS,
     PlaywrightInspectTool,
     set_driver,
     url_is_localhost,
 )
-from jarvis.services.semgrep import SemgrepScanTool
-from jarvis.services.semgrep import parse_findings as semgrep_parse
-from jarvis.tools.base import Permission, ToolContext
+from kira.services.semgrep import SemgrepScanTool
+from kira.services.semgrep import parse_findings as semgrep_parse
+from kira.tools.base import Permission, ToolContext
 
 
 def _ctx(tmp_path: Path, *, enabled=("semgrep", "gitleaks", "playwright_local")) -> ToolContext:
@@ -151,7 +151,7 @@ async def test_semgrep_output_is_framed_untrusted(tmp_path: Path, monkeypatch) -
         return tooling.CliResult(returncode=1, stdout=json.dumps({"results": []}), stderr="")
 
     monkeypatch.setattr(tooling, "run_cli", fake_run)
-    monkeypatch.setattr("jarvis.services.semgrep.run_cli", fake_run)
+    monkeypatch.setattr("kira.services.semgrep.run_cli", fake_run)
     tool = SemgrepScanTool(_ctx(tmp_path))
     out = await tool.run(tool.Params(path="."))
     assert not out.is_error
@@ -191,7 +191,7 @@ async def test_playwright_refuses_non_localhost(tmp_path: Path) -> None:
 
 
 async def test_playwright_inspect_runs_via_injected_driver(tmp_path: Path) -> None:
-    from jarvis.services.playwright_local import _NotInstalledDriver
+    from kira.services.playwright_local import _NotInstalledDriver
 
     class FakeDriver:
         async def inspect(self, verb, url, selector):
@@ -210,9 +210,9 @@ async def test_playwright_inspect_runs_via_injected_driver(tmp_path: Path) -> No
 
 
 async def test_service_call_is_ledgered(tmp_path: Path) -> None:
-    from jarvis.observability.ledger import CostContext, ServiceLedger, cost_context
-    from jarvis.persistence.db import connect
-    from jarvis.projects import ProjectStore
+    from kira.observability.ledger import CostContext, ServiceLedger, cost_context
+    from kira.persistence.db import connect
+    from kira.projects import ProjectStore
 
     db = await connect(tmp_path / "l.db")
     lock = asyncio.Lock()
@@ -224,7 +224,7 @@ async def test_service_call_is_ledgered(tmp_path: Path) -> None:
     def fake_run(argv, *, cwd, timeout=120.0):
         return tooling.CliResult(returncode=0, stdout="[]", stderr="")
 
-    import jarvis.services.gitleaks as gl
+    import kira.services.gitleaks as gl
 
     gl.run_cli = fake_run  # type: ignore[assignment]
     tool = GitleaksScanTool(ctx)

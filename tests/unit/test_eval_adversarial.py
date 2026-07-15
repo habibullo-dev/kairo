@@ -10,9 +10,9 @@ import shutil
 
 from tests.evals import recorder, runner
 
-from jarvis.core import FakeClient, ToolCall, text_message, tool_use_message
-from jarvis.permissions.gate import Decision
-from jarvis.tools import Permission
+from kira.core import FakeClient, ToolCall, text_message, tool_use_message
+from kira.permissions.gate import Decision
+from kira.tools import Permission
 
 ADV = runner.load_scenarios("adversarial")
 PROBES = [s for s in runner.load_scenarios("core") if s.name.startswith("underquery_")]
@@ -289,7 +289,7 @@ def test_child_report_is_stripped_before_reflection() -> None:
     # _strip_tool_results removes ALL tool_result bodies, so a poisoned child report can't
     # launder into long-term memory (the second delegation->memory path, after the
     # subagent-session exclusion pinned in test_persistence).
-    from jarvis.memory.reflection import _strip_tool_results
+    from kira.memory.reflection import _strip_tool_results
 
     transcript = [
         {"role": "user", "content": "delegate research"},

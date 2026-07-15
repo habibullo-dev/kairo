@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.actions.preview import build_preview
-from jarvis.actions.requests import (
+from kira.actions.preview import build_preview
+from kira.actions.requests import (
     CalendarCancelRequest,
     CalendarCreateRequest,
     CalendarUpdateRequest,

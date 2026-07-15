@@ -3,7 +3,7 @@
 *Plan-of-record. Approved by Habib 2026-07-10. Basis: `docs/ROADMAP-12-16-execution.md` §Phase 16,
 bound to the post-15.6 substrate (HEAD `7aabcfc`, migrations v14, mutation pin 44, suite 2010,
 core gate 19/19 $0). Discipline: per-task commits with EXPLICIT paths (never `git add -A`); keyless
-tests per task; full suite + `ruff check` + `uv run jarvis eval gate --suite core` ($0 replay) green
+tests per task; full suite + `ruff check` + `uv run kira eval gate --suite core` ($0 replay) green
 each task; trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`. Numbering:
 migration **v15**, ADR-**0024**, mutation-route closed set **44 → 45** (one new route). Never commit
 `docs/PLAN.md` or `docs/PLAN-7-voice-consent-checkpoint.md`.*
@@ -72,7 +72,7 @@ or high-priority personal decisions. Model/pricing/provider uncertain ⇒ fail c
    deterministic collectors + one summarize each (digest pattern); model policy above; golden-file
    tests on fixtures.
 7. **Job definitions + chunking** — each builder is one ≤10-min chunk; DEFINED but NOT scheduled;
-   manual `jarvis dream run <job>` for attended testing only.
+   manual `kira dream run <job>` for attended testing only.
 8. **Adversarial evals** — cage reachability per forbidden tool; injected reviewed-content cannot
    escalate a proposal into an action; budget-halt; routing minimization; cross-project isolation;
    self-injection quarantine.

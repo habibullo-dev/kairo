@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from jarvis.intelligence import build_report_draft
-from jarvis.orchestration.store import OrchestrationRun
-from jarvis.projects import ProjectSnapshot, SnapshotSource
+from kira.intelligence import build_report_draft
+from kira.orchestration.store import OrchestrationRun
+from kira.projects import ProjectSnapshot, SnapshotSource
 
 
 def _snapshot() -> ProjectSnapshot:

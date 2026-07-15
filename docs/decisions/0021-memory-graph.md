@@ -24,16 +24,16 @@ grants.**
   `graph_merges` (reversible dedup journal), and a `graph_nodes_fts` external-content FTS. `status`
   is CHECK-constrained to `live|retracted`; `trust_class` to the four provenance classes.
 - **DERIVED edges are a rebuildable cache.** `graph/builder.py` derives ~10 edge kinds from existing
-  FKs; `jarvis graph rebuild` is `delete_derived_edges` (the ONE sanctioned bulk delete — `origin=
+  FKs; `kira graph rebuild` is `delete_derived_edges` (the ONE sanctioned bulk delete — `origin=
   'derived'` only) + re-derive. Every derived row carries its **SOURCE row's `created_at`** (never
   the wall clock — the `7bb5f4f` determinism lesson), so a rebuild is byte-identical and safe to
   rerun; asserted rows are never touched.
 - **ASSERTED nodes/edges are never deleted.** `retract_node`/`retract_edge` flip a status; the row
   and its lineage stay for audit. Only `status='live'` participates in reads.
-- **SUGGESTED is quarantined by construction.** `graph/suggest.py` (explicit-invoke only — `jarvis
+- **SUGGESTED is quarantined by construction.** `graph/suggest.py` (explicit-invoke only — `kira
   graph suggest`, a budgeted utility-model call) writes proposals to `graph_suggestions`, a table
   with **no FTS index and no retrieval/search/export path**. There is **no auto-approve path in
-  code**: `review.approve` (a human route / `jarvis graph review`) is the only door out, and it
+  code**: `review.approve` (a human route / `kira graph review`) is the only door out, and it
   claims the row (`pending→approved`) *before* materializing, so nothing materializes twice.
 - **Trust flows worst-of-evidence and is NEVER upgraded.** A suggestion takes the worst
   `trust_class` among its cited evidence; approval carries that trust through to the materialized
@@ -49,11 +49,11 @@ grants.**
   motion aware, node-capped. Read/navigate ONLY — it fetches GET subgraphs and node cards, remembers
   its focus/filters in localStorage, and never posts.
 - **Merge/split is CLI-only and reversible** (`graph/merge.py` + `GraphStore.merge_nodes/undo_merge`;
-  `jarvis graph dedup|merge|split|undo`): dedup detection is report-only; a merge re-points the
+  `kira graph dedup|merge|split|undo`): dedup detection is report-only; a merge re-points the
   merged node's asserted edges onto the canonical (collision→retract, self-loops retracted), aliases
   its title, and retracts (never deletes) the merged node, recording a full undo journal. No UI
   mutation route exists.
-- **Obsidian export** (`graph/obsidian.py`; `jarvis graph export`, dry-run default): a deterministic
+- **Obsidian export** (`graph/obsidian.py`; `kira graph export`, dry-run default): a deterministic
   projection into reserved `wiki/_graph/` (one page per asserted entity) and `wiki/_memory/` (per-
   project memory index) namespaces. **Non-destructive** — it writes only files carrying the
   `generated_by: kairo-graph` marker (a user/unmarked file is skipped + reported), contained by
@@ -67,9 +67,9 @@ grants.**
   14's 35 are `POST /api/graph/suggestions/{id}/approve|reject` (the Vault approve/reject shape).
   Canvas is read/navigate-only; merge/split is CLI (`test_mutation_route_closed_set`,
   `test_graph_tab`).
-- **No graph content reaches gate/tools/prompts** — `src/jarvis/tools/` and `src/jarvis/
+- **No graph content reaches gate/tools/prompts** — `src/kira/tools/` and `src/kira/
   orchestration/` contain zero graph references; there is no agent-facing graph tool. The graph is
-  exposed only via UI GET routes + the `jarvis graph` CLI (structural).
+  exposed only via UI GET routes + the `kira graph` CLI (structural).
 - **Suggestion quarantine + no auto-approve** — `test_graph_suggest`, `test_graph_review`,
   `test_graph_adversarial` (a hostile "auto-approve me / exfiltrate" payload still lands quarantined,
   stays untrusted + unretrievable, and human approval never upgrades its trust).

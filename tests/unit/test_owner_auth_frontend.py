@@ -7,12 +7,12 @@ from pathlib import Path
 
 import httpx
 
-from jarvis.config import load_config
-from jarvis.persistence.db import connect
-from jarvis.persistence.sessions import SessionStore
-from jarvis.ui.auth import AuthManager
-from jarvis.ui.owner_auth import Argon2PasswordHasher, OwnerAuthService
-from jarvis.ui.server import create_app
+from kira.config import load_config
+from kira.persistence.db import connect
+from kira.persistence.sessions import SessionStore
+from kira.ui.auth import AuthManager
+from kira.ui.owner_auth import Argon2PasswordHasher, OwnerAuthService
+from kira.ui.server import create_app
 
 TOKEN = "frontend-owner-token"
 PASSWORD = "A unique owner passphrase 2026!"
@@ -89,7 +89,7 @@ async def test_auth_shell_is_exactly_public_and_has_no_external_dependencies(
 
 
 def test_workstation_shell_handles_session_expiry_and_explicit_lock() -> None:
-    static = Path(__file__).parents[2] / "src" / "jarvis" / "ui" / "static"
+    static = Path(__file__).parents[2] / "src" / "kira" / "ui" / "static"
     html = (static / "index.html").read_text(encoding="utf-8")
     script = (static / "app.js").read_text(encoding="utf-8")
     assert 'id="st-logout"' in html

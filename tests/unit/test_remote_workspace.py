@@ -5,8 +5,8 @@ from __future__ import annotations
 import base64
 import datetime as dt
 
-from jarvis.connectors.base import ConnectorError, ConnectorRegistry
-from jarvis.remote.workspace import (
+from kira.connectors.base import ConnectorError, ConnectorRegistry
+from kira.remote.workspace import (
     calendar_status,
     inbox_status,
     inbox_today_summary,

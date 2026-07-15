@@ -199,7 +199,7 @@ Three tiers:
 - "Always allow" at the prompt persists the rule to the yaml. Every decision (and who made it: policy vs human) is audited.
 
 ### Logging / observability
-- structlog JSON lines → `logs/jarvis-YYYY-MM-DD.jsonl`. Event types: `turn_start`, `model_call` (model, tokens in/out, cost, latency, stop_reason), `tool_call`, `permission_decision`, `tool_result`, `turn_end`, `error`.
+- structlog JSON lines → `logs/kira-YYYY-MM-DD.jsonl`. Event types: `turn_start`, `model_call` (model, tokens in/out, cost, latency, stop_reason), `tool_call`, `permission_decision`, `tool_result`, `turn_end`, `error`.
 - `trace_id` per user turn ties everything together; session totals (tokens, cost) shown in REPL status bar.
 - Pricing table constant per model → cost computed at call time.
 
@@ -287,8 +287,8 @@ jarvis/
 ├── config/
 │   ├── settings.yaml           # models, token budgets, limits
 │   └── permissions.yaml        # per-tool + scoped policies
-├── src/jarvis/
-│   ├── __main__.py             # `python -m jarvis` / `jarvis` entry
+├── src/kira/
+│   ├── __main__.py             # `python -m kira` / `jarvis` entry
 │   ├── cli/
 │   │   ├── repl.py             # input loop, approval prompts
 │   │   └── render.py           # rich streaming markdown, tool panels
@@ -338,7 +338,7 @@ Ordered; each task ends green (tests pass, ruff clean). Tasks 1–6 are pure inf
 7. **Live client + streaming**: real Anthropic streaming, retries with backoff on 429/529, usage capture wired to cost logging.
 8. **REPL**: prompt_toolkit input, rich streaming markdown, tool-call panels, approval prompt (y/n/always), Ctrl+C cancels turn only, status bar with session token/cost totals.
 9. **Built-in tools**: `filesystem.py` (read/write/list/glob, path checks), `shell.py` (pwsh, timeout, cwd, output caps), `web.py` (Tavily search, httpx+trafilatura fetch). Unit tests; web tests mocked.
-10. **Persistence**: SQLite schema v1 (`sessions`, `messages`), migration runner, save-per-turn, `jarvis --resume`.
+10. **Persistence**: SQLite schema v1 (`sessions`, `messages`), migration runner, save-per-turn, `kira --resume`.
 11. **Smoke evals**: `tests/evals/runner.py` + 3 scenarios (multi-step file task in temp dir; web research question; permission-denial handling). Run live, print pass/fail + cost.
 12. **Docs**: fill README (setup, usage, safety model), `docs/architecture.md` as-built, ADR-0001 (from-scratch loop rationale).
 
@@ -373,7 +373,7 @@ Mechanics in Claude Code: approve this plan, then switch the session model to **
 
 Milestone 1 is done when, from a fresh clone with only `.env` populated:
 1. `uv sync && uv run pytest` — all unit tests pass without an API key.
-2. `uv run jarvis` — REPL starts; a multi-step request (e.g. "list the files in this repo, read pyproject.toml, and write a one-line summary to summary.txt") streams reasoning, shows tool panels, asks approval for the write, and completes; `summary.txt` exists with sensible content.
+2. `uv run kira` — REPL starts; a multi-step request (e.g. "list the files in this repo, read pyproject.toml, and write a one-line summary to summary.txt") streams reasoning, shows tool panels, asks approval for the write, and completes; `summary.txt` exists with sensible content.
 3. A denied approval produces a graceful model acknowledgment, not a crash; the denial appears in `logs/*.jsonl` with the turn's trace_id.
 4. `uv run python tests/evals/runner.py` — all 3 smoke scenarios pass, with per-scenario cost printed.
-5. `jarvis --resume` restores the previous conversation.
+5. `kira --resume` restores the previous conversation.

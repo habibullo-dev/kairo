@@ -12,12 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.config import ConfigError, load_config
-from jarvis.core.anthropic_client import AnthropicClient, CompatResponseError
-from jarvis.models.factory import ClientFactory
-from jarvis.models.openai_client import OpenAIChatClient
-from jarvis.models.providers import provider_spec
-from jarvis.models.roles import ModelRoute
+from kira.config import ConfigError, load_config
+from kira.core.anthropic_client import AnthropicClient, CompatResponseError
+from kira.models.factory import ClientFactory
+from kira.models.openai_client import OpenAIChatClient
+from kira.models.providers import provider_spec
+from kira.models.roles import ModelRoute
 
 
 @pytest.fixture(autouse=True)
@@ -264,7 +264,7 @@ def test_factory_threads_retry_limit_to_openai_compat(
         def __init__(self, **kw: object) -> None:
             captured.update(kw)
 
-    monkeypatch.setattr("jarvis.models.factory.OpenAIChatClient", _RecordingClient)
+    monkeypatch.setattr("kira.models.factory.OpenAIChatClient", _RecordingClient)
     cfg = _cfg(tmp_path, openai_api_key="k")
     cfg.limits = cfg.limits.model_copy(update={"max_retries": 9})
     ClientFactory(cfg).for_route(ModelRoute("openai", "gpt-5.2", text_only=True))

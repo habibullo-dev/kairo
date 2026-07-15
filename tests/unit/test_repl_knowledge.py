@@ -8,14 +8,14 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from jarvis.cli.repl import Repl, _build_knowledge
-from jarvis.config import KnowledgeConfig, load_config
-from jarvis.core import FakeClient, text_message
-from jarvis.knowledge.service import KnowledgeService
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.persistence.db import connect
-from jarvis.persistence.sessions import SessionStore
+from kira.cli.repl import Repl, _build_knowledge
+from kira.config import KnowledgeConfig, load_config
+from kira.core import FakeClient, text_message
+from kira.knowledge.service import KnowledgeService
+from kira.knowledge.store import KnowledgeStore
+from kira.memory.embeddings import FakeEmbedder
+from kira.persistence.db import connect
+from kira.persistence.sessions import SessionStore
 
 _OPEN_DBS: list = []
 

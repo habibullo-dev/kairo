@@ -10,11 +10,11 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from jarvis.connectors.base import ConnectorError
-from jarvis.connectors.demo import DemoNotifier
-from jarvis.connectors.kakao import KakaoNotifier, kakao_provider
-from jarvis.connectors.telegram import TelegramNotifier
-from jarvis.connectors.tokens import TokenState, TokenStore
+from kira.connectors.base import ConnectorError
+from kira.connectors.demo import DemoNotifier
+from kira.connectors.kakao import KakaoNotifier, kakao_provider
+from kira.connectors.telegram import TelegramNotifier
+from kira.connectors.tokens import TokenState, TokenStore
 
 FIXED = _dt.datetime(2026, 1, 1, 12, 0, 0, tzinfo=_dt.UTC)
 

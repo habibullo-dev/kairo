@@ -11,8 +11,8 @@ from typing import BinaryIO
 
 import pytest
 
-import jarvis.persistence.instance_lock as lock_module
-from jarvis.persistence.instance_lock import (
+import kira.persistence.instance_lock as lock_module
+from kira.persistence.instance_lock import (
     InstanceAlreadyRunning,
     InstanceLock,
     ResetBarrier,
@@ -31,7 +31,7 @@ RUNNING_MESSAGE = (
 _KIRA_CHILD = r"""
 import sys
 from pathlib import Path
-from jarvis.persistence.instance_lock import InstanceAlreadyRunning, InstanceLock
+from kira.persistence.instance_lock import InstanceAlreadyRunning, InstanceLock
 
 try:
     InstanceLock(Path(sys.argv[1])).acquire()
@@ -45,7 +45,7 @@ _RAW_CHILD = r"""
 import os
 import sys
 from pathlib import Path
-from jarvis.persistence.instance_lock import instance_lock_path, legacy_instance_lock_path
+from kira.persistence.instance_lock import instance_lock_path, legacy_instance_lock_path
 
 path_fn = legacy_instance_lock_path if sys.argv[2] == "legacy" else instance_lock_path
 path = path_fn(Path(sys.argv[1]))
@@ -320,9 +320,9 @@ def test_blocked_entrypoint_does_not_prepare_runtime_dirs_or_logging(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import jarvis.__main__ as entry
-    import jarvis.config as config_module
-    import jarvis.observability as observability
+    import kira.__main__ as entry
+    import kira.config as config_module
+    import kira.observability as observability
 
     calls: list[str] = []
     config = SimpleNamespace(
@@ -363,12 +363,12 @@ def test_blocked_entrypoint_does_not_prepare_runtime_dirs_or_logging(
 def test_entrypoint_migrates_database_under_lock_before_logging_and_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import jarvis.__main__ as entry
-    import jarvis.cli.repl as repl_module
-    import jarvis.config as config_module
-    import jarvis.observability as observability
-    import jarvis.persistence.database_identity as identity_module
-    import jarvis.persistence.reset_recovery as recovery_module
+    import kira.__main__ as entry
+    import kira.cli.repl as repl_module
+    import kira.config as config_module
+    import kira.observability as observability
+    import kira.persistence.database_identity as identity_module
+    import kira.persistence.reset_recovery as recovery_module
 
     calls: list[str] = []
     data = tmp_path / "data"
@@ -429,10 +429,10 @@ def test_interrupted_reset_error_blocks_startup_before_directory_creation(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import jarvis.__main__ as entry
-    import jarvis.config as config_module
-    import jarvis.observability as observability
-    import jarvis.persistence.reset_recovery as recovery_module
+    import kira.__main__ as entry
+    import kira.config as config_module
+    import kira.observability as observability
+    import kira.persistence.reset_recovery as recovery_module
 
     calls: list[str] = []
     config = SimpleNamespace(
@@ -469,9 +469,9 @@ def test_missing_provider_key_without_pending_reset_stays_lock_and_directory_fre
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import jarvis.__main__ as entry
-    import jarvis.config as config_module
-    from jarvis.config import ConfigError
+    import kira.__main__ as entry
+    import kira.config as config_module
+    from kira.config import ConfigError
 
     def require(*_services: str) -> None:
         raise ConfigError("Missing required API key(s): ANTHROPIC_API_KEY")

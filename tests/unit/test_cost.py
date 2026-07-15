@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.observability.cost import (
+from kira.observability.cost import (
     CACHE_READ_MULTIPLIER,
     CACHE_WRITE_MULTIPLIER,
     Usage,

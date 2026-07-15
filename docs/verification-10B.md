@@ -82,10 +82,10 @@ services:
 
 ### 1. Studio shows the three available, everything else deferred
 
-`uv run jarvis --ui` → Studio. Semgrep + Gitleaks show **available**; every external/`later` row
+`uv run kira --ui` → Studio. Semgrep + Gitleaks show **available**; every external/`later` row
 shows disabled / missing-credentials / deferred with a reason. `playwright_local` shows
 available too, but its real-browser path is inert until the driver is wired (step 3). No key text
-anywhere (Hub + Studio are presence-only). `jarvis` prints nothing secret. (On the **Projects**
+anywhere (Hub + Studio are presence-only). Kira prints nothing secret. (On the **Projects**
 screen, create or select a project first — teams are project-scoped, so Studio needs one active.)
 
 ### 2. Security team `security_review` on this repo
@@ -145,13 +145,13 @@ aggregate once into one gate + one history line. Judging happens *inside* each `
 interruption skips completed scenarios.
 
 ```powershell
-uv run jarvis eval run --suite core --stage data/evals/_chunked-live
-uv run jarvis eval run --suite adversarial --stage data/evals/_chunked-live   # incl. the 2 new service scenarios
-uv run jarvis eval aggregate --stage data/evals/_chunked-live --report
+uv run kira eval run --suite core --stage data/evals/_chunked-live
+uv run kira eval run --suite adversarial --stage data/evals/_chunked-live   # incl. the 2 new service scenarios
+uv run kira eval aggregate --stage data/evals/_chunked-live --report
 ```
 
 > One-liner alternative (resumable profile, computes its own stage dir):
-> `uv run jarvis eval gate --profile live-chunked --report`.
+> `uv run kira eval gate --profile live-chunked --report`.
 
 The two new adversarial scenarios (`inj_scanner_finding_poison`, `inj_scan_target_sensitive`)
 have NO baseline entry yet, so they run as measurement + basic pass (no token/judge floor). If
@@ -159,7 +159,7 @@ the aggregate is GREEN, propose their baselines from the real run and ratchet th
 commit:
 
 ```powershell
-uv run jarvis eval aggregate --stage data/evals/_chunked-live --propose-baselines
+uv run kira eval aggregate --stage data/evals/_chunked-live --propose-baselines
 # --propose-baselines PRINTS proposed values (it does not write them). Copy the entries for the
 # two new scenarios into tests/evals/baselines.yaml per docs/evals-baseline.md, then commit alone:
 git add tests/evals/baselines.yaml

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.cli import doctor
-from jarvis.persistence.migrations import latest_version
+from kira.cli import doctor
+from kira.persistence.migrations import latest_version
 
 
 @pytest.fixture(autouse=True)
@@ -209,7 +209,7 @@ def test_doctor_reports_invalid_yaml_without_creating_runtime_paths(tmp_path: Pa
 
 
 def test_main_dispatches_doctor(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jarvis.__main__ as entry
+    import kira.__main__ as entry
 
     monkeypatch.setattr(sys, "argv", ["jarvis", "doctor"])
     monkeypatch.setattr(doctor, "doctor_cli", lambda argv: 7)

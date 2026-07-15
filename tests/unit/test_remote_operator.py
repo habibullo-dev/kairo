@@ -8,11 +8,11 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from jarvis.config import SchedulerConfig, TelegramRemoteOperatorConfig
-from jarvis.persistence.db import connect
-from jarvis.persistence.sessions import SessionStore
-from jarvis.projects.store import ProjectStore
-from jarvis.remote.operator import (
+from kira.config import SchedulerConfig, TelegramRemoteOperatorConfig
+from kira.persistence.db import connect
+from kira.persistence.sessions import SessionStore
+from kira.projects.store import ProjectStore
+from kira.remote.operator import (
     RemoteLiveSearchParams,
     RemoteLiveSearchTool,
     RemoteOperatorService,
@@ -21,9 +21,9 @@ from jarvis.remote.operator import (
     RemoteProposalTool,
     render_tool_approval,
 )
-from jarvis.scheduler.service import TaskService
-from jarvis.scheduler.store import ParkedContinuation, TaskStore
-from jarvis.tools.base import Tool
+from kira.scheduler.service import TaskService
+from kira.scheduler.store import ParkedContinuation, TaskStore
+from kira.tools.base import Tool
 
 
 async def _stores(tmp_path: Path):

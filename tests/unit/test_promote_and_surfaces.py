@@ -13,20 +13,20 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.config import MemoryConfig, load_config
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.memory.service import MemoryService
-from jarvis.memory.store import MemoryStore
-from jarvis.observability.budget import BudgetService
-from jarvis.observability.cost import load_pricing
-from jarvis.observability.ledger import CostLedger
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectService, ProjectStore
-from jarvis.scheduler.service import TaskService
-from jarvis.scheduler.store import TaskStore
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.readmodels import UiServices, list_tasks
-from jarvis.ui.server import create_app
+from kira.config import MemoryConfig, load_config
+from kira.memory.embeddings import FakeEmbedder
+from kira.memory.service import MemoryService
+from kira.memory.store import MemoryStore
+from kira.observability.budget import BudgetService
+from kira.observability.cost import load_pricing
+from kira.observability.ledger import CostLedger
+from kira.persistence.db import connect
+from kira.projects import ProjectService, ProjectStore
+from kira.scheduler.service import TaskService
+from kira.scheduler.store import TaskStore
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.readmodels import UiServices, list_tasks
+from kira.ui.server import create_app
 
 _OPEN: list = []
 
@@ -218,10 +218,10 @@ async def test_tasks_scoped_by_project_no_cross_leak(tmp_path: Path) -> None:
     # Two projects + a global task. A project page (?project_id=) shows that project's tasks
     # + global, and NEVER another project's — the isolation guarantee.
     client, auth, _m, db, lock, _pid = await _app(tmp_path)
-    from jarvis.config import SchedulerConfig
-    from jarvis.projects import ProjectStore
-    from jarvis.scheduler.service import TaskService
-    from jarvis.scheduler.store import TaskStore
+    from kira.config import SchedulerConfig
+    from kira.projects import ProjectStore
+    from kira.scheduler.service import TaskService
+    from kira.scheduler.store import TaskStore
 
     b = await ProjectStore(db, lock).create(name="ProjectB")  # id 2 (Proj=1 from _app)
     tasks = TaskService(TaskStore(db, lock), SchedulerConfig())
@@ -270,9 +270,9 @@ async def test_promote_to_task_scopes_to_active_project(tmp_path: Path) -> None:
         headers=_hdr(auth, post=True),
     )
     assert r.status_code == 200
-    from jarvis.config import SchedulerConfig
-    from jarvis.scheduler.service import TaskService
-    from jarvis.scheduler.store import TaskStore
+    from kira.config import SchedulerConfig
+    from kira.scheduler.service import TaskService
+    from kira.scheduler.store import TaskStore
 
     tasks = TaskService(TaskStore(db, lock), SchedulerConfig())
     rows = await list_tasks(tasks, project_id=pid)

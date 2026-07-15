@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import BudgetsConfig
-from jarvis.observability.budget import BudgetService, _local_now, _period_start
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
+from kira.config import BudgetsConfig
+from kira.observability.budget import BudgetService, _local_now, _period_start
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
 
 _OPEN: list = []
 

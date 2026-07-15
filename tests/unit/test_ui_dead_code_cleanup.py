@@ -1,6 +1,6 @@
 """Confirmed dead static assets stay removed rather than silently drifting back."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 
 def test_dead_status_targets_and_unused_static_assets_are_absent() -> None:

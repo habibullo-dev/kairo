@@ -8,7 +8,7 @@ reads of the shipped JS."""
 
 from __future__ import annotations
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 HDR = (STATIC_DIR / "ui" / "header.js").read_text(encoding="utf-8")
 APP = (STATIC_DIR / "app.js").read_text(encoding="utf-8")

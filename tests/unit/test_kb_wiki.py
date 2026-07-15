@@ -10,17 +10,17 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import KnowledgeConfig
-from jarvis.knowledge.service import KnowledgeError, KnowledgeService
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.knowledge.wiki import (
+from kira.config import KnowledgeConfig
+from kira.knowledge.service import KnowledgeError, KnowledgeService
+from kira.knowledge.store import KnowledgeStore
+from kira.knowledge.wiki import (
     WikiPathError,
     build_front_matter,
     safe_wiki_path,
     split_front_matter,
 )
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.persistence.db import connect
+from kira.memory.embeddings import FakeEmbedder
+from kira.persistence.db import connect
 
 FIXED = dt.datetime(2026, 7, 6, 12, 0, tzinfo=dt.UTC)
 _OPEN_DBS: list = []

@@ -10,12 +10,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.config import load_config
-from jarvis.core import AgentLoop, FakeClient, build_system, text_message
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.routing import Classifier, RoutingMode
-from jarvis.routing.router import Router, RoutingState
-from jarvis.tools import ToolContext, ToolExecutor, ToolRegistry
+from kira.config import load_config
+from kira.core import AgentLoop, FakeClient, build_system, text_message
+from kira.permissions import PermissionGate, Policy
+from kira.routing import Classifier, RoutingMode
+from kira.routing.router import Router, RoutingState
+from kira.tools import ToolContext, ToolExecutor, ToolRegistry
 
 _ALL = lambda _p: True  # noqa: E731 - every provider available in the test
 
@@ -27,7 +27,7 @@ def _classifier(json_text: str) -> Classifier:
 def _loop(tmp_path: Path, *, router, anth: FakeClient, gem: FakeClient):
     cfg = load_config(root=tmp_path, env_file=None)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     clients = {"anthropic": anth, "gemini": gem}
     loop = AgentLoop(
         client=anth,
@@ -122,7 +122,7 @@ async def test_no_router_is_byte_identical(tmp_path: Path) -> None:
     # No router ⇒ self.client + config.models.main (REPL / sub-agents / evals unchanged).
     cfg = load_config(root=tmp_path, env_file=None)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     client = FakeClient([text_message("done")])
     loop = AgentLoop(
         client=client, registry=reg, executor=ToolExecutor(),

@@ -12,16 +12,16 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.permissions import (
+from kira.permissions import (
     HeadlessApprover,
     PermissionGate,
     Policy,
     ShellRule,
     UnattendedGate,
 )
-from jarvis.permissions.gate import Decision
-from jarvis.permissions.policy import FilesystemPolicy, ShellPolicy
-from jarvis.tools.base import Permission
+from kira.permissions.gate import Decision
+from kira.permissions.policy import FilesystemPolicy, ShellPolicy
+from kira.tools.base import Permission
 
 ALLOW, ASK, DENY = Permission.ALLOW, Permission.ASK, Permission.DENY
 

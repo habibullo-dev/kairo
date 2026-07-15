@@ -10,14 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import MemoryConfig
-from jarvis.knowledge.wiki import WikiPathError, safe_wiki_path
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.memory.service import MemoryService
-from jarvis.memory.store import MemoryStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
-from jarvis.projects.export import (
+from kira.config import MemoryConfig
+from kira.knowledge.wiki import WikiPathError, safe_wiki_path
+from kira.memory.embeddings import FakeEmbedder
+from kira.memory.service import MemoryService
+from kira.memory.store import MemoryStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
+from kira.projects.export import (
     export_project_memories,
     import_project_memories,
 )
@@ -126,9 +126,9 @@ def test_path_jail_rejects_escape(tmp_path: Path) -> None:
 async def test_export_import_are_not_tools() -> None:
     # These are human rituals — never exposed to the model. Assert the functions live in the
     # projects package and are not registered as tools (a tool would make them reachable).
-    from jarvis.tools import ToolContext, ToolRegistry
+    from kira.tools import ToolContext, ToolRegistry
 
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext())
+    reg.discover("kira.tools.builtin", ToolContext())
     names = {spec["name"] for spec in reg.specs()}
     assert not any("export" in n or "import" in n for n in names)

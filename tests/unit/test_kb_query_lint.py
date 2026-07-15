@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import KnowledgeConfig
-from jarvis.knowledge.service import KnowledgeService
-from jarvis.knowledge.store import KnowledgeStore, NewChunk
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.persistence.db import connect
+from kira.config import KnowledgeConfig
+from kira.knowledge.service import KnowledgeService
+from kira.knowledge.store import KnowledgeStore, NewChunk
+from kira.memory.embeddings import FakeEmbedder
+from kira.persistence.db import connect
 
 _OPEN_DBS: list = []
 

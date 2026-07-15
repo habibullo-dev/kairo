@@ -8,13 +8,13 @@ exactly what reached the synthesizer).
 
 from __future__ import annotations
 
-from jarvis.core.agent import TurnResult
-from jarvis.core.client import ToolCall
-from jarvis.core.events import SubAgentEvent, ToolDecision, ToolFinished, ToolStarted
-from jarvis.observability.cost import Usage
-from jarvis.permissions.gate import Decision
-from jarvis.tools.base import Permission
-from jarvis.voice import (
+from kira.core.agent import TurnResult
+from kira.core.client import ToolCall
+from kira.core.events import SubAgentEvent, ToolDecision, ToolFinished, ToolStarted
+from kira.observability.cost import Usage
+from kira.permissions.gate import Decision
+from kira.tools.base import Permission
+from kira.voice import (
     FakeSynthesizer,
     ScriptedScreenApprover,
     VoiceApprover,

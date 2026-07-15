@@ -11,12 +11,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
-from jarvis.config import load_config
-from jarvis.observability.ledger import ServiceLedger
-from jarvis.persistence.db import connect
-from jarvis.services.searxng import SearxngSearchTool
-from jarvis.tools.base import ToolContext
+import kira.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
+from kira.config import load_config
+from kira.observability.ledger import ServiceLedger
+from kira.persistence.db import connect
+from kira.services.searxng import SearxngSearchTool
+from kira.tools.base import ToolContext
 
 _OPEN: list = []
 
@@ -77,7 +77,7 @@ def test_available_when_flagged_no_key_needed(tmp_path: Path) -> None:
 
 def test_egress_is_true_despite_local(tmp_path: Path) -> None:
     # The local instance proxies OUT ⇒ classified egress; the derived flag drives taint/unattended.
-    from jarvis.services.catalog import SERVICE_CATALOG
+    from kira.services.catalog import SERVICE_CATALOG
 
     assert SERVICE_CATALOG["searxng"].egress is True
     assert SearxngSearchTool.egress is True

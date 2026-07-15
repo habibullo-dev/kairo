@@ -6,8 +6,8 @@ provider that may receive private context at all (private_ok)."""
 
 from __future__ import annotations
 
-from jarvis.models.context_reuse import ContextReuseMode, capability
-from jarvis.models.providers import PROVIDER_CATALOG
+from kira.models.context_reuse import ContextReuseMode, capability
+from kira.models.providers import PROVIDER_CATALOG
 
 
 def test_anthropic_capability() -> None:
@@ -45,7 +45,7 @@ def test_bad_mode_string_fails_closed_to_off(monkeypatch) -> None:
     # A catalog spec with an unrecognized mode must resolve to OFF, not crash or pass it through.
     from dataclasses import replace
 
-    import jarvis.models.context_reuse as cr
+    import kira.models.context_reuse as cr
 
     spec = replace(PROVIDER_CATALOG["anthropic"], context_reuse_mode="turbo-cache-9000")
     monkeypatch.setattr(cr, "provider_spec", lambda name: spec)

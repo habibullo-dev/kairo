@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import pathlib
 
-from jarvis.models.context_reuse import capability, plan
-from jarvis.models.prompt_layout import PromptSection, SectionKind, assemble
-from jarvis.models.providers import PROVIDER_CATALOG
+from kira.models.context_reuse import capability, plan
+from kira.models.prompt_layout import PromptSection, SectionKind, assemble
+from kira.models.providers import PROVIDER_CATALOG
 
-_SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "jarvis"
+_SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "kira"
 _CR = (_SRC / "models" / "context_reuse.py").read_text(encoding="utf-8")
 _PL = (_SRC / "models" / "prompt_layout.py").read_text(encoding="utf-8")
 
@@ -43,7 +43,7 @@ def test_default_provider_caches_nothing() -> None:
     # Fail-closed default: a provider with no explicit context-reuse resolves to OFF.
     from dataclasses import replace
 
-    import jarvis.models.context_reuse as cr
+    import kira.models.context_reuse as cr
 
     bare = replace(
         PROVIDER_CATALOG["deepseek"], supports_context_reuse=False, context_reuse_mode="off"

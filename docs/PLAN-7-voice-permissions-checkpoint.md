@@ -320,7 +320,7 @@ nondeterminism), run as a deliberate recorded ritual like the eval gate.
 - The concrete listening-indicator + escalation UI (belongs with the Phase 8 web/desktop
   surface; the contract is fixed here, the pixels are not).
 - Barge-in / partial-transcript / endpointing mechanics.
-- The chunked-eval command (`jarvis eval gate --profile live-chunked`) that Phase 7's own
+- The chunked-eval command (`kira eval gate --profile live-chunked`) that Phase 7's own
   live set will want — noted as an early infrastructure task, not designed here.
 
 ## Acceptance for this checkpoint

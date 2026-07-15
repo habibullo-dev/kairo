@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from jarvis.models.providers import (
+from kira.models.providers import (
     PROVIDER_CATALOG,
     TRUSTED_AUTHORITY_PROVIDERS,
     ProviderRegistry,
@@ -96,7 +96,7 @@ def test_pricing_covers_priced_providers_including_qwen() -> None:
     # (Habib-provided DashScope numbers) so the coder route is priced, not fail-closed.
     from pathlib import Path
 
-    from jarvis.observability.cost import load_pricing
+    from kira.observability.cost import load_pricing
 
     pricing = load_pricing(Path("config/pricing.yaml"))
     priced = pricing.priced_providers()

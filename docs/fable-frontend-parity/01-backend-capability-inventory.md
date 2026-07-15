@@ -4,14 +4,14 @@ Read-only audit at working tree (HEAD `98c4ebc` + uncommitted changes to `knowle
 
 - **LIVE** — reachable and correctly consumed in the browser UI
 - **PARTIAL** — some of the capability is in the UI, the rest is not
-- **API-ONLY** — a route/read model exists; no frontend code calls it (verified by grep over `src/jarvis/ui/static/`)
-- **CLI-ONLY** — reachable only from `jarvis …` / REPL commands
+- **API-ONLY** — a route/read model exists; no frontend code calls it (verified by grep over `src/kira/ui/static/`)
+- **CLI-ONLY** — reachable only from `kira …` / REPL commands
 - **INTERNAL** — no route and no CLI; reached only by other code
 - **DISABLED** — behind a default-off flag
 - **UNWIRED** — code exists but nothing constructs/calls it
 - **OBSOLETE/UNCLEAR** — dead or of doubtful purpose
 
-## 1. Conversation & agent loop (`src/jarvis/core/`, `src/jarvis/ui/session.py`)
+## 1. Conversation & agent loop (`src/kira/core/`, `src/kira/ui/session.py`)
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -23,7 +23,7 @@ Read-only audit at working tree (HEAD `98c4ebc` + uncommitted changes to `knowle
 | Egress-taint demotion (private read ⇒ egress ASK, non-persistable) | **LIVE** (behavior) / **PARTIAL** (explanation) | `core/agent.py:624-722`; approval modal hides "Always" when `persistable:false` (approver.py:121-170 pins). No UI explains *why* the Always button vanished |
 | Model/effort/routing selection (Auto default, Anthropic-only manual) | **LIVE** | `/api/models` (readmodels.py:1230), `POST /api/model` (server.py:551), `POST /api/effort` (server.py:580); header.js:101,123 |
 
-## 2. Sub-agents (`src/jarvis/agents/`)
+## 2. Sub-agents (`src/kira/agents/`)
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -32,7 +32,7 @@ Read-only audit at working tree (HEAD `98c4ebc` + uncommitted changes to `knowle
 | Sub-agent approval forwarding with run-scoped grants | **LIVE** | approver.py:253-270; modal labels child ASKs |
 | `subagent_event` / `subagent_completed` / `tool_finished` rendering | **PARTIAL** | serialized (session.py:129-142) but `onConversationEvent` ignores them (conversation.js:237-253); visible only as raw lines on the debug Trace screen |
 
-## 3. Orchestration (`src/jarvis/orchestration/`)
+## 3. Orchestration (`src/kira/orchestration/`)
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -43,13 +43,13 @@ Read-only audit at working tree (HEAD `98c4ebc` + uncommitted changes to `knowle
 | Roster overrides from project settings | **UNWIRED** (documented) | only `team_budget_usd` applied (teams.py:200-219) |
 | `skills_manifest_json`, `context_manifest_json` on runs | **INTERNAL** (audit-only) | store writes (v19; store.py); not in `serialize_orchestration_run` (readmodels.py:790-816) |
 
-## 4. Skill forge (`src/jarvis/skills/`)
+## 4. Skill forge (`src/kira/skills/`)
 
 | Capability | Status | Evidence |
 |---|---|---|
 | Hash-pinned skill packs compiled into member prompts (off/shadow/active) | **DISABLED + INTERNAL** | catalog.py:105-186; `skills.mode: off`, `enabled: []` (settings.yaml:84-87, working tree); no in-tree runtime pack (`config/skills/packs/` holds `.gitkeep`); **no CLI or UI to list/validate/inspect packs** — the only user-visible effect is a 400 on estimate/start if a pinned pack is invalid (ui/orchestration.py:167,215) |
 
-## 5. Knowledge / Vault (`src/jarvis/knowledge/`)
+## 5. Knowledge / Vault (`src/kira/knowledge/`)
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -59,10 +59,10 @@ Read-only audit at working tree (HEAD `98c4ebc` + uncommitted changes to `knowle
 | Project knowledge readiness card (working tree) | **LIVE** (new) | readmodels.py `vault_overview` readiness block (readmodels.py:693 area); duplicated markup in `screens/vault.js:16-24` and `workspace/vault.js:23-36` |
 | Wiki page write + lint | **PARTIAL** | `write_wiki_page` tool + `/api/vault/lint` (server.py:801) — lint renders as a raw JSON dump (vault.js:79); no wiki browsing surface at all |
 | KB `rebuild_index`, interactive review walk, folder ingest command | **CLI-ONLY** | REPL `kb rebuild|review|ingest` (repl.py:711) |
-| `find_by_hash` | **OBSOLETE** | store.py:223 — no caller in `src/jarvis` |
+| `find_by_hash` | **OBSOLETE** | store.py:223 — no caller in `src/kira` |
 | `kb_sources.mime` | **OBSOLETE/UNCLEAR** | column never populated by `add_source` |
 
-## 6. Projects & workspaces (`src/jarvis/projects/`, `src/jarvis/ui/workspaces.py`)
+## 6. Projects & workspaces (`src/kira/projects/`, `src/kira/ui/workspaces.py`)
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -73,7 +73,7 @@ Read-only audit at working tree (HEAD `98c4ebc` + uncommitted changes to `knowle
 | Workspace isolation (server-owned context, scoped WS delivery) | **LIVE** | workspaces.py:201-213; connections.py:133-163; pinned by test_ui_workspaces.py:293-488 |
 | Per-project `settings_json["model_routes"]` | **UNWIRED** | documented registry.py:4,77; nothing reads it; engine always built with `project_routes=None` (repl.py:1491) |
 
-## 7. Scheduler / tasks (`src/jarvis/scheduler/`)
+## 7. Scheduler / tasks (`src/kira/scheduler/`)
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -84,7 +84,7 @@ Read-only audit at working tree (HEAD `98c4ebc` + uncommitted changes to `knowle
 | Runner pause/resume (emergency stop) | **LIVE** | server.py:604-630; app.js:609-610 |
 | Background notices (reminder fired, job ok/failed) | **PARTIAL** | NoticeBoard → WS `notice` broadcast (notices.py:56) renders only as the single latest line on Daily (daily.js:151); `GET /api/notices` (server.py:634) has zero frontend consumers — no notice history view |
 
-## 8. Memory (`src/jarvis/memory/`)
+## 8. Memory (`src/kira/memory/`)
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -92,7 +92,7 @@ Read-only audit at working tree (HEAD `98c4ebc` + uncommitted changes to `knowle
 | **Remember** (save a memory with dedup adjudication) from UI | **API-ONLY** | `POST /api/memory/remember` (server.py:1376) — zero grep hits; saving a memory requires asking the agent in chat |
 | Auto-recall context per turn | **INTERNAL** (correct) | service.py:193; recalled block is invisible in UI (by design; no indicator either) |
 
-## 9. Memory graph (`src/jarvis/graph/`)
+## 9. Memory graph (`src/kira/graph/`)
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -100,19 +100,19 @@ Read-only audit at working tree (HEAD `98c4ebc` + uncommitted changes to `knowle
 | NEW code-dependency map view (`view=dependencies`) | **LIVE** | service.py:232-301; graphview.js (+306), workspace/graph.js (+113); DoD state `code-map` (graph_dod.py:48) |
 | Suggestion review (approve/reject) | **LIVE** | routes server.py:2113-2137; gate.js:105-107, workspace/memory.js:28-30 |
 | Merge / split / undo / dedup / export / reindex / rebuild / suggest | **CLI-ONLY** | cli/graph.py (docstring: "CLI-only — no route"); `graph_merges` table has no UI reader |
-| Derived-edge freshness | **PARTIAL** | rebuild fires only on folder finalize/reject (server.py:1282,984) or CLI; single-file approvals leave the graph stale; UI offers only a "Copy: jarvis graph rebuild" clipboard hint (graph.js:60-62) |
+| Derived-edge freshness | **PARTIAL** | rebuild fires only on folder finalize/reject (server.py:1282,984) or CLI; single-file approvals leave the graph stale; UI offers only a "Copy: kira graph rebuild" clipboard hint (graph.js:60-62) |
 
-## 10. Attention & dreaming (`src/jarvis/attention/`)
+## 10. Attention & dreaming (`src/kira/attention/`)
 
 | Capability | Status | Evidence |
 |---|---|---|
 | Unified attention queue (ASKs + intents + graph suggestions + durable rows) | **LIVE** | readmodel.py:52-152; `/api/attention` (server.py:1905); gate.js:36 |
 | Resolve (done/dismiss) | **LIVE** | server.py:1939; gate.js:112-113 |
-| Dreaming jobs (proposal-only, attended) | **CLI-ONLY** | cli/dream.py `jarvis dream run`; proposals surface in the queue; scheduling deferred past Checkpoint K (runner.py:6-7) |
+| Dreaming jobs (proposal-only, attended) | **CLI-ONLY** | cli/dream.py `kira dream run`; proposals surface in the queue; scheduling deferred past Checkpoint K (runner.py:6-7) |
 | NotificationRouter (urgent push, quiet hours, per-project mute) | **UNWIRED** | routing.py:84-122 defined+exported, **never instantiated anywhere**; config keys `attention.urgent_channels`/`quiet_hours_*`/`muted_projects` (config.py:545-548) change nothing at runtime |
 | Dreaming tool cage (`DREAMING_TOOLS`, `assert_caged`) | **UNWIRED** (deferred variant) | dreaming.py:32-111; every shipped builder is tool-less (builders.py:120) |
 
-## 11. Voice (`src/jarvis/voice/`, `src/jarvis/ui/voice.py`)
+## 11. Voice (`src/kira/voice/`, `src/kira/ui/voice.py`)
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -124,7 +124,7 @@ Read-only audit at working tree (HEAD `98c4ebc` + uncommitted changes to `knowle
 | `retain_audio` flag | **OBSOLETE/UNCLEAR** | meeting.py:49 accepted, never used |
 | Wake word | **DISABLED by design** | listening.py:59-63 `wake_active()` always False |
 
-## 12. Actions / connectors (`src/jarvis/tools/builtin/`, `src/jarvis/actions/`)
+## 12. Actions / connectors (`src/kira/tools/builtin/`, `src/kira/actions/`)
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -133,7 +133,7 @@ Read-only audit at working tree (HEAD `98c4ebc` + uncommitted changes to `knowle
 | `connector_writes` journal (what actually left the box) | **INTERNAL** | written by WriteExecutor, read only for undo; **no list/audit read model** (migrations v10; agent D table) |
 | Egress log | **INTERNAL** | log events only (egress.py:23); no table, no UI audit view |
 | Google reads / drafts / notify | **LIVE** (flag-off) | connectors_google.py; Hub cards (hub.js:49-55); all `connectors.*.enabled: false` default |
-| OAuth connect / disconnect | **CLI-ONLY** | `jarvis connect <provider>`; Hub renders copy-paste command strings (hub.js:18-29) |
+| OAuth connect / disconnect | **CLI-ONLY** | `kira connect <provider>`; Hub renders copy-paste command strings (hub.js:18-29) |
 
 ## 13. Models / providers / costs / observability
 
@@ -143,12 +143,12 @@ Read-only audit at working tree (HEAD `98c4ebc` + uncommitted changes to `knowle
 | Budget limits set from UI | **API-ONLY + EPHEMERAL** | `POST /api/budgets` (server.py:507) — zero grep hits; and it mutates only the in-process config copy (comment server.py:509-510) |
 | Provider availability truth | **LIVE (with a defect)** | `capability_truth` (readmodels.py:1341); Hub/Settings call it without workspace ⇒ `exposed_to_chat` falls back to connected-implies-exposed (readmodels.py:1330,1336-1338; server.py:652,667), so it can disagree with Daily/header — violating its own "never disagree" doc (readmodels.py:1348-1350) |
 | Context reuse / cache savings columns (v11) | **DISABLED** | `context_reuse.enabled: false` (config.py:478); costs read model has a `context_reuse` rollup that will be empty in default installs (readmodels.py:253 area) |
-| Eval harness (`jarvis eval`) & Lab screen | **PARTIAL** | Lab reads files only (readmodels.py:1641); running evals is CLI-only; Lab is debug-gated (app.js:409) |
-| Backup/restore | **CLI-ONLY** | `jarvis backup` (cli); no UI surface |
+| Eval harness (`kira eval`) & Lab screen | **PARTIAL** | Lab reads files only (readmodels.py:1641); running evals is CLI-only; Lab is debug-gated (app.js:409) |
+| Backup/restore | **CLI-ONLY** | `kira backup` (cli); no UI surface |
 | Federated FTS search across 8 domains (messages/memories/kb/tasks/runs/digests/artifacts/graph) | **API-ONLY** | `GET /api/search` → `_federated_search` (server.py:1960); persistence/fts.py; **zero grep hits — the palette searches only `/api/graph/search`** (palette.js:212) |
 | Saved views (save/delete) | **PARTIAL/API-ONLY** | `GET /api/views` consumed (projects.js:131) but `POST /api/views/save` (server.py:1981) and `POST /api/views/{id}/delete` (server.py:2009) have zero grep hits — views can render but never be created or removed from the UI |
 
-## 14. Verified-orphan route summary (grep over `src/jarvis/ui/static/`, this session)
+## 14. Verified-orphan route summary (grep over `src/kira/ui/static/`, this session)
 
 Sixteen routes with **no frontend consumer**: `POST /api/tasks/create`, `GET /api/tasks/{id}/runs`, `POST /api/memory/remember`, `POST /api/turn/cancel`, `GET /api/search`, `POST /api/views/save`, `POST /api/views/{id}/delete`, `POST /api/budgets`, `POST /api/digest/run`, `POST /api/voice/listen`, `GET /api/agents`, `GET /api/notices`, `POST /api/projects/{id}/update`, `POST /api/projects/{id}/services`, `GET /api/artifacts/{id}`, `GET /api/intents/{id}`.
 

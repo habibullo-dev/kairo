@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.cli import connect
-from jarvis.config import (
+from kira.cli import connect
+from kira.config import (
     ConfigError,
     load_config,
     resolve_kakao_redirect_uri,

@@ -10,17 +10,17 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.config import ProjectIntelligenceConfig, load_config
-from jarvis.connectors.base import ConnectorRegistry
-from jarvis.connectors.demo import DemoGoogleClient, DemoNotifier
-from jarvis.graph import GraphStore
-from jarvis.intelligence import AnalysisJobState, AnalysisJobStore, ProjectReportStore
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore, seal_snapshot
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.readmodels import UiServices, daily_overview, hub_status
-from jarvis.ui.server import create_app
+from kira.config import ProjectIntelligenceConfig, load_config
+from kira.connectors.base import ConnectorRegistry
+from kira.connectors.demo import DemoGoogleClient, DemoNotifier
+from kira.graph import GraphStore
+from kira.intelligence import AnalysisJobState, AnalysisJobStore, ProjectReportStore
+from kira.knowledge.store import KnowledgeStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore, seal_snapshot
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.readmodels import UiServices, daily_overview, hub_status
+from kira.ui.server import create_app
 
 _OPEN: list = []
 
@@ -231,7 +231,7 @@ async def test_eval_freshness_stale_when_head_moved(tmp_path: Path) -> None:
     (decoy / "history.jsonl").write_text(
         '{"git_rev": "newrev", "verdict": "FAIL"}\n', encoding="utf-8"
     )
-    from jarvis.ui.readmodels import _eval_freshness
+    from kira.ui.readmodels import _eval_freshness
 
     fresh = _eval_freshness(cfg, [{"path": ".", "state": {"head_rev": "oldrev"}}])
     assert fresh["stale"] is False and fresh["verdict"] == "PASS"

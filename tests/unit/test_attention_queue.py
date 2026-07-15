@@ -14,14 +14,14 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.attention import AttentionKind, AttentionPriority, AttentionStore
-from jarvis.attention.readmodel import attention_queue
-from jarvis.config import load_config
-from jarvis.core.execution import ExecutionContext
-from jarvis.persistence.db import connect
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.readmodels import UiServices
-from jarvis.ui.server import create_app
+from kira.attention import AttentionKind, AttentionPriority, AttentionStore
+from kira.attention.readmodel import attention_queue
+from kira.config import load_config
+from kira.core.execution import ExecutionContext
+from kira.persistence.db import connect
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.readmodels import UiServices
+from kira.ui.server import create_app
 
 _OPEN: list = []
 
@@ -37,7 +37,7 @@ async def _store(tmp_path: Path) -> AttentionStore:
     db = await connect(tmp_path / "a.db")
     _OPEN.append(db)
     lock = asyncio.Lock()
-    from jarvis.projects import ProjectStore
+    from kira.projects import ProjectStore
 
     projects = ProjectStore(db, lock)
     for name in ("One", "Two"):

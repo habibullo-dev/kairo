@@ -1,6 +1,6 @@
 """Slice 6: the chat renderer has a deliberately small, DOM-only Markdown subset."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 CONVERSATION = (STATIC_DIR / "screens" / "conversation.js").read_text(encoding="utf-8")
 CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")

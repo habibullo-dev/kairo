@@ -2,7 +2,7 @@
 
 import aiosqlite
 
-from jarvis.persistence import migrations as M
+from kira.persistence import migrations as M
 
 
 async def _build_v19() -> aiosqlite.Connection:

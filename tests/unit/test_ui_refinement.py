@@ -8,7 +8,7 @@ surfaced. These are content pins over the hand-written assets (no server behavio
 
 from __future__ import annotations
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 INDEX = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")

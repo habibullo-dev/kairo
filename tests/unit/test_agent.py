@@ -9,8 +9,8 @@ import pytest
 import structlog
 from pydantic import BaseModel
 
-from jarvis.config import Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets
-from jarvis.core import (
+from kira.config import Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets
+from kira.core import (
     AgentLoop,
     FakeClient,
     ToolCall,
@@ -20,11 +20,11 @@ from jarvis.core import (
     text_message,
     tool_use_message,
 )
-from jarvis.core.events import Event, ToolDecision
-from jarvis.observability.cost import Usage
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.permissions.unattended import ApprovalParked, ParkingApprover
-from jarvis.tools import Permission, Tool, ToolExecutor, ToolRegistry
+from kira.core.events import Event, ToolDecision
+from kira.observability.cost import Usage
+from kira.permissions import PermissionGate, Policy
+from kira.permissions.unattended import ApprovalParked, ParkingApprover
+from kira.tools import Permission, Tool, ToolExecutor, ToolRegistry
 
 # --- fixtures / tools ------------------------------------------------------
 
@@ -369,7 +369,7 @@ async def test_cancellation_snapshot_keeps_completed_tool_rounds() -> None:
 
 async def test_tool_use_with_no_blocks_ends_turn() -> None:
     # Defensive: stop_reason=tool_use but no tool_use blocks -> treat as terminal.
-    from jarvis.core.client import ModelResponse
+    from kira.core.client import ModelResponse
 
     weird = ModelResponse(
         content_blocks=[{"type": "text", "text": "hi"}],
@@ -507,7 +507,7 @@ async def test_null_path_sends_full_messages_unchanged() -> None:
 
 
 async def test_compaction_sends_view_but_persists_full_history() -> None:
-    from jarvis.core.context import ContextManager
+    from kira.core.context import ContextManager
 
     history = _long_history(30)
     history.append({"role": "user", "content": "the final question"})
@@ -525,7 +525,7 @@ async def test_compaction_sends_view_but_persists_full_history() -> None:
 
 
 async def test_context_overflow_stops_turn_without_calling_model() -> None:
-    from jarvis.core.context import ContextManager
+    from kira.core.context import ContextManager
 
     # One giant user message: no boundary to cut, no tool_result to elide.
     huge = [{"role": "user", "content": "x" * 400_000}]
@@ -558,7 +558,7 @@ async def test_no_recall_block_leaves_system_unchanged() -> None:
 
 
 def _compacting_manager(summary_responses: list):
-    from jarvis.core.context import ContextManager
+    from kira.core.context import ContextManager
 
     return ContextManager(
         context_token_budget=2000,

@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import load_config
-from jarvis.services import SERVICE_CATALOG, ContextPolicy, OutputTrust, ServiceRegistry
-from jarvis.services.registry import ServiceState
+from kira.config import load_config
+from kira.services import SERVICE_CATALOG, ContextPolicy, OutputTrust, ServiceRegistry
+from kira.services.registry import ServiceState
 
 _ADAPTERS_NOW = {
     "semgrep",
@@ -99,7 +99,7 @@ def test_deferred_even_when_flagged() -> None:
 def test_missing_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     # Simulate a hypothetical "now" service needing a key by checking the credential path via
     # a metered later-service's logic is deferred; instead assert the mechanism on the env map.
-    from jarvis.services.catalog import SERVICE_CATALOG as CAT
+    from kira.services.catalog import SERVICE_CATALOG as CAT
 
     spec = CAT["firecrawl"]
     r_present = ServiceRegistry(
@@ -126,7 +126,7 @@ def test_project_narrowing_intersects() -> None:
 
 
 def test_availability_view_has_no_key_values(tmp_path: Path) -> None:
-    from jarvis.ui.readmodels import services_status
+    from kira.ui.readmodels import services_status
 
     cfg = load_config(root=tmp_path, env_file=None)
     cfg.services.enabled = ["semgrep"]

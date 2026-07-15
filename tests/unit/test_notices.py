@@ -7,12 +7,12 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from jarvis.config import load_config
-from jarvis.core.execution import ExecutionContext
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.connections import ConnectionManager
-from jarvis.ui.notices import NoticeBoard
-from jarvis.ui.server import create_app
+from kira.config import load_config
+from kira.core.execution import ExecutionContext
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.connections import ConnectionManager
+from kira.ui.notices import NoticeBoard
+from kira.ui.server import create_app
 
 TOKEN = "tok-GOOD-canary"
 

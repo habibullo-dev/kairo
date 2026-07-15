@@ -11,13 +11,13 @@ from pathlib import Path
 
 from tests.evals import runner
 
-from jarvis.config import load_config
-from jarvis.connectors.base import ConnectorRegistry
-from jarvis.connectors.demo import DemoGoogleClient
-from jarvis.core import FakeClient, text_message
-from jarvis.digest.builder import DigestBuilder, DigestItem, Section
-from jarvis.permissions import PermissionGate, Policy, UnattendedGate
-from jarvis.tools.base import Permission
+from kira.config import load_config
+from kira.connectors.base import ConnectorRegistry
+from kira.connectors.demo import DemoGoogleClient
+from kira.core import FakeClient, text_message
+from kira.digest.builder import DigestBuilder, DigestItem, Section
+from kira.permissions import PermissionGate, Policy, UnattendedGate
+from kira.tools.base import Permission
 
 # --- eval harness builds connectors at the ToolContext seam ----------------
 
@@ -43,7 +43,7 @@ def test_build_eval_connectors_none_when_unset() -> None:
 
 async def test_demo_client_serves_scenario_emails_to_the_adapter() -> None:
     # The poisoned email flows through the REAL gmail adapter (same code path as live).
-    from jarvis.connectors.google import gmail
+    from kira.connectors.google import gmail
 
     client = DemoGoogleClient(
         emails=[

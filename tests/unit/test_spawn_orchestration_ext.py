@@ -13,16 +13,16 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.agents import AgentRunStore, SubAgentService
-from jarvis.config import load_config
-from jarvis.core import FakeClient, text_message
-from jarvis.observability.cost import Usage
-from jarvis.observability.ledger import CostContext, ServiceLedger, cost_context
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
-from jarvis.tools import ToolContext, ToolExecutor, ToolRegistry
+from kira.agents import AgentRunStore, SubAgentService
+from kira.config import load_config
+from kira.core import FakeClient, text_message
+from kira.observability.cost import Usage
+from kira.observability.ledger import CostContext, ServiceLedger, cost_context
+from kira.permissions import PermissionGate, Policy
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
+from kira.tools import ToolContext, ToolExecutor, ToolRegistry
 
 _OPEN: list = []
 
@@ -51,7 +51,7 @@ async def _service(tmp_path: Path, *, responses: list) -> tuple[SubAgentService,
         config=cfg,
     )
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     svc.bind(registry=reg)
     return svc, run_store
 
@@ -74,7 +74,7 @@ async def test_spawn_agent_tool_exposes_no_routing_params(tmp_path: Path) -> Non
     # The model-facing tool must not be able to choose model/role/client/run — routing stays
     # config-only. The tool's input schema has only title/prompt/tools.
     svc, _rs = await _service(tmp_path, responses=[])
-    from jarvis.tools.builtin.agents import SpawnAgentParams
+    from kira.tools.builtin.agents import SpawnAgentParams
 
     fields = set(SpawnAgentParams.model_fields)
     assert fields == {"title", "prompt", "tools"}

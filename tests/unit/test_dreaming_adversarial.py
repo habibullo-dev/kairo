@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.attention import (
+from kira.attention import (
     FORBIDDEN_TOOLS,
     JOBS,
     AttentionKind,
@@ -28,11 +28,11 @@ from jarvis.attention import (
     minimized_push,
     run_dreaming_job,
 )
-from jarvis.attention.readmodel import attention_queue
-from jarvis.config import load_config
-from jarvis.core.client import FakeClient, text_message
-from jarvis.persistence.db import connect
-from jarvis.tools import ToolContext
+from kira.attention.readmodel import attention_queue
+from kira.config import load_config
+from kira.core.client import FakeClient, text_message
+from kira.persistence.db import connect
+from kira.tools import ToolContext
 
 _OPEN: list = []
 
@@ -48,7 +48,7 @@ async def _store(tmp_path: Path) -> AttentionStore:
     db = await connect(tmp_path / "a.db")
     _OPEN.append(db)
     lock = asyncio.Lock()
-    from jarvis.projects import ProjectStore
+    from kira.projects import ProjectStore
 
     projects = ProjectStore(db, lock)
     for name in ("A", "B"):  # ids 1, 2

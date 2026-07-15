@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.graph import GraphStore
-from jarvis.graph.review import UNINDEXED, approve, reject
-from jarvis.memory.store import MemoryStore
-from jarvis.persistence.db import connect
-from jarvis.persistence.fts import query_domain
+from kira.graph import GraphStore
+from kira.graph.review import UNINDEXED, approve, reject
+from kira.memory.store import MemoryStore
+from kira.persistence.db import connect
+from kira.persistence.fts import query_domain
 
 _OPEN: list = []
 

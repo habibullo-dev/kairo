@@ -50,7 +50,7 @@ Baseline operating discipline for every Kairo team member: claims are backed by 
 ## Verification
 
 - [RUN, if `read_file` in scope] Re-read any file you cite immediately before citing it.
-- [RECOMMEND] `uv run pytest` — full keyless unit suite; `uv run ruff check` — lint; `uv run jarvis eval gate --suite core` — 19-scenario keyless replay gate ($0). Name these instead of claiming their results unless you executed them yourself this run.
+- [RECOMMEND] `uv run pytest` — full keyless unit suite; `uv run ruff check` — lint; `uv run kira eval gate --suite core` — 19-scenario keyless replay gate ($0). Name these instead of claiming their results unless you executed them yourself this run.
 
 ## Stop and escalation conditions
 
@@ -84,21 +84,21 @@ BLOCKED-ITEMS: <none | denial/missing-input details>
 
 ## Examples
 
-Good FINDINGS entry: `The gate demotes egress ALLOW to a non-persistable ASK after a private read [src/jarvis/core/agent.py:650-657]`.
+Good FINDINGS entry: `The gate demotes egress ALLOW to a non-persistable ASK after a private read [src/kira/core/agent.py:650-657]`.
 Bad: `The permission system looks solid.` (no anchor, no content).
 Good BLOCKED report: `STATUS: BLOCKED — synthesis summary was empty; implementing without a directive would be guessing. Needed: a non-empty summary or the original task brief outside the untrusted frame.`
 
 ## Revision triggers
 
-- Any change to the untrusted-framing delimiters or report framing (`src/jarvis/agents/service.py`, `src/jarvis/orchestration/context.py`).
+- Any change to the untrusted-framing delimiters or report framing (`src/kira/agents/service.py`, `src/kira/orchestration/context.py`).
 - A structural report schema is added to member outputs (P1-3 fix) — the Deliverable format must then match it.
 - Stage prompts in `engine.py` gain role text, making parts of this pack redundant.
 
 ## Source evidence
 
-- Identical stage prompts, no role text: `src/jarvis/orchestration/engine.py:510,529,552`.
-- ok = clean stop, not success: `src/jarvis/agents/service.py:419-422`.
+- Identical stage prompts, no role text: `src/kira/orchestration/engine.py:510,529,552`.
+- ok = clean stop, not success: `src/kira/agents/service.py:419-422`.
 - Forged report text is inert: `tests/unit/test_orchestration_engine.py:239`; ADR-0014 §4 (`docs/decisions/0014-orchestration-on-spawn.md:42-47`).
-- Framing delimiters: `src/jarvis/orchestration/context.py:58-61,97-106`; report frame `src/jarvis/agents/service.py:91-136`.
-- Read-only floor (no shell for council/review): `src/jarvis/orchestration/roles.py:23-32`.
+- Framing delimiters: `src/kira/orchestration/context.py:58-61,97-106`; report frame `src/kira/agents/service.py:91-136`.
+- Read-only floor (no shell for council/review): `src/kira/orchestration/roles.py:23-32`.
 - Verification commands: `docs/evals-cost-control.md:11-16`; `pyproject.toml:76-84`.

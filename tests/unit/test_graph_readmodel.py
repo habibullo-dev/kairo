@@ -10,13 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.agents import AgentRunStore
-from jarvis.graph import GraphStore
-from jarvis.graph.builder import rebuild
-from jarvis.graph.service import MAX_DEPTH, node_card, subgraph
-from jarvis.orchestration import OrchestrationStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
+from kira.agents import AgentRunStore
+from kira.graph import GraphStore
+from kira.graph.builder import rebuild
+from kira.graph.service import MAX_DEPTH, node_card, subgraph
+from kira.orchestration import OrchestrationStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
 
 _OPEN: list = []
 _TS = "2026-03-15T00:00:00+00:00"

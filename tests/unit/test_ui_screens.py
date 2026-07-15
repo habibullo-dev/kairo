@@ -12,17 +12,17 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from jarvis.config import KnowledgeConfig, SchedulerConfig, load_config
-from jarvis.knowledge.service import KnowledgeService
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.memory.store import MemoryStore
-from jarvis.persistence.db import connect
-from jarvis.scheduler.service import TaskService
-from jarvis.scheduler.store import TaskStore
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.readmodels import UiServices
-from jarvis.ui.server import STATIC_DIR, create_app
+from kira.config import KnowledgeConfig, SchedulerConfig, load_config
+from kira.knowledge.service import KnowledgeService
+from kira.knowledge.store import KnowledgeStore
+from kira.memory.embeddings import FakeEmbedder
+from kira.memory.store import MemoryStore
+from kira.persistence.db import connect
+from kira.scheduler.service import TaskService
+from kira.scheduler.store import TaskStore
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.readmodels import UiServices
+from kira.ui.server import STATIC_DIR, create_app
 
 STATIC = STATIC_DIR
 

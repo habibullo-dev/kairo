@@ -8,8 +8,8 @@ from pathlib import Path
 
 import aiosqlite
 
-from jarvis.persistence import migrations as M
-from jarvis.persistence.migrations import migrate
+from kira.persistence import migrations as M
+from kira.persistence.migrations import migrate
 
 _NOW = "2026-01-01T00:00:00+00:00"
 

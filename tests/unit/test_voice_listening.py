@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import VoiceConfig, load_config
-from jarvis.core import AgentLoop, FakeClient, build_system, text_message, tool_use_message
-from jarvis.core.client import ToolCall
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.tools import ToolContext, ToolExecutor, ToolRegistry
-from jarvis.voice import (
+from kira.config import VoiceConfig, load_config
+from kira.core import AgentLoop, FakeClient, build_system, text_message, tool_use_message
+from kira.core.client import ToolCall
+from kira.permissions import PermissionGate, Policy
+from kira.tools import ToolContext, ToolExecutor, ToolRegistry
+from kira.voice import (
     FakeCapture,
     FakeTranscriber,
     PushToTalkListener,
@@ -31,7 +31,7 @@ class _Output:
 def _session(tmp_path: Path, *, transcripts, client, approver=None) -> VoiceSession:
     cfg = load_config(root=tmp_path, env_file=None)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     loop = AgentLoop(
         client=client,
         registry=reg,

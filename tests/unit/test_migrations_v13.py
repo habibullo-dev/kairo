@@ -7,8 +7,8 @@ from pathlib import Path
 
 import aiosqlite
 
-from jarvis.persistence import migrations as M
-from jarvis.persistence.migrations import migrate
+from kira.persistence import migrations as M
+from kira.persistence.migrations import migrate
 
 
 async def _build_v12(path: Path) -> aiosqlite.Connection:

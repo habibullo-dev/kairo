@@ -9,12 +9,12 @@ from pathlib import Path
 
 import httpx
 
-from jarvis.config import load_config
-from jarvis.persistence.db import connect
-from jarvis.persistence.sessions import SessionStore
-from jarvis.ui.auth import LEGACY_SESSION_COOKIE, SESSION_COOKIE, AuthManager
-from jarvis.ui.owner_auth import Argon2PasswordHasher, OwnerAuthService
-from jarvis.ui.server import AUTH_GRANT_COOKIE, LEGACY_AUTH_GRANT_COOKIE, create_app
+from kira.config import load_config
+from kira.persistence.db import connect
+from kira.persistence.sessions import SessionStore
+from kira.ui.auth import LEGACY_SESSION_COOKIE, SESSION_COOKIE, AuthManager
+from kira.ui.owner_auth import Argon2PasswordHasher, OwnerAuthService
+from kira.ui.server import AUTH_GRANT_COOKIE, LEGACY_AUTH_GRANT_COOKIE, create_app
 
 TOKEN = "owner-launch-token-canary"
 PASSWORD = "A unique owner passphrase 2026!"

@@ -13,9 +13,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from jarvis.config import load_config
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.server import STATIC_DIR, create_app
+from kira.config import load_config
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.server import STATIC_DIR, create_app
 
 STATIC_FILES = sorted(STATIC_DIR.rglob("*.*"))
 TEXT_ASSET_SUFFIXES = {".css", ".html", ".js", ".json", ".svg", ".txt"}
@@ -241,5 +241,5 @@ def test_shell_hides_via_class_not_blocked_inline_style() -> None:
     index = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     assert 'style="display:none"' not in index, "use the is-hidden class, not blocked inline style"
     assert "is-hidden" in index
-    from jarvis.ui.server import STATIC_DIR as SD
+    from kira.ui.server import STATIC_DIR as SD
     assert ".is-hidden" in (SD / "kira.css").read_text(encoding="utf-8")

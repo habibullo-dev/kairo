@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.ui.auth import AuthManager, host_allowed, origin_allowed
-from jarvis.ui.connections import ConnectionManager
+from kira.ui.auth import AuthManager, host_allowed, origin_allowed
+from kira.ui.connections import ConnectionManager
 
 # --- Host allowlist (anti DNS-rebinding) -----------------------------------
 

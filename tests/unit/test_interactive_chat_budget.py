@@ -7,16 +7,16 @@ from types import SimpleNamespace
 
 from pydantic import BaseModel
 
-from jarvis.config import ChatConfig, Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets
-from jarvis.core import AgentLoop, FakeClient, ToolCall, text_message, tool_use_message
-from jarvis.core.agent import _request_token_ceiling
-from jarvis.core.execution import ExecutionContext, bind_execution_context
-from jarvis.observability.cost import Price, PricingTable, Usage
-from jarvis.observability.ledger import cost_context
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.routing import Classifier, RoutingMode
-from jarvis.routing.router import Router, RoutingState
-from jarvis.tools import Permission, Tool, ToolExecutor, ToolRegistry
+from kira.config import ChatConfig, Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets
+from kira.core import AgentLoop, FakeClient, ToolCall, text_message, tool_use_message
+from kira.core.agent import _request_token_ceiling
+from kira.core.execution import ExecutionContext, bind_execution_context
+from kira.observability.cost import Price, PricingTable, Usage
+from kira.observability.ledger import cost_context
+from kira.permissions import PermissionGate, Policy
+from kira.routing import Classifier, RoutingMode
+from kira.routing.router import Router, RoutingState
+from kira.tools import Permission, Tool, ToolExecutor, ToolRegistry
 
 
 class _EchoParams(BaseModel):

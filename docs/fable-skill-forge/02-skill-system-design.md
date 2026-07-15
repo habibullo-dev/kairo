@@ -7,10 +7,10 @@ Companion docs: [01-current-state-audit.md](01-current-state-audit.md) (evidence
 
 The audit (01, §6) shows the orchestration engine has strong *structural* safety but near-zero *behavioral* guidance:
 
-- Every council member receives the byte-identical prompt `"Analyze the task for your specialty."` (`src/jarvis/orchestration/engine.py:510`) — and is never told what its specialty *is*. A `redteam` analyst and a `data_analyst` differ only by model route and tool scope.
+- Every council member receives the byte-identical prompt `"Analyze the task for your specialty."` (`src/kira/orchestration/engine.py:510`) — and is never told what its specialty *is*. A `redteam` analyst and a `data_analyst` differ only by model route and tool scope.
 - The writer gets `"Implement per the synthesis."` (`engine.py:529`); reviewers get `"Review the work."` over the execution output alone, without the task brief or acceptance criteria (`engine.py:552`).
-- A sub-agent's `status="ok"` means "the model ended its turn cleanly" (`src/jarvis/agents/service.py:419-422`), not "the task succeeded"; nothing requires evidence for success claims.
-- `RosterRole` has no persona/instruction field at all (`src/jarvis/orchestration/roles.py:41-54`).
+- A sub-agent's `status="ok"` means "the model ended its turn cleanly" (`src/kira/agents/service.py:419-422`), not "the task succeeded"; nothing requires evidence for success claims.
+- `RosterRole` has no persona/instruction field at all (`src/kira/orchestration/roles.py:41-54`).
 
 Skill packs are the missing behavioral layer: versioned, human-approved process text, bound to (team, role, stage), compiled into the **system prompt** of spawned members. They make workers consistent, evidence-bound, and self-terminating — without touching a single authority mechanism.
 
@@ -40,7 +40,7 @@ Per ADR-0004 (`docs/decisions/0004:110-114`), no runtime code path may feed inge
 
 A pack is one markdown file with strict YAML frontmatter (schema in 03). The staged Fable drafts stay in `docs/fable-skill-forge/packs/`; a reviewed, committed copy may live in `config/skills/packs/*.md`. That runtime directory is write-denied in `config/permissions.yaml`, so `write_file` cannot touch packs even under an approved ASK — the same containment pattern as `data/knowledge`.
 
-### 3.2 The catalog (new module, ~`src/jarvis/skills/catalog.py`)
+### 3.2 The catalog (new module, ~`src/kira/skills/catalog.py`)
 
 Mirrors the catalog-as-safety-model pattern of ADR-0015/0016 ("the catalog is the safety model; enforcement is derived, never hand-set"):
 
@@ -101,7 +101,7 @@ At spawn time the engine resolves the tuple `(team_id, member_id, route_role, st
 
 The compiled text goes into the **system prompt** of the spawned member, after the safety guidance blocks and before volatile extras:
 
-1. `build_system(...)` (`src/jarvis/core/prompts.py:124-169`) gains a dedicated `skills: str | None = None` parameter, appended **after** `SUBAGENT_GUIDANCE`/other guidance and **before** `extra`. Rationale: safety framing first (precedence by position), skills next (stable), volatile context last (preserves the cache-breakpoint design noted at `prompts.py:146-148`). A dedicated parameter — not `extra` — because `extra` is the volatile channel (compaction/recall) and skills must be part of the stable prefix and separately hashable.
+1. `build_system(...)` (`src/kira/core/prompts.py:124-169`) gains a dedicated `skills: str | None = None` parameter, appended **after** `SUBAGENT_GUIDANCE`/other guidance and **before** `extra`. Rationale: safety framing first (precedence by position), skills next (stable), volatile context last (preserves the cache-breakpoint design noted at `prompts.py:146-148`). A dedicated parameter — not `extra` — because `extra` is the volatile channel (compaction/recall) and skills must be part of the stable prefix and separately hashable.
 2. `SubAgentService.spawn(...)` (`agents/service.py:216-296`) gains a `skill_text: str | None` pass-through to `build_system(subagent=True, ..., skills=skill_text)` at `service.py:350`. The task envelope (`service.py:98-104`) and framed report path (`service.py:117-136`) are untouched.
 3. `OrchestrationEngine._spawn_member` (`engine.py:265-312`) resolves + compiles packs and passes `skill_text`. Stage user-prompts (`engine.py:510,529,552`) are **unchanged** in v1 — skills ride in the system prompt only, so `mode: off` byte-identity is trivial to pin.
 

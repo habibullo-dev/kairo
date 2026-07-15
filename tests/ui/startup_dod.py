@@ -22,7 +22,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 _HARNESS_NAME = "__startup_dod.html"
 _SEED_SENTINEL = "__kira_startup_dod_seeded__"

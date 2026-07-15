@@ -10,13 +10,13 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from jarvis.cli.repl import Repl
-from jarvis.config import SchedulerConfig, load_config
-from jarvis.core import FakeClient, text_message
-from jarvis.core.prompts import TASKS_GUIDANCE
-from jarvis.persistence.db import connect
-from jarvis.scheduler.service import TaskService
-from jarvis.scheduler.store import TaskStore
+from kira.cli.repl import Repl
+from kira.config import SchedulerConfig, load_config
+from kira.core import FakeClient, text_message
+from kira.core.prompts import TASKS_GUIDANCE
+from kira.persistence.db import connect
+from kira.scheduler.service import TaskService
+from kira.scheduler.store import TaskStore
 
 START = dt.datetime(2026, 7, 6, 8, 0, tzinfo=dt.UTC)
 _OPEN_DBS: list = []

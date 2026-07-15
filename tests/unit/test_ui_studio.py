@@ -4,7 +4,7 @@ existing Phase 10B orchestration flow (unchanged)."""
 
 from __future__ import annotations
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 STUDIO = (STATIC_DIR / "screens" / "studio.js").read_text(encoding="utf-8")
 REPORT = (STATIC_DIR / "ui" / "project-report.js").read_text(encoding="utf-8")

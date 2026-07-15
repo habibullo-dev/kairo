@@ -54,7 +54,7 @@ every "action" in the Office is a click that calls an already-enumerated route.
   --good --attention --danger --cost --veil-a/b/c --gap --radius --motion --nav`. The premium/calm
   look is **CSS gradients only (an atmospheric veil) — zero image assets**; icons are emoji/monograms.
   Responsive breakpoints at `900px` and `720px` (rail collapses to 58px).
-- **Screenshot DoD (`tests/ui/capture.py` + `jarvis.ui.screenshots`)**: a headless-browser harness
+- **Screenshot DoD (`tests/ui/capture.py` + `kira.ui.screenshots`)**: a headless-browser harness
   over `THEMES × VIEWPORTS` that screenshots each `hash:screen:state` and runs `analyze_overlap`
   (no element overlap, no horizontal overflow); the pure machinery is unit-tested keyless
   (`test_screenshot_harness.py`). Viewports are the pinned 1440/1024/390 (verification-11).
@@ -118,14 +118,14 @@ new event storage. `feed` reuses the Phase-11 activity read model (metadata + sh
 added to the `workspace.js` `TABS` allowlist. Route `#workspace/{id}/office`. The top-level `#studio`
 screen is untouched and remains the default calm view. New/edited files:
 
-- `src/jarvis/ui/static/screens/workspace/office.js` — the Office panel (NEW). Renders from
+- `src/kira/ui/static/screens/workspace/office.js` — the Office panel (NEW). Renders from
   `/api/workspace/{id}/office`; subscribes to `busOn("orchestration", …)` for live patches.
-- `src/jarvis/ui/static/screens/workspace.js` — add `["office","Office"]` to `TABS` (allowlist).
-- `src/jarvis/ui/static/ui/office.js` — pure view helpers (room/zone layout, node rendering, stage
+- `src/kira/ui/static/screens/workspace.js` — add `["office","Office"]` to `TABS` (allowlist).
+- `src/kira/ui/static/ui/office.js` — pure view helpers (room/zone layout, node rendering, stage
   map, feed formatting), unit-friendly + reused by both modes (NEW, optional split).
-- `src/jarvis/ui/static/kairo.css` — an `/* --- Phase 14 Office --- */` block using existing tokens
+- `src/kira/ui/static/kairo.css` — an `/* --- Phase 14 Office --- */` block using existing tokens
   only (no new theme, no assets).
-- `src/jarvis/ui/readmodels.py` — `office_overview`; `src/jarvis/ui/server.py` — the GET route
+- `src/kira/ui/readmodels.py` — `office_overview`; `src/kira/ui/server.py` — the GET route
   (+ optional layout-save route, §10 M3).
 
 **Two modes, one data source (requirement 5):**
@@ -233,7 +233,7 @@ horizontal overflow):
 
 Seed the states from replay/demo data (no live API). The DoD is GREEN = zero layout violations
 across the full theme×viewport×state grid; captured in `docs/verification-14.md`. Reuse
-`jarvis.ui.screenshots` (keyless-unit-tested machinery) unchanged.
+`kira.ui.screenshots` (keyless-unit-tested machinery) unchanged.
 
 ## 9. Performance for long/large runs (requirement 9)
 
@@ -297,7 +297,7 @@ throughout; the Office ships behind the workspace tab, never as the app landing.
 
 ## 11. Live / demo verification (requirement 11 — Task 8, after approval)
 
-1. `jarvis --ui`; open a project → **Workspace → Office**. Confirm: Studio (`#studio`) is still the
+1. `kira --ui`; open a project → **Workspace → Office**. Confirm: Studio (`#studio`) is still the
    default; the Office is a tab, opt-in.
 2. With **replay/demo data** (no live API): rooms render for each team; the stage map + head chair
    are clear; nodes show role/model/provider/tools/services/cost/status.
@@ -319,7 +319,7 @@ evidence, before Task 8 and before any live/demo. Per-task commits with explicit
 adversarial review before each commit; suite + ruff + `eval gate --suite core` replay green every
 task. Reuse, never fork: `ui/dom.js` `el()`/`esc()`, the workspace tab shell + allowlist + error
 boundary, the orchestration bus (`busOn`), `ui/theme.js`/`ui/keys.js`, the token system (no new
-theme, **no image assets/CDN**), `jarvis.ui.screenshots` (DoD machinery), the `set_label`/
+theme, **no image assets/CDN**), `kira.ui.screenshots` (DoD machinery), the `set_label`/
 `set_services` merge-safe settings-write pattern, the secret-sweep + mutation-route-pin discipline.
 **No new authority, no new action path, no new storage/migration** (the office read model is an
 assembler; layout is a small explicit blob). The Office must never become the app default; the calm

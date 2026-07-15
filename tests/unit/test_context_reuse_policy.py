@@ -7,14 +7,14 @@ route explicitly allows it; otherwise nothing is cached (default = stable non-se
 
 from __future__ import annotations
 
-from jarvis.models.context_reuse import (
+from kira.models.context_reuse import (
     ContextReuseMode,
     anthropic_cache_control,
     capability,
     openai_prompt_cache_key,
     plan,
 )
-from jarvis.models.prompt_layout import PromptSection, SectionKind, assemble
+from kira.models.prompt_layout import PromptSection, SectionKind, assemble
 
 
 def _prompt(sensitive: bool = False):

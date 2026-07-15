@@ -9,15 +9,15 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from jarvis.config import TelegramRemoteAttachmentsConfig
-from jarvis.remote import attachments as attachments_module
-from jarvis.remote.attachments import (
+from kira.config import TelegramRemoteAttachmentsConfig
+from kira.remote import attachments as attachments_module
+from kira.remote.attachments import (
     RemoteAttachment,
     RemoteAttachmentError,
     RemoteAttachmentProcessor,
     prepare_image,
 )
-from jarvis.voice.protocols import Transcript
+from kira.voice.protocols import Transcript
 
 
 class _Transcriber:

@@ -11,9 +11,9 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from jarvis.connectors import oauth
-from jarvis.connectors.base import ConnectorAuthError
-from jarvis.connectors.oauth import (
+from kira.connectors import oauth
+from kira.connectors.base import ConnectorAuthError
+from kira.connectors.oauth import (
     OAuthProvider,
     authorize,
     build_auth_url,

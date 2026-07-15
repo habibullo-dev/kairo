@@ -9,10 +9,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from jarvis.agents import AgentRun, AgentRunStore
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
+from kira.agents import AgentRun, AgentRunStore
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
 
 
 async def _store(tmp_path: Path) -> tuple[AgentRunStore, SessionStore]:

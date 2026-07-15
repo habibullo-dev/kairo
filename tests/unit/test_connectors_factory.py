@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import load_config
-from jarvis.connectors.factory import build_connectors
+from kira.config import load_config
+from kira.connectors.factory import build_connectors
 
 _ENV = ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "TELEGRAM_BOT_TOKEN", "KAKAO_REST_API_KEY")
 

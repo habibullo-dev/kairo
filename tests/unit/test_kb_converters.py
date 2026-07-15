@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.knowledge import converters
-from jarvis.knowledge.converters import (
+from kira.knowledge import converters
+from kira.knowledge.converters import (
     ConversionError,
     convert_file,
     fetch_url,
@@ -127,7 +127,7 @@ def test_kb_conversion_never_carries_web_tool_framing() -> None:
     # Separation pin (D6): KB ingestion converts HTML via converters, NOT the web tool,
     # so the web tool's untrusted-content framing must never leak into stored markdown.
     # A future refactor that routed KB ingest through the web tool would fail here.
-    from jarvis.tools.builtin import web
+    from kira.tools.builtin import web
 
     html = (
         "<html><body><article><h1>Runbook</h1>"

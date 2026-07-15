@@ -1,9 +1,9 @@
 """Contract pins for the current, offline Kira-to-macOS migration ritual."""
 
-from jarvis.observability.logging import CANONICAL_LOG_PREFIX
-from jarvis.persistence.database_identity import DATABASE_FILENAME, LEGACY_DATABASE_FILENAME
-from jarvis.persistence.migrations import latest_version
-from jarvis.ui.server import STATIC_DIR
+from kira.observability.logging import CANONICAL_LOG_PREFIX
+from kira.persistence.database_identity import DATABASE_FILENAME, LEGACY_DATABASE_FILENAME
+from kira.persistence.migrations import latest_version
+from kira.ui.server import STATIC_DIR
 
 REPOSITORY_ROOT = STATIC_DIR.parents[3]
 GUIDE = (REPOSITORY_ROOT / "docs" / "migration-macos.md").read_text(encoding="utf-8")

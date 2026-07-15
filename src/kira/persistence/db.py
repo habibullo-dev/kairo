@@ -1,0 +1,84 @@
+"""SQLite connection helper (aiosqlite) + the shared write lock.
+
+The whole app runs on **one shared** aiosqlite connection. That makes interleaved writes
+the hazard: with sqlite3's legacy implicit transactions, two coroutines writing
+across await points share one open transaction, and either one's ``commit()``
+commits the other's half-done work — a crash at the wrong moment can then lose
+data (e.g. a ``save_messages`` DELETE committed without its INSERT).
+
+Correctness therefore lives here, not in call-site discipline: every store takes
+a shared ``asyncio.Lock``, single-statement writes hold it around execute+commit,
+and multi-statement writes go through :func:`transaction` (BEGIN IMMEDIATE …
+COMMIT/ROLLBACK under the lock, atomic on disk).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import aiosqlite
+
+from kira.persistence.backup import create_pre_migration_snapshot, existing_database_version
+from kira.persistence.migrations import latest_version, migrate
+
+
+async def connect(path: Path) -> aiosqlite.Connection:
+    """Open a ready-to-use SQLite connection with predictable concurrency settings.
+
+    WAL is persistent per database file; the remaining safety and contention settings are
+    connection-local and must therefore be applied every time a connection is opened.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A real, older database is snapshotted before any DDL. The online SQLite backup API makes
+    # this safe even if another process currently has the database open. Snapshot failure
+    # intentionally blocks migration rather than risking the only copy of user state.
+    current_version = existing_database_version(path)
+    target_version = latest_version()
+    if current_version is not None and current_version < target_version:
+        create_pre_migration_snapshot(
+            path, current_version=current_version, target_version=target_version
+        )
+    db = await aiosqlite.connect(path)
+    try:
+        # Keep short lock contention from surfacing as an immediate OperationalError while
+        # preserving the existing in-process transaction lock as the primary writer guard.
+        await db.execute("PRAGMA busy_timeout = 5000")
+        cursor = await db.execute("PRAGMA journal_mode = WAL")
+        row = await cursor.fetchone()
+        if row is None or str(row[0]).lower() != "wal":
+            reported_mode = row[0] if row else None
+            raise RuntimeError(
+                f"SQLite database {path} did not enable WAL mode (reported {reported_mode!r})."
+            )
+        # NORMAL is the intended WAL durability/performance trade-off: SQLite stays
+        # consistent after a crash, while the most recent committed transactions can be lost
+        # on sudden power loss.
+        await db.execute("PRAGMA synchronous = NORMAL")
+        await db.execute("PRAGMA foreign_keys = ON")
+        await migrate(db)
+    except BaseException:
+        await db.close()
+        raise
+    return db
+
+
+@asynccontextmanager
+async def transaction(db: aiosqlite.Connection, lock: asyncio.Lock) -> AsyncIterator[None]:
+    """One atomic multi-statement write: BEGIN IMMEDIATE … COMMIT under ``lock``.
+
+    Any exception rolls the whole block back and re-raises. Statements inside the
+    block must use ``db.execute`` directly — not store methods that re-acquire the
+    lock (asyncio locks are not re-entrant).
+    """
+    async with lock:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            await db.rollback()
+            raise
+        else:
+            await db.commit()

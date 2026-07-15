@@ -14,15 +14,15 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.actions.intents import IntentKind, IntentStore
-from jarvis.actions.journal import ConnectorWriteJournal
-from jarvis.actions.requests import CalendarCreateRequest, request_to_dict
-from jarvis.config import load_config
-from jarvis.connectors.base import ConnectorRegistry
-from jarvis.persistence.db import connect
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.readmodels import UiServices
-from jarvis.ui.server import create_app
+from kira.actions.intents import IntentKind, IntentStore
+from kira.actions.journal import ConnectorWriteJournal
+from kira.actions.requests import CalendarCreateRequest, request_to_dict
+from kira.config import load_config
+from kira.connectors.base import ConnectorRegistry
+from kira.persistence.db import connect
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.readmodels import UiServices
+from kira.ui.server import create_app
 
 _OPEN: list = []
 

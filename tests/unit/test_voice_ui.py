@@ -15,13 +15,13 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from jarvis.config import load_config
-from jarvis.core.execution import ExecutionContext
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.server import STATIC_DIR, WORKSPACE_HEADER, create_app
-from jarvis.ui.voice import UiVoice
-from jarvis.voice import FakeCapture, MeetingCapture
-from jarvis.voice.protocols import FakeTranscriber
+from kira.config import load_config
+from kira.core.execution import ExecutionContext
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.server import STATIC_DIR, WORKSPACE_HEADER, create_app
+from kira.ui.voice import UiVoice
+from kira.voice import FakeCapture, MeetingCapture
+from kira.voice.protocols import FakeTranscriber
 
 
 class _FakeSession:

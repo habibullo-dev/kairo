@@ -13,16 +13,16 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-from jarvis.config import load_config
-from jarvis.core import AgentLoop, FakeClient, build_system, text_message
-from jarvis.core.client import ToolCall
-from jarvis.core.events import ToolStarted
-from jarvis.core.execution import ExecutionContext, bind_execution_context
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.permissions.gate import Decision
-from jarvis.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
-from jarvis.ui.voice import UiVoiceRenderer
-from jarvis.voice import FakeSynthesizer, FakeTranscriber, VoiceApprover, VoiceSession
+from kira.config import load_config
+from kira.core import AgentLoop, FakeClient, build_system, text_message
+from kira.core.client import ToolCall
+from kira.core.events import ToolStarted
+from kira.core.execution import ExecutionContext, bind_execution_context
+from kira.permissions import PermissionGate, Policy
+from kira.permissions.gate import Decision
+from kira.tools import Permission, ToolContext, ToolExecutor, ToolRegistry
+from kira.ui.voice import UiVoiceRenderer
+from kira.voice import FakeSynthesizer, FakeTranscriber, VoiceApprover, VoiceSession
 
 ASK = Decision(Permission.ASK, "needs approval")
 _CONTEXT = ExecutionContext(session_id=101, project_id=None)
@@ -107,7 +107,7 @@ async def test_mid_turn_events_are_not_mirrored() -> None:
 def _loop(tmp_path: Path, client) -> AgentLoop:
     cfg = load_config(root=tmp_path, env_file=None)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     return AgentLoop(
         client=client,
         registry=reg,
@@ -191,7 +191,7 @@ async def test_played_escalation_audio_has_no_payload() -> None:
 
 
 async def test_voice_state_broadcast_is_state_only() -> None:
-    from jarvis.ui.voice import UiVoice
+    from kira.ui.voice import UiVoice
 
     conns = _Conns()
     voice = UiVoice(connections=conns)
@@ -216,7 +216,7 @@ async def test_voice_state_broadcast_is_state_only() -> None:
 
 
 async def test_meeting_state_is_separate_scoped_and_content_free() -> None:
-    from jarvis.ui.voice import UiVoice
+    from kira.ui.voice import UiVoice
 
     conns = _Conns()
     voice = UiVoice(connections=conns)
@@ -244,7 +244,7 @@ async def test_meeting_state_is_separate_scoped_and_content_free() -> None:
 
 
 async def test_meeting_state_uses_the_workspace_publisher_when_composed() -> None:
-    from jarvis.ui.voice import UiVoice
+    from kira.ui.voice import UiVoice
 
     delivered: list[tuple[object, str, int, int | None]] = []
 
@@ -268,7 +268,7 @@ async def test_meeting_state_uses_the_workspace_publisher_when_composed() -> Non
 
 
 async def test_meeting_state_delivery_preserves_revision_order_when_first_send_is_slow() -> None:
-    from jarvis.ui.voice import UiVoice
+    from kira.ui.voice import UiVoice
 
     release_first = asyncio.Event()
     delivered: list[tuple[str, int]] = []
@@ -295,7 +295,7 @@ async def test_meeting_state_delivery_preserves_revision_order_when_first_send_i
 
 
 async def test_cancelling_meeting_delivery_cancels_its_active_publication() -> None:
-    from jarvis.ui.voice import UiVoice
+    from kira.ui.voice import UiVoice
 
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -328,7 +328,7 @@ async def test_cancelling_meeting_delivery_cancels_its_active_publication() -> N
 
 
 async def test_immediate_meeting_delivery_cancellation_never_starts_custom_publisher() -> None:
-    from jarvis.ui.voice import UiVoice
+    from kira.ui.voice import UiVoice
 
     publisher_called = False
 
@@ -353,7 +353,7 @@ async def test_immediate_meeting_delivery_cancellation_never_starts_custom_publi
 
 
 async def test_cancelled_middle_meeting_delivery_cannot_break_revision_order() -> None:
-    from jarvis.ui.voice import UiVoice
+    from kira.ui.voice import UiVoice
 
     first_started = asyncio.Event()
     release_first = asyncio.Event()
@@ -393,7 +393,7 @@ async def test_cancelled_middle_meeting_delivery_cannot_break_revision_order() -
 
 
 async def test_meeting_publisher_may_return_an_already_scheduled_task() -> None:
-    from jarvis.ui.voice import UiVoice
+    from kira.ui.voice import UiVoice
 
     delivered: list[tuple[str, int]] = []
 

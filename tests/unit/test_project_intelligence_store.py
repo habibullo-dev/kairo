@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.intelligence import (
+from kira.intelligence import (
     AnalysisJobState,
     AnalysisJobStore,
     ProjectReportStore,
 )
-from jarvis.orchestration import OrchestrationStore
-from jarvis.persistence.db import connect
-from jarvis.persistence.migrations import latest_version
-from jarvis.projects import ProjectStore
+from kira.orchestration import OrchestrationStore
+from kira.persistence.db import connect
+from kira.persistence.migrations import latest_version
+from kira.projects import ProjectStore
 
 _OPEN: list = []
 

@@ -7,7 +7,7 @@ presentation-only debug/trace toggle. Presence booleans only — never a key val
 
 from __future__ import annotations
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 SET = (STATIC_DIR / "screens" / "settings.js").read_text(encoding="utf-8")
 

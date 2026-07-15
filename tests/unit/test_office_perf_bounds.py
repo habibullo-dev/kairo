@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 OFFICE_JS = (STATIC_DIR / "screens" / "workspace" / "office.js").read_text(encoding="utf-8")
 CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")

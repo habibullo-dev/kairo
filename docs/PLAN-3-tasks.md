@@ -178,7 +178,7 @@ Phase 3 introduces the first real write concurrency on the **single shared aiosq
 
 The turn lock (D4) remains — but as UX policy (one thing talks to the terminal), not the correctness mechanism.
 
-## 4. Module design (`src/jarvis/scheduler/`)
+## 4. Module design (`src/kira/scheduler/`)
 
 - **`store.py` — `TaskStore(db, lock)`** (+ frozen `Task`, `TaskRun` dataclasses): `add(...) -> int`, `get`, `list(include_finished=False)`, `due(now_iso)` (active, due, no unfinished run, ordered), `set_next_run`, `set_status`, `record_failure -> int`, `reset_failures`, `start_run(task_id, scheduled_for) -> run_id`, `finish_run(run_id, status, *, session_id, result_text, denied_count, error, cost_usd)` (atomic with task advancement via the service), `runs_for(task_id, limit=20)`, `sweep_stale_runs()` (orphaned `running` → `aborted`, advance the task). Module docstring repeats the shared-connection warning like `memory/store.py`.
 - **`triggers.py`** — the only file importing APScheduler: `validate(schedule_kind, spec, tz) -> str | None` (human-readable error) and `compute_next(schedule_kind, spec, tz, *, after) -> datetime | None` (aware-UTC in/out; interval floor **60s**; once returns the instant if ahead of `after`, else None).

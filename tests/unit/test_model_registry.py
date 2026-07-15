@@ -11,14 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import ConfigError, load_config
-from jarvis.models import ClientFactory, ModelRegistry, ModelRoute, RouteError
-from jarvis.models.openai_client import (
+from kira.config import ConfigError, load_config
+from kira.models import ClientFactory, ModelRegistry, ModelRoute, RouteError
+from kira.models.openai_client import (
     OpenAIChatClient,
     OpenAIResponseError,
     UnsupportedToolUseError,
 )
-from jarvis.models.roles import DEFAULT_ROUTES, ROLES
+from kira.models.roles import DEFAULT_ROUTES, ROLES
 
 # --- registry resolution + validation --------------------------------------
 
@@ -206,7 +206,7 @@ async def test_openai_adapter_puts_system_first() -> None:
 
 
 def test_hub_model_routes_report_configured_without_keys(tmp_path: Path) -> None:
-    from jarvis.ui.readmodels import model_routes_status
+    from kira.ui.readmodels import model_routes_status
 
     cfg = _cfg(tmp_path, anthropic="SECRET-ANTHROPIC-CANARY", openai="")
     rows = model_routes_status(cfg)
@@ -222,7 +222,7 @@ def test_hub_model_routes_report_configured_without_keys(tmp_path: Path) -> None
 
 
 def test_model_routes_report_provider_state(tmp_path: Path) -> None:
-    from jarvis.ui.readmodels import model_routes_status
+    from kira.ui.readmodels import model_routes_status
 
     cfg = _cfg(tmp_path, anthropic="k", openai="")
     by_role = {r["role"]: r for r in model_routes_status(cfg)}
@@ -243,7 +243,7 @@ def _write_pricing(tmp_path: Path) -> None:
 
 
 def test_providers_status_states_and_secret_sweep(tmp_path: Path) -> None:
-    from jarvis.ui.readmodels import providers_status
+    from kira.ui.readmodels import providers_status
 
     _write_pricing(tmp_path)  # deepseek+gemini priced here; qwen intentionally absent
     cfg = _cfg(tmp_path, anthropic="k", openai="")

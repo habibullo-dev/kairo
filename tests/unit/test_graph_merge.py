@@ -11,10 +11,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jarvis.graph import GraphStore
-from jarvis.graph.merge import find_duplicates, locate_merge, split
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
+from kira.graph import GraphStore
+from kira.graph.merge import find_duplicates, locate_merge, split
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
 
 _OPEN: list = []
 _TS = "2026-03-01T00:00:00+00:00"
@@ -143,7 +143,7 @@ async def test_merge_leaves_derived_edges_untouched(tmp_path: Path) -> None:
 
 
 async def test_merge_survives_a_rebuild(tmp_path: Path) -> None:
-    from jarvis.graph.builder import rebuild
+    from kira.graph.builder import rebuild
 
     store = await _store(tmp_path)
     canon, merged = await _person(store, "A"), await _person(store, "B")

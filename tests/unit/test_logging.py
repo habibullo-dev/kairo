@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.observability import (
+from kira.observability import (
     bind_trace,
     clear_trace,
     configure_logging,
     get_logger,
     get_trace_id,
 )
-from jarvis.observability import logging as obs_logging
+from kira.observability import logging as obs_logging
 
 
 @pytest.fixture(autouse=True)

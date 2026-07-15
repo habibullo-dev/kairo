@@ -10,12 +10,12 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from jarvis.config import load_config
-from jarvis.permissions import PermissionGate
-from jarvis.permissions.policy import Policy
-from jarvis.tools import Permission
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.server import STATIC_DIR, create_app
+from kira.config import load_config
+from kira.permissions import PermissionGate
+from kira.permissions.policy import Policy
+from kira.tools import Permission
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.server import STATIC_DIR, create_app
 
 
 def _client(tmp_path: Path):

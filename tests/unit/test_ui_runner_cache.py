@@ -1,6 +1,6 @@
 """Runner status has one cache owner; secondary surfaces consume that shared truth."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 APP = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 HEADER = (STATIC_DIR / "ui" / "header.js").read_text(encoding="utf-8")

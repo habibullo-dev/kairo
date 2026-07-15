@@ -7,9 +7,9 @@ from pathlib import Path
 import aiosqlite
 import numpy as np
 
-from jarvis.memory.store import MemoryStore, Provenance
-from jarvis.persistence.db import connect
-from jarvis.persistence.migrations import _SCHEMA_V1, latest_version, migrate
+from kira.memory.store import MemoryStore, Provenance
+from kira.persistence.db import connect
+from kira.persistence.migrations import _SCHEMA_V1, latest_version, migrate
 
 MODEL = "voyage-3-large"
 

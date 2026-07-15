@@ -10,11 +10,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jarvis.graph import GraphStore
-from jarvis.graph.obsidian import MARKER, export
-from jarvis.memory import MemoryStore, Provenance
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
+from kira.graph import GraphStore
+from kira.graph.obsidian import MARKER, export
+from kira.memory import MemoryStore, Provenance
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
 
 _OPEN: list = []
 _EMB = np.array([0.1, 0.2, 0.3], dtype=np.float32)

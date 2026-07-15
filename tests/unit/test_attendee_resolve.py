@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.actions.resolve import (
+from kira.actions.resolve import (
     AttendeesUnresolved,
     is_email,
     normalize_email,

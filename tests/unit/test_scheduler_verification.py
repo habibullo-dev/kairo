@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import SchedulerConfig
-from jarvis.scheduler.runner import BackgroundRunner, JobOutcome
-from jarvis.scheduler.service import TaskService
-from jarvis.scheduler.store import TaskStore
-from jarvis.scheduler.verification import VerificationContract, verify_final_text
+from kira.config import SchedulerConfig
+from kira.scheduler.runner import BackgroundRunner, JobOutcome
+from kira.scheduler.service import TaskService
+from kira.scheduler.store import TaskStore
+from kira.scheduler.verification import VerificationContract, verify_final_text
 
 UTC = dt.UTC
 START = dt.datetime(2026, 7, 6, 8, 0, tzinfo=UTC)
@@ -30,7 +30,7 @@ class Clock:
 
 
 async def _service(tmp_path: Path) -> tuple[TaskService, Clock, TaskStore]:
-    from jarvis.persistence.db import connect
+    from kira.persistence.db import connect
 
     clock = Clock()
     store = TaskStore(await connect(tmp_path / "tasks.db"))

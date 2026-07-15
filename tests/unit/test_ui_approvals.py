@@ -16,16 +16,16 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx import ASGITransport
 
-from jarvis.config import load_config
-from jarvis.core.client import ToolCall
-from jarvis.core.execution import ExecutionContext, bind_execution_context
-from jarvis.permissions import PermissionGate, load_policy
-from jarvis.permissions.gate import Decision
-from jarvis.tools import Permission
-from jarvis.ui.approver import ApprovalManager, UIApprover, make_ui_subagent_approver
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.connections import ConnectionManager
-from jarvis.ui.server import create_app
+from kira.config import load_config
+from kira.core.client import ToolCall
+from kira.core.execution import ExecutionContext, bind_execution_context
+from kira.permissions import PermissionGate, load_policy
+from kira.permissions.gate import Decision
+from kira.tools import Permission
+from kira.ui.approver import ApprovalManager, UIApprover, make_ui_subagent_approver
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.connections import ConnectionManager
+from kira.ui.server import create_app
 
 ASK = Decision(Permission.ASK, "needs approval")
 _CONTEXT = ExecutionContext(session_id=101, project_id=None)
@@ -308,7 +308,7 @@ async def test_ui_subagent_approver_labels_and_grants(tmp_path: Path) -> None:
     # A sub-agent ASK is surfaced with its title; "always" records a run-scoped pattern
     # grant on the child's gate (not persist_always). Here we just assert the labeling +
     # that resolve drives the future (grant path exercised in Phase 6 gate tests).
-    from jarvis.permissions import SubAgentGate
+    from kira.permissions import SubAgentGate
 
     config = load_config(root=tmp_path, env_file=None)
     parent = PermissionGate(load_policy(tmp_path / "config" / "permissions.yaml"), config.root)
@@ -349,7 +349,7 @@ def test_list_approvals_without_workspace_hides_pending_payloads(tmp_path: Path)
     client, app, auth = _client(tmp_path)
     # seed a pending approval directly (to_public doesn't touch the future)
     fut: asyncio.Future = asyncio.get_event_loop_policy().new_event_loop().create_future()
-    from jarvis.ui.approver import PendingApproval
+    from kira.ui.approver import PendingApproval
 
     app.state.approvals._pending["D1"] = PendingApproval(
         "D1", _call("write_file", path="a.txt"), ASK, "turn", None, fut, lambda: None, _CONTEXT

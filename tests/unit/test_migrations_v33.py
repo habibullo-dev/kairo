@@ -5,8 +5,8 @@ from __future__ import annotations
 import aiosqlite
 import pytest
 
-from jarvis.knowledge.store import KnowledgeStore, NewChunk
-from jarvis.persistence import migrations as M
+from kira.knowledge.store import KnowledgeStore, NewChunk
+from kira.persistence import migrations as M
 
 
 async def _add(store: KnowledgeStore, *, origin: str, content_hash: str) -> int:

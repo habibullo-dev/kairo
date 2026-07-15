@@ -108,7 +108,7 @@ deliberately comes late: it should land on mature surfaces, not create them.
     Definition of done includes screenshots (R4): empty state, populated state,
     mobile/narrow, project page, search results, artifact preview — via playwright_local
     where possible.
-  - Small task: `jarvis backup` MVP (SQLite backup API + vault/artifacts + manifest) —
+  - Small task: `kira backup` MVP (SQLite backup API + vault/artifacts + manifest) —
     pulled forward from 17 because the data becomes valuable faster than packaging matures.
   - Core chat ergonomics (edit/regenerate, stop, copy/quote, inline artifact previews) —
     scoped in or explicitly split to an 11.5, decided in the detailed plan.
@@ -301,7 +301,7 @@ deliberately comes late: it should land on mature surfaces, not create them.
   single-instance + port management; health endpoint + self-diagnostics screen (db
   integrity, index freshness, connector token expiry, scheduler liveness, egress-log
   summary); versioned backup/restore with a **tested restore path** (secrets excluded /
-  handled separately; encrypt-at-rest option); `jarvis migrate` for the MacBook move (path
+  handled separately; encrypt-at-rest option); `kira migrate` for the MacBook move (path
   translation; credentials re-entered, never silently copied); Syncthing guidance (vault/
   artifacts sync; the DB and token stores NEVER sync — instance-lock guard); onboarding
   wizard + demo-mode content.
@@ -372,7 +372,7 @@ deliberately comes late: it should land on mature surfaces, not create them.
 > pinned/favorites, archive, groups; (e) richer project pages (Overview/Chats/Artifacts/
 > Memory/Tasks/Vault/Studio/Costs/Activity) with a unified Activity feed read model;
 > (f) command palette + keyboard-first navigation; (g) UX maturity pass (empty states,
-> hierarchy, calm premium density); (h) `jarvis backup` MVP; (i) decide in-plan whether
+> hierarchy, calm premium density); (h) `kira backup` MVP; (i) decide in-plan whether
 > core chat ergonomics (edit/regenerate/stop/quote/inline artifact previews) fits or
 > splits to 11.5; (j) Saved Views / Smart Collections (R1): built-ins "Recent artifacts",
 > "Needs review", "Generated this week", "By team/model", "Pinned project work", plus

@@ -1,6 +1,6 @@
 """Chat lifecycle controls are compact UI affordances over existing session routes only."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 
 def test_chat_shows_identity_save_state_and_existing_lifecycle_actions() -> None:

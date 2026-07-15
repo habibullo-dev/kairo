@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.ui import server as server_mod
-from jarvis.ui.server import STATIC_DIR
+from kira.ui import server as server_mod
+from kira.ui.server import STATIC_DIR
 
 COSTS = (STATIC_DIR / "screens" / "costs.js").read_text(encoding="utf-8")
 SERVER = Path(server_mod.__file__).read_text(encoding="utf-8")

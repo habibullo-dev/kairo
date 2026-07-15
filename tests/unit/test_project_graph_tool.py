@@ -9,15 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.agents import SPAWNABLE
-from jarvis.core.execution import bind_project_scope
-from jarvis.graph import GraphStore
-from jarvis.intelligence.context import build_project_overview
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectContext, ProjectStore, seal_snapshot
-from jarvis.tools import ToolContext
-from jarvis.tools.builtin.project_graph import (
+from kira.agents import SPAWNABLE
+from kira.core.execution import bind_project_scope
+from kira.graph import GraphStore
+from kira.intelligence.context import build_project_overview
+from kira.knowledge.store import KnowledgeStore
+from kira.persistence.db import connect
+from kira.projects import ProjectContext, ProjectStore, seal_snapshot
+from kira.tools import ToolContext
+from kira.tools.builtin.project_graph import (
     _MAX_OUTPUT_CHARS,
     QueryProjectGraphTool,
     _render_bounded,

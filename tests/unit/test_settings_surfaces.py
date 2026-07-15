@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import SkillActivationConfig, SkillsConfig, load_config
-from jarvis.permissions.policy import Policy
-from jarvis.tools import Permission
-from jarvis.ui.readmodels import settings_overview
+from kira.config import SkillActivationConfig, SkillsConfig, load_config
+from kira.permissions.policy import Policy
+from kira.tools import Permission
+from kira.ui.readmodels import settings_overview
 
 
 def _cfg(tmp_path: Path, *, enabled=("firecrawl",)):

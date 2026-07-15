@@ -11,16 +11,16 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from jarvis.agents import AgentRunStore, SubAgentService
-from jarvis.cli.repl import Repl, _call_summary
-from jarvis.config import load_config
-from jarvis.core.client import ToolCall, text_message, tool_use_message
-from jarvis.core.events import SubAgentEvent
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.tools import ToolContext, ToolExecutor, ToolRegistry
-from jarvis.tools.builtin.agents import SpawnAgentParams, SpawnAgentTool
+from kira.agents import AgentRunStore, SubAgentService
+from kira.cli.repl import Repl, _call_summary
+from kira.config import load_config
+from kira.core.client import ToolCall, text_message, tool_use_message
+from kira.core.events import SubAgentEvent
+from kira.permissions import PermissionGate, Policy
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.tools import ToolContext, ToolExecutor, ToolRegistry
+from kira.tools.builtin.agents import SpawnAgentParams, SpawnAgentTool
 
 
 def _cfg(tmp_path: Path):
@@ -33,11 +33,11 @@ def _cfg(tmp_path: Path):
 def test_registers_only_when_a_service_is_present(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     with_service = ToolRegistry()
-    with_service.discover("jarvis.tools.builtin", ToolContext(config=cfg, agents=object()))
+    with_service.discover("kira.tools.builtin", ToolContext(config=cfg, agents=object()))
     assert "spawn_agent" in with_service
 
     without = ToolRegistry()
-    without.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    without.discover("kira.tools.builtin", ToolContext(config=cfg))
     assert "spawn_agent" not in without  # no delegation surface when disabled
 
 
@@ -103,7 +103,7 @@ async def _service(tmp_path: Path, client: object) -> tuple[SubAgentService, obj
     db = await connect(tmp_path / "db.db")
     lock = asyncio.Lock()
     registry = ToolRegistry()
-    registry.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    registry.discover("kira.tools.builtin", ToolContext(config=cfg))
     svc = SubAgentService(
         session_store=SessionStore(db, lock),
         run_store=AgentRunStore(db, lock),

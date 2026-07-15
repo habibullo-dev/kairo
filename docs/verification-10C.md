@@ -71,7 +71,7 @@ Revert when done: `git checkout -- config/settings.yaml`.
 
 ### 3.1 Studio shows the right states
 
-`uv run jarvis --ui` → Studio. `deepseek` + `gemini` show **available**; `zai` shows
+`uv run kira --ui` → Studio. `deepseek` + `gemini` show **available**; `zai` shows
 **missing_credentials** (or disabled); `qwen` shows **unpriced** (unless you filled pricing);
 external rows deferred. No key text anywhere (presence booleans + env-var names only).
 
@@ -91,7 +91,7 @@ run a research workflow. Confirm the council output is framed and synthesis stay
 confirm a **tool-capable** route to Gemini is REJECTED:
 
 ```powershell
-uv run python -c "from jarvis.models.registry import ModelRegistry; ModelRegistry({'coder':{'provider':'gemini','model':'gemini-2.5-flash'}}).route('coder')"
+uv run python -c "from kira.models.registry import ModelRegistry; ModelRegistry({'coder':{'provider':'gemini','model':'gemini-2.5-flash'}}).route('coder')"
 # expect: RouteError — 'coder' must drive tools; provider 'gemini' is text-only
 ```
 
@@ -117,9 +117,9 @@ stop a runaway fan-out.
 ### 3.7 Chunked eval gate (loop-adjacent code changed)
 
 ```powershell
-uv run jarvis eval run --suite core --stage data/evals/_chunked-10c
-uv run jarvis eval run --suite adversarial --stage data/evals/_chunked-10c
-uv run jarvis eval aggregate --stage data/evals/_chunked-10c --report
+uv run kira eval run --suite core --stage data/evals/_chunked-10c
+uv run kira eval run --suite adversarial --stage data/evals/_chunked-10c
+uv run kira eval aggregate --stage data/evals/_chunked-10c --report
 ```
 
 Green required. **No baseline ratchet is expected** — 10C adds no eval scenarios and should not

@@ -4,8 +4,8 @@ Kept deliberately trivial so `pytest` is green from task 1 with no API key.
 Real unit tests arrive with their subsystems (tools, gate, loop).
 """
 
-import jarvis
+import kira
 
 
 def test_package_importable() -> None:
-    assert jarvis.__version__ == "0.1.0"
+    assert kira.__version__ == "0.1.0"

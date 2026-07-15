@@ -13,11 +13,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jarvis.graph import GraphStore
-from jarvis.persistence.db import connect
-from jarvis.persistence.fts import query_domain
-from jarvis.persistence.migrations import _SCHEMA_V12, latest_version, migrate
-from jarvis.projects import ProjectStore
+from kira.graph import GraphStore
+from kira.persistence.db import connect
+from kira.persistence.fts import query_domain
+from kira.persistence.migrations import _SCHEMA_V12, latest_version, migrate
+from kira.projects import ProjectStore
 
 _OPEN: list = []
 

@@ -14,27 +14,27 @@ from types import SimpleNamespace
 
 from rich.console import Console
 
-from jarvis.attention import AttentionStore
-from jarvis.cli.repl import (
+from kira.attention import AttentionStore
+from kira.cli.repl import (
     Repl,
     _build_project_intelligence_coordinator,
     _ui_access_urls,
     build_ui_app,
     run_ui,
 )
-from jarvis.config import load_config
-from jarvis.core import FakeClient
-from jarvis.core.prompts import VOICE_GUIDANCE
-from jarvis.graph import GraphStore
-from jarvis.intelligence import AnalysisJobStore, ProjectReportStore
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.orchestration import OrchestrationStore
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.ui.approver import UIApprover
-from jarvis.ui.auth import AuthManager
-from jarvis.ui.readmodels import UiServices
-from jarvis.ui.session import UiSession
+from kira.config import load_config
+from kira.core import FakeClient
+from kira.core.prompts import VOICE_GUIDANCE
+from kira.graph import GraphStore
+from kira.intelligence import AnalysisJobStore, ProjectReportStore
+from kira.knowledge.store import KnowledgeStore
+from kira.orchestration import OrchestrationStore
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.ui.approver import UIApprover
+from kira.ui.auth import AuthManager
+from kira.ui.readmodels import UiServices
+from kira.ui.session import UiSession
 
 
 def _console() -> Console:

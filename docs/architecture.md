@@ -16,9 +16,10 @@ decision see [`learning-notes.md`](learning-notes.md).
 The product-facing subsystem names are Kira **Core** (`core/`), **Command** (`cli/`), **Gate**
 (`permissions/`), **Vault**
 (`memory/` + `knowledge/`), **Trace** (`observability/` + audit tables), **Lab**
-(`tests/evals/`), and **Orchestrator** (`agents/`). The lowercase `jarvis` import namespace remains
-temporarily for source and compatibility; the canonical product and CLI identity is Kira / `kira`.
-Hub is now the shipped connector and capability-readiness screen.
+(`tests/evals/`), and **Orchestrator** (`agents/`). The canonical import namespace, product, and CLI
+identity are all Kira / `kira`; only the explicitly documented command, database, and log-read
+compatibility boundaries retain the former name. Hub is now the shipped connector and
+capability-readiness screen.
 
 ## Current-system map (Kira 0.1.0, schema v33)
 
@@ -187,7 +188,7 @@ subset of its explicit 5-tool, non-egress, non-private read allowlist.
 
 `Policy` (from `config/permissions.yaml`) is data; `PermissionGate` interprets it.
 Base decision precedence: per-tool entry → the tool's own default → policy default.
-Refinements: a **sensitive-path floor** (`jarvis/paths.py`) denies reads and writes
+Refinements: a **sensitive-path floor** (`kira/paths.py`) denies reads and writes
 of secrets/keys regardless of policy; filesystem writes are checked against an
 allowlist (can only tighten); filesystem reads outside the project/read allowlist
 escalate to an explicit approval; shell commands match longest-prefix rules at a token

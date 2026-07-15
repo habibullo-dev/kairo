@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from jarvis.graph.code_dependencies import SourceHead, local_import_pairs
+from kira.graph.code_dependencies import SourceHead, local_import_pairs
 
 
 def test_python_imports_resolve_from_the_uploaded_source_root() -> None:

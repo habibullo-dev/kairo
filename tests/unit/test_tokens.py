@@ -9,9 +9,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from jarvis.connectors.base import ConnectorAuthError
-from jarvis.connectors.oauth import OAuthProvider
-from jarvis.connectors.tokens import (
+from kira.connectors.base import ConnectorAuthError
+from kira.connectors.oauth import OAuthProvider
+from kira.connectors.tokens import (
     TokenState,
     TokenStore,
     read_token_state,

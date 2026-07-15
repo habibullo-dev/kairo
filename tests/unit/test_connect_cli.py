@@ -8,11 +8,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from jarvis.cli import connect
-from jarvis.config import load_config
-from jarvis.connectors.google import GOOGLE_SCOPES
-from jarvis.connectors.tokens import TokenState, write_token_state
-from jarvis.persistence.instance_lock import InstanceLock, ResetBarrier
+from kira.cli import connect
+from kira.config import load_config
+from kira.connectors.google import GOOGLE_SCOPES
+from kira.connectors.tokens import TokenState, write_token_state
+from kira.persistence.instance_lock import InstanceLock, ResetBarrier
 
 _FAKE = TokenState(
     provider="google",
@@ -29,7 +29,7 @@ def test_connect_cli_barrier_contention_prevents_directory_and_token_writes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import jarvis.config as config_module
+    import kira.config as config_module
 
     config = load_config(root=tmp_path, env_file=None)
     monkeypatch.setattr(config_module, "load_config", lambda **_kwargs: config)
@@ -45,7 +45,7 @@ def test_connect_cli_holds_legacy_compatible_instance_ownership(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import jarvis.config as config_module
+    import kira.config as config_module
 
     config = load_config(root=tmp_path, env_file=None)
     monkeypatch.setattr(config_module, "load_config", lambda **_kwargs: config)

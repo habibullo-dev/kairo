@@ -16,12 +16,12 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from jarvis.config import Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets
-from jarvis.core import AgentLoop, FakeClient, ToolCall, text_message, tool_use_message
-from jarvis.core.events import Event, ToolDecision
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.permissions.gate import Decision
-from jarvis.tools import Permission, Tool, ToolExecutor, ToolRegistry
+from kira.config import Config, LimitsConfig, ModelsConfig, PathsConfig, Secrets
+from kira.core import AgentLoop, FakeClient, ToolCall, text_message, tool_use_message
+from kira.core.events import Event, ToolDecision
+from kira.permissions import PermissionGate, Policy
+from kira.permissions.gate import Decision
+from kira.tools import Permission, Tool, ToolExecutor, ToolRegistry
 
 ALLOW, ASK, DENY = Permission.ALLOW, Permission.ASK, Permission.DENY
 

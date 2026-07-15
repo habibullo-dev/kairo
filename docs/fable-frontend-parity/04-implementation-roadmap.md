@@ -9,25 +9,25 @@ Split per instructions: **[FIX]** = small, high-confidence; **[DECIDE]** = requi
 ## P0 — broken trust, broken connectivity, mis-scoped behavior
 
 ### P0-1 [FIX] capability_truth actually never disagrees
-- **Files**: `src/jarvis/ui/server.py:643-668` (hub, settings handlers), `src/jarvis/ui/readmodels.py:1330-1338`; test in `tests/unit/test_ui_readmodels.py`.
+- **Files**: `src/kira/ui/server.py:643-668` (hub, settings handlers), `src/kira/ui/readmodels.py:1330-1338`; test in `tests/unit/test_ui_readmodels.py`.
 - **Work**: resolve a workspace in `/api/hub` and `/api/settings` the same way `/api/daily` does (server.py:731) and pass `registered_tools` into `_capabilities`; keep the current fallback for the legacy composition.
 - **Dependency**: none. **Risk**: low — read-only paths.
 - **Accept**: new pytest: with a tool-less loop, `exposed_to_chat` is `false` on all four routes simultaneously; grep test that `_capabilities()` is never called without a workspace under the workspace composition.
 
 ### P0-2 [FIX] Workspace Vault tab renders one scope, not two
-- **Files**: `src/jarvis/ui/server.py:861-991` (`/api/chat/knowledge`), `src/jarvis/ui/static/screens/workspace/vault.js:11,39`.
+- **Files**: `src/kira/ui/server.py:861-991` (`/api/chat/knowledge`), `src/kira/ui/static/screens/workspace/vault.js:11,39`.
 - **Work**: accept `?project_id=` on `/api/chat/knowledge` with the same workspace-mismatch 404 used by `/api/vault` (server.py:783-800); workspace tab passes its ctx project explicitly; delete the client-side filter.
 - **Dependency**: none. **Risk**: low; watch the chat Library shelf which uses the ambient form (chat.js:424) — keep ambient default.
 - **Accept**: unit test: bound workspace + foreign `project_id` ⇒ 404; DoD `workspace-vault` state unchanged; tree and readiness card agree on file count for the same project.
 
 ### P0-3 [FIX] Per-turn Stop in the composer
-- **Files**: `src/jarvis/ui/static/ui/*` (composer area in `conversation.js`/`chat.js`), `app.js:609` (keep pause as global control in Daily/status bar only).
+- **Files**: `src/kira/ui/static/ui/*` (composer area in `conversation.js`/`chat.js`), `app.js:609` (keep pause as global control in Daily/status bar only).
 - **Work**: while `turn_busy`, composer shows Stop → `POST /api/turn/cancel` (route exists, server.py:418); `turn_cancelled` handler already renders the note (app.js:202-208).
 - **Dependency**: none. **Risk**: low.
 - **Accept**: pytest for the route already-exists behavior + new WS `turn_cancelled` contract test (05); manual: cancel mid-stream leaves runner running and other workspaces untouched.
 
 ### P0-4 [DECIDE] `web_search: allow` (working tree) — keep or revert, then say it out loud
-- **Files**: `config/permissions.yaml` (uncommitted), `src/jarvis/ui/static/screens/settings.js`, `docs/` (README approval-posture text).
+- **Files**: `config/permissions.yaml` (uncommitted), `src/kira/ui/static/screens/settings.js`, `docs/` (README approval-posture text).
 - **Work**: product decision first: silent web search is a real posture change (egress without prompt; taint demotion still applies — core/agent.py:624-722). Whichever way: Settings should render per-tool gate policy with non-default values flagged (`/api/gate/policy` exists, server.py:382, currently debug-only in gate.js:206).
 - **Risk**: none technical; trust risk if left silent.
 - **Accept**: Settings shows "web_search — allow (changed from default ask)"; docs match config.
@@ -37,13 +37,13 @@ Split per instructions: **[FIX]** = small, high-confidence; **[DECIDE]** = requi
 ## P1 — high-value backend features unreachable or unusable
 
 ### P1-1 [FIX] Promote a follow-up action item to a real task
-- **Files**: `src/jarvis/ui/static/screens/workspace/tasks.js:31` area, `screens/studio.js` detail panel; server: none (`POST /api/tasks/create` exists, server.py:1407).
+- **Files**: `src/kira/ui/static/screens/workspace/tasks.js:31` area, `screens/studio.js` detail panel; server: none (`POST /api/tasks/create` exists, server.py:1407).
 - **Work**: "Schedule…" button per action item → prefilled create call (kind=job/reminder, payload = item text + run link); visually mark follow-ups as planning notes vs scheduled tasks.
 - **Dependency**: none. **Risk**: low — reuses an existing gated route; no new authority.
 - **Accept**: clicking promote creates a `tasks` row (visible in list) carrying the source run id; follow-up chip switches to "scheduled ✓"; pytest on the create payload shape.
 
 ### P1-2 [FIX] Palette searches everything
-- **Files**: `src/jarvis/ui/static/ui/palette.js:210-262`; server: none (`GET /api/search`, server.py:1960).
+- **Files**: `src/kira/ui/static/ui/palette.js:210-262`; server: none (`GET /api/search`, server.py:1960).
 - **Work**: query `/api/search` (federated 8-domain FTS, persistence/fts.py) alongside or instead of `/api/graph/search`; extend KIND_ROUTE for `message/task/digest` results (chat→resume already exists via sessions path).
 - **Dependency**: verify `/api/search` result shape → add contract test (05). **Risk**: low.
 - **Accept**: palette finds a chat by message content, a task by title, an artifact by text; existing `test_ui_palette.py` recent-chats behavior unchanged.
@@ -53,12 +53,12 @@ Split per instructions: **[FIX]** = small, high-confidence; **[DECIDE]** = requi
 - **Dependency**: none. **Risk**: low. **Accept**: failed job shows its run row with status/error; last 50 notices listed with timestamps.
 
 ### P1-4 [FIX] Sub-agent progress in the chat thread
-- **Files**: `src/jarvis/ui/static/screens/conversation.js:237-253`.
+- **Files**: `src/kira/ui/static/screens/conversation.js:237-253`.
 - **Work**: handle `subagent_event` (compact "↳ {title}: started/tool" line) and `subagent_completed` ("↳ {title} — {status}, ${cost}"); events already serialized (session.py:129-142) and delivered.
 - **Risk**: low; render text via existing `el()`/textContent only. **Accept**: message_dod-style state showing a delegation sequence; no innerHTML additions.
 
 ### P1-5 [FIX] Lock `/api/workspace/{id}` + `/activity` like their siblings
-- **Files**: `src/jarvis/ui/server.py:2017-2027`.
+- **Files**: `src/kira/ui/server.py:2017-2027`.
 - **Work**: same `_workspace_for` + mismatch-404 used by `/office` (server.py:2027) and `/graph` (server.py:2039).
 - **Risk**: low; legacy composition keeps current behavior. **Accept**: pytest parametrized over the four `/api/workspace/*` routes asserting uniform 404-on-foreign-project.
 
@@ -67,12 +67,12 @@ Split per instructions: **[FIX]** = small, high-confidence; **[DECIDE]** = requi
 - **Accept**: rename persists across reload; grid + workspace header agree.
 
 ### P1-7 [FIX] Heartbeat interval leak
-- **Files**: `src/jarvis/ui/static/app.js:130-139`.
+- **Files**: `src/kira/ui/static/app.js:130-139`.
 - **Work**: store the interval id; clear on `onclose` before scheduling reconnect.
 - **Accept**: reconnect N times ⇒ exactly one heartbeat timer (assert via counter in a DoD-style harness or code inspection note in review).
 
 ### P1-8 [DECIDE] NotificationRouter: wire or declare inert
-- **Files**: `src/jarvis/attention/routing.py:84-122`, composition in `cli/repl.py`; config keys config.py:545-548.
+- **Files**: `src/kira/attention/routing.py:84-122`, composition in `cli/repl.py`; config keys config.py:545-548.
 - **Work**: this is the repo's class of switch that needs its own checkpoint (urgent push = unattended egress). Short-term honest fix: comment the config keys as "not yet wired" and hide any UI copy implying routing.
 - **Accept (short-term)**: no config key promises behavior the runtime lacks.
 

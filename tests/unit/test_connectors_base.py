@@ -6,8 +6,8 @@ later tasks; here we pin the dependency-light seam every connector builds on.
 
 from __future__ import annotations
 
-from jarvis.connectors.base import ConnectorAuthError, ConnectorRegistry, Notifier
-from jarvis.tools.base import ToolContext
+from kira.connectors.base import ConnectorAuthError, ConnectorRegistry, Notifier
+from kira.tools.base import ToolContext
 
 
 class _RecordingNotifier:

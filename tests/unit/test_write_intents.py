@@ -11,14 +11,14 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from jarvis.actions.intents import (
+from kira.actions.intents import (
     ALLOWED_TRANSITIONS,
     IntentKind,
     IntentState,
     IntentStore,
     InvalidTransition,
 )
-from jarvis.persistence.db import connect
+from kira.persistence.db import connect
 
 _NOW = "2026-01-01T00:00:00+00:00"
 

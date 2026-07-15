@@ -1,10 +1,10 @@
-"""Tests for jarvis.paths: unified resolution + the sensitive-path safety floor."""
+"""Tests for kira.paths: unified resolution + the sensitive-path safety floor."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.paths import (
+from kira.paths import (
     is_safe_to_persist_dir,
     is_sensitive_path,
     matches_any,
@@ -77,10 +77,10 @@ def test_connector_token_files_are_sensitive(tmp_path: Path) -> None:
 
 def test_connector_source_package_is_not_sensitive(tmp_path: Path) -> None:
     # The regression the *pattern* (not a _SENSITIVE_DIRS "connectors" entry) exists to avoid:
-    # the source package src/jarvis/connectors/*.py must stay readable. A component-match set
+    # the source package src/kira/connectors/*.py must stay readable. A component-match set
     # would have blocked it because the path also contains a "connectors" component.
-    assert not is_sensitive_path(tmp_path / "src" / "jarvis" / "connectors" / "base.py")
-    assert not is_sensitive_path(tmp_path / "src" / "jarvis" / "connectors" / "google" / "gmail.py")
+    assert not is_sensitive_path(tmp_path / "src" / "kira" / "connectors" / "base.py")
+    assert not is_sensitive_path(tmp_path / "src" / "kira" / "connectors" / "google" / "gmail.py")
 
 
 def test_matching_is_case_insensitive(tmp_path: Path) -> None:

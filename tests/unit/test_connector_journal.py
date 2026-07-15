@@ -10,8 +10,8 @@ from pathlib import Path
 
 import aiosqlite
 
-from jarvis.actions.journal import ConnectorWriteJournal
-from jarvis.persistence.db import connect
+from kira.actions.journal import ConnectorWriteJournal
+from kira.persistence.db import connect
 
 _NOW = "2026-01-01T00:00:00+00:00"
 

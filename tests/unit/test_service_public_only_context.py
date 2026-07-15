@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.orchestration import check_context_policy
-from jarvis.orchestration.context import (
+from kira.orchestration import check_context_policy
+from kira.orchestration.context import (
     ContextBundle,
     ContextItem,
     ContextPolicyError,
     Provenance,
 )
-from jarvis.services.catalog import SERVICE_CATALOG, ContextPolicy
+from kira.services.catalog import SERVICE_CATALOG, ContextPolicy
 
 _FIVE = ("firecrawl", "exa", "jina_reader", "searxng", "openai_image")
 

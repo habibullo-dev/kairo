@@ -7,8 +7,8 @@ from pathlib import Path
 from tests.evals.cassette import CassetteConfig
 from tests.evals.runner import REPO_ROOT, run_smoke
 
-from jarvis.config import load_config
-from jarvis.core import FakeClient, text_message
+from kira.config import load_config
+from kira.core import FakeClient, text_message
 
 
 def _cfg(tmp_path: Path):
@@ -52,7 +52,7 @@ async def test_smoke_zero_attempts_fails_even_when_skips_are_optional(
 async def test_default_smoke_allows_optional_skip_when_another_provider_passes(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    from jarvis.models.factory import ClientFactory
+    from kira.models.factory import ClientFactory
 
     config = load_config(root=REPO_ROOT, env_file=None)
     secrets = config.secrets.model_copy(update={"anthropic_api_key": "test-key"})

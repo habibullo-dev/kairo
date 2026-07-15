@@ -14,13 +14,13 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from jarvis.config import load_config
-from jarvis.memory.store import MemoryStore
-from jarvis.persistence.db import connect
-from jarvis.scheduler.service import TaskService
-from jarvis.scheduler.store import TaskStore
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.readmodels import (
+from kira.config import load_config
+from kira.memory.store import MemoryStore
+from kira.persistence.db import connect
+from kira.scheduler.service import TaskService
+from kira.scheduler.store import TaskStore
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.readmodels import (
     UiServices,
     _eval_report_preview,
     hub_status,
@@ -28,7 +28,7 @@ from jarvis.ui.readmodels import (
     list_memories,
     list_tasks,
 )
-from jarvis.ui.server import create_app
+from kira.ui.server import create_app
 
 MODEL = "voyage-3-large"
 
@@ -135,7 +135,7 @@ async def test_list_and_forget_memories(tmp_path: Path) -> None:
 
 
 async def test_list_tasks(tmp_path: Path) -> None:
-    from jarvis.config import SchedulerConfig
+    from kira.config import SchedulerConfig
 
     store = TaskStore(await connect(tmp_path / "t.db"))
     svc = TaskService(store, SchedulerConfig())
@@ -292,10 +292,10 @@ def test_no_secret_crosses_the_wire_on_any_get(tmp_path: Path) -> None:
 
     # Phase 9: seed a real connector token file on disk and expose it through the connector
     # status path — Hub/Daily must report scopes/expiry, never the token itself.
-    from jarvis.connectors.base import ConnectorRegistry
-    from jarvis.connectors.google import google_provider
-    from jarvis.connectors.google.client import GoogleClient
-    from jarvis.connectors.tokens import TokenState, TokenStore, write_token_state
+    from kira.connectors.base import ConnectorRegistry
+    from kira.connectors.google import google_provider
+    from kira.connectors.google.client import GoogleClient
+    from kira.connectors.tokens import TokenState, TokenStore, write_token_state
 
     tokdir = cfg.data_dir / "connectors"
     write_token_state(

@@ -12,14 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.attention import (
+from kira.attention import (
     AttentionKind,
     AttentionPriority,
     AttentionState,
     AttentionStore,
     InvalidTransition,
 )
-from jarvis.persistence.db import connect
+from kira.persistence.db import connect
 
 _OPEN: list = []
 
@@ -35,7 +35,7 @@ async def _store(tmp_path: Path) -> AttentionStore:
     db = await connect(tmp_path / "a.db")
     _OPEN.append(db)
     lock = asyncio.Lock()
-    from jarvis.projects import ProjectStore
+    from kira.projects import ProjectStore
 
     projects = ProjectStore(db, lock)
     for name in ("One", "Two"):  # ids 1, 2 (FK: attention_items.project_id → projects.id)

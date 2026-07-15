@@ -23,14 +23,14 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.agents import AgentRunStore, SubAgentService
-from jarvis.config import load_config
-from jarvis.core.client import FakeClient, ToolCall, text_message, tool_use_message
-from jarvis.models import ModelRegistry
-from jarvis.observability.budget import BudgetService
-from jarvis.observability.cost import Usage, load_pricing
-from jarvis.observability.ledger import CostLedger, LedgeredClient
-from jarvis.orchestration import (
+from kira.agents import AgentRunStore, SubAgentService
+from kira.config import load_config
+from kira.core.client import FakeClient, ToolCall, text_message, tool_use_message
+from kira.models import ModelRegistry
+from kira.observability.budget import BudgetService
+from kira.observability.cost import Usage, load_pricing
+from kira.observability.ledger import CostLedger, LedgeredClient
+from kira.orchestration import (
     READ_ONLY_SPAWNABLE,
     WORKFLOWS,
     ContextBundle,
@@ -38,19 +38,19 @@ from jarvis.orchestration import (
     OrchestrationStore,
     resolve_team,
 )
-from jarvis.orchestration.context import ContextItem, Provenance
-from jarvis.orchestration.engine import (
+from kira.orchestration.context import ContextItem, Provenance
+from kira.orchestration.engine import (
     ProviderClientError,
     ResumeUnavailableError,
     TeamWorkflowError,
 )
-from jarvis.orchestration.roles import Capability
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
-from jarvis.tools import ToolContext, ToolExecutor, ToolRegistry
-from jarvis.tools.base import ToolResult
+from kira.orchestration.roles import Capability
+from kira.permissions import PermissionGate, Policy
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
+from kira.tools import ToolContext, ToolExecutor, ToolRegistry
+from kira.tools.base import ToolResult
 
 _OPEN: list = []
 
@@ -1275,7 +1275,7 @@ def _scope_engine() -> OrchestrationEngine:
 
 
 def _member(cap, services):
-    from jarvis.orchestration.roles import RosterRole
+    from kira.orchestration.roles import RosterRole
 
     return RosterRole("m", "M", "utility", frozenset({"read_file"}), frozenset(services), cap, "r")
 
@@ -1340,7 +1340,7 @@ async def test_engine_runs_on_real_spawn(tmp_path: Path) -> None:
         config=cfg,
     )
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     svc.bind(registry=reg)
 
     store = OrchestrationStore(db, lock)

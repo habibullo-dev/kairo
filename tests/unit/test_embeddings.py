@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from jarvis.memory.embeddings import Embedder, FakeEmbedder, VoyageEmbedder
+from kira.memory.embeddings import Embedder, FakeEmbedder, VoyageEmbedder
 
 
 def _cos(a: list[float], b: list[float]) -> float:

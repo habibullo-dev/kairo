@@ -11,13 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.agents import AgentRunStore
-from jarvis.graph import GraphStore
-from jarvis.graph.builder import rebuild
-from jarvis.graph.service import dependency_subgraph, subgraph
-from jarvis.orchestration import OrchestrationStore
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
+from kira.agents import AgentRunStore
+from kira.graph import GraphStore
+from kira.graph.builder import rebuild
+from kira.graph.service import dependency_subgraph, subgraph
+from kira.orchestration import OrchestrationStore
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
 
 _OPEN: list = []
 _TS = "2026-03-15T00:00:00+00:00"  # a fixed PAST time — proves edges use the source row's time
@@ -208,6 +208,6 @@ async def test_rebuild_never_touches_asserted_edges(tmp_path: Path) -> None:
 async def test_rebuild_cli_runs_on_empty_db(tmp_path: Path) -> None:
     # The `kira graph rebuild` core: a fresh DB migrates to v12 and derives 0 edges (no source
     # rows), returning 0 — proves the CLI path wires the locked DB -> store -> builder cleanly.
-    from jarvis.cli.graph import _run_rebuild
+    from kira.cli.graph import _run_rebuild
 
     assert await _run_rebuild(tmp_path / "kira.db") == 0

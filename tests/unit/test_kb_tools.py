@@ -7,22 +7,22 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from jarvis.config import KnowledgeConfig, load_config
-from jarvis.core import AgentLoop, FakeClient, ToolCall, text_message, tool_use_message
-from jarvis.core.execution import bind_project_scope
-from jarvis.knowledge.service import KnowledgeService
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.permissions import PermissionGate, load_policy
-from jarvis.persistence.db import connect
-from jarvis.tools import Permission, ToolContext, ToolRegistry
-from jarvis.tools.builtin.knowledge import (
+from kira.config import KnowledgeConfig, load_config
+from kira.core import AgentLoop, FakeClient, ToolCall, text_message, tool_use_message
+from kira.core.execution import bind_project_scope
+from kira.knowledge.service import KnowledgeService
+from kira.knowledge.store import KnowledgeStore
+from kira.memory.embeddings import FakeEmbedder
+from kira.permissions import PermissionGate, load_policy
+from kira.persistence.db import connect
+from kira.tools import Permission, ToolContext, ToolRegistry
+from kira.tools.builtin.knowledge import (
     IngestSourceTool,
     LintKnowledgeBaseTool,
     QueryKnowledgeBaseTool,
     WriteWikiPageTool,
 )
-from jarvis.tools.executor import ToolExecutor
+from kira.tools.executor import ToolExecutor
 
 KB_TOOLS = ("ingest_source", "query_knowledge_base", "lint_knowledge_base", "write_wiki_page")
 _OPEN_DBS: list = []
@@ -137,7 +137,7 @@ def test_tools_unavailable_without_service() -> None:
 
 def test_registry_skips_kb_tools_without_service() -> None:
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=None, knowledge=None))
+    reg.discover("kira.tools.builtin", ToolContext(config=None, knowledge=None))
     for name in KB_TOOLS:
         assert name not in reg
     assert "read_file" in reg  # earlier-phase tools still register
@@ -146,7 +146,7 @@ def test_registry_skips_kb_tools_without_service() -> None:
 async def test_registry_registers_kb_tools_with_service(tmp_path: Path) -> None:
     svc = await _svc(tmp_path)
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=None, knowledge=svc))
+    reg.discover("kira.tools.builtin", ToolContext(config=None, knowledge=svc))
     for name in KB_TOOLS:
         assert name in reg
 
@@ -170,7 +170,7 @@ def test_policy_defaults() -> None:
 
 
 def test_system_prompt_gains_kb_guidance_only_when_enabled() -> None:
-    from jarvis.core.prompts import KNOWLEDGE_GUIDANCE, build_system
+    from kira.core.prompts import KNOWLEDGE_GUIDANCE, build_system
 
     assert KNOWLEDGE_GUIDANCE not in build_system()
     assert KNOWLEDGE_GUIDANCE in build_system(knowledge_enabled=True)
@@ -183,7 +183,7 @@ async def test_ingest_through_agent_loop(tmp_path: Path) -> None:
     svc = await _svc(tmp_path)
     config = load_config(root=tmp_path, env_file=None)
     registry = ToolRegistry()
-    registry.discover("jarvis.tools.builtin", ToolContext(config=config, knowledge=svc))
+    registry.discover("kira.tools.builtin", ToolContext(config=config, knowledge=svc))
     gate = PermissionGate(load_policy(Path("config/permissions.yaml")), tmp_path)
 
     async def _allow(_call, _decision):
@@ -214,7 +214,7 @@ async def test_ingest_through_agent_loop(tmp_path: Path) -> None:
 
 
 def test_call_summary_branches() -> None:
-    from jarvis.cli.repl import _call_summary
+    from kira.cli.repl import _call_summary
 
     ingest = _call_summary(ToolCall("c", "ingest_source", {"url": "https://example.test/post"}))
     assert "https://example.test/post" in ingest

@@ -9,13 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import KnowledgeConfig
-from jarvis.knowledge import converters
-from jarvis.knowledge.service import IngestResult, KnowledgeError, KnowledgeService
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
+from kira.config import KnowledgeConfig
+from kira.knowledge import converters
+from kira.knowledge.service import IngestResult, KnowledgeError, KnowledgeService
+from kira.knowledge.store import KnowledgeStore
+from kira.memory.embeddings import FakeEmbedder
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
 
 _OPEN_DBS: list = []
 

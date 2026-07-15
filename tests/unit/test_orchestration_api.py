@@ -17,24 +17,24 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.agents import AgentRunStore
-from jarvis.config import BudgetsConfig, load_config
-from jarvis.core.execution import ExecutionContext
-from jarvis.orchestration import WORKFLOWS, OrchestrationStore, estimate_run, resolve_team
-from jarvis.orchestration.estimate import RunEstimate
-from jarvis.persistence.db import connect
-from jarvis.persistence.sessions import SessionStore
-from jarvis.projects import ProjectStore
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.orchestration import OrchestrationController, serialize_estimate
-from jarvis.ui.readmodels import (
+from kira.agents import AgentRunStore
+from kira.config import BudgetsConfig, load_config
+from kira.core.execution import ExecutionContext
+from kira.orchestration import WORKFLOWS, OrchestrationStore, estimate_run, resolve_team
+from kira.orchestration.estimate import RunEstimate
+from kira.persistence.db import connect
+from kira.persistence.sessions import SessionStore
+from kira.projects import ProjectStore
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.orchestration import OrchestrationController, serialize_estimate
+from kira.ui.readmodels import (
     UiServices,
     orchestration_run_detail,
     orchestration_runs_view,
     teams_catalog,
     workflows_catalog,
 )
-from jarvis.ui.server import (
+from kira.ui.server import (
     EXPECTED_CONTEXT_REVISION_HEADER,
     EXPECTED_PROJECT_HEADER,
     EXPECTED_SESSION_HEADER,
@@ -388,8 +388,8 @@ def test_serialize_estimate_is_metadata_only() -> None:
     est = estimate_run(
         team=resolve_team("backend"),
         workflow=WORKFLOWS["implement"],
-        registry=__import__("jarvis.models.registry", fromlist=["ModelRegistry"]).ModelRegistry(),
-        pricing=__import__("jarvis.observability.cost", fromlist=["load_pricing"]).load_pricing(
+        registry=__import__("kira.models.registry", fromlist=["ModelRegistry"]).ModelRegistry(),
+        pricing=__import__("kira.observability.cost", fromlist=["load_pricing"]).load_pricing(
             None
         ),
         budgets=BudgetsConfig(confirm_above_usd=1e9),
@@ -786,7 +786,7 @@ async def test_cancel_route_timeout_reports_request_without_claiming_terminal_ca
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "jarvis.ui.server.ORCHESTRATION_CANCEL_SETTLE_TIMEOUT_SECONDS",
+        "kira.ui.server.ORCHESTRATION_CANCEL_SETTLE_TIMEOUT_SECONDS",
         0.01,
     )
     store = _CancelRouteStore(50)

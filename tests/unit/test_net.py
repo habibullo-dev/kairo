@@ -8,7 +8,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from jarvis import net
+from kira import net
 
 # --- check_public_http_url -------------------------------------------------
 

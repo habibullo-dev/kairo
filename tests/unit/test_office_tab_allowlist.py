@@ -9,7 +9,7 @@ Structural (keyless): reads the shipped JS as text via STATIC_DIR, the establish
 
 from __future__ import annotations
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 WS_JS = (STATIC_DIR / "screens" / "workspace.js").read_text(encoding="utf-8")
 OFFICE_JS = (STATIC_DIR / "screens" / "workspace" / "office.js").read_text(encoding="utf-8")

@@ -11,18 +11,18 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.persistence import database_identity as identity_module
-from jarvis.persistence.backup import verify_backup
-from jarvis.persistence.database_identity import (
+from kira.persistence import database_identity as identity_module
+from kira.persistence.backup import verify_backup
+from kira.persistence.database_identity import (
     DATABASE_FILENAME,
     LEGACY_DATABASE_FILENAME,
     DatabaseIdentityError,
     migrate_live_database,
     select_database,
 )
-from jarvis.persistence.db import connect
-from jarvis.persistence.instance_lock import InstanceLock
-from jarvis.persistence.migrations import latest_version
+from kira.persistence.db import connect
+from kira.persistence.instance_lock import InstanceLock
+from kira.persistence.migrations import latest_version
 
 
 def _database(path: Path, *, version: int | None = None, value: str = "preserved") -> None:

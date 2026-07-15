@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.persistence.db import connect
-from jarvis.persistence.sessions import SessionStore
-from jarvis.projects.service import ProjectService
-from jarvis.projects.store import ProjectStore
-from jarvis.ui.readmodels import UiServices, projects_overview, serialize_project
+from kira.persistence.db import connect
+from kira.persistence.sessions import SessionStore
+from kira.projects.service import ProjectService
+from kira.projects.store import ProjectStore
+from kira.ui.readmodels import UiServices, projects_overview, serialize_project
 
 _OPEN: list = []
 

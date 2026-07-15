@@ -13,18 +13,18 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.agents import AgentRunStore
-from jarvis.config import load_config
-from jarvis.core import AgentLoop, FakeClient, build_system
-from jarvis.permissions import PermissionGate, Policy
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.tools import ToolContext, ToolExecutor, ToolRegistry
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.readmodels import UiServices
-from jarvis.ui.server import create_app
-from jarvis.ui.session import UiSession
-from jarvis.ui.state import InteractiveModelState
+from kira.agents import AgentRunStore
+from kira.config import load_config
+from kira.core import AgentLoop, FakeClient, build_system
+from kira.permissions import PermissionGate, Policy
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.tools import ToolContext, ToolExecutor, ToolRegistry
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.readmodels import UiServices
+from kira.ui.server import create_app
+from kira.ui.session import UiSession
+from kira.ui.state import InteractiveModelState
 
 _OPEN: list = []
 _TS = "2026-03-01T00:00:00+00:00"
@@ -46,7 +46,7 @@ async def _client(tmp_path: Path):
     sid = await store.create_session(title="First chat", kind="interactive")
     await store.save_messages(sid, [{"role": "user", "content": "hi"}])
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=cfg))
+    reg.discover("kira.tools.builtin", ToolContext(config=cfg))
     auth = AuthManager(token="tok")
     app = create_app(cfg, auth=auth)
     loop = AgentLoop(

@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.models.context_reuse import estimated_cache_savings, normalize_cache_usage
-from jarvis.observability.cost import Usage, load_pricing
-from jarvis.observability.ledger import CostContext, CostLedger
-from jarvis.persistence.db import connect
+from kira.models.context_reuse import estimated_cache_savings, normalize_cache_usage
+from kira.observability.cost import Usage, load_pricing
+from kira.observability.ledger import CostContext, CostLedger
+from kira.persistence.db import connect
 
 _OPEN: list = []
 

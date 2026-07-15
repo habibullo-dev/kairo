@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 STORAGE = (STATIC_DIR / "ui" / "storage.js").read_text(encoding="utf-8")
 THEME = (STATIC_DIR / "ui" / "theme.js").read_text(encoding="utf-8")

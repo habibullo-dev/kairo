@@ -9,13 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.config import KnowledgeConfig
-from jarvis.knowledge.service import KnowledgeService
-from jarvis.knowledge.store import KnowledgeStore
-from jarvis.memory.embeddings import FakeEmbedder
-from jarvis.persistence.db import connect
-from jarvis.projects import ProjectStore
-from jarvis.voice import FakeCapture, FakeTranscriber, MeetingCapture
+from kira.config import KnowledgeConfig
+from kira.knowledge.service import KnowledgeService
+from kira.knowledge.store import KnowledgeStore
+from kira.memory.embeddings import FakeEmbedder
+from kira.persistence.db import connect
+from kira.projects import ProjectStore
+from kira.voice import FakeCapture, FakeTranscriber, MeetingCapture
 
 
 class _FakeKnowledge:

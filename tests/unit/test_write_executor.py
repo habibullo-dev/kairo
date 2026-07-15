@@ -12,16 +12,16 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.actions.executor import WriteExecutor
-from jarvis.actions.intents import IntentKind, IntentState, IntentStore
-from jarvis.actions.journal import ConnectorWriteJournal
-from jarvis.actions.requests import (
+from kira.actions.executor import WriteExecutor
+from kira.actions.intents import IntentKind, IntentState, IntentStore
+from kira.actions.journal import ConnectorWriteJournal
+from kira.actions.requests import (
     CalendarCreateRequest,
     DocCreateRequest,
     request_to_dict,
 )
-from jarvis.connectors.base import ConnectorError
-from jarvis.persistence.db import connect
+from kira.connectors.base import ConnectorError
+from kira.persistence.db import connect
 
 _OPEN: list = []
 

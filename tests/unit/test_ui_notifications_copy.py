@@ -1,6 +1,6 @@
 """Notification actions must distinguish authorization from list hygiene."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 GATE = (STATIC_DIR / "screens" / "gate.js").read_text(encoding="utf-8")
 PALETTE = (STATIC_DIR / "ui" / "palette.js").read_text(encoding="utf-8")

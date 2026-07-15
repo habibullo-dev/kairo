@@ -9,19 +9,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.agents.service import SPAWNABLE
-from jarvis.config import load_config
-from jarvis.connectors.base import ConnectorRegistry
-from jarvis.connectors.demo import DemoGoogleClient, DemoNotifier
-from jarvis.tools import Permission, ToolContext, ToolRegistry, ToolResult
-from jarvis.tools.builtin.connectors_google import (
+from kira.agents.service import SPAWNABLE
+from kira.config import load_config
+from kira.connectors.base import ConnectorRegistry
+from kira.connectors.demo import DemoGoogleClient, DemoNotifier
+from kira.tools import Permission, ToolContext, ToolRegistry, ToolResult
+from kira.tools.builtin.connectors_google import (
     CalendarListEventsTool,
     DriveFetchTool,
     GmailCreateDraftTool,
     GmailReadTool,
     GmailSearchTool,
 )
-from jarvis.tools.builtin.connectors_notify import SendNotificationTool
+from kira.tools.builtin.connectors_notify import SendNotificationTool
 
 _GOOGLE_TOOLS = {
     "calendar_list_events",
@@ -43,7 +43,7 @@ def _cfg(tmp_path: Path):
 
 def _names(connectors, tmp_path: Path) -> set[str]:
     reg = ToolRegistry()
-    reg.discover("jarvis.tools.builtin", ToolContext(config=_cfg(tmp_path), connectors=connectors))
+    reg.discover("kira.tools.builtin", ToolContext(config=_cfg(tmp_path), connectors=connectors))
     return {t.name for t in reg.all()}
 
 

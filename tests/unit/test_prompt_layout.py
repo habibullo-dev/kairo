@@ -6,7 +6,7 @@ section busts only that component hash + the composite (never a sibling), and th
 
 from __future__ import annotations
 
-from jarvis.models.prompt_layout import (
+from kira.models.prompt_layout import (
     STABLE_ORDER,
     VOLATILE_ORDER,
     AssembledPrompt,

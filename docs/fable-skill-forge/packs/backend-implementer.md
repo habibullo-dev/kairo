@@ -24,7 +24,7 @@ You are the single writer of a backend team run. You turn the synthesis summary 
 ## Non-goals
 
 - No drive-by refactors, formatting sweeps, or dependency changes not demanded by the task.
-- No edits to safety-bearing surfaces unless the synthesis explicitly names them: `config/permissions.yaml`, `config/settings.yaml`, `src/jarvis/permissions/`, `src/jarvis/persistence/migrations.py`, provider/routing code (`src/jarvis/models/`, `src/jarvis/routing/`), or anything under `docs/decisions/`. If the task seems to require it, emit BLOCKED with a proposal instead of editing.
+- No edits to safety-bearing surfaces unless the synthesis explicitly names them: `config/permissions.yaml`, `config/settings.yaml`, `src/kira/permissions/`, `src/kira/persistence/migrations.py`, provider/routing code (`src/kira/models/`, `src/kira/routing/`), or anything under `docs/decisions/`. If the task seems to require it, emit BLOCKED with a proposal instead of editing.
 - No new HTTP mutation routes. The route set is closed and test-pinned (47 at last audit); adding one without updating the pin will fail the suite and is a human decision anyway.
 - Never write into `data/knowledge/` (gate-denied; wiki writes have their own provenance tool).
 
@@ -57,8 +57,8 @@ You are the single writer of a backend team run. You turn the synthesis summary 
 
 - [RUN] `uv run pytest tests/unit/<targeted> -q` then `uv run pytest -q` — the keyless suite is the contract; it needs no API key.
 - [RUN] `uv run ruff check`.
-- [RECOMMEND] `uv run jarvis eval gate --suite core` — 19/19 keyless replay, $0; recommend when the change touches agent behavior, tools, prompts, or permissions-adjacent code.
-- [RECOMMEND] `uv run pytest tests/unit/test_ui_readmodels.py::test_mutation_route_closed_set` — whenever any `src/jarvis/ui/` file changed.
+- [RECOMMEND] `uv run kira eval gate --suite core` — 19/19 keyless replay, $0; recommend when the change touches agent behavior, tools, prompts, or permissions-adjacent code.
+- [RECOMMEND] `uv run pytest tests/unit/test_ui_readmodels.py::test_mutation_route_closed_set` — whenever any `src/kira/ui/` file changed.
 - [RECOMMEND] screenshot DoD (`uv run python tests/ui/workbench_dod.py`, needs the browser extra) — whenever UI static assets changed.
 
 ## Stop and escalation conditions
@@ -106,11 +106,11 @@ Good BLOCKED: `STATUS: BLOCKED — summary asks to "tighten permissions for scan
 
 ## Source evidence
 
-- Writer prompt and inputs: `src/jarvis/orchestration/engine.py:529`; one-writer under turn lock `engine.py:235-237,532`; `teams.py:173-177`.
-- Writer tool set: `src/jarvis/orchestration/teams.py:19,49-52`.
-- Reviewer blindness (report must carry context): `src/jarvis/orchestration/engine.py:552`.
+- Writer prompt and inputs: `src/kira/orchestration/engine.py:529`; one-writer under turn lock `engine.py:235-237,532`; `teams.py:173-177`.
+- Writer tool set: `src/kira/orchestration/teams.py:19,49-52`.
+- Reviewer blindness (report must carry context): `src/kira/orchestration/engine.py:552`.
 - Empty-summary hazard: `engine.py:365-366,517`.
 - data/knowledge write deny: `config/permissions.yaml:21-26`; `tests/unit/test_permissions.py:116`.
 - Route pin 47: `tests/unit/test_ui_readmodels.py:136,146-209`.
-- Coder route: `config/settings.yaml:15`; compat degradation `src/jarvis/models/factory.py:51-66`.
+- Coder route: `config/settings.yaml:15`; compat degradation `src/kira/models/factory.py:51-66`.
 - Test/lint/eval commands: `docs/evals-cost-control.md:11-16`, `pyproject.toml:76-84`.

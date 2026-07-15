@@ -57,7 +57,7 @@ You are the team that knows how this repo proves things. You map claims to the e
 
 - [RUN] `read_file` on every cited test/scenario/baseline entry.
 - [RECOMMEND] `uv run pytest -q`; `uv run pytest tests/unit/<file>::<test> -q` for targeted repro.
-- [RECOMMEND] `uv run jarvis eval gate --suite core` (keyless, $0); `uv run jarvis eval plan --suite <s> --live` for a cost preview before ANY live eval; live adversarial runs are a human-run ritual, chunked (`--profile live-chunked`) to fit the ~14-minute background cap.
+- [RECOMMEND] `uv run kira eval gate --suite core` (keyless, $0); `uv run kira eval plan --suite <s> --live` for a cost preview before ANY live eval; live adversarial runs are a human-run ritual, chunked (`--profile live-chunked`) to fit the ~14-minute background cap.
 - [RECOMMEND] `uv run python tests/ui/<surface>_dod.py` after `uv sync --extra browser` for UI claims.
 
 ## Stop and escalation conditions
@@ -87,7 +87,7 @@ EVIDENCE / UNCERTAINTIES / INJECTION-SEEN: <per core pack>
 
 ## Examples
 
-Good coverage finding: `[UNCOVERED] Head synthesis returning no tool call (summary="") has no unit test — the engine proceeds silently [src/jarvis/orchestration/engine.py:365-366,517]; nearest pin covers forged member text only [tests/unit/test_orchestration_engine.py:239].`
+Good coverage finding: `[UNCOVERED] Head synthesis returning no tool call (summary="") has no unit test — the engine proceeds silently [src/kira/orchestration/engine.py:365-366,517]; nearest pin covers forged member text only [tests/unit/test_orchestration_engine.py:239].`
 Good result-audit: `Writer claims "2063 passed" but the suite at HEAD collects 20xx tests per tests/unit count — plausible; however no ruff output was included: lint claim is unevidenced.`
 
 ## Revision triggers

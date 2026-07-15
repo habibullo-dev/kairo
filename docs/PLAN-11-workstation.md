@@ -194,7 +194,7 @@ the services panel keeps showing it deferred. The adapter waits for the MCP-clie
    `rebuild`-style maintenance command re-syncs indexes idempotently.
    (messages caveat: save_messages bulk delete+reinserts — triggers stay correct, just busy.)
 
-**Search service (`src/jarvis/search/`):** federated query over the FTS tables returning
+**Search service (`src/kira/search/`):** federated query over the FTS tables returning
 `{domain, id, project_id, title, snippet(), provenance/sensitivity class, ts}`; **scoping in
 SQL** — project filter applied via each domain's project_id (or join); snippets only, never
 full bodies; results for model-facing reuse (none in Phase 11) would be framed untrusted.
@@ -227,7 +227,7 @@ events).
 
 ## 6. Frontend architecture
 
-New leaf layer `src/jarvis/ui/static/ui/` (ES modules, no build step, import DAG:
+New leaf layer `src/kira/ui/static/ui/` (ES modules, no build step, import DAG:
 `ui/* ← screens/* ← app.js`):
 - `dom.js` — canonical `esc()` + **`escAttr()`** (quote-safe) + `el()` builder; delete the 8
   duplicated `esc` copies; fix the attribute-interpolation sites (projects.js color,
@@ -287,7 +287,7 @@ tracking, and `renderRunnerState` are load-bearing — untouched semantics.
   scoping canaries, cost-center groupings/warnings/ROI, workspace aggregate, content-route
   confinement, palette pin, mutation pin 30, sweeps, escaping.
 - **Replay/keyless evals by default:** the replay gate (97 cassettes) must stay green after
-  every task — `uv run jarvis eval gate --suite core` is $0/keyless. NO eval scenario
+  every task — `uv run kira eval gate --suite core` is $0/keyless. NO eval scenario
   changes expected; NO live judged gate until phase closeout (terminal ritual, Habib's
   machine, chunked commands).
 - **Screenshot DoD (R4)** — captured via Kairo's own `playwright_local` (driver wired in
@@ -365,7 +365,7 @@ background image assets (CSS veils only); a third rail column; eval-run affordan
 Execute T1–T15 in order with **mandatory stops at Checkpoint E (after T4) and Checkpoint F
 (after T10)** — report evidence and WAIT for Habib's approval at each. Per-task commits with
 explicit paths ending `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
-Suite + ruff green at every commit; the keyless replay gate (`jarvis eval gate --suite
+Suite + ruff green at every commit; the keyless replay gate (`kira eval gate --suite
 core`, $0) green at every task; if any cassette misses after a legitimate scenario-adjacent
 change, re-record with `--record --max-cost-usd 5`, sweep (`sweep_cassettes` discipline),
 and commit cassettes in a dedicated commit — do not change eval scenarios in this phase.

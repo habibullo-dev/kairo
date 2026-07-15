@@ -1,7 +1,7 @@
 """Converter sandbox tests: killable subprocess + zip-bomb pre-scan.
 
 The subprocess round-trip and timeout-kill tests run a real child process
-(``python -m jarvis.knowledge.convert_worker``); the archive checks are pure."""
+(``python -m kira.knowledge.convert_worker``); the archive checks are pure."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.knowledge import converters
-from jarvis.knowledge.converters import (
+from kira.knowledge import converters
+from kira.knowledge.converters import (
     ConversionError,
     check_archive_safety,
     convert_file_sandboxed,
@@ -47,7 +47,7 @@ async def test_sandbox_reports_conversion_error_from_child(tmp_path: Path) -> No
 async def test_sandbox_kills_a_hung_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # the env-gated self-test hook makes the worker sleep; the parent must kill it at
     # the deadline and report honestly (a thread-based timeout could not do this)
-    monkeypatch.setenv("JARVIS_CONVERT_SELFTEST_SLEEP", "30")
+    monkeypatch.setenv("KIRA_CONVERT_SELFTEST_SLEEP", "30")
     p = tmp_path / "page.html"
     p.write_text("<html><body><h1>x</h1></body></html>", encoding="utf-8")
     with pytest.raises(ConversionError, match="exceeded|terminated"):

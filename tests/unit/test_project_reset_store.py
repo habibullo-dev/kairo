@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.actions.intents import IntentKind, IntentState, IntentStore
-from jarvis.attention.store import AttentionStore
-from jarvis.graph.store import GraphStore
-from jarvis.intelligence.store import AnalysisJobStore
-from jarvis.persistence.db import connect
-from jarvis.persistence.sessions import SessionStore
-from jarvis.projects import ProjectResetBusyError, ProjectResetError, ProjectStore
-from jarvis.scheduler.store import TaskStore
+from kira.actions.intents import IntentKind, IntentState, IntentStore
+from kira.attention.store import AttentionStore
+from kira.graph.store import GraphStore
+from kira.intelligence.store import AnalysisJobStore
+from kira.persistence.db import connect
+from kira.persistence.sessions import SessionStore
+from kira.projects import ProjectResetBusyError, ProjectResetError, ProjectStore
+from kira.scheduler.store import TaskStore
 
 
 async def _stores(tmp_path: Path) -> tuple[ProjectStore, SessionStore]:

@@ -11,12 +11,12 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
-from jarvis.config import load_config
-from jarvis.ui.auth import AuthManager
-from jarvis.ui.server import create_app
+from kira.config import load_config
+from kira.ui.auth import AuthManager
+from kira.ui.server import create_app
 
 ROOT = Path(__file__).parents[2]
-STATIC_DIR = ROOT / "src" / "jarvis" / "ui" / "static"
+STATIC_DIR = ROOT / "src" / "kira" / "ui" / "static"
 
 # A non-browser route is a deliberate product/API decision, not an accidental gap.  Keep each
 # reason short so adding an exemption is a visible review decision.

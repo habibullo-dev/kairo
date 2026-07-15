@@ -62,7 +62,7 @@ filter is the smallest change that blocks cross-project *source* retrieval (A1).
 
 ### 6. Export/import is a human ritual that ignores inbound provenance
 
-`jarvis project export|import` round-trips a project's memories to Markdown (reusing the wiki
+`kira project export|import` round-trips a project's memories to Markdown (reusing the wiki
 front-matter machinery + path jail). Import **forces** `project_id = target` and
 `source = 'import'` (untrusted) and ignores any `project_id`/`source` a file claims — a
 hand-crafted file cannot launder text into a trusted or cross-project memory. Never reachable

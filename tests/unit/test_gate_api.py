@@ -6,7 +6,7 @@ import gzip
 import json
 from pathlib import Path
 
-from jarvis.ui.gate_api import read_today_audit
+from kira.ui.gate_api import read_today_audit
 
 
 def _write_jsonl(path: Path, *events: dict, compressed: bool = False) -> None:
@@ -21,17 +21,17 @@ def _write_jsonl(path: Path, *events: dict, compressed: bool = False) -> None:
 def test_read_today_audit_merges_rotated_segments_in_chronological_order(tmp_path: Path) -> None:
     day = "2026-07-06"
     _write_jsonl(
-        tmp_path / f"jarvis-{day}.2.jsonl.gz",
+        tmp_path / f"kira-{day}.2.jsonl.gz",
         {"event": "tool_call", "sequence": 1},
         compressed=True,
     )
     _write_jsonl(
-        tmp_path / f"jarvis-{day}.1.jsonl.gz",
+        tmp_path / f"kira-{day}.1.jsonl.gz",
         {"event": "tool_call", "sequence": 2},
         compressed=True,
     )
     _write_jsonl(
-        tmp_path / f"jarvis-{day}.jsonl",
+        tmp_path / f"kira-{day}.jsonl",
         {"event": "ignored", "sequence": 0},
         {"event": "tool_call", "sequence": 3},
     )

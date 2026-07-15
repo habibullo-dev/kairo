@@ -9,9 +9,9 @@ from pathlib import Path
 
 import httpx
 
-from jarvis.config import TelegramRemoteControlConfig
-from jarvis.persistence.db import connect
-from jarvis.remote.telegram import (
+from kira.config import TelegramRemoteControlConfig
+from kira.persistence.db import connect
+from kira.remote.telegram import (
     ChatHandlerResult,
     InboxHandlerResult,
     InboxRequest,

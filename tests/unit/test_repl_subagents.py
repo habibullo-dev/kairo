@@ -14,17 +14,17 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from jarvis.agents import AgentRunStore
-from jarvis.cli.repl import Repl
-from jarvis.config import load_config
-from jarvis.core import FakeClient, text_message
-from jarvis.core.client import ToolCall
-from jarvis.core.prompts import DELEGATION_GUIDANCE
-from jarvis.permissions import PermissionGate, Policy, SubAgentGate
-from jarvis.permissions.gate import Decision
-from jarvis.persistence import SessionStore
-from jarvis.persistence.db import connect
-from jarvis.tools.base import Permission
+from kira.agents import AgentRunStore
+from kira.cli.repl import Repl
+from kira.config import load_config
+from kira.core import FakeClient, text_message
+from kira.core.client import ToolCall
+from kira.core.prompts import DELEGATION_GUIDANCE
+from kira.permissions import PermissionGate, Policy, SubAgentGate
+from kira.permissions.gate import Decision
+from kira.persistence import SessionStore
+from kira.persistence.db import connect
+from kira.tools.base import Permission
 
 _OPEN: list = []
 

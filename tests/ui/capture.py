@@ -7,7 +7,7 @@ screen × theme × viewport it saves a PNG and runs the no-overlap / no-horizont
 It also records ``securitypolicyviolation`` events from the real FastAPI response, so a screenshot
 cannot pass while the production CSP is silently refusing part of the interface.
 The pure machinery (viewport matrix, filename, overlap analysis) lives in
-``jarvis.ui.screenshots`` and is unit-tested keyless; this file is only the Playwright glue.
+``kira.ui.screenshots`` and is unit-tested keyless; this file is only the Playwright glue.
 
 Usage (after `uv sync --extra browser` and `uv run playwright install chromium`, with the UI
 running so you have the tokened URL it printed):
@@ -25,7 +25,7 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from jarvis.ui.screenshots import (
+from kira.ui.screenshots import (
     OVERLAP_PROBE_JS,
     THEMES,
     VIEWPORTS,

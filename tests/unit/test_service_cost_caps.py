@@ -11,13 +11,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-import jarvis.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
-from jarvis.config import load_config
-from jarvis.observability.cost import PricingTable
-from jarvis.observability.ledger import CostContext, ServiceBudget, ServiceLedger, _day_start
-from jarvis.persistence.db import connect
-from jarvis.services.exa import ExaSearchTool
-from jarvis.tools.base import ToolContext
+import kira.core  # noqa: F401 - load core first (ledger<->core.context import cycle in isolation)
+from kira.config import load_config
+from kira.observability.cost import PricingTable
+from kira.observability.ledger import CostContext, ServiceBudget, ServiceLedger, _day_start
+from kira.persistence.db import connect
+from kira.services.exa import ExaSearchTool
+from kira.tools.base import ToolContext
 
 _OPEN: list = []
 
@@ -139,7 +139,7 @@ def _pricing(**services) -> PricingTable:
 
 
 def test_reservation_includes_metered_service_flat_cost() -> None:
-    from jarvis.orchestration.estimate import _service_cost
+    from kira.orchestration.estimate import _service_cost
 
     pricing = _pricing(firecrawl={"unit": "page", "usd_per_unit": 0.001})
     cost, unpriced = _service_cost(frozenset({"firecrawl"}), turns=3, pricing=pricing)

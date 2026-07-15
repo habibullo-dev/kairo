@@ -1,6 +1,6 @@
 """Cassette (VCR) layer for eval model calls — cost control.
 
-A :class:`CassetteClient` decorates any :class:`~jarvis.core.client.LLMClient` (same pattern as
+A :class:`CassetteClient` decorates any :class:`~kira.core.client.LLMClient` (same pattern as
 ``LedgeredClient``) and intercepts every ``create`` call:
 
 * **replay** (default): a cassette HIT returns the cached :class:`ModelResponse`; a MISS fails
@@ -25,8 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from jarvis.core.client import ModelResponse
-from jarvis.observability.cost import PricingTable, Usage
+from kira.core.client import ModelResponse
+from kira.observability.cost import PricingTable, Usage
 
 Mode = Literal["replay", "record", "live"]
 
@@ -44,12 +44,12 @@ def _canonical(obj: object) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=True, default=str)
 
 
-# Eval scenarios run in a random temp workdir (tempfile.mkdtemp(prefix="jarvis-eval-")). That
+# Eval scenarios run in a random temp workdir (tempfile.mkdtemp(prefix="kira-eval-")). That
 # absolute path leaks into the message stream (e.g. a write_file confirmation), which would make
 # the cassette key differ every run — and every machine. Normalize the whole temp-workdir prefix
-# (drive/root … up to and including `jarvis-eval-<random>`) to a stable token BEFORE hashing, so
+# (drive/root … up to and including `kira-eval-<random>`) to a stable token BEFORE hashing, so
 # replay is deterministic across runs and across machines (CI). The relative sub-path is kept.
-_WORKDIR_RE = re.compile(r'(?:[A-Za-z]:)?[\\/](?:[^\\/\n"]+[\\/])*?jarvis-eval-[A-Za-z0-9_]+')
+_WORKDIR_RE = re.compile(r'(?:[A-Za-z]:)?[\\/](?:[^\\/\n"]+[\\/])*?kira-eval-[A-Za-z0-9_]+')
 
 
 def _redact_paths(value: object) -> object:
@@ -215,7 +215,7 @@ def wrap_web_tool(tool: object, *, store: CassetteStore, mode: Mode) -> None:
     """Replace a web tool's ``run`` with a cassette-cached version (E6a). replay: hit → cached
     ToolResult, MISS → fail closed (no live Tavily/web call); record/live: call + record the
     result content. Mutates the tool instance in place (eval-only)."""
-    from jarvis.tools.base import ToolResult
+    from kira.tools.base import ToolResult
 
     inner_run = tool.run
     name = tool.name

@@ -13,14 +13,14 @@ from __future__ import annotations
 import pathlib
 from pathlib import Path
 
-from jarvis.actions.intents import IntentKind, IntentState, IntentStore
-from jarvis.connectors.base import ConnectorRegistry
-from jarvis.persistence.db import connect
-from jarvis.tools.base import ToolContext
-from jarvis.tools.builtin.connectors_write import CalendarCreateEventTool, CalendarCreateParams
-from jarvis.ui.readmodels import intents_queue
+from kira.actions.intents import IntentKind, IntentState, IntentStore
+from kira.connectors.base import ConnectorRegistry
+from kira.persistence.db import connect
+from kira.tools.base import ToolContext
+from kira.tools.builtin.connectors_write import CalendarCreateEventTool, CalendarCreateParams
+from kira.ui.readmodels import intents_queue
 
-_SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "jarvis"
+_SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "kira"
 # The Google write adapters — the calls that actually change a remote account.
 _WRITE_ADAPTER_CALLS = (
     "create_event(",

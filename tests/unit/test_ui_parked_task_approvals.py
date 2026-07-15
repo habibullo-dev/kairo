@@ -9,14 +9,14 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from jarvis.config import load_config
-from jarvis.core.execution import ExecutionContext
-from jarvis.scheduler.store import ParkedContinuation, TaskRun
-from jarvis.ui.approver import ParkedTaskApprovalManager
-from jarvis.ui.auth import SESSION_COOKIE, AuthManager
-from jarvis.ui.connections import ConnectionManager
-from jarvis.ui.readmodels import UiServices
-from jarvis.ui.server import (
+from kira.config import load_config
+from kira.core.execution import ExecutionContext
+from kira.scheduler.store import ParkedContinuation, TaskRun
+from kira.ui.approver import ParkedTaskApprovalManager
+from kira.ui.auth import SESSION_COOKIE, AuthManager
+from kira.ui.connections import ConnectionManager
+from kira.ui.readmodels import UiServices
+from kira.ui.server import (
     EXPECTED_CONTEXT_REVISION_HEADER,
     EXPECTED_PROJECT_HEADER,
     EXPECTED_SESSION_HEADER,
@@ -208,8 +208,8 @@ def test_parked_task_endpoint_delegates_only_after_nonce_and_fresh_scope(tmp_pat
 
 def test_parked_task_browser_surface_is_exact_and_has_no_always_action() -> None:
     root = Path(__file__).parents[2]
-    draft = (root / "src/jarvis/ui/static/ui/task-draft.js").read_text(encoding="utf-8")
-    app = (root / "src/jarvis/ui/static/app.js").read_text(encoding="utf-8")
+    draft = (root / "src/kira/ui/static/ui/task-draft.js").read_text(encoding="utf-8")
+    app = (root / "src/kira/ui/static/app.js").read_text(encoding="utf-8")
     assert "Exact saved tool call" in draft
     assert "Approve once & resume" in draft
     assert "Reject task run" in draft

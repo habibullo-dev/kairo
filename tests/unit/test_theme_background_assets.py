@@ -1,6 +1,6 @@
 """Theme background assets are local, compressed, and mapped only by the appearance theme."""
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")
 ASSETS = STATIC_DIR / "assets"

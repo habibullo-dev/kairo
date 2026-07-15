@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.cli import reset as reset_module
-from jarvis.config import Config, load_config
-from jarvis.persistence.db import connect
-from jarvis.persistence.durable_fs import durable_rename_no_replace
-from jarvis.persistence.instance_lock import InstanceLock, ResetBarrier
-from jarvis.persistence.reset_recovery import (
+from kira.cli import reset as reset_module
+from kira.config import Config, load_config
+from kira.persistence.db import connect
+from kira.persistence.durable_fs import durable_rename_no_replace
+from kira.persistence.instance_lock import InstanceLock, ResetBarrier
+from kira.persistence.reset_recovery import (
     FAILED_FRESH_LABEL,
     RESET_FORMAT_VERSION,
     RESET_LOCATOR_SUFFIX,
@@ -462,7 +462,7 @@ async def test_link_backed_foreign_locator_storage_inside_current_roots_remains_
     except OSError:
         locator_root.mkdir()
         simulated_link = True
-        from jarvis.persistence import reset_recovery as recovery_module
+        from kira.persistence import reset_recovery as recovery_module
 
         real_is_link_like = recovery_module._is_link_like
         monkeypatch.setattr(
@@ -881,7 +881,7 @@ async def test_recovery_retries_after_rename_failure_without_losing_either_tree(
     durable_rename_no_replace(case.move.source, case.move.quarantine)
     case.move.source.mkdir()
     (case.move.source / "fresh-sentinel.txt").write_text("fresh data", encoding="utf-8")
-    from jarvis.persistence import reset_recovery as recovery_module
+    from kira.persistence import reset_recovery as recovery_module
 
     real_rename = recovery_module.durable_rename_no_replace
     calls = 0
@@ -911,7 +911,7 @@ async def test_manifest_write_failure_after_restore_only_requires_status_retry(
 ) -> None:
     case = await _pending_case(tmp_path)
     durable_rename_no_replace(case.move.source, case.move.quarantine)
-    from jarvis.persistence import reset_recovery as recovery_module
+    from kira.persistence import reset_recovery as recovery_module
 
     real_write = recovery_module.write_manifest
 
@@ -935,7 +935,7 @@ async def test_visible_rolled_back_manifest_counts_as_success_after_publish_erro
 ) -> None:
     case = await _pending_case(tmp_path)
     durable_rename_no_replace(case.move.source, case.move.quarantine)
-    from jarvis.persistence import reset_recovery as recovery_module
+    from kira.persistence import reset_recovery as recovery_module
 
     real_write = recovery_module.write_manifest
 
@@ -1084,9 +1084,9 @@ async def test_startup_recovers_before_reporting_missing_provider_key(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import jarvis.__main__ as entry
-    import jarvis.cli.repl as repl_module
-    import jarvis.config as config_module
+    import kira.__main__ as entry
+    import kira.cli.repl as repl_module
+    import kira.config as config_module
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     case = await _pending_case(tmp_path)

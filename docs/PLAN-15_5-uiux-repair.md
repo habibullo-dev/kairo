@@ -46,7 +46,7 @@ The theme of this phase: **every piece of workstation state gets exactly one ser
 truth, and every surface renders from it.** No more per-surface shapes that drift.
 
 ```
-src/jarvis/
+src/kira/
 ├── ui/
 │   ├── session.py          # UiSession — gains nothing; start_new_session already exists
 │   ├── state.py            # NEW — InteractiveModelState (the ModeState pattern): the runtime
@@ -236,7 +236,7 @@ is enabled (config, user-controlled); I never touch `config/settings.yaml` or th
 ### 5.7 Graph & Workspace discovery
 Daily tertiary strip gains an **Active workspace** card (project name, tab links incl. Graph,
 falls back to "Select a project"). The graph tab's empty state gains action chips ("Rebuild the
-graph" → copies `jarvis graph rebuild`; "Learn what the graph shows" → inline one-liner). Memory
+graph" → copies `kira graph rebuild`; "Learn what the graph shows" → inline one-liner). Memory
 screen rows, artifact rows, and vault sources get a quiet "View in graph →" link (GET/navigate
 only, deep-linking `#workspace/{pid}/graph` focused on the node). No new authority.
 
@@ -284,7 +284,7 @@ only, deep-linking `#workspace/{pid}/graph` focused on the node). No new authori
   row under the active project.
 - **Existing suites must stay green unmodified** (voice render, gate, modes, eval contracts) —
   any needed change to THEIR assertions is a design smell to escalate, not patch.
-- **Full gate per task:** suite + ruff + `uv run jarvis eval gate --suite core` (keyless replay,
+- **Full gate per task:** suite + ruff + `uv run kira eval gate --suite core` (keyless replay,
   $0) green before every commit; per-task commits with explicit paths.
 
 ## 8. Screenshot definition of done (`tests/ui/workbench_dod.py`)
@@ -390,7 +390,7 @@ a mobile-native layout beyond responsive CSS; MCP client (still avoided); voice 
 Execute Tasks 1–10 in order; **MANDATORY full stop at ⛔ Checkpoint J2** with the ten-bullet
 evidence — Phase 16 only on Habib's explicit sign-off. Per-task commits with EXPLICIT paths
 (never `git add -A`) ending `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`;
-adversarial self-review before each commit; suite + ruff + `uv run jarvis eval gate --suite core`
+adversarial self-review before each commit; suite + ruff + `uv run kira eval gate --suite core`
 (keyless replay, $0) green every task; never commit red; never touch the NEVER-touch list (§ top).
 Reuse, never fork: the `ModeState` pattern for `InteractiveModelState`; the `sessions/pin` route
 shape for the four new mutations; `hub_status`/`services_status` shaping for `capability_truth`;

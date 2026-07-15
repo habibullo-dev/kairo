@@ -7,7 +7,7 @@ server write. Structural reads of the shipped JS."""
 
 from __future__ import annotations
 
-from jarvis.ui.server import STATIC_DIR
+from kira.ui.server import STATIC_DIR
 
 DAILY = (STATIC_DIR / "screens" / "daily.js").read_text(encoding="utf-8")
 GRAPH = (STATIC_DIR / "screens" / "workspace" / "graph.js").read_text(encoding="utf-8")

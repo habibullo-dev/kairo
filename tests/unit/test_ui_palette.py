@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.ui import server as server_mod
-from jarvis.ui.server import STATIC_DIR
+from kira.ui import server as server_mod
+from kira.ui.server import STATIC_DIR
 
 PALETTE_JS = (STATIC_DIR / "ui" / "palette.js").read_text(encoding="utf-8")
 APP_JS = (STATIC_DIR / "app.js").read_text(encoding="utf-8")

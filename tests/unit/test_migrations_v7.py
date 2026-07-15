@@ -10,7 +10,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from jarvis.persistence.migrations import (
+from kira.persistence.migrations import (
     _SCHEMA_V1,
     _SCHEMA_V2,
     _SCHEMA_V3,
@@ -139,7 +139,7 @@ async def test_v7_project_link_and_fk(tmp_path: Path) -> None:
 
 
 async def test_fresh_db_is_v11(tmp_path: Path) -> None:
-    from jarvis.persistence.db import connect
+    from kira.persistence.db import connect
 
     db = await connect(tmp_path / "fresh.db")
     try:

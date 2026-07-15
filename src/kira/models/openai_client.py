@@ -1,0 +1,164 @@
+"""OpenAI chat client — TEXT-ONLY (Phase 10 Task 6).
+
+Implements the :class:`~kira.core.client.LLMClient` protocol for tool-less calls only:
+analysis/synthesis/review/judge roles that produce text, never drive tools. A call that
+passes ``tools`` raises :class:`UnsupportedToolUseError` (fail loud) rather than silently
+dropping them — a write-capable executor must stay on Anthropic this phase.
+
+Two correctness pins the pre-mortem (#12/#14) demands:
+* **Usage fields are mapped explicitly** — OpenAI's ``prompt_tokens`` / ``completion_tokens``
+  → our ``input_tokens`` / ``output_tokens``. Reusing ``Usage.from_response`` (Anthropic-shaped)
+  would read zeros and silently cost $0.
+* **Empty/short responses fail loud** — an absent choice or empty content raises, so a stage
+  can't "succeed" with nothing.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from time import perf_counter
+
+from kira.core.client import ModelResponse
+from kira.models.context_reuse import openai_prompt_cache_key, plan_for_prefix
+from kira.observability.cost import Usage
+
+
+class UnsupportedToolUseError(RuntimeError):
+    """Raised when a tool-use call reaches the text-only OpenAI adapter."""
+
+
+class OpenAIResponseError(RuntimeError):
+    """Raised when an OpenAI response has no usable content (fail loud, never silent)."""
+
+
+def _usage_from_openai(usage: object) -> Usage:
+    """Map OpenAI usage → our Usage with EXPLICIT field names (never the Anthropic shape).
+    Cached prompt tokens, when reported, are recorded as cache reads."""
+
+    def _get(name: str) -> int:
+        if usage is None:
+            return 0
+        val = getattr(usage, name, None)
+        if val is None and isinstance(usage, dict):
+            val = usage.get(name)
+        return int(val or 0)
+
+    cached = 0
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is not None:
+        cached = int(getattr(details, "cached_tokens", 0) or 0)
+    return Usage(
+        input_tokens=_get("prompt_tokens"),
+        output_tokens=_get("completion_tokens"),
+        cache_read_input_tokens=cached,
+    )
+
+
+class OpenAIChatClient:
+    """Text-only :class:`LLMClient` over OpenAI chat completions. Inject ``client`` in tests."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        client: object | None = None,
+        base_url: str | None = None,
+        provider: str = "openai",
+        context_reuse: bool = False,
+        max_retries: int = 4,
+    ) -> None:
+        if client is None:
+            from openai import AsyncOpenAI
+
+            kwargs: dict = {"api_key": api_key, "max_retries": max_retries}
+            if base_url:  # Gemini's OpenAI-compatible endpoint (Phase 10C); None ⇒ OpenAI default
+                kwargs["base_url"] = base_url
+            client = AsyncOpenAI(**kwargs)
+        self._client = client
+        # S7 enable-step (Phase 13): set a `prompt_cache_key` to route to a warm prefix cache when
+        # on. The key is derived from `provider`'s capability, so OpenAI (automatic_prefix +
+        # cache_key) gets a key while Gemini (provider_default / implicit) naturally gets NONE.
+        self._provider = provider
+        self.context_reuse = context_reuse
+
+    async def create(
+        self,
+        *,
+        model: str,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: int,
+        on_text_delta: Callable[[str], None] | None = None,
+        tool_choice: dict | None = None,
+        temperature: float | None = None,
+        stable_prefix: str | None = None,
+        effort: str | None = None,  # protocol conformance; OpenAI-compat has no output_config
+    ) -> ModelResponse:
+        if tools:
+            raise UnsupportedToolUseError(
+                f"OpenAIChatClient is text-only; model {model!r} cannot drive tools this phase"
+            )
+        # Anthropic keeps `system` separate; OpenAI takes it as the first message.
+        oai_messages = [{"role": "system", "content": system}, *_to_openai_messages(messages)]
+        kwargs: dict = {
+            "model": model,
+            "messages": oai_messages,
+            "max_completion_tokens": max_tokens,
+        }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        # S7 enable-step: attach a prompt_cache_key when caching is on (nothing added otherwise, so
+        # the request stays byte-identical to a no-caching build). None for Gemini (implicit).
+        cr_hash: str | None = None
+        if self.context_reuse and stable_prefix:
+            directive, assembled = plan_for_prefix(self._provider, stable_prefix)
+            key = openai_prompt_cache_key(directive)
+            if key is not None:
+                kwargs["prompt_cache_key"] = key
+                cr_hash = assembled.stable_prefix_hash
+        start = perf_counter()
+        completion = await self._client.chat.completions.create(**kwargs)  # type: ignore[attr-defined]
+        latency_ms = (perf_counter() - start) * 1000.0
+
+        choices = getattr(completion, "choices", None) or []
+        if not choices:
+            raise OpenAIResponseError(f"OpenAI returned no choices for model {model!r}")
+        content = getattr(choices[0].message, "content", None)
+        if not content or not content.strip():
+            raise OpenAIResponseError(f"OpenAI returned empty content for model {model!r}")
+        if on_text_delta:
+            on_text_delta(content)
+        return ModelResponse(
+            content_blocks=[{"type": "text", "text": content}],
+            stop_reason="end_turn",
+            usage=_usage_from_openai(getattr(completion, "usage", None)),
+            model=getattr(completion, "model", None) or model,
+            latency_ms=latency_ms,
+            stable_prefix_hash=cr_hash,  # None unless a prompt_cache_key was set
+        )
+
+
+def _to_openai_messages(messages: list[dict]) -> list[dict]:
+    """Flatten our (possibly block-shaped) messages to OpenAI's plain {role, content} text.
+    Tool-use/tool-result blocks are rendered as short text notes — this adapter is text-only,
+    so a caller shouldn't be sending them, but we degrade rather than crash."""
+    out: list[dict] = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content")
+        if isinstance(content, str):
+            out.append({"role": role, "content": content})
+            continue
+        parts: list[str] = []
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+            elif block.get("type") == "tool_use":
+                parts.append(f"[requested tool {block.get('name')}]")
+            elif block.get("type") == "tool_result":
+                parts.append(f"[tool result: {block.get('content')}]")
+        out.append({"role": role, "content": "\n".join(p for p in parts if p)})
+    return out
