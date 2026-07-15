@@ -315,23 +315,30 @@ async def test_remote_wiring_passes_recent_delivered_turns_with_correct_roles(
         await db.close()
 
 
-async def test_remote_photo_question_reaches_vision_model_without_attachment_tools(
+async def test_remote_photo_question_has_no_egress_even_when_live_search_is_enabled(
     tmp_path: Path,
 ) -> None:
     config = load_config(root=tmp_path, env_file=None)
     config.connectors.telegram.remote_control.enabled = True
     config.connectors.telegram.remote_control.allowed_chat_id = "123"
     config.connectors.telegram.remote_control.attachments.enabled = True
-    config.secrets = config.secrets.model_copy(update={"telegram_bot_token": "BOT-CANARY"})
+    config.connectors.telegram.remote_control.operator.enabled = True
+    config.connectors.telegram.remote_control.operator.live_web_search_enabled = True
+    config.secrets = config.secrets.model_copy(
+        update={"telegram_bot_token": "BOT-CANARY", "tavily_api_key": "TVLY-CANARY"}
+    )
     db = await connect(tmp_path / "photo.db")
     controller = None
     try:
+        source = _WebSearch()
+        registry = ToolRegistry()
+        registry.register(source)
         fake = FakeClient([text_message("The image shows a green rectangle.")])
         repl = SimpleNamespace(
             tasks=None,
             projects=None,
             turn_lock=asyncio.Lock(),
-            registry=ToolRegistry(),
+            registry=registry,
             client=fake,
             executor=ToolExecutor(
                 timeout=config.limits.tool_timeout_seconds,
@@ -373,6 +380,7 @@ async def test_remote_photo_question_reaches_vision_model_without_attachment_too
         content = fake.calls[0]["messages"][0]["content"]
         assert isinstance(content, list) and content[0]["type"] == "image"
         assert "What is in this image?" in content[1]["text"]
+        assert source.calls == []
         assert http.sent[-1]["text"] == "The image shows a green rectangle."
     finally:
         if controller is not None:
