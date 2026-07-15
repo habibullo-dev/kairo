@@ -12,6 +12,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from jarvis.persistence.durable_fs import durable_mkdir, durable_replace
+
 LOCKED_PROVIDERS = frozenset({"google", "kakao", "telegram"})
 _MARKER_NAME = ".integration-consent.json"
 
@@ -47,7 +49,8 @@ def integration_is_locked(data_dir: Path, provider: str) -> bool:
 
 
 def _write_marker(data_dir: Path, locked: set[str]) -> None:
-    data_dir.mkdir(parents=True, exist_ok=True)
+    if not data_dir.exists():
+        durable_mkdir(data_dir)
     marker = integration_consent_path(data_dir)
     payload = {
         "version": 1,
@@ -62,7 +65,7 @@ def _write_marker(data_dir: Path, locked: set[str]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, marker)
+        durable_replace(temporary_path, marker)
     except BaseException:
         temporary_path.unlink(missing_ok=True)
         raise

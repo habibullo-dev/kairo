@@ -22,7 +22,10 @@ def backup_cli(argv: list[str]) -> int:
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("create", help="Create a timestamped backup under data/backups/.")
+    sub.add_parser(
+        "create",
+        help="Create a timestamped backup under data/backups/ (Kira must be stopped).",
+    )
     verify = sub.add_parser("verify", help="Verify hashes and SQLite integrity without restoring.")
     verify.add_argument("backup", help="Path to one backup directory.")
     args = parser.parse_args(argv)
@@ -36,7 +39,20 @@ def backup_cli(argv: list[str]) -> int:
             except ConfigError as exc:
                 print(f"Kira backup configuration error: {exc}", file=sys.stderr)
                 return 1
-            path = create_backup(config.data_dir)
+            from jarvis.persistence.instance_lock import (
+                InstanceAlreadyRunning,
+                ResetMaintenanceBusy,
+            )
+            from jarvis.persistence.reset_recovery import (
+                ResetRecoveryError,
+                reset_sensitive_writer,
+            )
+
+            try:
+                with reset_sensitive_writer(config):
+                    path = create_backup(config.data_dir)
+            except (InstanceAlreadyRunning, ResetMaintenanceBusy, ResetRecoveryError) as exc:
+                raise BackupError(str(exc)) from exc
             print(f"Kira backup created: {path}")
             return 0
         result = verify_backup(Path(args.backup))

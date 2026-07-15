@@ -18,6 +18,7 @@ from jarvis.cli.backup import backup_cli
 from jarvis.config import ConfigError
 from jarvis.persistence.backup import BackupError, create_backup, verify_backup
 from jarvis.persistence.db import connect
+from jarvis.persistence.instance_lock import ResetBarrier
 from jarvis.persistence.migrations import latest_version
 
 EXCLUDED_PATTERNS = [
@@ -706,6 +707,22 @@ def test_backup_cli_reports_configuration_errors_without_traceback(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "Kira backup configuration error: invalid test configuration" in captured.err
+
+
+def test_backup_create_barrier_contention_prevents_data_directory_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from jarvis.config import load_config
+
+    config = load_config(root=tmp_path, env_file=None)
+    monkeypatch.setattr(config_module, "load_config", lambda **_kwargs: config)
+    with ResetBarrier(config.data_dir):
+        assert backup_cli(["create"]) == 1
+
+    assert not config.data_dir.exists()
+    assert "data-maintenance operation" in capsys.readouterr().err
 
 
 def test_backup_cli_errors_use_stderr(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import contextlib
-import ctypes
-import errno
 import os
 import sqlite3
 import stat
-import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from jarvis.persistence.durable_fs import (
+    rename_no_replace as _rename_no_replace,
+)
+from jarvis.persistence.durable_fs import (
+    sync_directory as _durable_sync_directory,
+)
 from jarvis.persistence.instance_lock import InstanceLock
 
 DATABASE_FILENAME = "kira.db"
@@ -301,65 +304,10 @@ def _sync_file(path: Path, expected: _FileIdentity) -> None:
 
 
 def _sync_directory(path: Path) -> None:
-    if os.name == "nt":
-        return
-    descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY)
-        os.fsync(descriptor)
+        _durable_sync_directory(path)
     except OSError as exc:
         raise DatabaseIdentityError("Database directory could not be synced safely.") from exc
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-
-
-def _rename_no_replace(source: Path, destination: Path) -> None:
-    """Atomically move ``source`` without ever overwriting ``destination``."""
-    if os.name == "nt":
-        os.rename(source, destination)
-        return
-
-    libc = ctypes.CDLL(None, use_errno=True)
-    encoded_source = os.fsencode(source)
-    encoded_destination = os.fsencode(destination)
-    if sys.platform.startswith("linux"):
-        rename = getattr(libc, "renameat2", None)
-        if rename is None:
-            raise OSError(
-                errno.ENOTSUP,
-                "atomic no-replace rename is unavailable",
-                str(destination),
-            )
-        rename.argtypes = [
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_uint,
-        ]
-        rename.restype = ctypes.c_int
-        result = rename(-100, encoded_source, -100, encoded_destination, 1)
-    elif sys.platform == "darwin":
-        rename = getattr(libc, "renamex_np", None)
-        if rename is None:
-            raise OSError(
-                errno.ENOTSUP,
-                "atomic no-replace rename is unavailable",
-                str(destination),
-            )
-        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-        rename.restype = ctypes.c_int
-        result = rename(encoded_source, encoded_destination, 0x00000004)
-    else:
-        raise OSError(
-            errno.ENOTSUP,
-            "atomic no-replace rename is unavailable",
-            str(destination),
-        )
-    if result != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), str(destination))
 
 
 def _write_marker_staging(data_dir: Path, name: str, payload: bytes) -> Path:
@@ -542,14 +490,15 @@ def _restore_parked_no_clobber(data_dir: Path, parked: Path, legacy: Path) -> No
             f"A raced cutover file remains preserved at {parked.name}."
         ) from exc
     _sync_directory(data_dir)
-    if _regular_identity(
-        legacy,
-        label="Restored legacy database file",
-        allowed_links=frozenset({2}),
-    ) != parked_identity:
-        raise DatabaseIdentityError(
-            f"A raced cutover file remains preserved at {parked.name}."
+    if (
+        _regular_identity(
+            legacy,
+            label="Restored legacy database file",
+            allowed_links=frozenset({2}),
         )
+        != parked_identity
+    ):
+        raise DatabaseIdentityError(f"A raced cutover file remains preserved at {parked.name}.")
     try:
         parked.unlink()
     except OSError as exc:

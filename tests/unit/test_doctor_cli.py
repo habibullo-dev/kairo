@@ -180,6 +180,22 @@ def test_doctor_reports_ambiguous_database_identity_without_changes(
     } == before
 
 
+def test_doctor_reports_interrupted_reset_without_creating_or_recovering_paths(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / ".kira-reset-manifests" / "20260715T120000Z-deadbeef.json"
+    manifest.parent.mkdir()
+    manifest.write_text('{"status": "in_progress"}\n', encoding="utf-8")
+    before = _inventory(tmp_path)
+    lines: list[str] = []
+
+    assert doctor.doctor_cli([], root=tmp_path, emit=lines.append) == 1
+
+    assert _inventory(tmp_path) == before
+    assert not (tmp_path / "data").exists() and not (tmp_path / "logs").exists()
+    assert "Reset recovery: blocked" in "\n".join(lines)
+
+
 def test_doctor_reports_invalid_yaml_without_creating_runtime_paths(tmp_path: Path) -> None:
     settings = tmp_path / "config" / "settings.yaml"
     settings.parent.mkdir()

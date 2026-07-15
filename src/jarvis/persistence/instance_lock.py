@@ -23,6 +23,10 @@ class InstanceAlreadyRunning(RuntimeError):
     """Another Kira or legacy-compatible process owns the configured data root."""
 
 
+class ResetMaintenanceBusy(RuntimeError):
+    """A reset-sensitive Kira operation already owns the maintenance barrier."""
+
+
 def legacy_instance_lock_path(data_dir: Path) -> Path:
     """Return the exact pre-Kira lock path used by already-running older processes."""
     resolved = data_dir.resolve()
@@ -42,6 +46,12 @@ def instance_lock_paths(data_dir: Path) -> tuple[Path, Path]:
         resolved.with_name(f".{resolved.name}.kairo-instance.lock"),
         resolved.with_name(f".{resolved.name}.kira-instance.lock"),
     )
+
+
+def reset_barrier_path(data_dir: Path) -> Path:
+    """Return the lock that serializes reset with otherwise-online data writers."""
+    resolved = data_dir.resolve()
+    return resolved.with_name(f".{resolved.name}.kira-reset-barrier.lock")
 
 
 def _acquire_handle(path: Path) -> BinaryIO:
@@ -136,6 +146,56 @@ class InstanceLock:
             raise first_error
 
     def __enter__(self) -> InstanceLock:
+        return self.acquire()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.release()
+
+
+class ResetBarrier:
+    """Non-blocking barrier between reset/recovery and reset-sensitive writers.
+
+    Acquire this barrier before ``InstanceLock`` whenever both are needed.  Long-lived
+    runtimes can release the barrier after recovery and startup preparation because their
+    retained ``InstanceLock`` continues to exclude reset.
+    """
+
+    def __init__(self, data_dir: Path) -> None:
+        self.data_dir = data_dir.resolve()
+        self.path = reset_barrier_path(self.data_dir)
+        self._handle: BinaryIO | None = None
+
+    def owned_data_dir(self) -> Path:
+        """Return the protected root only while the barrier is held."""
+        if self._handle is None:
+            raise RuntimeError("ResetBarrier is not currently acquired")
+        return self.data_dir
+
+    def acquire(self) -> ResetBarrier:
+        if self._handle is not None:
+            raise RuntimeError("ResetBarrier is already acquired")
+        try:
+            self._handle = _acquire_handle(self.path)
+        except OSError as exc:
+            raise ResetMaintenanceBusy(
+                "Another Kira data-maintenance operation is active. Wait for it to finish "
+                "and retry."
+            ) from exc
+        return self
+
+    def release(self) -> None:
+        handle = self._handle
+        if handle is None:
+            return
+        self._handle = None
+        _release_handle(handle)
+
+    def __enter__(self) -> ResetBarrier:
         return self.acquire()
 
     def __exit__(

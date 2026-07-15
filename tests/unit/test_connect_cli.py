@@ -12,6 +12,7 @@ from jarvis.cli import connect
 from jarvis.config import load_config
 from jarvis.connectors.google import GOOGLE_SCOPES
 from jarvis.connectors.tokens import TokenState, write_token_state
+from jarvis.persistence.instance_lock import InstanceLock, ResetBarrier
 
 _FAKE = TokenState(
     provider="google",
@@ -21,6 +22,38 @@ _FAKE = TokenState(
     obtained_at="2026-01-01T00:00:00+00:00",
     scopes=list(GOOGLE_SCOPES),
 )
+
+
+def test_connect_cli_barrier_contention_prevents_directory_and_token_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import jarvis.config as config_module
+
+    config = load_config(root=tmp_path, env_file=None)
+    monkeypatch.setattr(config_module, "load_config", lambda **_kwargs: config)
+    with ResetBarrier(config.data_dir):
+        assert connect.connect_cli(["status"]) == 1
+
+    assert not config.data_dir.exists() and not config.logs_dir.exists()
+    assert "Connect blocked:" in capsys.readouterr().out
+
+
+def test_connect_cli_holds_legacy_compatible_instance_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import jarvis.config as config_module
+
+    config = load_config(root=tmp_path, env_file=None)
+    monkeypatch.setattr(config_module, "load_config", lambda **_kwargs: config)
+    with InstanceLock(config.data_dir):
+        assert connect.connect_cli(["status"]) == 1
+
+    assert not config.data_dir.exists() and not config.logs_dir.exists()
+    assert "Kira may already be running" in capsys.readouterr().out
 
 
 @pytest.fixture(autouse=True)

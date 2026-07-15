@@ -24,6 +24,7 @@ from jarvis.persistence.database_identity import (
     select_database,
 )
 from jarvis.persistence.migrations import latest_version
+from jarvis.persistence.reset_recovery import interrupted_reset_diagnostic
 
 if TYPE_CHECKING:
     from jarvis.config import Config
@@ -143,22 +144,27 @@ def doctor_cli(argv: list[str], *, root: Path | None = None, emit=print) -> int:
     emit("Kira doctor (read-only; no network requests or local changes):")
     credentials_ready = _report_credentials(config, emit=emit)
     _report_extras(emit=emit)
-    try:
-        database = select_database(config.data_dir)
-    except DatabaseIdentityError as exc:
-        emit(f"Database identity: blocked ({exc})")
+    reset_state = interrupted_reset_diagnostic(config)
+    if reset_state is not None:
+        emit(f"Reset recovery: {reset_state}")
         database_ready = False
     else:
-        if database.name == LEGACY_DATABASE_FILENAME:
-            emit(
-                f"Database identity: legacy {LEGACY_DATABASE_FILENAME} "
-                f"(migrates to {DATABASE_FILENAME} on exclusive startup)"
-            )
-        elif database.exists():
-            emit(f"Database identity: canonical {DATABASE_FILENAME}")
+        try:
+            database = select_database(config.data_dir)
+        except DatabaseIdentityError as exc:
+            emit(f"Database identity: blocked ({exc})")
+            database_ready = False
         else:
-            emit(f"Database identity: not created (next database: {DATABASE_FILENAME})")
-        database_ready = _report_database(database, emit=emit)
+            if database.name == LEGACY_DATABASE_FILENAME:
+                emit(
+                    f"Database identity: legacy {LEGACY_DATABASE_FILENAME} "
+                    f"(migrates to {DATABASE_FILENAME} on exclusive startup)"
+                )
+            elif database.exists():
+                emit(f"Database identity: canonical {DATABASE_FILENAME}")
+            else:
+                emit(f"Database identity: not created (next database: {DATABASE_FILENAME})")
+            database_ready = _report_database(database, emit=emit)
     disk_ready = _report_disk(config.data_dir, emit=emit)
     if credentials_ready and database_ready and disk_ready:
         emit("Doctor: ready.")

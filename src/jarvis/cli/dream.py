@@ -23,7 +23,17 @@ from jarvis.persistence.database_identity import (
     migrate_live_database,
 )
 from jarvis.persistence.db import connect
-from jarvis.persistence.instance_lock import InstanceAlreadyRunning, InstanceLock
+from jarvis.persistence.instance_lock import (
+    InstanceAlreadyRunning,
+    InstanceLock,
+    ResetBarrier,
+    ResetMaintenanceBusy,
+)
+from jarvis.persistence.reset_recovery import (
+    ResetRecoveryError,
+    interrupted_reset_diagnostic,
+    recover_interrupted_reset,
+)
 from jarvis.scheduler.store import TaskStore
 
 if TYPE_CHECKING:
@@ -83,15 +93,28 @@ def dream_cli(argv: list[str]) -> int:
         from jarvis.config import ConfigError, load_config
 
         try:
-            config = load_config(require=("anthropic",))
-            with InstanceLock(config.data_dir) as lock:
+            config = load_config()
+            if interrupted_reset_diagnostic(config) is None:
+                config.require("anthropic")
+            with (
+                ResetBarrier(config.data_dir) as barrier,
+                InstanceLock(config.data_dir) as lock,
+            ):
+                recover_interrupted_reset(config, barrier, lock)
+                config.require("anthropic")
                 config.ensure_dirs()
                 database = migrate_live_database(lock)
+                barrier.release()
                 return asyncio.run(_run(config, database, args.job))
         except ConfigError as exc:
             print(f"Dream configuration error: {exc}", file=sys.stderr)
             return 1
-        except (InstanceAlreadyRunning, DatabaseIdentityError) as exc:
+        except (
+            InstanceAlreadyRunning,
+            ResetMaintenanceBusy,
+            ResetRecoveryError,
+            DatabaseIdentityError,
+        ) as exc:
             print(f"Dream command blocked: {exc}", file=sys.stderr)
             return 1
     return 2

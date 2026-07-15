@@ -355,6 +355,17 @@ def test_cache_ab_cli_requires_explicit_live_cap(capsys) -> None:
     assert "requires --live and a positive --max-cost-usd" in capsys.readouterr().out
 
 
+def test_eval_plan_remains_read_only_and_does_not_acquire_reset_barrier(
+    monkeypatch, capsys
+) -> None:
+    def unexpected_barrier(_config):
+        raise AssertionError("read-only planning must not acquire the reset writer barrier")
+
+    monkeypatch.setattr(runner, "reset_sensitive_writer", unexpected_barrier)
+    assert runner.cli(["plan", "--suite", "core", "--runs", "1"]) == 0
+    assert "projected live cost" in capsys.readouterr().out
+
+
 async def test_cache_ab_isolates_arms_and_leaves_runtime_eval_state_unchanged(
     tmp_path: Path, monkeypatch
 ) -> None:

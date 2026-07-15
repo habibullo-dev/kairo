@@ -108,19 +108,37 @@ def main() -> None:
     from jarvis.config import ConfigError, load_config
     from jarvis.observability import configure_logging
     from jarvis.persistence.database_identity import DatabaseIdentityError, migrate_live_database
-    from jarvis.persistence.instance_lock import InstanceAlreadyRunning, InstanceLock
+    from jarvis.persistence.instance_lock import (
+        InstanceAlreadyRunning,
+        InstanceLock,
+        ResetBarrier,
+        ResetMaintenanceBusy,
+    )
+    from jarvis.persistence.reset_recovery import (
+        ResetRecoveryError,
+        interrupted_reset_diagnostic,
+        recover_interrupted_reset,
+    )
 
     console = Console()
     try:
-        config = load_config(require=("anthropic",))
+        config = load_config()
+        if interrupted_reset_diagnostic(config) is None:
+            config.require("anthropic")
     except ConfigError as exc:
         console.print(f"[red]Configuration error:[/] {exc}")
         sys.exit(1)
 
     try:
-        with InstanceLock(config.data_dir) as lock:
+        with (
+            ResetBarrier(config.data_dir) as barrier,
+            InstanceLock(config.data_dir) as lock,
+        ):
+            recover_interrupted_reset(config, barrier, lock)
+            config.require("anthropic")
             config.ensure_dirs()
             database = migrate_live_database(lock)
+            barrier.release()
             configure_logging(config.logs_dir, **config.logging.model_dump())
             if args.ui:
                 asyncio.run(run_ui(config, console=console, database=database))
@@ -130,7 +148,10 @@ def main() -> None:
                 asyncio.run(
                     run_repl(config, resume=args.resume, console=console, database=database)
                 )
-    except InstanceAlreadyRunning as exc:
+    except ConfigError as exc:
+        console.print(f"[red]Configuration error:[/] {exc}")
+        sys.exit(1)
+    except (InstanceAlreadyRunning, ResetMaintenanceBusy, ResetRecoveryError) as exc:
         console.print(f"[red]Startup blocked:[/] {exc}")
         sys.exit(1)
     except DatabaseIdentityError as exc:

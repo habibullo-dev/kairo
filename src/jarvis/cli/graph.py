@@ -24,7 +24,13 @@ from jarvis.persistence.database_identity import (
     DatabaseIdentityError,
     migrate_live_database,
 )
-from jarvis.persistence.instance_lock import InstanceAlreadyRunning, InstanceLock
+from jarvis.persistence.instance_lock import (
+    InstanceAlreadyRunning,
+    InstanceLock,
+    ResetBarrier,
+    ResetMaintenanceBusy,
+)
+from jarvis.persistence.reset_recovery import ResetRecoveryError, recover_interrupted_reset
 
 if TYPE_CHECKING:
     from jarvis.config import Config
@@ -108,9 +114,14 @@ def graph_cli(argv: list[str]) -> int:
 
     try:
         config = load_config()
-        with InstanceLock(config.data_dir) as lock:
+        with (
+            ResetBarrier(config.data_dir) as barrier,
+            InstanceLock(config.data_dir) as lock,
+        ):
+            recover_interrupted_reset(config, barrier, lock)
             config.ensure_dirs()
             database = migrate_live_database(lock)
+            barrier.release()
             if args.cmd == "rebuild":
                 return asyncio.run(_run_rebuild(database))
             if args.cmd == "suggest":
@@ -132,7 +143,12 @@ def graph_cli(argv: list[str]) -> int:
     except ConfigError as exc:
         print(f"Graph configuration error: {exc}", file=sys.stderr)
         return 1
-    except (InstanceAlreadyRunning, DatabaseIdentityError) as exc:
+    except (
+        InstanceAlreadyRunning,
+        ResetMaintenanceBusy,
+        ResetRecoveryError,
+        DatabaseIdentityError,
+    ) as exc:
         print(f"Graph command blocked: {exc}", file=sys.stderr)
         return 1
     return 1

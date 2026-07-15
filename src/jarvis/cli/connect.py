@@ -203,7 +203,8 @@ async def _dispatch(args: argparse.Namespace, config: Config) -> int:
 
 def connect_cli(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        prog="kira connect", description="Connect external accounts (a terminal ritual)."
+        prog="kira connect",
+        description="Connect external accounts while the Kira runtime is stopped.",
     )
     parser.add_argument("provider", choices=["google", "kakao", "telegram", "status"])
     parser.add_argument(
@@ -213,17 +214,25 @@ def connect_cli(argv: list[str]) -> int:
 
     from jarvis.config import ConfigError, load_config
     from jarvis.observability import configure_logging
+    from jarvis.persistence.instance_lock import (
+        InstanceAlreadyRunning,
+        ResetMaintenanceBusy,
+    )
+    from jarvis.persistence.reset_recovery import ResetRecoveryError, reset_sensitive_writer
 
     try:
         config = load_config()
     except ConfigError as exc:
         print(f"Configuration error: {exc}")
         return 1
-    config.ensure_dirs()
-    configure_logging(config.logs_dir, **config.logging.model_dump())
-
     try:
-        return asyncio.run(_dispatch(args, config))
+        with reset_sensitive_writer(config):
+            config.ensure_dirs()
+            configure_logging(config.logs_dir, **config.logging.model_dump())
+            return asyncio.run(_dispatch(args, config))
+    except (InstanceAlreadyRunning, ResetMaintenanceBusy, ResetRecoveryError) as exc:
+        print(f"Connect blocked: {exc}")
+        return 1
     except ConnectorError as exc:
         print(exc.user_message)  # friendly only — never the provider's raw error body
         return 1

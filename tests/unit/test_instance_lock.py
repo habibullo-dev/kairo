@@ -15,9 +15,12 @@ import jarvis.persistence.instance_lock as lock_module
 from jarvis.persistence.instance_lock import (
     InstanceAlreadyRunning,
     InstanceLock,
+    ResetBarrier,
+    ResetMaintenanceBusy,
     instance_lock_path,
     instance_lock_paths,
     legacy_instance_lock_path,
+    reset_barrier_path,
 )
 
 RUNNING_MESSAGE = (
@@ -122,6 +125,35 @@ def test_locks_live_beside_movable_data_root_in_compatibility_order(tmp_path: Pa
     assert legacy_instance_lock_path(data) == legacy
     assert instance_lock_path(data) == canonical
     assert instance_lock_paths(data) == (legacy, canonical)
+
+
+def test_reset_barrier_serializes_online_writers_without_owning_instance_lock(
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "data"
+    barrier_path = tmp_path / ".data.kira-reset-barrier.lock"
+    assert reset_barrier_path(data) == barrier_path
+
+    barrier = ResetBarrier(data)
+    with pytest.raises(RuntimeError, match="not currently acquired"):
+        barrier.owned_data_dir()
+    with barrier:
+        assert barrier.owned_data_dir() == data.resolve()
+        with pytest.raises(ResetMaintenanceBusy):
+            ResetBarrier(data).acquire()
+        with InstanceLock(data):
+            pass
+    assert barrier_path.read_bytes() == b"\0"
+    with ResetBarrier(data):
+        pass
+
+
+def test_reset_barrier_release_is_idempotent(tmp_path: Path) -> None:
+    barrier = ResetBarrier(tmp_path / "data").acquire()
+    barrier.release()
+    barrier.release()
+    with pytest.raises(RuntimeError, match="not currently acquired"):
+        barrier.owned_data_dir()
 
 
 def test_second_owner_fails_without_waiting_and_release_allows_reacquire(tmp_path: Path) -> None:
@@ -294,9 +326,11 @@ def test_blocked_entrypoint_does_not_prepare_runtime_dirs_or_logging(
 
     calls: list[str] = []
     config = SimpleNamespace(
+        root=tmp_path,
         data_dir=tmp_path / "data",
         logs_dir=tmp_path / "logs",
         logging=SimpleNamespace(model_dump=lambda: {}),
+        require=lambda *_services: None,
         ensure_dirs=lambda: calls.append("ensure_dirs"),
     )
 
@@ -334,6 +368,7 @@ def test_entrypoint_migrates_database_under_lock_before_logging_and_runtime(
     import jarvis.config as config_module
     import jarvis.observability as observability
     import jarvis.persistence.database_identity as identity_module
+    import jarvis.persistence.reset_recovery as recovery_module
 
     calls: list[str] = []
     data = tmp_path / "data"
@@ -344,9 +379,11 @@ def test_entrypoint_migrates_database_under_lock_before_logging_and_runtime(
         data.mkdir(parents=True)
 
     config = SimpleNamespace(
+        root=tmp_path,
         data_dir=data,
         logs_dir=tmp_path / "logs",
         logging=SimpleNamespace(model_dump=lambda: {}),
+        require=lambda *_services: None,
         ensure_dirs=ensure_dirs,
     )
 
@@ -354,6 +391,12 @@ def test_entrypoint_migrates_database_under_lock_before_logging_and_runtime(
         assert lock.owned_data_dir() == data.resolve()
         calls.append("migrate")
         return canonical
+
+    def recover(_config, barrier: ResetBarrier, lock: InstanceLock) -> bool:
+        assert barrier.owned_data_dir() == data.resolve()
+        assert lock.owned_data_dir() == data.resolve()
+        calls.append("recover")
+        return False
 
     async def run_repl(
         _config,
@@ -368,6 +411,7 @@ def test_entrypoint_migrates_database_under_lock_before_logging_and_runtime(
     monkeypatch.setattr(sys, "argv", ["kira"])
     monkeypatch.setattr(config_module, "load_config", lambda **_kwargs: config)
     monkeypatch.setattr(identity_module, "migrate_live_database", migrate)
+    monkeypatch.setattr(recovery_module, "recover_interrupted_reset", recover)
     monkeypatch.setattr(
         observability,
         "configure_logging",
@@ -377,4 +421,74 @@ def test_entrypoint_migrates_database_under_lock_before_logging_and_runtime(
 
     entry.main()
 
-    assert calls == ["ensure_dirs", "migrate", "logging", "runtime"]
+    assert calls == ["recover", "ensure_dirs", "migrate", "logging", "runtime"]
+
+
+def test_interrupted_reset_error_blocks_startup_before_directory_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import jarvis.__main__ as entry
+    import jarvis.config as config_module
+    import jarvis.observability as observability
+    import jarvis.persistence.reset_recovery as recovery_module
+
+    calls: list[str] = []
+    config = SimpleNamespace(
+        root=tmp_path,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+        logging=SimpleNamespace(model_dump=lambda: {}),
+        require=lambda *_services: None,
+        ensure_dirs=lambda: calls.append("ensure_dirs"),
+    )
+
+    def refuse(_config, _barrier, _lock) -> bool:
+        calls.append("recover")
+        raise recovery_module.ResetRecoveryError("ambiguous interrupted reset")
+
+    monkeypatch.setattr(sys, "argv", ["kira"])
+    monkeypatch.setattr(config_module, "load_config", lambda **_kwargs: config)
+    monkeypatch.setattr(recovery_module, "recover_interrupted_reset", refuse)
+    monkeypatch.setattr(
+        observability, "configure_logging", lambda *_args, **_kwargs: calls.append("logging")
+    )
+
+    with pytest.raises(SystemExit) as exited:
+        entry.main()
+
+    assert exited.value.code == 1
+    assert calls == ["recover"]
+    assert not config.data_dir.exists() and not config.logs_dir.exists()
+    assert "ambiguous interrupted reset" in capsys.readouterr().out
+
+
+def test_missing_provider_key_without_pending_reset_stays_lock_and_directory_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import jarvis.__main__ as entry
+    import jarvis.config as config_module
+    from jarvis.config import ConfigError
+
+    def require(*_services: str) -> None:
+        raise ConfigError("Missing required API key(s): ANTHROPIC_API_KEY")
+
+    config = SimpleNamespace(
+        root=tmp_path,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+        require=require,
+    )
+    monkeypatch.setattr(sys, "argv", ["kira"])
+    monkeypatch.setattr(config_module, "load_config", lambda **_kwargs: config)
+
+    with pytest.raises(SystemExit) as exited:
+        entry.main()
+
+    assert exited.value.code == 1
+    assert not config.data_dir.exists() and not config.logs_dir.exists()
+    assert not list(tmp_path.glob(".*.lock"))
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().out

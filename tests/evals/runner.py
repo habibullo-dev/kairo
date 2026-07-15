@@ -79,6 +79,8 @@ from jarvis.permissions import PermissionGate, load_policy
 from jarvis.permissions.gate import Decision
 from jarvis.persistence import SessionStore
 from jarvis.persistence.db import connect
+from jarvis.persistence.instance_lock import InstanceAlreadyRunning, ResetMaintenanceBusy
+from jarvis.persistence.reset_recovery import ResetRecoveryError, reset_sensitive_writer
 from jarvis.scheduler.runner import BackgroundRunner
 from jarvis.scheduler.service import TaskService, utc_now
 from jarvis.scheduler.store import TaskStore
@@ -2461,15 +2463,22 @@ def cli(argv: list[str] | None = None) -> int:
             return 2
         try:
             config = load_config(require=("anthropic",))
-            exit_code, result, report_path = asyncio.run(
-                run_cache_ab(
-                    config,
-                    loaded=matches[0],
-                    runs=args.runs,
-                    max_cost_usd=args.max_cost_usd,
+            with reset_sensitive_writer(config):
+                exit_code, result, report_path = asyncio.run(
+                    run_cache_ab(
+                        config,
+                        loaded=matches[0],
+                        runs=args.runs,
+                        max_cost_usd=args.max_cost_usd,
+                    )
                 )
-            )
-        except (ConfigError, ValueError) as exc:
+        except (
+            ConfigError,
+            ValueError,
+            InstanceAlreadyRunning,
+            ResetMaintenanceBusy,
+            ResetRecoveryError,
+        ) as exc:
             print(f"[cache-ab] {exc}; no call was made")
             return 2
         print(
@@ -2487,10 +2496,17 @@ def cli(argv: list[str] | None = None) -> int:
             return 2
         try:
             config = load_config(require=("anthropic",))
-            exit_code, result, report_path = asyncio.run(
-                run_skills_ab(config, runs=args.runs, max_cost_usd=args.max_cost_usd)
-            )
-        except (ConfigError, ValueError) as exc:
+            with reset_sensitive_writer(config):
+                exit_code, result, report_path = asyncio.run(
+                    run_skills_ab(config, runs=args.runs, max_cost_usd=args.max_cost_usd)
+                )
+        except (
+            ConfigError,
+            ValueError,
+            InstanceAlreadyRunning,
+            ResetMaintenanceBusy,
+            ResetRecoveryError,
+        ) as exc:
             print(f"[skills-ab] {exc}; no call was made")
             return 2
         print(
@@ -2506,27 +2522,38 @@ def cli(argv: list[str] | None = None) -> int:
         cassette_cfg = CassetteConfig(
             mode=mode, store_dir=CASSETTES_PATH / "smoke", max_cost_usd=max_cost
         )
-        return asyncio.run(
-            run_smoke(
-                config,
-                providers=args.provider or list(_SMOKE_PROVIDERS),
-                cassette_cfg=cassette_cfg,
-                runs=args.runs,
-            )
-        )
+        try:
+            with reset_sensitive_writer(config):
+                return asyncio.run(
+                    run_smoke(
+                        config,
+                        providers=args.provider or list(_SMOKE_PROVIDERS),
+                        cassette_cfg=cassette_cfg,
+                        runs=args.runs,
+                    )
+                )
+        except (InstanceAlreadyRunning, ResetMaintenanceBusy, ResetRecoveryError) as exc:
+            print(f"[smoke] blocked: {exc}")
+            return 1
 
     if args.cmd == "aggregate":
-        config = load_config()  # offline: aggregation makes no API calls
-        return asyncio.run(
-            aggregate_staged(
-                config,
-                stage=Path(args.stage),
-                chunks=tuple(args.chunks),
-                report_md=args.report,
-                compare_rev=args.compare,
-                propose=args.propose,
-            )
-        )
+        # Network-offline, but finalization writes reports and history under data/evals.
+        config = load_config()
+        try:
+            with reset_sensitive_writer(config):
+                return asyncio.run(
+                    aggregate_staged(
+                        config,
+                        stage=Path(args.stage),
+                        chunks=tuple(args.chunks),
+                        report_md=args.report,
+                        compare_rev=args.compare,
+                        propose=args.propose,
+                    )
+                )
+        except (InstanceAlreadyRunning, ResetMaintenanceBusy, ResetRecoveryError) as exc:
+            print(f"[aggregate] blocked: {exc}")
+            return 1
 
     if args.cmd == "run":
         scenarios = load_scenarios(args.suite)
@@ -2535,17 +2562,22 @@ def cli(argv: list[str] | None = None) -> int:
         client_factory, judge_client = _apply_cassette(
             config, _cassette_config_from_args(args), judge_client
         )
-        return asyncio.run(
-            run_chunk(
-                config,
-                suite=args.suite,
-                runs=args.runs,
-                no_judge=args.no_judge,
-                judge_client=judge_client,
-                stage=Path(args.stage),
-                client_factory=client_factory,
-            )
-        )
+        try:
+            with reset_sensitive_writer(config):
+                return asyncio.run(
+                    run_chunk(
+                        config,
+                        suite=args.suite,
+                        runs=args.runs,
+                        no_judge=args.no_judge,
+                        judge_client=judge_client,
+                        stage=Path(args.stage),
+                        client_factory=client_factory,
+                    )
+                )
+        except (InstanceAlreadyRunning, ResetMaintenanceBusy, ResetRecoveryError) as exc:
+            print(f"[run] blocked: {exc}")
+            return 1
 
     # gate (single-process, or the chunked profile)
     if getattr(args, "profile", None) == "live-chunked":
@@ -2556,19 +2588,24 @@ def cli(argv: list[str] | None = None) -> int:
             config, _cassette_config_from_args(args), judge_client
         )
         stage = Path(args.stage) if args.stage else staging_dir(recorder.git_rev())
-        return asyncio.run(
-            run_profile_chunked(
-                config,
-                runs=args.runs,
-                no_judge=args.no_judge,
-                judge_client=judge_client,
-                stage=stage,
-                report_md=args.report,
-                compare_rev=args.compare,
-                propose=args.propose,
-                client_factory=client_factory,
-            )
-        )
+        try:
+            with reset_sensitive_writer(config):
+                return asyncio.run(
+                    run_profile_chunked(
+                        config,
+                        runs=args.runs,
+                        no_judge=args.no_judge,
+                        judge_client=judge_client,
+                        stage=stage,
+                        report_md=args.report,
+                        compare_rev=args.compare,
+                        propose=args.propose,
+                        client_factory=client_factory,
+                    )
+                )
+        except (InstanceAlreadyRunning, ResetMaintenanceBusy, ResetRecoveryError) as exc:
+            print(f"[gate] blocked: {exc}")
+            return 1
 
     scenarios = load_scenarios(args.suite)
     if args.only:  # narrow the key requirements + judge client to the filtered set
@@ -2578,21 +2615,26 @@ def cli(argv: list[str] | None = None) -> int:
     client_factory, judge_client = _apply_cassette(
         config, _cassette_config_from_args(args), judge_client
     )
-    return asyncio.run(
-        run_all(
-            config,
-            runs=args.runs,
-            suite=args.suite,
-            only=args.scenario,
-            no_judge=args.no_judge,
-            judge_client=judge_client,
-            report_md=args.report,
-            compare_rev=args.compare,
-            propose=args.propose,
-            client_factory=client_factory,
-            only_prefix=args.only,
-        )
-    )
+    try:
+        with reset_sensitive_writer(config):
+            return asyncio.run(
+                run_all(
+                    config,
+                    runs=args.runs,
+                    suite=args.suite,
+                    only=args.scenario,
+                    no_judge=args.no_judge,
+                    judge_client=judge_client,
+                    report_md=args.report,
+                    compare_rev=args.compare,
+                    propose=args.propose,
+                    client_factory=client_factory,
+                    only_prefix=args.only,
+                )
+            )
+    except (InstanceAlreadyRunning, ResetMaintenanceBusy, ResetRecoveryError) as exc:
+        print(f"[gate] blocked: {exc}")
+        return 1
 
 
 def main() -> None:

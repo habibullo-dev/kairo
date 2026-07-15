@@ -23,15 +23,46 @@ from pathlib import Path
 from typing import Any
 
 from jarvis.config import Config
-from jarvis.connectors.consent import LOCKED_PROVIDERS, lock_all_integrations
+from jarvis.connectors.consent import (
+    LOCKED_PROVIDERS,
+    lock_all_integrations,
+    locked_integrations,
+)
 from jarvis.persistence.database_identity import (
     DatabaseIdentityError,
     migrate_live_database,
     select_database,
 )
 from jarvis.persistence.db import connect
-from jarvis.persistence.instance_lock import InstanceAlreadyRunning, InstanceLock
+from jarvis.persistence.durable_fs import durable_mkdir, durable_rename_no_replace
+from jarvis.persistence.instance_lock import (
+    InstanceAlreadyRunning,
+    InstanceLock,
+    ResetBarrier,
+    ResetMaintenanceBusy,
+)
 from jarvis.persistence.migrations import latest_version
+from jarvis.persistence.reset_recovery import (
+    FAILED_FRESH_LABEL as _FAILED_FRESH_LABEL,
+)
+from jarvis.persistence.reset_recovery import (
+    LEGACY_RESET_MANIFEST_DIRNAMES,
+    RESET_FORMAT_VERSION,
+    RESET_LOCATOR_SUFFIX,
+    RESET_MANIFEST_DIRNAME,
+    RESET_RETIRED_LOCATOR_SUFFIX,
+    DirectoryIdentity,
+    ResetRecoveryError,
+    canonical_local_path,
+    directory_identity,
+    manifest_locator_payload,
+    manifest_matches,
+    manifest_roots,
+    quarantine_paths,
+    recover_interrupted_reset,
+    retire_manifest_locator,
+    write_manifest,
+)
 from jarvis.ui.owner_auth import (
     LOGIN_FAILURES_BEFORE_LOCK,
     LOGIN_MAX_LOCK_SECONDS,
@@ -41,10 +72,6 @@ from jarvis.ui.owner_auth import (
 
 CONFIRMATION_PHRASE = "RESET ALL KIRA DATA"
 _COUNT_TABLES = ("owner_accounts", "projects", "sessions", "tasks", "kb_sources")
-_RESET_MANIFEST_DIRNAME = ".kira-reset-manifests"
-_LEGACY_RESET_MANIFEST_DIRNAMES = (".kairo-reset-manifests",)
-_QUARANTINE_LABEL = "kira-quarantine"
-_LEGACY_QUARANTINE_LABELS = ("kairo-quarantine",)
 
 
 class DataResetError(RuntimeError):
@@ -67,6 +94,13 @@ class _RootMove:
     roles: tuple[str, ...]
     source: Path
     quarantine: Path
+    source_identity: DirectoryIdentity
+
+
+@dataclass(frozen=True)
+class _AbsentRoot:
+    roles: tuple[str, ...]
+    source: Path
 
 
 def _is_link_like(path: Path) -> bool:
@@ -75,13 +109,26 @@ def _is_link_like(path: Path) -> bool:
 
 
 def _resolved_root(path: Path, *, must_exist: bool = False) -> Path:
-    absolute = Path(os.path.abspath(path))
-    if absolute.exists() and _is_link_like(absolute):
-        raise DataResetError(f"Refusing linked or junction-backed reset root: {absolute}")
     try:
-        return absolute.resolve(strict=must_exist)
-    except OSError as exc:
-        raise DataResetError(f"Reset root is unavailable: {absolute}") from exc
+        return canonical_local_path(
+            path,
+            label="Reset root",
+            must_exist=must_exist,
+            reject_final_link=True,
+        )
+    except ResetRecoveryError as exc:
+        raise DataResetError(str(exc)) from exc
+
+
+def _resolved_config_anchor(path: Path) -> Path:
+    try:
+        return canonical_local_path(
+            path,
+            label="Kira configuration root",
+            must_exist=True,
+        )
+    except ResetRecoveryError as exc:
+        raise DataResetError(str(exc)) from exc
 
 
 def _validate_safe_root(path: Path, *, config_root: Path) -> None:
@@ -98,33 +145,62 @@ def _validate_safe_root(path: Path, *, config_root: Path) -> None:
         raise DataResetError(f"Refusing unsafe reset root: {path}")
 
 
-def _manifest_roots(data: Path) -> tuple[Path, ...]:
-    parent = data.resolve().parent
-    return (
-        parent / _RESET_MANIFEST_DIRNAME,
-        *(parent / name for name in _LEGACY_RESET_MANIFEST_DIRNAMES),
+def _manifest_roots(data: Path, *, config_root: Path) -> tuple[Path, ...]:
+    data_anchor = Path(os.path.abspath(data)).parent
+    config_anchor = Path(os.path.abspath(config_root))
+    bound = tuple(
+        parent / name
+        for parent in dict.fromkeys((config_anchor, data_anchor))
+        for name in (RESET_MANIFEST_DIRNAME, *LEGACY_RESET_MANIFEST_DIRNAMES)
     )
+    return tuple(dict.fromkeys((*bound, *manifest_roots(data, config_root=config_root))))
 
 
 def _quarantine_paths(source: Path, reset_id: str) -> tuple[Path, ...]:
-    return (
-        source.with_name(f".{source.name}.{_QUARANTINE_LABEL}-{reset_id}"),
-        *(
-            source.with_name(f".{source.name}.{label}-{reset_id}")
-            for label in _LEGACY_QUARANTINE_LABELS
-        ),
-    )
+    return quarantine_paths(source, reset_id)
 
 
 def _path_present(path: Path) -> bool:
     return os.path.lexists(path)
 
 
+def _configured_root_paths(config: Config) -> dict[str, Path]:
+    return {
+        "data": _resolved_root(config.data_dir),
+        "logs": _resolved_root(config.logs_dir),
+        "knowledge": _resolved_root(config.knowledge_dir),
+    }
+
+
+def _assert_reset_binding(
+    config: Config,
+    *,
+    config_root: Path,
+    configured_roots: dict[str, Path],
+    barrier: ResetBarrier,
+    lock: InstanceLock,
+) -> None:
+    data = configured_roots["data"]
+    if barrier.owned_data_dir() != data or lock.owned_data_dir() != data:
+        raise DataResetError("Reset locks no longer protect the planned data root")
+    if _resolved_config_anchor(config.root) != config_root:
+        raise DataResetError("The Kira configuration root changed during reset")
+    if _configured_root_paths(config) != configured_roots:
+        raise DataResetError("Configured Kira reset roots changed during reset")
+
+
 def _planned_moves(
-    config: Config, reset_id: str, *, include_external_knowledge: bool
+    config: Config,
+    reset_id: str,
+    *,
+    include_external_knowledge: bool,
+    include_external_logs: bool = False,
+    configured_roots: dict[str, Path] | None = None,
+    config_root: Path | None = None,
 ) -> tuple[list[_RootMove], list[Path]]:
-    config_root = config.root.resolve()
-    data = _resolved_root(config.data_dir, must_exist=True)
+    config_root = _resolved_config_anchor(config.root) if config_root is None else config_root
+    configured = _configured_root_paths(config) if configured_roots is None else configured_roots
+    data = configured["data"]
     try:
         database = select_database(data)
     except DatabaseIdentityError as exc:
@@ -134,15 +210,11 @@ def _planned_moves(
     if _is_link_like(database) or database.resolve().parent != data:
         raise DataResetError("Refusing a linked database outside the Kira data root")
     _validate_safe_root(data, config_root=config_root)
-    manifest_roots = _manifest_roots(data)
+    manifest_roots = _manifest_roots(data, config_root=config_root)
     if any(root == data or root.is_relative_to(data) for root in manifest_roots):
         raise DataResetError("Reset manifest storage must be outside the Kira data root")
 
-    configured = {
-        "data": data,
-        "logs": _resolved_root(config.logs_dir),
-        "knowledge": _resolved_root(config.knowledge_dir),
-    }
+    managed_logs = config_root / "logs"
     grouped: dict[Path, set[str]] = {data: {"data"}}
     for role in ("logs", "knowledge"):
         path = configured[role]
@@ -157,14 +229,19 @@ def _planned_moves(
         ):
             raise DataResetError(f"Refusing {role} root that overlaps reset manifest storage")
         _validate_safe_root(path, config_root=config_root)
+        external_authorized = (
+            include_external_knowledge
+            if role == "knowledge"
+            else include_external_logs or path == managed_logs
+        )
+        if not external_authorized:
+            raise DataResetError(
+                f"The configured {role} root is outside Kira's data root; "
+                "its exact path requires separate confirmation"
+            )
         if path.exists():
             if not path.is_dir():
                 raise DataResetError(f"Configured {role} root is not a directory: {path}")
-            if role == "knowledge" and not include_external_knowledge:
-                raise DataResetError(
-                    "The configured knowledge vault is outside Kira's data root; "
-                    "its exact path requires separate confirmation"
-                )
             grouped.setdefault(path, set()).add(role)
 
     # Collapse an unusual nested external layout to the outer moved directory.  All roots were
@@ -180,35 +257,124 @@ def _planned_moves(
     moves: list[_RootMove] = []
     for source, roles in selected.items():
         quarantine, *legacy_quarantines = _quarantine_paths(source, reset_id)
+        failed_fresh = source.with_name(f".{source.name}.{_FAILED_FRESH_LABEL}-{reset_id}")
         collision = next(
-            (path for path in (quarantine, *legacy_quarantines) if _path_present(path)),
+            (
+                path
+                for path in (quarantine, *legacy_quarantines, failed_fresh)
+                if _path_present(path)
+            ),
             None,
         )
         if collision is not None:
-            raise DataResetError(f"Reset quarantine already exists: {collision}")
-        moves.append(_RootMove(tuple(sorted(roles)), source, quarantine))
+            raise DataResetError(f"Reset recovery path already exists: {collision}")
+        try:
+            identity = directory_identity(source, label="Reset source root")
+        except ResetRecoveryError as exc:
+            raise DataResetError(str(exc)) from exc
+        moves.append(_RootMove(tuple(sorted(roles)), source, quarantine, identity))
     return moves, list(dict.fromkeys(configured.values()))
 
 
-def _manifest_path(config: Config, reset_id: str) -> Path:
-    roots = _manifest_roots(config.data_dir)
+def _planned_absent_roots(
+    configured: dict[str, Path],
+    reset_id: str,
+    moves: list[_RootMove],
+) -> list[_AbsentRoot]:
+    grouped: dict[Path, set[str]] = {}
+    for role, source in configured.items():
+        covering_index = next(
+            (
+                index
+                for index, move in enumerate(moves)
+                if source == move.source or source.is_relative_to(move.source)
+            ),
+            None,
+        )
+        if covering_index is not None:
+            move = moves[covering_index]
+            if role not in move.roles:
+                moves[covering_index] = _RootMove(
+                    tuple(sorted((*move.roles, role))),
+                    move.source,
+                    move.quarantine,
+                    move.source_identity,
+                )
+            continue
+        if _path_present(source):
+            raise DataResetError(f"Reset root appeared while the reset plan was prepared: {source}")
+        grouped.setdefault(source, set()).add(role)
+    selected: dict[Path, set[str]] = {}
+    for source in sorted(grouped, key=lambda item: len(item.parts)):
+        parent = next((root for root in selected if source.is_relative_to(root)), None)
+        if parent is not None:
+            selected[parent].update(grouped[source])
+        else:
+            selected[source] = set(grouped[source])
+
+    absent: list[_AbsentRoot] = []
+    for source, roles in selected.items():
+        failed = source.with_name(f".{source.name}.{_FAILED_FRESH_LABEL}-{reset_id}")
+        if _path_present(failed):
+            raise DataResetError(f"Reset recovery archive already exists: {failed}")
+        absent.append(_AbsentRoot(tuple(sorted(roles)), source))
+    return absent
+
+
+def _manifest_path(
+    config: Config,
+    reset_id: str,
+    *,
+    data_root: Path | None = None,
+    config_root: Path | None = None,
+) -> Path:
+    data = (
+        _resolved_root(config.data_dir) if data_root is None else Path(os.path.abspath(data_root))
+    )
+    config_anchor = _resolved_config_anchor(config.root) if config_root is None else config_root
+    roots = _manifest_roots(
+        data,
+        config_root=config_anchor,
+    )
     for root in roots:
         if _path_present(root) and (_is_link_like(root) or not root.is_dir()):
             raise DataResetError("Reset manifest storage is not a regular local directory")
-    candidates = tuple(root / f"{reset_id}.json" for root in roots)
+    candidates = tuple(
+        path
+        for root in roots
+        for path in (
+            root / f"{reset_id}.json",
+            root / f"{reset_id}{RESET_LOCATOR_SUFFIX}",
+            root / f"{reset_id}{RESET_RETIRED_LOCATOR_SUFFIX}",
+        )
+    )
     collision = next((path for path in candidates if _path_present(path)), None)
     if collision is not None:
         raise DataResetError(f"Reset manifest already exists: {collision}")
-    return candidates[0]
+    canonical = data.parent / RESET_MANIFEST_DIRNAME / f"{reset_id}.json"
+    if canonical.parent not in roots:
+        raise DataResetError("Reset manifest storage is not anchored to the Kira data root")
+    return canonical
 
 
-def _reset_auth_path(config: Config) -> Path:
-    data = config.data_dir.resolve()
+def _manifest_locator_path(manifest: Path, *, config_root: Path, reset_id: str) -> Path | None:
+    locator_root = config_root / RESET_MANIFEST_DIRNAME
+    if locator_root == manifest.parent:
+        return None
+    return locator_root / f"{reset_id}{RESET_LOCATOR_SUFFIX}"
+
+
+def _reset_auth_path(config_or_data: Config | Path) -> Path:
+    data = (
+        Path(os.path.abspath(config_or_data))
+        if isinstance(config_or_data, Path)
+        else config_or_data.data_dir.resolve()
+    )
     return data.with_name(f".{data.name}.kira-reset-auth.json")
 
 
-def _reset_auth_state(config: Config) -> tuple[int, dt.datetime | None]:
-    path = _reset_auth_path(config)
+def _reset_auth_state(config_or_data: Config | Path) -> tuple[int, dt.datetime | None]:
+    path = _reset_auth_path(config_or_data)
     if not path.exists() and not _is_link_like(path):
         return 0, None
     try:
@@ -234,15 +400,15 @@ def _reset_auth_state(config: Config) -> tuple[int, dt.datetime | None]:
         raise DataResetError("Reset authentication throttle is unreadable") from exc
 
 
-def _check_reset_auth_throttle(config: Config) -> None:
-    _attempts, locked = _reset_auth_state(config)
+def _check_reset_auth_throttle(config_or_data: Config | Path) -> None:
+    _attempts, locked = _reset_auth_state(config_or_data)
     now = dt.datetime.now(dt.UTC)
     if locked is not None and now < locked:
         raise OwnerLoginThrottledError(math.ceil((locked - now).total_seconds()))
 
 
-def _record_reset_auth_failure(config: Config) -> int:
-    attempts, _locked = _reset_auth_state(config)
+def _record_reset_auth_failure(config_or_data: Config | Path) -> int:
+    attempts, _locked = _reset_auth_state(config_or_data)
     attempts += 1
     delay = 0
     if attempts >= LOGIN_FAILURES_BEFORE_LOCK:
@@ -255,7 +421,7 @@ def _record_reset_auth_failure(config: Config) -> int:
     )
     try:
         _write_manifest(
-            _reset_auth_path(config),
+            _reset_auth_path(config_or_data),
             {"failed_attempts": attempts, "locked_until": locked_until},
         )
     except OSError as exc:
@@ -263,31 +429,18 @@ def _record_reset_auth_failure(config: Config) -> int:
     return delay
 
 
-def _clear_reset_auth_throttle(config: Config) -> None:
-    path = _reset_auth_path(config)
+def _clear_reset_auth_throttle(config_or_data: Config | Path) -> None:
+    path = _reset_auth_path(config_or_data)
     if not path.exists() and not _is_link_like(path):
         return
-    _reset_auth_state(config)
+    _reset_auth_state(config_or_data)
     try:
         path.unlink()
     except OSError as exc:
         raise DataResetError("Reset authentication throttle could not be cleared") from exc
 
 
-def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
-    except BaseException:
-        temporary_path.unlink(missing_ok=True)
-        raise
+_write_manifest = write_manifest
 
 
 async def _database_facts(db) -> tuple[int, dict[str, int]]:  # noqa: ANN001
@@ -406,47 +559,89 @@ async def _bootstrap_fresh_database(database: Path) -> int:
         await db.close()
 
 
-def _remove_fresh_root(path: Path) -> None:
-    if not path.exists():
-        return
-    if path.is_dir() and not _is_link_like(path):
-        shutil.rmtree(path)
-    else:
-        path.unlink()
-
-
 async def _reset_with_lock(
     config: Config,
     password: str,
+    barrier: ResetBarrier,
     lock: InstanceLock,
     *,
     include_external_knowledge: bool = False,
+    include_external_logs: bool = False,
+    confirmed_external_roots: dict[str, Path] | None = None,
 ) -> DataResetResult:
-    if lock.owned_data_dir() != config.data_dir.resolve():
-        raise DataResetError("Reset lock does not protect the configured data directory")
+    bound_data = lock.owned_data_dir()
+    if barrier.owned_data_dir() != bound_data:
+        raise DataResetError("Reset locks do not protect the configured data directory")
+    bound_config_root = _resolved_config_anchor(config.root)
+    configured_roots = _configured_root_paths(config)
+    if configured_roots["data"] != bound_data:
+        raise DataResetError("The configured data root changed before reset planning")
+    for role, confirmed in (confirmed_external_roots or {}).items():
+        if role not in {"logs", "knowledge"} or configured_roots[role] != confirmed:
+            raise DataResetError("An exact external reset confirmation no longer matches")
+    _assert_reset_binding(
+        config,
+        config_root=bound_config_root,
+        configured_roots=configured_roots,
+        barrier=barrier,
+        lock=lock,
+    )
     now = dt.datetime.now(dt.UTC)
     reset_id = f"{now.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(4)}"
     try:
-        source_database = select_database(config.data_dir)
+        source_database = select_database(bound_data)
     except DatabaseIdentityError as exc:
         raise DataResetError(str(exc)) from exc
-    moves, configured_roots = _planned_moves(
-        config, reset_id, include_external_knowledge=include_external_knowledge
+    moves, _configured_root_list = _planned_moves(
+        config,
+        reset_id,
+        include_external_knowledge=include_external_knowledge,
+        include_external_logs=include_external_logs,
+        configured_roots=configured_roots,
+        config_root=bound_config_root,
     )
-    manifest_path = _manifest_path(config, reset_id)
-    _check_reset_auth_throttle(config)
+    absent_roots = _planned_absent_roots(configured_roots, reset_id, moves)
+    manifest_path = _manifest_path(
+        config,
+        reset_id,
+        data_root=bound_data,
+        config_root=bound_config_root,
+    )
+    locator_path = _manifest_locator_path(
+        manifest_path,
+        config_root=bound_config_root,
+        reset_id=reset_id,
+    )
+    locator: dict[str, Any] | None = None
+    _assert_reset_binding(
+        config,
+        config_root=bound_config_root,
+        configured_roots=configured_roots,
+        barrier=barrier,
+        lock=lock,
+    )
+    _check_reset_auth_throttle(bound_data)
     try:
         old_version, old_counts = await _authenticate_old_database(source_database, password)
     except _ResetPasswordRejected:
-        delay = _record_reset_auth_failure(config)
+        delay = _record_reset_auth_failure(bound_data)
         if delay:
             raise OwnerLoginThrottledError(delay) from None
         raise
-    _clear_reset_auth_throttle(config)
+    _assert_reset_binding(
+        config,
+        config_root=bound_config_root,
+        configured_roots=configured_roots,
+        barrier=barrier,
+        lock=lock,
+    )
+    _clear_reset_auth_throttle(bound_data)
     manifest: dict[str, Any] = {
+        "format_version": RESET_FORMAT_VERSION,
         "reset_id": reset_id,
         "created_at": now.isoformat(),
         "status": "in_progress",
+        "config_root": str(bound_config_root),
         "old_schema_version": old_version,
         "old_counts": old_counts,
         "roots": [
@@ -454,31 +649,108 @@ async def _reset_with_lock(
                 "roles": list(move.roles),
                 "source": str(move.source),
                 "quarantine": str(move.quarantine),
+                "source_identity": move.source_identity.payload(),
             }
             for move in moves
         ],
-        "preserved": [str(config.root.resolve() / ".env"), str(config.root.resolve() / "config")],
+        "absent_roots": [
+            {"roles": list(root.roles), "source": str(root.source)} for root in absent_roots
+        ],
+        "preserved": [str(bound_config_root / ".env"), str(bound_config_root / "config")],
         "locked_integrations": sorted(LOCKED_PROVIDERS),
     }
+    if locator_path is not None:
+        locator = manifest_locator_payload(
+            reset_id=reset_id,
+            manifest=manifest_path,
+            config_root=bound_config_root,
+            data_root=bound_data,
+            manifest_payload=manifest,
+        )
+    _assert_reset_binding(
+        config,
+        config_root=bound_config_root,
+        configured_roots=configured_roots,
+        barrier=barrier,
+        lock=lock,
+    )
     try:
         _write_manifest(manifest_path, manifest)
-    except OSError as exc:
+        if not manifest_matches(manifest_path, manifest):
+            raise DataResetError("The reset manifest could not be verified; no data was moved")
+        if locator_path is not None and locator is not None:
+            _write_manifest(locator_path, locator)
+            if not manifest_matches(locator_path, locator):
+                raise DataResetError(
+                    "The reset manifest locator could not be verified; no data was moved"
+                )
+    except (OSError, ResetRecoveryError) as exc:
         raise DataResetError("The reset manifest could not be written; no data was moved") from exc
 
-    moved: list[_RootMove] = []
-    created_roots: set[Path] = set()
     try:
+        _assert_reset_binding(
+            config,
+            config_root=bound_config_root,
+            configured_roots=configured_roots,
+            barrier=barrier,
+            lock=lock,
+        )
+        for root in absent_roots:
+            if _path_present(root.source):
+                raise DataResetError(
+                    f"Originally absent reset root appeared before quarantine: {root.source}"
+                )
         for move in moves:
-            move.source.rename(move.quarantine)
-            moved.append(move)
+            current = directory_identity(move.source, label="Reset source root")
+            if current != move.source_identity:
+                raise DataResetError("Reset source root changed before quarantine")
+            durable_rename_no_replace(move.source, move.quarantine)
+            if (
+                directory_identity(move.quarantine, label="Reset quarantine")
+                != move.source_identity
+            ):
+                raise DataResetError("Reset source identity changed during quarantine")
 
-        for root in configured_roots:
-            if not root.exists():
-                root.mkdir(parents=True, exist_ok=False)
-                created_roots.add(root)
-        lock_all_integrations(config.data_dir.resolve())
+        _assert_reset_binding(
+            config,
+            config_root=bound_config_root,
+            configured_roots=configured_roots,
+            barrier=barrier,
+            lock=lock,
+        )
+        top_level_roots = {move.source for move in moves} | {root.source for root in absent_roots}
+        fresh_root_identities: dict[Path, DirectoryIdentity] = {}
+        for root in sorted(top_level_roots, key=lambda item: len(item.parts)):
+            durable_mkdir(root)
+            fresh_root_identities[root] = directory_identity(root, label="Fresh reset root")
+        for root in sorted(
+            set(configured_roots.values()) - top_level_roots,
+            key=lambda item: len(item.parts),
+        ):
+            durable_mkdir(root)
+            fresh_root_identities[root] = directory_identity(root, label="Fresh reset root")
+        _assert_reset_binding(
+            config,
+            config_root=bound_config_root,
+            configured_roots=configured_roots,
+            barrier=barrier,
+            lock=lock,
+        )
+        lock_all_integrations(bound_data)
         fresh_database = migrate_live_database(lock)
         fresh_version = await _bootstrap_fresh_database(fresh_database)
+        for root, expected in fresh_root_identities.items():
+            if directory_identity(root, label="Fresh reset root") != expected:
+                raise DataResetError("Fresh reset root changed before completion")
+        if locked_integrations(bound_data) != LOCKED_PROVIDERS:
+            raise DataResetError("Fresh integration-consent lock verification failed")
+        _assert_reset_binding(
+            config,
+            config_root=bound_config_root,
+            configured_roots=configured_roots,
+            barrier=barrier,
+            lock=lock,
+        )
 
         manifest.update(
             status="completed",
@@ -487,24 +759,37 @@ async def _reset_with_lock(
             integrity_check="ok",
         )
         _write_manifest(manifest_path, manifest)
+        if not manifest_matches(manifest_path, manifest):
+            raise DataResetError("The completed reset manifest could not be verified")
+        if locator_path is not None and locator is not None:
+            retire_manifest_locator(locator_path, locator)
     except BaseException as exc:
-        # Delete only paths created by this attempt, then restore established roots in reverse.
-        cleanup = set(created_roots)
-        cleanup.update(move.source for move in moved)
-        for path in sorted(cleanup, key=lambda item: len(item.parts), reverse=True):
-            _remove_fresh_root(path)
-        for move in reversed(moved):
-            if move.source.exists() or not move.quarantine.exists():
-                raise DataResetError(
-                    "Reset failed and automatic quarantine restore was blocked"
-                ) from exc
-            move.quarantine.rename(move.source)
-        manifest.update(
-            status="rolled_back",
-            rolled_back_at=dt.datetime.now(dt.UTC).isoformat(),
-            error_type=type(exc).__name__,
-        )
-        _write_manifest(manifest_path, manifest)
+        if manifest.get("status") == "completed":
+            try:
+                completed = manifest_matches(manifest_path, manifest)
+            except ResetRecoveryError:
+                completed = False
+            if completed:
+                try:
+                    if locator_path is not None and locator is not None:
+                        retire_manifest_locator(locator_path, locator)
+                except ResetRecoveryError as retirement_exc:
+                    raise DataResetError(
+                        "Reset completed, but its recovery locator could not be retired"
+                    ) from retirement_exc
+                return DataResetResult(
+                    reset_id=reset_id,
+                    manifest=manifest_path,
+                    quarantines=tuple(move.quarantine for move in moves),
+                )
+        try:
+            if not recover_interrupted_reset(config, barrier, lock):
+                raise ResetRecoveryError("The published reset manifest is no longer discoverable")
+        except ResetRecoveryError as recovery_exc:
+            raise DataResetError(
+                "Reset failed and lossless automatic recovery was blocked; no recovery path "
+                "was overwritten or deleted"
+            ) from recovery_exc
         if isinstance(exc, (DataResetError, OwnerLoginThrottledError)):
             raise
         raise DataResetError("Reset failed; the original Kira data was restored") from exc
@@ -517,18 +802,28 @@ async def _reset_with_lock(
 
 
 async def reset_all_data(
-    config: Config, password: str, *, include_external_knowledge: bool = False
+    config: Config,
+    password: str,
+    *,
+    include_external_knowledge: bool = False,
+    include_external_logs: bool = False,
 ) -> DataResetResult:
     """Programmatic reset entry point; always enforces exclusive runtime ownership."""
     try:
-        with InstanceLock(config.data_dir) as lock:
+        with (
+            ResetBarrier(config.data_dir) as barrier,
+            InstanceLock(config.data_dir) as lock,
+        ):
+            recover_interrupted_reset(config, barrier, lock)
             return await _reset_with_lock(
                 config,
                 password,
+                barrier,
                 lock,
                 include_external_knowledge=include_external_knowledge,
+                include_external_logs=include_external_logs,
             )
-    except InstanceAlreadyRunning as exc:
+    except (InstanceAlreadyRunning, ResetMaintenanceBusy, ResetRecoveryError) as exc:
         raise DataResetError(str(exc)) from exc
 
 
@@ -551,10 +846,15 @@ def reset_cli(argv: list[str]) -> int:
         print(f"Configuration error: {exc}")
         return 1
 
+    barrier = ResetBarrier(config.data_dir)
     lock = InstanceLock(config.data_dir)
     try:
+        barrier.acquire()
         lock.acquire()
-    except InstanceAlreadyRunning as exc:
+        recover_interrupted_reset(config, barrier, lock)
+    except (InstanceAlreadyRunning, ResetMaintenanceBusy, ResetRecoveryError) as exc:
+        lock.release()
+        barrier.release()
         print(f"Reset refused: {exc}")
         return 1
     try:
@@ -564,21 +864,38 @@ def reset_cli(argv: list[str]) -> int:
             print("Reset cancelled: confirmation phrase did not match.")
             return 1
         data_root = _resolved_root(config.data_dir, must_exist=True)
+        logs_root = _resolved_root(config.logs_dir)
         knowledge_root = _resolved_root(config.knowledge_dir)
+        include_external_logs = False
         include_external_knowledge = False
-        if knowledge_root.exists() and not knowledge_root.is_relative_to(data_root):
-            print(f"External knowledge vault: {knowledge_root}")
-            if input("Type that exact path to quarantine this vault: ") != str(knowledge_root):
-                print("Reset cancelled: external knowledge path did not match.")
-                return 1
-            include_external_knowledge = True
+        confirmed: set[Path] = set()
+        confirmed_external_roots: dict[str, Path] = {}
+        for role, root in (("logs", logs_root), ("knowledge", knowledge_root)):
+            if root.is_relative_to(data_root):
+                continue
+            if role == "logs" and root == config.root.resolve() / "logs":
+                continue
+            print(f"External {role} root: {root}")
+            if root not in confirmed:
+                if input(f"Type that exact path to quarantine this {role} root: ") != str(root):
+                    print(f"Reset cancelled: external {role} path did not match.")
+                    return 1
+                confirmed.add(root)
+            if role == "logs":
+                include_external_logs = True
+            else:
+                include_external_knowledge = True
+            confirmed_external_roots[role] = root
         password = getpass.getpass("Current owner password: ")
         result = asyncio.run(
             _reset_with_lock(
                 config,
                 password,
+                barrier,
                 lock,
                 include_external_knowledge=include_external_knowledge,
+                include_external_logs=include_external_logs,
+                confirmed_external_roots=confirmed_external_roots,
             )
         )
     except (DataResetError, OwnerLoginThrottledError) as exc:
@@ -592,6 +909,7 @@ def reset_cli(argv: list[str]) -> int:
         return 130
     finally:
         lock.release()
+        barrier.release()
 
     print(f"Kira data reset complete. Manifest: {result.manifest}")
     for quarantine in result.quarantines:

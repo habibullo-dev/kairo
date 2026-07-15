@@ -13,11 +13,15 @@ from jarvis.cli import dream as dream_module
 from jarvis.cli import graph as graph_module
 from jarvis.persistence.instance_lock import InstanceLock
 from jarvis.persistence.migrations import latest_version
+from jarvis.persistence.reset_recovery import ResetRecoveryError
 
 
 def _config(data: Path):
     return SimpleNamespace(
-        data_dir=data, ensure_dirs=lambda: data.mkdir(parents=True, exist_ok=True)
+        root=data.parent,
+        data_dir=data,
+        require=lambda *_services: None,
+        ensure_dirs=lambda: data.mkdir(parents=True, exist_ok=True),
     )
 
 
@@ -105,5 +109,46 @@ def test_dream_cli_passes_the_locked_config_and_database_to_dispatch(
 
     assert dream_module.dream_cli(["run", "nightly_review"]) == 0
 
-    assert loads == [{"require": ("anthropic",)}]
+    assert loads == [{}]
     assert dispatched == [(config, data / "kira.db", "nightly_review")]
+
+
+@pytest.mark.parametrize(
+    ("module", "invoke", "blocked_copy"),
+    [
+        (graph_module, lambda: graph_module.graph_cli(["rebuild"]), "Graph command blocked:"),
+        (
+            dream_module,
+            lambda: dream_module.dream_cli(["run", "nightly_review"]),
+            "Dream command blocked:",
+        ),
+    ],
+)
+def test_interrupted_reset_blocks_data_commands_before_ensure_dirs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    module,
+    invoke,
+    blocked_copy: str,
+) -> None:
+    data = tmp_path / "data"
+    calls: list[str] = []
+    config = SimpleNamespace(
+        root=tmp_path,
+        data_dir=data,
+        require=lambda *_services: None,
+        ensure_dirs=lambda: calls.append("ensure_dirs"),
+    )
+
+    def refuse(_config, _barrier, _lock) -> bool:
+        calls.append("recover")
+        raise ResetRecoveryError("ambiguous interrupted reset")
+
+    monkeypatch.setattr(config_module, "load_config", lambda **_kwargs: config)
+    monkeypatch.setattr(module, "recover_interrupted_reset", refuse)
+
+    assert invoke() == 1
+    assert calls == ["recover"]
+    assert not data.exists()
+    assert blocked_copy in capsys.readouterr().err

@@ -18,6 +18,8 @@ logs/
 .*.kira-quarantine-*/
 .*.kairo-instance.lock
 .*.kira-instance.lock
+.*.kira-reset-barrier.lock
+.*.kira-reset-failed-fresh-*/
 .*.kira-reset-auth.json
 
 # OS / editor cruft
