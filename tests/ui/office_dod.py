@@ -148,6 +148,21 @@ async def _capture(base: str, out: Path) -> int:
                             "{mode:'" + mode + "'}));}catch(e){}"
                         )
                         page = await ctx.new_page()
+                        local_resource_failures: list[str] = []
+                        page.on(
+                            "response",
+                            lambda response, failures=local_resource_failures: failures.append(
+                                f"HTTP {response.status}: {response.url}"
+                            )
+                            if response.status >= 400
+                            else None,
+                        )
+                        page.on(
+                            "requestfailed",
+                            lambda request, failures=local_resource_failures: failures.append(
+                                f"request failed: {request.url}"
+                            ),
+                        )
                         await page.goto(f"{base}/__dod.html?state={dstate}", wait_until="load")
                         try:
                             await page.wait_for_function("window.__READY__ === true", timeout=5000)
@@ -180,6 +195,10 @@ async def _capture(base: str, out: Path) -> int:
                         shots += 1
                         for v in analyze_overlap(await page.evaluate(OVERLAP_PROBE_JS)):
                             problems.append(f"[{theme} {width}w {label}] {v}")
+                        for failure in local_resource_failures:
+                            problems.append(
+                                f"[{theme} {width}w {label}] local resource {failure}"
+                            )
                         await ctx.close()
         finally:
             await browser.close()
@@ -199,6 +218,9 @@ async def main() -> int:
     try:
         static = tmp / "static"
         shutil.copytree(STATIC_DIR, static)
+        # Production CSS uses root-absolute ``/static/...`` asset URLs. Mirror the production
+        # mount so screenshots cannot silently omit theme backgrounds while still passing layout.
+        shutil.copytree(STATIC_DIR, static / "static")
         (static / "__dod.html").write_text(HARNESS, encoding="utf-8")
         await _seed_json(static)
         port = _free_port()
