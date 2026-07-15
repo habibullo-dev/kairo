@@ -1,5 +1,5 @@
 # Non-secret configuration. Secrets (API keys) live in .env — never here.
-# Every value has a code default in src/jarvis/config.py; this file overrides them.
+# Every value has a code default in src/kira/config.py; this file overrides them.
 
 models:
   # Habib's routing (2026-07-09): Sonnet for the daily chat, Haiku for cheap/economy background
@@ -149,7 +149,7 @@ ui:
   # Workstation UI (Phase 8). An authenticated LOCAL peer of the REPL — same AgentLoop,
   # same PermissionGate/VoiceApprover, no new authority. Off = byte-identical to Phase 7.
   # Safety floor: docs/PLAN-8-ui.md + ADR-0008. Approvals are explicit, audited, replay-proof.
-  enabled: false                 # opt-in; start with `jarvis --ui`
+  enabled: false                 # opt-in; start with `kira --ui`
   host: 127.0.0.1                # LOOPBACK ONLY — a non-loopback host is refused at load
   port: 8787
   heartbeat_seconds: 15.0        # approval/voice-screen liveness window (dead client can't approve)
@@ -164,7 +164,7 @@ connectors:
   demo: false                    # populate Daily/Hub with clearly-badged FAKE data (no OAuth);
                                  # ignored when real provider keys are present (never masks live)
   google:
-    enabled: false               # needs GOOGLE_CLIENT_ID/SECRET + one-time `jarvis connect google`
+    enabled: false               # needs GOOGLE_CLIENT_ID/SECRET + one-time `kira connect google`
     calendar_id: primary
     max_results: 25
   telegram:
@@ -181,7 +181,7 @@ connectors:
       max_model_messages_per_hour: 20
       max_input_chars: 2000
   kakao:
-    enabled: false               # "send to me" memo; needs KAKAO_REST_API_KEY + `jarvis connect kakao`
+    enabled: false               # "send to me" memo; needs KAKAO_REST_API_KEY + `kira connect kakao`
     redirect_port: 8788          # MUST match the redirect URI registered in the Kakao dev console
   digest:
     enabled: false               # scheduled Daily Digest (deterministic collectors + 1 summarize)
@@ -202,7 +202,7 @@ attention:
 logging:
   max_bytes: 10485760            # 10 MiB active JSONL segment; older segments are gzip-compressed
   backup_count: 3                # compressed segments retained for the current day
-  retention_days: 30             # recognized Jarvis logs older than this are deleted
+  retention_days: 30             # recognized Kira and legacy logs older than this are deleted
 
 paths:
   data_dir: data   # SQLite db (relative to project root)

@@ -6,7 +6,7 @@ model, persistence, routing, and observability are implemented directly in this 
 authority boundary stays visible and testable.
 
 The canonical command is `kira`. The exact `jarvis` command remains temporarily available as a
-compatibility alias while the internal Python namespace is migrated offline.
+compatibility alias for existing launch scripts during the deprecation window.
 
 Start with the [`Kira User Guide`](docs/KIRA-USER-GUIDE.md). Architecture and design history live in
 [`docs/architecture.md`](docs/architecture.md), [`docs/PLAN.md`](docs/PLAN.md), and
