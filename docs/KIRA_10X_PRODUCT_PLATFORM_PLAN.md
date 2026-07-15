@@ -1,4 +1,11 @@
-# Kairo 10× Product & Platform Improvement Plan
+# Kira 10× Product & Platform Improvement Plan
+
+> **Historical audit / legacy-name notice (2026-07-12).** This document predates the Kira
+> rebrand. Its body intentionally preserves `Kairo` (the former product name) and
+> `Jarvis`/`jarvis`, including commands and paths such as `jarvis --ui`, `src/jarvis`,
+> `data/jarvis.db`, and `logs/jarvis-*`, because they describe the exact snapshot reviewed at
+> commit `98c4ebc`. They are historical evidence, not current Kira setup instructions or
+> implementation status.
 
 | | |
 |---|---|
