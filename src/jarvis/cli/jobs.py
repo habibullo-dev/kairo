@@ -143,9 +143,17 @@ class JobRunner:
             for name in registry.names()
             if (tool := registry.get(name)) is not None and getattr(tool, "egress", False)
         )
+        # Remote Operator promises a second, exact Telegram approval for every demotable
+        # side effect. The scheduler's local unattended allowlist belongs to ordinary jobs and
+        # must never silently widen that remote authority boundary.
+        unattended_allow_tools = (
+            frozenset()
+            if task.origin == "remote_operator"
+            else frozenset(self.config.scheduler.unattended_allow_tools)
+        )
         ugate = UnattendedGate(
             self.gate,
-            allow_tools=frozenset(self.config.scheduler.unattended_allow_tools),
+            allow_tools=unattended_allow_tools,
             egress_tools=egress_tools,
             demote_to_ask=task.origin == "remote_operator",
         )

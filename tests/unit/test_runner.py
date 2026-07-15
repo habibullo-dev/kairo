@@ -742,7 +742,7 @@ async def test_unattended_denial_flows_back_and_is_counted(tmp_path: Path) -> No
     assert not outcome.parked and not outcome.retry_safe
 
 
-async def test_remote_operator_job_exposes_local_subset_and_parks_allowed_write(
+async def test_remote_operator_job_ignores_scheduler_allowlist_and_parks_allowed_write(
     tmp_path: Path,
 ) -> None:
     service, clock, store = await _service(tmp_path)
@@ -767,6 +767,7 @@ async def test_remote_operator_job_exposes_local_subset_and_parks_allowed_write(
         ]
     )
     job_runner = await _parkable_job_runner(tmp_path, client, store, policy=policy)
+    job_runner.config.scheduler.unattended_allow_tools = ["write_file"]
     runner = BackgroundRunner(
         service,
         notify=Recorder().notify,
