@@ -245,7 +245,7 @@ async def test_allowlisted_attachment_downloads_once_and_reaches_handler(tmp_pat
             "photo": [{"file_id": "photo-1", "file_size": 4, "width": 10, "height": 10}],
         },
     }
-    http = _TelegramHttp([[update]], files={"photo-1": b"JPEG"})
+    http = _TelegramHttp([[], [update]], files={"photo-1": b"JPEG"})
     store = TelegramRemoteControlStore(db, asyncio.Lock())
     await store.bootstrap(0)
     controller = TelegramRemoteControl(
@@ -266,6 +266,7 @@ async def test_allowlisted_attachment_downloads_once_and_reaches_handler(tmp_pat
         http=http,
     )
     try:
+        await controller.initialize()
         assert await controller.poll_once() == 1
         assert seen == [("image", b"JPEG", "Explain this")]
         assert http.downloaded == ["photo-1"]
@@ -290,7 +291,7 @@ async def test_unknown_chat_attachment_is_never_downloaded(tmp_path: Path) -> No
             "document": {"file_id": "private", "file_name": "notes.txt", "file_size": 4},
         },
     }
-    http = _TelegramHttp([[update]], files={"private": b"text"})
+    http = _TelegramHttp([[], [update]], files={"private": b"text"})
     store = TelegramRemoteControlStore(db, asyncio.Lock())
     await store.bootstrap(0)
     controller = TelegramRemoteControl(
@@ -309,6 +310,7 @@ async def test_unknown_chat_attachment_is_never_downloaded(tmp_path: Path) -> No
         http=http,
     )
     try:
+        await controller.initialize()
         assert await controller.poll_once() == 0
         assert http.downloaded == []
         assert not any(url.endswith("/getFile") for url, _data in http.requests)
@@ -796,6 +798,37 @@ async def test_initialize_consumes_backlog_before_the_channel_is_announced_ready
         assert calls["status"] == ["called"]
         assert http.requests[1][1]["timeout"] == "25"
         assert http.requests[0][1]["timeout"] == "0"
+        assert http.requests[0][1]["offset"] == "-1"
+        assert http.requests[0][1]["limit"] == "1"
+    finally:
+        await db.close()
+
+
+async def test_restart_discards_updates_retained_while_controller_was_offline(
+    tmp_path: Path,
+) -> None:
+    controller, http, calls, db = await _controller(
+        tmp_path,
+        batches=[
+            [],
+            [_update(5, text="stale action from offline window")],
+            [_update(6, text="/status")],
+        ],
+    )
+    try:
+        await controller.initialize()
+        await controller.stop()
+
+        await controller.initialize()
+        assert calls["chat"] == []
+        assert http.sent == []
+
+        assert await controller.poll_once() == 1
+        assert calls["status"] == ["called"]
+        assert http.sent[-1]["text"] == "STATUS"
+        assert [
+            form["timeout"] for url, form in http.requests if url.endswith("/getUpdates")
+        ] == ["0", "0", "25"]
     finally:
         await db.close()
 

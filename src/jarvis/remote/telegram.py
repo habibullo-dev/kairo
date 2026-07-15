@@ -8,8 +8,9 @@ may resolve expiring approval codes; the model itself never receives execution a
 
 The durable cursor is advanced before a message is handled.  A crash can therefore lose one
 reply (the owner may resend), but never replay a model request or an accidental future effect.
-On first enable, retained Telegram updates are discarded and the owner must send a fresh message;
-historical bot traffic must not become work merely because Kira was started.
+At every controller start, retained Telegram updates are discarded and the owner must send a fresh
+message after Kira reports the channel ready; traffic received while the controller was offline or
+disabled must not become work merely because Kira was started.
 """
 
 from __future__ import annotations
@@ -415,7 +416,7 @@ class TelegramRemoteControlStore:
         return bool(row[0]), int(row[1])
 
     async def bootstrap(self, next_update_id: int) -> None:
-        """Mark the initial retained Telegram backlog consumed without invoking handlers."""
+        """Mark a retained Telegram backlog consumed without invoking handlers."""
         async with self.lock:
             await self._ensure_row_locked()
             await self.db.execute(
@@ -574,6 +575,7 @@ class TelegramRemoteControl:
         self._pending_inbox_context: InboxReferenceContext | None = None
         self._pending_conversation_update = False
         self._pending_conversation_context: RemoteConversationContext | None = None
+        self._runtime_initialized = False
         self._task: asyncio.Task[None] | None = None
 
     def _active_inbox_context(self) -> InboxReferenceContext | None:
@@ -681,6 +683,7 @@ class TelegramRemoteControl:
                 await task
         self._inbox_context = None
         self._conversation_context = None
+        self._runtime_initialized = False
         self._discard_reference_update()
         if self._operator_shutdown_handler is not None:
             await self._operator_shutdown_handler()
@@ -708,20 +711,26 @@ class TelegramRemoteControl:
             )
 
     async def _fetch_updates(
-        self, *, offset: int, http: Any, timeout_seconds: int | None = None
+        self,
+        *,
+        offset: int,
+        http: Any,
+        timeout_seconds: int | None = None,
+        limit: int | None = None,
     ) -> list[object]:
+        payload = {
+            "offset": str(offset),
+            "timeout": str(
+                self._config.poll_timeout_seconds if timeout_seconds is None else timeout_seconds
+            ),
+            "allowed_updates": '["message"]',
+        }
+        if limit is not None:
+            payload["limit"] = str(limit)
         try:
             response = await http.post(
                 f"{_TELEGRAM_API}/bot{self._bot_token}/getUpdates",
-                data={
-                    "offset": str(offset),
-                    "timeout": str(
-                        self._config.poll_timeout_seconds
-                        if timeout_seconds is None
-                        else timeout_seconds
-                    ),
-                    "allowed_updates": '["message"]',
-                },
+                data=payload,
             )
         except httpx.HTTPError as exc:
             raise ConnectorError(
@@ -806,27 +815,35 @@ class TelegramRemoteControl:
         return raw
 
     async def initialize(self, *, http: Any = None) -> None:
-        """Discard retained pre-enable updates before announcing the remote channel ready.
+        """Discard retained pre-start updates before announcing the remote channel ready.
 
-        A zero-second fetch makes the first cursor durable without waiting out the normal
-        long-poll timeout.  A message sent after this fetch is processed normally; a message
-        already retained before enable is never turned into work.  The ordinary poll path keeps
-        its same safe bootstrap fallback if this first network request is unavailable.
+        A zero-second fetch advances the durable cursor without waiting out the normal long-poll
+        timeout. A message sent after this fetch is processed normally; a message retained while
+        this controller was offline or disabled is never turned into work. Initialization is
+        idempotent for one running controller, while a stopped/recreated controller must bootstrap
+        a fresh runtime epoch.
         """
+        if self._runtime_initialized:
+            return
         client = http or self._http
         if client is None:
             async with httpx.AsyncClient(timeout=5.0) as owned:
                 await self.initialize(http=owned)
                 return
-        initialized, offset = await self._store.cursor()
-        if initialized:
-            return
-        updates = await self._fetch_updates(offset=offset, http=client, timeout_seconds=0)
-        highest = max(
-            (update_id for update in updates if (update_id := _update_id(update)) is not None),
-            default=offset - 1,
+        # Telegram's documented negative offset returns the newest queued update and forgets all
+        # earlier updates. Requesting one item therefore establishes an atomic, bounded startup
+        # edge even when more than the normal 100-update page accumulated while Kira was offline.
+        updates = await self._fetch_updates(
+            offset=-1,
+            http=client,
+            timeout_seconds=0,
+            limit=1,
         )
-        await self._store.bootstrap(highest + 1)
+        update_ids = [
+            update_id for update in updates if (update_id := _update_id(update)) is not None
+        ]
+        await self._store.bootstrap(max(update_ids) + 1 if update_ids else 0)
+        self._runtime_initialized = True
 
     async def poll_once(self, *, http: Any = None) -> int:
         """Poll and process one batch. Exposed for deterministic lifecycle tests."""
@@ -835,6 +852,10 @@ class TelegramRemoteControl:
             timeout = self._config.poll_timeout_seconds + 10.0
             async with httpx.AsyncClient(timeout=timeout) as owned:
                 return await self.poll_once(http=owned)
+
+        if not self._runtime_initialized:
+            await self.initialize(http=client)
+            return 0
 
         initialized, offset = await self._store.cursor()
         updates = await self._fetch_updates(offset=offset, http=client)
@@ -847,8 +868,8 @@ class TelegramRemoteControl:
             key=lambda item: item[0],
         )
         if not initialized:
-            # Never act on a retained pre-enable backlog.  A newly enabled owner sends /start
-            # after Kira announces that the channel is up.
+            # Defensive recovery if another host cleared the durable initialization bit after this
+            # runtime bootstrapped. Never execute that newly ambiguous batch.
             highest = max((update_id for update_id, _message in received), default=offset - 1)
             await self._store.bootstrap(highest + 1)
             return 0
@@ -1073,6 +1094,8 @@ class TelegramRemoteControl:
         async with httpx.AsyncClient(timeout=timeout) as http:
             while True:
                 try:
+                    # poll_once performs the safe zero-second bootstrap first when eager startup
+                    # initialization timed out; it never falls through to backlog execution.
                     await self.poll_once(http=http)
                 except asyncio.CancelledError:
                     raise
