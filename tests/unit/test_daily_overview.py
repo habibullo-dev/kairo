@@ -81,8 +81,13 @@ async def test_daily_overview_shape_with_no_services(tmp_path: Path) -> None:
     # tmp_path isn't a git repo ⇒ the "." repo state is None (never an error).
     assert out["repos"] == [{"path": ".", "state": None}]
     assert out["evals"]["ever_run"] is False
-    assert out["evals"]["command"] == "uv run kira eval gate"  # copy-only terminal ritual
-    assert "uv run kira eval plan --live" in out["evals"]["cost_note"]
+    assert out["evals"]["replay_command"] == "uv run kira eval gate --suite core"
+    assert "command" not in out["evals"] and "last_gate_cost_usd" not in out["evals"]
+    assert "--scenario permission_denied" in out["evals"]["live_command"]
+    assert "--max-cost-usd 1.00" in out["evals"]["live_command"]
+    assert "positive finite --max-cost-usd LLM spend stop threshold" in out["evals"]["cost_note"]
+    assert "partial signal, not closeout evidence" in out["evals"]["cost_note"]
+    assert "Stop the running Kira process" in out["evals"]["cost_note"]
     assert "jarvis" not in str(out["evals"]).lower()
 
 

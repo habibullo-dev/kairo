@@ -66,7 +66,12 @@ async def test_lab_overview_reads_history_and_baselines(tmp_path: Path) -> None:
     lab = await lab_overview(cfg, baselines_path=baselines)
     assert lab["gate_runs"] == 2 and lab["history"][-1]["git_rev"] == "def"
     assert "schema_version" in lab["baselines"]
-    assert "uv run kira eval gate" in lab["note"]
+    assert lab["replay_command"] == "uv run kira eval gate --suite core"
+    assert "--scenario permission_denied" in lab["live_command"]
+    assert "--no-judge --live --max-cost-usd 1.00" in lab["live_command"]
+    assert "Stop the running Kira UI or terminal first" in lab["note"]
+    assert "spend stop threshold" in lab["note"]
+    assert "partial signal, not full closeout evidence" in lab["note"]
     assert "jarvis" not in lab["note"].lower()
 
 

@@ -89,6 +89,12 @@ _PROJECT_REPORT_BUCKETS = (
     "fe_be_gaps",
     "test_gaps",
 )
+
+_EVAL_REPLAY_COMMAND = "uv run kira eval gate --suite core"
+_EVAL_SMALL_LIVE_COMMAND = (
+    "uv run kira eval gate --suite core --scenario permission_denied --runs 1 "
+    "--no-judge --live --max-cost-usd 1.00"
+)
 _PROJECT_REPORT_COVERAGE = frozenset(
     {
         "files_total",
@@ -2226,7 +2232,6 @@ def _eval_freshness(config: Config, repos: list[dict]) -> dict:
     last = history[-1] if history else None
     head = next((r["state"]["head_rev"] for r in repos if r["path"] == "." and r["state"]), None)
     last_rev = last.get("git_rev") if last else None
-    last_cost = (last.get("totals") or {}).get("cost_usd") if isinstance(last, dict) else None
     return {
         "ever_run": bool(history),
         "last_gate_at": last.get("timestamp") if last else None,
@@ -2235,21 +2240,16 @@ def _eval_freshness(config: Config, repos: list[dict]) -> dict:
         "head_rev": head,
         # stale = HEAD has moved past the last gated revision (freshness chip goes gray).
         "stale": bool(head and last_rev and head != last_rev),
-        "command": "uv run kira eval gate",  # shown to copy, never a run button
-        # Cost projection (eval cost-control layer). The default eval mode is keyless replay
-        # ($0, no API calls); a live gate is the phase-closeout ritual whose cost is estimated
-        # from the last live run. Shown so the human sees the $ before running anything.
+        "replay_command": _EVAL_REPLAY_COMMAND,  # shown to copy, never a run button
+        "live_command": _EVAL_SMALL_LIVE_COMMAND,
         "default_mode": "replay",
-        "last_gate_cost_usd": last_cost,
         "projected_replay_usd": 0.0,
         "cost_note": (
-            "default `uv run kira eval` is keyless replay = $0; a live gate "
-            + (
-                f"last cost ${last_cost:.2f}"
-                if isinstance(last_cost, int | float)
-                else "has no prior cost recorded"
-            )
-            + ". Use `uv run kira eval plan --live` for a projection."
+            "the default command is keyless replay = $0 incremental API spend; "
+            "live/record modes require an explicit positive finite --max-cost-usd LLM "
+            "spend stop threshold. The small live scenario is a partial signal, not "
+            "closeout evidence. "
+            "Stop the running Kira process before either gate."
         ),
     }
 
@@ -2468,9 +2468,13 @@ async def lab_overview(
         "gate_runs": len(history),
         "baselines": baselines,
         "latest_report": report_text,
+        "replay_command": _EVAL_REPLAY_COMMAND,
+        "live_command": _EVAL_SMALL_LIVE_COMMAND,
         "note": (
-            "Run evals from the terminal: `uv run kira eval gate` "
-            "(a deliberate, recorded ritual)."
+            "Stop the running Kira UI or terminal first because evals require exclusive "
+            "maintenance authority. Start with keyless replay. The live example runs one "
+            "unjudged scenario and uses a $1.00 LLM spend stop threshold. It is a partial "
+            "signal, not full closeout evidence."
         ),
     }
 

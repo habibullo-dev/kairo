@@ -126,6 +126,15 @@ def test_debug_css_only_toggles_visibility() -> None:
     assert "body.debug .debug-only { display: revert; }" in css
 
 
+def test_lab_renders_backend_owned_safe_eval_commands() -> None:
+    lab = (STATIC / "screens" / "lab.js").read_text(encoding="utf-8")
+    assert '${esc(lab.replay_command || "")}' in lab
+    assert '${esc(lab.live_command || "")}' in lab
+    assert "Keyless replay · recommended first" in lab
+    assert "Small live scenario · may spend" in lab
+    assert "live-chunked" not in lab
+
+
 def test_project_assessment_surfaces_are_read_only_and_escape_model_text() -> None:
     report = (STATIC / "ui" / "project-report.js").read_text(encoding="utf-8")
     gate = (STATIC / "screens" / "gate.js").read_text(encoding="utf-8")
