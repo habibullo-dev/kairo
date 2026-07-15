@@ -3,7 +3,7 @@ test (its filename doesn't match ``test_*`` so pytest never collects it), like `
 
 Unlike ``capture.py`` (which drives an already-running, authed app), this is SELF-CONTAINED: it
 seeds ``office_overview`` JSON in-process for empty / populated / large projects, serves a COPY of
-the static dir plus a tiny harness that runs the REAL ``screens/workspace/office.js`` + kairo.css in
+the static dir plus a tiny harness that runs the REAL ``screens/workspace/office.js`` + kira.css in
 headless chromium, then screenshots and runs the same ``analyze_overlap`` (no element overflow / no
 horizontal scroll) the workstation DoD uses — across the Office's states x themes x viewports.
 No running server, no auth, no DB serving needed.
@@ -59,7 +59,7 @@ STATES = [
 # the Office's OWN layout. Theme is applied from localStorage (this harness has no theme.js).
 HARNESS = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="./kairo.css">
+<link rel="stylesheet" href="./kira.css">
 <style>html,body{height:auto!important;overflow:visible!important;display:block!important}
 #root{padding:16px}</style></head><body>
 <div id="root"></div>

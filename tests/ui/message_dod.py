@@ -27,7 +27,7 @@ class _QuietHandler(http.server.SimpleHTTPRequestHandler):
 
 HTML = r"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/static/kairo.css"></head><body>
+<link rel="stylesheet" href="/static/kira.css"></head><body>
 <main><section class="chat-shell"><div class="chat-thread" id="messages"></div></section></main>
 <script type="module">
   import { renderConversation } from "/static/screens/conversation.js";

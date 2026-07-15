@@ -167,7 +167,7 @@ function drawList() {
   if (!items.length) {
     list.appendChild(el("div", { class: "empty-state" }, [
       el("h4", {}, ["No artifacts"]),
-      el("div", {}, [_S.all.length ? "None match these filters." : "Reports, drafts and outputs Kairo produces are filed here."]),
+      el("div", {}, [_S.all.length ? "None match these filters." : "Reports, drafts and outputs Kira produces are filed here."]),
     ]));
     return;
   }
@@ -232,7 +232,7 @@ export async function render(container, api, args) {
   const head = el("div", { class: "rise" }, [
     el("h1", {}, ["Artifacts"]),
     el("div", { class: "sub" }, [
-      "Everything Kairo has produced — reports, drafts, pages, run outputs — with its provenance.",
+      "Everything Kira has produced — reports, drafts, pages, run outputs — with its provenance.",
     ]),
   ]);
 

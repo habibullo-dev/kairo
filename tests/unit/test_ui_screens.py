@@ -120,7 +120,7 @@ def test_debug_is_presentation_only_in_js() -> None:
 
 
 def test_debug_css_only_toggles_visibility() -> None:
-    css = (STATIC / "kairo.css").read_text(encoding="utf-8")
+    css = (STATIC / "kira.css").read_text(encoding="utf-8")
     # .debug-only rules affect display only — never add a capability, only reveal detail
     assert ".debug-only { display: none; }" in css
     assert "body.debug .debug-only { display: revert; }" in css

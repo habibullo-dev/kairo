@@ -72,7 +72,7 @@ export async function render(container, api, ctx) {
         emptyState(
           dependencyEmpty ? "No local code relationships yet" : "Nothing to graph yet",
           dependencyEmpty
-            ? "Kairo draws Code map links only for local imports it can resolve. Switch to Files to browse the project tree."
+            ? "Kira draws Code map links only for local imports it can resolve. Switch to Files to browse the project tree."
             : "Work in this project, then rebuild the derived links to populate the graph.",
         ),
         el("div", { class: "graph-empty-actions" }, [copy]),

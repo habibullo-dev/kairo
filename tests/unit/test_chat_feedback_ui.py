@@ -6,7 +6,7 @@ CHAT = (STATIC_DIR / "screens" / "chat.js").read_text(encoding="utf-8")
 FEEDBACK = (STATIC_DIR / "ui" / "feedback.js").read_text(encoding="utf-8")
 APP = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 INDEX = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-CSS = (STATIC_DIR / "kairo.css").read_text(encoding="utf-8")
+CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")
 
 
 def test_chat_uses_custom_dialogs_and_toasts_not_browser_chrome() -> None:
@@ -21,10 +21,10 @@ def test_chat_uses_custom_dialogs_and_toasts_not_browser_chrome() -> None:
 def test_gate_is_concise_by_default_but_retains_disclosed_exact_details() -> None:
     assert "approvalCopy" in APP
     for phrase in (
-        "Kairo wants to create a Gmail draft.",
-        "Kairo wants to write a local file.",
-        "Kairo wants to use your terminal.",
-        "Kairo wants to search the web.",
+        "Kira wants to create a Gmail draft.",
+        "Kira wants to write a local file.",
+        "Kira wants to use your terminal.",
+        "Kira wants to search the web.",
     ):
         assert phrase in APP
     assert 'id="ap-request"' in INDEX

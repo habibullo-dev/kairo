@@ -3,7 +3,7 @@ const view = document.querySelector(`[data-view="${viewName}"]`);
 
 if (view) {
   view.hidden = false;
-  document.title = `Kairo · ${viewName === "setup" ? "Create owner" : viewName === "recover" ? "Recover owner" : "Sign in"}`;
+  document.title = `Kira · ${viewName === "setup" ? "Create owner" : viewName === "recover" ? "Recover owner" : "Sign in"}`;
   view.querySelector("input[autofocus]")?.focus();
 }
 
@@ -51,7 +51,7 @@ for (const form of document.querySelectorAll("form[data-endpoint]")) {
         body: JSON.stringify(payload),
       });
       if (response.ok) {
-        setStatus(form, "Access confirmed. Opening Kairo…", "progress");
+        setStatus(form, "Access confirmed. Opening Kira…", "progress");
         location.replace("/");
         return;
       }
@@ -62,12 +62,12 @@ for (const form of document.querySelectorAll("form[data-endpoint]")) {
       } else if (response.status === 401 && viewName === "login") {
         setStatus(form, "That passphrase is not correct.");
       } else if (response.status === 401) {
-        setStatus(form, "This setup link has expired. Restart Kairo for a fresh link.");
+        setStatus(form, "This setup link has expired. Restart Kira for a fresh link.");
       } else {
-        setStatus(form, detail || "Kairo could not complete this request.");
+        setStatus(form, detail || "Kira could not complete this request.");
       }
     } catch {
-      setStatus(form, "Kairo is not reachable. Check that the workstation is running.");
+      setStatus(form, "Kira is not reachable. Check that the workstation is running.");
     } finally {
       button.disabled = false;
     }

@@ -261,10 +261,10 @@ _RUN_DETAIL = {
 }
 _PROJECT = {
     "id": 1,
-    "name": "Kairo",
-    "slug": "kairo",
+    "name": "Atlas",
+    "slug": "atlas",
     "description": "Local-first AI workstation",
-    "icon": "K",
+    "icon": "A",
     "color": "#7cc4ff",
     "status": "active",
     "pinned": True,
@@ -332,7 +332,7 @@ _COSTS = {
         "project_monthly_usd": 25,
     },
     "budget_warning": {"cap_usd": 25, "month_spend_usd": 2.4, "level": "ok"},
-    "by_project": [{"project": "Kairo", "cost_usd": 2.4, "calls": 28}],
+    "by_project": [{"project": "Atlas", "cost_usd": 2.4, "calls": 28}],
     "by_model": [{"model": "claude-sonnet-5", "cost_usd": 2.4, "calls": 28}],
     "by_provider": [],
     "by_team": [],
@@ -397,7 +397,7 @@ def _base() -> dict:
         "/api/models": _MODELS,
         "/api/capabilities": _CAPS,
         "/api/projects": {
-            "projects": [{"id": 1, "name": "Kairo"}, {"id": 2, "name": "Website"}],
+            "projects": [{"id": 1, "name": "Atlas"}, {"id": 2, "name": "Website"}],
             "active_project_id": None,
         },
         "/api/projects/overview": _PROJECT_OVERVIEW,
@@ -478,18 +478,18 @@ def _seed_for(state: str) -> dict:
         s["_hash"] = "chat"
     elif state == "projects":
         s["_hash"] = "projects"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
     elif state == "workspace-overview":
         s["_hash"] = "workspace/1"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         s["/api/projects"]["active_project_id"] = 1
     elif state == "workspace-tasks":
         s["_hash"] = "workspace/1/tasks"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         s["/api/projects"]["active_project_id"] = 1
     elif state == "workspace-vault":
         s["_hash"] = "workspace/1/vault"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         s["/api/projects"]["active_project_id"] = 1
         s["/api/vault"] = {
             "stats": {"sources": 4, "chunks": 12, "unreviewed": 0},
@@ -536,21 +536,21 @@ def _seed_for(state: str) -> dict:
         }
     elif state == "studio":
         s["_hash"] = "studio"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         s["/api/projects"]["active_project_id"] = 1
     elif state == "studio-result":
         s["_hash"] = "studio/1"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         s["/api/projects"]["active_project_id"] = 1
     elif state == "costs":
         s["_hash"] = "costs"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
     elif state == "settings":
         s["_hash"] = "settings"
     elif state == "meetings":
         s["_hash"] = "meetings"
         r["session_id"] = 5
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         s["/api/projects"]["active_project_id"] = 1
         s["/api/voice/status"] = {
             "enabled": True,
@@ -569,7 +569,7 @@ def _seed_for(state: str) -> dict:
         }
     elif state == "chat-project":
         s["_hash"] = "chat"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         r["session_id"] = 5
         r["session_title"] = "Design review"
         s["/api/projects"]["active_project_id"] = 1
@@ -586,7 +586,7 @@ def _seed_for(state: str) -> dict:
         }
     elif state == "chat-markdown":
         s["_hash"] = "chat"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         r["session_id"] = 5
         r["session_title"] = "Release checklist"
         s["/api/projects"]["active_project_id"] = 1
@@ -598,14 +598,14 @@ def _seed_for(state: str) -> dict:
         }
     elif state == "chat-history":
         s["_hash"] = "chat"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         r["session_id"] = 5
         r["session_title"] = "Design review"
         s["/api/projects"]["active_project_id"] = 1
         s["_trigger"] = "history"
     elif state == "chat-files":
         s["_hash"] = "chat"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         r["session_id"] = 5
         r["session_title"] = "Design review"
         s["/api/projects"]["active_project_id"] = 1
@@ -625,7 +625,7 @@ def _seed_for(state: str) -> dict:
         s["_trigger"] = "files"
     elif state == "chat-outputs":
         s["_hash"] = "chat"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         r["session_id"] = 5
         r["session_title"] = "Design review"
         s["/api/projects"]["active_project_id"] = 1
@@ -643,7 +643,7 @@ def _seed_for(state: str) -> dict:
         s["_trigger"] = "outputs"
     elif state == "chat-knowledge":
         s["_hash"] = "chat"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         r["session_id"] = 5
         r["session_title"] = "Design review"
         s["/api/projects"]["active_project_id"] = 1
@@ -678,7 +678,7 @@ def _seed_for(state: str) -> dict:
                     {
                         "id": "project:1",
                         "kind": "project",
-                        "label": "Kairo",
+                        "label": "Atlas",
                         "degree": 4,
                         "trust_class": "trusted_local",
                     },
@@ -709,13 +709,13 @@ def _seed_for(state: str) -> dict:
         s["_trigger"] = "knowledge"
     elif state == "chat-approval":
         s["_hash"] = "chat"
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         r["session_id"] = 5
         r["session_title"] = "Terminal task"
         s["/api/projects"]["active_project_id"] = 1
         s["_trigger"] = "approval"
     elif state == "model-selector":
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         s["/api/projects"]["active_project_id"] = 1
         s["_trigger"] = "model"
     elif state == "palette":
@@ -723,7 +723,7 @@ def _seed_for(state: str) -> dict:
     elif state == "hub-truth":
         s["_hash"] = "hub"
     elif state == "graph-discovery":
-        r["project"] = {"id": 1, "name": "Kairo"}
+        r["project"] = {"id": 1, "name": "Atlas"}
         s["/api/projects"]["active_project_id"] = 1
         s["_hash"] = "workspace/1/graph"
         s["/api/workspace/1/graph"] = {
@@ -733,7 +733,7 @@ def _seed_for(state: str) -> dict:
             "focus": "project:1",
             "project_id": 1,
         }
-        s["/api/workspace/1"] = {"project": {"id": 1, "name": "Kairo"}}
+        s["/api/workspace/1"] = {"project": {"id": 1, "name": "Atlas"}}
     elif state == "voice":
         s["/api/voice/status"] = {
             "enabled": True,
@@ -785,15 +785,15 @@ STATES = [
 HARNESS = """<!doctype html><html lang="en" data-theme="noir" data-density="comfortable"
 data-layout="focused"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/static/kairo.css"></head>
+<link rel="stylesheet" href="/static/kira.css"></head>
 <body>%BODY%
 <script>
 (function () {
   var q = new URLSearchParams(location.search);
   var th = q.get('theme') || 'noir';
   try {
-    localStorage.removeItem('kira:appearance');
-    localStorage.setItem('kairo:appearance', JSON.stringify({ theme: th }));
+    localStorage.removeItem('kairo:appearance');
+    localStorage.setItem('kira:appearance', JSON.stringify({ theme: th }));
   } catch (e) {}
   window.WebSocket = function () {
     var socket = {

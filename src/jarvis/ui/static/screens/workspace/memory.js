@@ -1,4 +1,4 @@
-// Workspace › Memory tab (Phase 11 T10; Phase 15 adds review). What Kairo knows about this project
+// Workspace › Memory tab (Phase 11 T10; Phase 15 adds review). What Kira knows about this project
 // (project + global live memories; each can be forgotten — a status flip, never a hard delete), plus
 // a "Suggested" review queue: QUARANTINED proposals a human must approve before they become durable
 // memory. Approve/reject reuse the existing gated review routes; untrusted-evidence proposals are

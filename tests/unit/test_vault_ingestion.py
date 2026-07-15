@@ -493,7 +493,7 @@ async def test_chat_attachment_refuses_unknown_types_without_returning_parser_de
     )
     assert r.status_code == 400
     assert r.json()["message"] == (
-        "Kairo couldn't add that file. Use a supported document under the upload limit."
+        "Kira couldn't add that file. Use a supported document under the upload limit."
     )
 
 

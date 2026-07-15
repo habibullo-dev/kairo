@@ -31,7 +31,7 @@ export function el(tag, attrs, children) {
       else if (k === "html") node.innerHTML = v;
       else if (k === "dataset") for (const [dk, dv] of Object.entries(v)) node.dataset[dk] = dv;
       else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2), v);
-      else if (k === "style") throw new TypeError("Inline styles are blocked by Kairo's CSP; use a CSS class");
+      else if (k === "style") throw new TypeError("Inline styles are blocked by Kira's CSP; use a CSS class");
       else node.setAttribute(k, v);
     }
   }

@@ -120,7 +120,7 @@ async function postControl(control, setting, path, body) {
   try {
     res = await api.post(path, body || {});
   } catch {
-    res = { ok: false, data: { message: "Kairo could not be reached." } };
+    res = { ok: false, data: { message: "Kira could not be reached." } };
   }
 
   if (!operationIsCurrent(operation)) {
@@ -220,7 +220,7 @@ function modelSelect(models, unavailable = false) {
   }
   const sel = el("select", { class: "hdr-select", "aria-label": "Model routing" }, opts);
   sel.value = policy === "auto" ? "auto" : (models.current || "auto");
-  sel.title = auto.description || "uses cheap models first, escalates only when needed";
+  sel.title = auto.description || "Uses lower-cost models first and escalates when needed.";
   restorePendingControl(sel, setting);
   sel.addEventListener("change", () => {
     if (!unavailable && sel.value) void postControl(

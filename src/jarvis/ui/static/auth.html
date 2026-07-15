@@ -4,17 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Kairo · Owner access</title>
+  <title>Kira · Owner access</title>
   <link rel="icon" href="/static/assets/kira-favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/auth/auth.css">
 </head>
 <body>
   <main class="auth-layout">
-    <section class="identity" aria-label="Kairo Workstation">
-      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>KAIRO</div>
+    <section class="identity" aria-label="Kira Workstation">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>KIRA</div>
       <div class="identity-copy">
         <p class="eyebrow">PRIVATE WORKSTATION</p>
-        <h1>Your work stays behind one owner key.</h1>
+        <h1>Your work stays behind one owner passphrase.</h1>
         <p class="lede">Projects, approvals, connectors, and live agent runs remain locked until
           this browser proves owner access.</p>
       </div>
@@ -25,7 +25,7 @@
       <div class="view" data-view="setup" hidden>
         <p class="step">FIRST-RUN SETUP</p>
         <h2>Create the owner account</h2>
-        <p class="intro">This becomes the only administrator on this Kairo installation.</p>
+        <p class="intro">This becomes the only administrator on this Kira installation.</p>
         <form method="post" action="/auth/enroll" data-endpoint="/auth/enroll" novalidate>
           <label for="setup-username">Owner name</label>
           <input id="setup-username" name="username" type="text" autocomplete="username"
@@ -43,7 +43,7 @@
             minlength="15" maxlength="1024" required>
 
           <label class="show-password"><input type="checkbox" data-show-password>Show passphrase</label>
-          <button type="submit">Create owner and enter Kairo</button>
+          <button type="submit">Create owner and enter Kira</button>
           <p class="form-status" role="status"></p>
         </form>
       </div>
@@ -57,7 +57,7 @@
           <input id="login-password" name="password" type="password"
             autocomplete="current-password" maxlength="1024" required autofocus>
           <label class="show-password"><input type="checkbox" data-show-password>Show passphrase</label>
-          <button type="submit">Enter Kairo</button>
+          <button type="submit">Enter Kira</button>
           <p class="form-status" role="status"></p>
         </form>
       </div>

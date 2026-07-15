@@ -2,7 +2,7 @@
 
 from jarvis.ui.server import STATIC_DIR
 
-CSS = (STATIC_DIR / "kairo.css").read_text(encoding="utf-8")
+CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")
 ASSETS = STATIC_DIR / "assets"
 
 THEME_BACKGROUNDS = {

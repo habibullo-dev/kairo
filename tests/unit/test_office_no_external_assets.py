@@ -11,7 +11,7 @@ import re
 from jarvis.ui.server import STATIC_DIR
 
 OFFICE_JS = (STATIC_DIR / "screens" / "workspace" / "office.js").read_text(encoding="utf-8")
-CSS = (STATIC_DIR / "kairo.css").read_text(encoding="utf-8")
+CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")
 
 # Substrings that would betray an off-origin dependency.
 BANNED = (

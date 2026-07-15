@@ -11,7 +11,7 @@ from __future__ import annotations
 from jarvis.ui.server import STATIC_DIR
 
 INDEX = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-CSS = (STATIC_DIR / "kairo.css").read_text(encoding="utf-8")
+CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")
 APP_JS = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 DAILY_JS = (STATIC_DIR / "screens" / "daily.js").read_text(encoding="utf-8")
 
@@ -53,7 +53,7 @@ def test_debug_is_off_by_default_and_presentation_only() -> None:
 def test_daily_has_the_priority_zones() -> None:
     # Pending approval (amber) is a distinct zone above the calm Daily status and briefing.
     assert "zone-pending" in DAILY_JS and "Waiting on you" in DAILY_JS
-    assert "Kairo is working" in DAILY_JS and "Kairo is idle" in DAILY_JS
+    assert "Kira is working" in DAILY_JS and "Kira is idle" in DAILY_JS
     assert "Continue chat" in DAILY_JS
     assert "daily-chat" not in DAILY_JS and "composer-input" not in DAILY_JS
     assert DAILY_JS.index('id="daily-pending"') < DAILY_JS.index('id="daily-status"')

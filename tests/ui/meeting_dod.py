@@ -121,7 +121,7 @@ async def _assert_success_and_single_flight(browser: object, base: str) -> None:
             "Checking the capture receipt and preparing audio…"
         )
         assert await page.locator("#mtg-out").text_content() == (
-            "Checking for a saved result first. Kairo will show Listening only if the "
+            "Checking for a saved result first. Kira will show Listening only if the "
             "microphone opens."
         )
         assert not await page.locator("#rec-dot").evaluate(
@@ -220,7 +220,7 @@ async def _assert_failures_recover(browser: object, base: str) -> None:
         ("busy", "Another voice action is active"),
         ("empty", "No speech was detected"),
         ("unavailable", "capture is unavailable"),
-        ("network", "before Kairo could confirm"),
+        ("network", "before Kira could confirm"),
     ):
         context, page, errors = await _open_page(browser, base)
         try:
@@ -670,7 +670,7 @@ async def _assert_invalid_canonical_receipt_falls_back(browser: object, base: st
         await page.locator("#mtg-consent").check()
         await page.locator("#mtg-start").click()
         await page.wait_for_function(
-            "document.getElementById('mtg-out').textContent.includes('before Kairo could confirm')"
+            "document.getElementById('mtg-out').textContent.includes('before Kira could confirm')"
         )
         first_id = await page.evaluate("window.__meetingPosts[0].capture_id")
         assert first_id == legacy_id
@@ -701,7 +701,7 @@ async def _assert_receipt_survives_reload(browser: object, base: str) -> None:
         await page.locator("#mtg-consent").check()
         await page.locator("#mtg-start").click()
         await page.wait_for_function(
-            "document.getElementById('mtg-out').textContent.includes('before Kairo could confirm')"
+            "document.getElementById('mtg-out').textContent.includes('before Kira could confirm')"
         )
         first_id = await page.evaluate("window.__meetingPosts[0].capture_id")
         assert first_id == canonical_id

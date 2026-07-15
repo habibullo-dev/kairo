@@ -33,7 +33,7 @@ export async function render(container, api) {
         <div class="stat"><span class="n">${esc(String(readiness.import_links || 0))}</span><span class="l">verified imports</span></div></div>
       <div class="dim vault-readiness-detail">${esc(readiness.detail || "")}</div>
       <div class="action-row vault-readiness-actions"><a class="plain-button ghost" href="#workspace/${escAttr(String(readiness.project_id))}/graph">Open project graph</a><a class="plain-button ghost" href="#chat">Ask about this project</a></div>
-      <div class="dim vault-readiness-detail">Kairo retrieves relevant sections and direct verified dependencies for a question; it does not put the entire project into every prompt.</div>
+      <div class="dim vault-readiness-detail">Kira retrieves relevant sections and direct verified dependencies for a question; it does not put the entire project into every prompt.</div>
     </div>` : ""}
     <div class="card rise"><div class="card-head"><div class="t">Add to the vault</div></div>
       <div class="ingest-box">
@@ -110,7 +110,12 @@ export async function render(container, api) {
             : `/api/vault/sources/${s.id}/reject`;
           result = await api.post(path);
         } catch {
-          result = { ok: false, data: { message: "This source review could not reach Kairo." } };
+          result = {
+            ok: false,
+            data: {
+              message: "Kira couldn't confirm whether the review decision was saved. Refresh the review queue before trying again.",
+            },
+          };
         }
         await settleVaultReview(operation, result);
       };

@@ -61,7 +61,12 @@ export async function render(container, api, ctx) {
     try {
       result = await api.post(path, {});
     } catch {
-      result = { ok: false, data: { message: "This source review could not reach Kairo." } };
+      result = {
+        ok: false,
+        data: {
+          message: "Kira couldn't confirm whether the review decision was saved. Refresh the review queue before trying again.",
+        },
+      };
     }
     await settleVaultReview(operation, result);
   };

@@ -132,7 +132,7 @@ function showReport(report, isCurrent) {
     el("div", { class: "project-report-head" }, [
       el("div", {}, [
         el("div", { class: "chat-kicker", text: "Read-only project assessment" }),
-        el("h2", { class: "dialog-title", text: "What Kairo found" }),
+        el("h2", { class: "dialog-title", text: "What Kira found" }),
       ]),
       el("span", { class: "chip", text: text(report?.status, "unknown") }),
     ]),

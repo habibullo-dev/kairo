@@ -54,7 +54,7 @@ def _assert_hardened(resp) -> None:
 def test_health_is_open(tmp_path: Path) -> None:
     client, _app_, _auth = _app(tmp_path)
     r = client.get("/api/health")
-    assert r.status_code == 200 and r.json()["app"] == "kairo"
+    assert r.status_code == 200 and r.json()["app"] == "kira"
     _assert_hardened(r)
 
 
@@ -68,7 +68,7 @@ def test_root_requires_session(tmp_path: Path) -> None:
 def test_authed_root_served(tmp_path: Path) -> None:
     client, _app_, auth = _app(tmp_path)
     r = client.get("/", headers=_cookie(auth))
-    assert r.status_code == 200 and "Kairo Workstation" in r.text
+    assert r.status_code == 200 and "Kira Workstation" in r.text
 
 
 # --- token exchange: clean URL, cookie, no-store ----------------------------
@@ -143,7 +143,7 @@ def test_exchange_roundtrip_lets_you_in(tmp_path: Path) -> None:
     # A real browser flow: hit the tokened url, follow the redirect, land authenticated.
     client, _app_, _auth = _app(tmp_path)
     r = client.get(f"/?token={TOKEN}")  # follow_redirects=True (default)
-    assert r.status_code == 200 and "Kairo Workstation" in r.text
+    assert r.status_code == 200 and "Kira Workstation" in r.text
 
 
 # --- Host allowlist (anti DNS-rebinding) ------------------------------------

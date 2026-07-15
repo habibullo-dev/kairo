@@ -1,4 +1,4 @@
-// Chat — Kairo's primary talking surface. It reuses the existing session/model/mode controls and
+// Chat — Kira's primary talking surface. It reuses the existing session/model/mode controls and
 // the sole attended turn route; no new route, authority, or event stream is introduced here.
 import { bindHeaderContext, mountHeader, refreshHeader } from "../ui/header.js";
 import { confirmDialog, promptDialog, showToast } from "../ui/feedback.js";
@@ -23,7 +23,7 @@ export function render(container, api) {
           </div>
         </section>
         <form class="chat-composer" id="chat-composer">
-          <textarea id="chat-input" rows="1" placeholder="Message Kairo…" autocomplete="off" aria-label="Message Kairo"></textarea>
+          <textarea id="chat-input" rows="1" placeholder="Message Kira…" autocomplete="off" aria-label="Message Kira"></textarea>
           <div class="chat-composer-toolbar">
             <div id="chat-convo-header"></div>
             <div class="chat-turn-meta" id="chat-turn-meta"></div>
@@ -60,7 +60,7 @@ export function render(container, api) {
     const submit = async (event) => {
       event.preventDefault();
       if (api.state.projectImport) {
-        showToast("Kairo is still preparing this project's knowledge.", "error");
+        showToast("Kira is still preparing this project's knowledge.", "error");
         return;
       }
       await submitConversationTurn(
@@ -119,7 +119,7 @@ export function render(container, api) {
       };
       const turnId = Number(api.state.runner?.turn_id);
       if (!expectedContext || !Number.isInteger(turnId) || turnId < 1) {
-        showToast("Kairo is refreshing this turn. Try Stop again in a moment.", "error");
+        showToast("Kira is refreshing this turn. Try Stop again in a moment.", "error");
         await api.runnerStatus({ refresh: true });
         renderTurnControls(container, api);
         return;
@@ -155,7 +155,7 @@ export function render(container, api) {
         await api.runnerStatus({ refresh: true });
         if (!authorityIsCurrent()) return;
         renderTurnControls(container, api);
-        showToast("Kairo couldn't stop this turn. Please try again.", "error");
+        showToast("Kira couldn't stop this turn. Please try again.", "error");
       }
     });
     handle.addEventListener("click", async () => openChatHistory(container, api, {}, redraw));
@@ -239,7 +239,7 @@ function renderProjectImportProgress(container, api) {
     detail.textContent = `Graphify is connecting folders and files. ${state.done}/${state.total} files are ready.${failures}`;
   } else {
     title.textContent = "Analyzing your project files";
-    detail.textContent = `Kairo is reading and indexing ${state.done}/${state.total} files.${failures}`;
+    detail.textContent = `Kira is reading and indexing ${state.done}/${state.total} files.${failures}`;
   }
 }
 
@@ -372,7 +372,7 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
         if (secretHits > 0) {
           if (projectFolder) importState.secretFiles += 1;
           else showToast(
-            "Kairo redacted suspected credentials from AI indexing. Review Notifications.",
+            "Kira redacted suspected credentials from AI indexing. Review Notifications.",
             "error",
           );
         }
@@ -388,7 +388,7 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
       } else {
         if (attachment) {
           attachment.state = "error";
-          attachment.error = result.data.message || "Kairo couldn't add this file.";
+          attachment.error = result.data.message || "Kira couldn't add this file.";
         }
         failures += 1;
         if (projectFolder) importState.failed += 1;
@@ -397,7 +397,7 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
       if (!importIsCurrent()) return;
       if (attachment) {
         attachment.state = "error";
-        attachment.error = "Kairo couldn't add this file.";
+        attachment.error = "Kira couldn't add this file.";
       }
       failures += 1;
       if (projectFolder) importState.failed += 1;
@@ -452,8 +452,8 @@ async function uploadAttachments(container, api, files, { projectFolder = false 
       ? ` ${summary.secretFiles.toLocaleString()} file${summary.secretFiles === 1 ? "" : "s"} need credential review.`
       : "";
     const assessmentNote = {
-      queued: " Kairo's read-only assessment is queued; you'll get a notification when it's ready.",
-      in_progress: " Kairo is already analyzing this project read-only.",
+      queued: " Kira's read-only assessment is queued; you'll get a notification when it's ready.",
+      in_progress: " Kira is already analyzing this project read-only.",
       ready: " The latest read-only assessment is ready in Notifications.",
       failed: " The project is indexed, but its assessment needs another attempt.",
       disabled: " Automatic project assessment is off.",
@@ -651,7 +651,7 @@ function renderChatList(panel, container, api, data, runner, redraw, refresh) {
     const result = await api.post("/api/sessions/new", {});
     if (result.ok) {
       closeChatHistory(container); await refreshHeader(); redraw(); showToast("New chat ready.");
-    } else showToast("Kairo couldn't start a new chat.", "error");
+    } else showToast("Kira couldn't start a new chat.", "error");
   }, "chat-history-new");
   panel.appendChild(create);
 
@@ -695,12 +695,12 @@ function renderChatList(panel, container, api, data, runner, redraw, refresh) {
         if (!next) return;
         const result = await api.post(`/api/sessions/${session.id}/rename`, { title: next });
         if (result.ok) { await refresh(); showToast("Chat renamed."); }
-        else showToast("Kairo couldn't rename this chat.", "error");
+        else showToast("Kira couldn't rename this chat.", "error");
       }),
       historyButton(session.pinned ? "⌖" : "⌑", session.pinned ? "Unpin chat" : "Pin chat", async () => {
         const result = await api.post(`/api/sessions/${session.id}/pin`, { pinned: !session.pinned });
         if (result.ok) { await refresh(); showToast(session.pinned ? "Chat unpinned." : "Chat pinned."); }
-        else showToast("Kairo couldn't update this chat.", "error");
+        else showToast("Kira couldn't update this chat.", "error");
       }),
       historyButton("⌫", "Archive chat", async () => {
         const message = session.id === activeId && runner.session_save_state === "failed"
@@ -711,7 +711,7 @@ function renderChatList(panel, container, api, data, runner, redraw, refresh) {
         })) return;
         const result = await api.post(`/api/sessions/${session.id}/archive`, { archived: true });
         if (result.ok) { await refresh(); showToast("Chat archived."); }
-        else showToast("Kairo couldn't archive this chat.", "error");
+        else showToast("Kira couldn't archive this chat.", "error");
       }, "chat-history-action danger"),
     );
     item.append(titleRow, actions);
@@ -770,9 +770,9 @@ function renderChatOutputs(panel, api, outputs) {
     if (artifact.has_content) {
       const download = historyButton("↓", "Download output", async () => {
         const ok = await api.download(
-          `/api/chat/outputs/${encodeURIComponent(artifact.id)}/content`, artifact.title || "kairo-output"
+          `/api/chat/outputs/${encodeURIComponent(artifact.id)}/content`, artifact.title || "kira-output"
         );
-        if (!ok) download.title = "Kairo couldn't download this output";
+        if (!ok) download.title = "Kira couldn't download this output";
       });
       row.appendChild(download);
     }
@@ -834,7 +834,7 @@ function renderProjectKnowledge(panel, container, api, knowledge, runner, refres
         const count = Number(folder.source_count) || 0;
         if (!await confirmDialog({
           title: "Remove this folder from the project?",
-          message: `Kairo will stop using ${count} file${count === 1 ? "" : "s"} from ${folder.root}. The source records stay in the local audit trail, and you can attach another folder afterwards.`,
+          message: `Kira will stop using ${count} file${count === 1 ? "" : "s"} from ${folder.root}. The source records stay in the local audit trail, and you can attach another folder afterwards.`,
           confirmLabel: "Remove folder", tone: "attention",
         })) return;
         const result = await api.post("/api/chat/knowledge/detach", { root: folder.root });
@@ -846,7 +846,7 @@ function renderProjectKnowledge(panel, container, api, knowledge, runner, refres
             : `Cleared ${chunks} indexed section${chunks === 1 ? "" : "s"} from this detached folder.`;
           showToast(message);
           await refresh();
-        } else showToast("Kairo couldn't remove that folder from this project.", "error");
+        } else showToast("Kira couldn't remove that folder from this project.", "error");
       }, "chat-history-action danger");
       row.append(label, remove);
       const meta = document.createElement("span");
@@ -887,7 +887,7 @@ function renderProjectKnowledge(panel, container, api, knowledge, runner, refres
     preview.appendChild(emptyShelf(
       graph.available
         ? "Sources are ready. Build the derived graph to show their connections."
-        : "The project graph is unavailable in this Kairo session.",
+        : "The project graph is unavailable in this Kira session.",
     ));
   } else {
     const root = document.createElement("div");
@@ -921,7 +921,7 @@ function renderProjectKnowledge(panel, container, api, knowledge, runner, refres
       await navigator.clipboard.writeText("uv run jarvis graph rebuild");
       showToast("Graph rebuild command copied.");
     } catch {
-      showToast("Kairo couldn't copy the graph command.", "error");
+      showToast("Kira couldn't copy the graph command.", "error");
     }
   }, "chat-history-action");
   actions.append(openGraph, buildGraph);

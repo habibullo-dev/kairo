@@ -58,7 +58,7 @@ function googleCard(google = {}) {
     copyCommand(google.command || "uv run jarvis connect google"),
     copyCommand(google.status_command || "uv run jarvis connect status"),
     el("p", { class: "hub-muted" }, [google.disconnect_note ||
-      "Disconnect is intentionally not a UI action. Revoke Kairo in the provider account, then check status."]),
+      "Disconnect is intentionally not a UI action. Revoke Kira in the provider account, then check status."]),
   ]);
 }
 
@@ -67,7 +67,7 @@ function telegramCard(telegram = {}) {
   const remoteText = !remote.enabled
     ? "Off. Enable one allowlisted private chat in settings to use it."
     : remote.ready
-      ? `Ready while Kairo is running; /status, /tasks, and up to ${remote.max_model_messages_per_hour || 20} short model replies per hour.`
+      ? `Ready while Kira is running; /status, /tasks, and up to ${remote.max_model_messages_per_hour || 20} short model replies per hour.`
       : "Enabled, but TELEGRAM_BOT_TOKEN is missing.";
   return card("Telegram", telegram.state || "disabled", [
     rule("Can", "Send one-way notifications to a configured destination."),
@@ -155,8 +155,8 @@ export async function render(container, api) {
       el("div", { class: "hub-hero-note" }, ["No secrets shown · writes stay preview → approve → execute"]),
     ]),
     el("section", { class: "hub-boundaries rise" }, [
-      el("div", {}, [el("h2", {}, ["What Kairo can do"]), el("p", {}, ["Use connected, narrowly scoped services through the existing permission and approval flow."])]),
-      el("div", {}, [el("h2", {}, ["What Kairo cannot do"]), el("p", {}, ["Send Gmail, take broad Drive access, reveal credentials, or run a hidden connector action from this page."])]),
+      el("div", {}, [el("h2", {}, ["What Kira can do"]), el("p", {}, ["Use connected, narrowly scoped services through the existing permission and approval flow."])]),
+      el("div", {}, [el("h2", {}, ["What Kira cannot do"]), el("p", {}, ["Send Gmail, take broad Drive access, reveal credentials, or run a hidden connector action from this page."])]),
     ]),
     el("section", { class: "hub-section rise" }, [el("div", { class: "hub-section-head" }, [
       el("h2", {}, ["Accounts & notification channels"]),

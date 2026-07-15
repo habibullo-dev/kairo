@@ -309,7 +309,7 @@ def create_app(
     policy_path = config.root / "config" / "permissions.yaml"
     gate = gate or PermissionGate(load_policy(policy_path), config.root, source_path=policy_path)
     log = get_logger("jarvis.ui")
-    app = FastAPI(title="Kairo Workstation", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="Kira Workstation", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.auth = auth
     app.state.owner_auth = owner_auth
     app.state.connections = connections
@@ -793,7 +793,7 @@ def create_app(
 
     @app.get("/api/health")
     async def health() -> dict:
-        return {"status": "ok", "app": "kairo"}
+        return {"status": "ok", "app": "kira"}
 
     # --- Single-owner authentication -----------------------------------------------
 
@@ -974,7 +974,7 @@ def create_app(
             # no-cache: the browser MUST revalidate (ETag) so a JS/HTML update is picked up on the
             # next load rather than served stale — a local app has no CDN, revalidation is cheap.
             return FileResponse(index, headers={"Cache-Control": "no-cache"})
-        return Response("Kairo Workstation — assets missing.", media_type="text/plain")
+        return Response("Kira Workstation — assets missing.", media_type="text/plain")
 
     @app.get("/static/{path:path}")
     async def static_asset(path: str) -> Response:
@@ -1790,7 +1790,7 @@ def create_app(
             "truncated": False,
         }
         # Global chats are intentionally not a back door into every global source.  Choose a
-        # project first, then Kairo can retrieve and visualize only that project's knowledge.
+        # project first, then Kira can retrieve and visualize only that project's knowledge.
         if project_id is None:
             return JSONResponse(
                 {
@@ -2383,7 +2383,7 @@ def create_app(
                     raw.extend(chunk)
                     if len(raw) > cap:
                         return JSONResponse(
-                            {"ok": False, "message": "file exceeds Kairo's upload size limit"},
+                            {"ok": False, "message": "file exceeds Kira's upload size limit"},
                             status_code=413,
                         )
             finally:
@@ -2423,7 +2423,7 @@ def create_app(
                 {
                     "ok": False,
                     "message": (
-                        "Kairo couldn't add that file. "
+                        "Kira couldn't add that file. "
                         "Use a supported document under the upload limit."
                     ),
                 },

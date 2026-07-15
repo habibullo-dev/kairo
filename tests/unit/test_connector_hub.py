@@ -43,7 +43,7 @@ def test_connector_hub_makes_google_scopes_and_boundaries_readable(tmp_path: Pat
     assert [x["name"] for x in google["scopes"]] == [
         "Read calendar events",
         "Create and update Gmail drafts",
-        "Create and update Kairo-created Docs",
+        "Create and update Kira-created Docs",
     ]
     gmail = next(x for x in google["services"] if x["name"] == "Gmail")
     drive = next(x for x in google["services"] if x["name"] == "Drive & Docs")

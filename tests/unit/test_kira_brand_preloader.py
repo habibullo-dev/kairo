@@ -12,7 +12,7 @@ from jarvis.ui.server import STATIC_DIR
 ASSETS = STATIC_DIR / "assets"
 INDEX = STATIC_DIR / "index.html"
 AUTH = STATIC_DIR / "auth.html"
-WORKSTATION_CSS = STATIC_DIR / "kairo.css"
+WORKSTATION_CSS = STATIC_DIR / "kira.css"
 AUTH_CSS = STATIC_DIR / "auth" / "auth.css"
 PRELOADER_CSS = STATIC_DIR / "kira-preloader.css"
 BOOT = STATIC_DIR / "ui" / "boot.js"
@@ -176,7 +176,7 @@ def test_bootstrap_is_external_blocking_and_runs_before_stylesheets() -> None:
     html = INDEX.read_text(encoding="utf-8")
     boot_src = '/static/ui/boot.js'
     preloader_href = '/static/kira-preloader.css'
-    app_href = '/static/kairo.css'
+    app_href = '/static/kira.css'
     assert html.index(boot_src) < html.index(preloader_href) < html.index(app_href)
 
     boot_tag = re.search(rf"<script\b[^>]*src=[\"']{re.escape(boot_src)}[\"'][^>]*>", html)

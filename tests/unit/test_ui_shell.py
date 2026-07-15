@@ -17,7 +17,7 @@ KEYS_JS = (STATIC_DIR / "ui" / "keys.js").read_text(encoding="utf-8")
 BUS_JS = (STATIC_DIR / "ui" / "bus.js").read_text(encoding="utf-8")
 THEME_JS = (STATIC_DIR / "ui" / "theme.js").read_text(encoding="utf-8")
 SETTINGS_JS = (STATIC_DIR / "screens" / "settings.js").read_text(encoding="utf-8")
-CSS = (STATIC_DIR / "kairo.css").read_text(encoding="utf-8")
+CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")
 
 
 def test_primary_rail_is_the_five_places() -> None:

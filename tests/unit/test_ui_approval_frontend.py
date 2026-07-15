@@ -9,7 +9,7 @@ from jarvis.ui.server import STATIC_DIR
 INDEX = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 APP_JS = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 KEYS_JS = (STATIC_DIR / "ui" / "keys.js").read_text(encoding="utf-8")
-CSS = (STATIC_DIR / "kairo.css").read_text(encoding="utf-8")
+CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")
 
 
 def _tag(element_id: str) -> str:

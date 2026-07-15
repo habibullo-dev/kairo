@@ -94,7 +94,7 @@ def test_index_served_authenticated_under_csp(tmp_path: Path) -> None:
     client, auth = _client(tmp_path)
     r = client.get("/", headers=_cookie(auth))
     assert r.status_code == 200
-    assert "KAIRO" in r.text and "/static/app.js" in r.text
+    assert "KIRA" in r.text and "/static/app.js" in r.text
     csp = r.headers.get("content-security-policy", "")
     assert "default-src 'self'" in csp
     assert "style-src 'self'" in csp
@@ -104,7 +104,7 @@ def test_index_served_authenticated_under_csp(tmp_path: Path) -> None:
 def test_static_assets_served_and_gated(tmp_path: Path) -> None:
     client, auth = _client(tmp_path)
     for path in (
-        "/static/kairo.css", "/static/app.js", "/static/screens/gate.js",
+        "/static/kira.css", "/static/app.js", "/static/screens/gate.js",
         "/static/assets/kira-workspace-bg-noir.jpg",
     ):
         assert client.get(path).status_code == 401, path  # no session ⇒ refused
@@ -112,6 +112,48 @@ def test_static_assets_served_and_gated(tmp_path: Path) -> None:
         assert r.status_code == 200, path
         assert r.headers.get("referrer-policy") == "no-referrer"
     assert r.headers.get("content-type", "").startswith("image/jpeg")
+    assert client.get(
+        "/static/kairo.css", headers=_cookie(auth)
+    ).status_code == 404
+
+
+def test_current_static_brand_is_kira_with_only_exact_legacy_storage_bridges() -> None:
+    """Keep shipped UI branding canonical without breaking persisted browser state."""
+    index = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert (STATIC_DIR / "kira.css").is_file()
+    assert not (STATIC_DIR / "kairo.css").exists()
+    assert '/static/kira.css' in index
+    assert '/static/kairo.css' not in index
+
+    allowed_legacy_storage_lexemes = {
+        "app.js": ('"kairo:workspace-id"',),
+        "ui/boot.js": ('"kairo:appearance"',),
+        "ui/theme.js": ('"kairo:appearance"',),
+        "ui/voice.js": ('"kairo:voice:playback"',),
+        "screens/meetings.js": ("`kairo:meeting-capture:${scope}`",),
+        "screens/workspace/graph.js": (
+            "`kairo:graph:v4:${pid}:${stamp}`",
+            "`kairo:graph:focus:${pid}`",
+        ),
+        "screens/workspace/office.js": ("`kairo:office:${pid}`",),
+    }
+    compatibility_files_seen: set[str] = set()
+    for path in STATIC_FILES:
+        relative = path.relative_to(STATIC_DIR)
+        relative_name = relative.as_posix()
+        lowered_name = str(relative).lower()
+        assert "kairo" not in lowered_name and "cairo" not in lowered_name, relative
+        if path.suffix.lower() not in TEXT_ASSET_SUFFIXES:
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "Jarvis" not in source and "JARVIS" not in source, relative
+        assert re.search(r"\bcairo\b", source, re.IGNORECASE) is None, relative
+        for lexeme in allowed_legacy_storage_lexemes.get(relative_name, ()):
+            assert source.count(lexeme) == 1, f"{relative}: expected exact bridge {lexeme}"
+            source = source.replace(lexeme, "", 1)
+            compatibility_files_seen.add(relative_name)
+        assert "kairo" not in source.lower(), relative
+    assert compatibility_files_seen == set(allowed_legacy_storage_lexemes)
 
 
 def test_static_path_traversal_refused(tmp_path: Path) -> None:
@@ -147,7 +189,7 @@ def test_assets_have_no_csp_blocked_inline_styles() -> None:
     Static HTML attributes, template-string attributes, and ``el(..., {style: ...})`` create
     inline style attributes that Chromium refuses under the production CSP.  Direct property
     updates such as ``node.style.width = ...`` remain available for genuinely dynamic geometry;
-    durable presentation belongs in ``kairo.css``.  ``cssText`` is banned as a portability and
+    durable presentation belongs in ``kira.css``.  ``cssText`` is banned as a portability and
     reviewability convention even though current Chromium applies it through CSSOM.
     """
     for f in STATIC_FILES:
@@ -200,4 +242,4 @@ def test_shell_hides_via_class_not_blocked_inline_style() -> None:
     assert 'style="display:none"' not in index, "use the is-hidden class, not blocked inline style"
     assert "is-hidden" in index
     from jarvis.ui.server import STATIC_DIR as SD
-    assert ".is-hidden" in (SD / "kairo.css").read_text(encoding="utf-8")
+    assert ".is-hidden" in (SD / "kira.css").read_text(encoding="utf-8")

@@ -25,7 +25,7 @@ export async function render(container, api) {
   container.append(
     el("div", { class: "rise" }, [
       el("h1", { text: "Memory" }),
-      el("div", { class: "sub", text: "What Kairo remembers about you — with where it came from." }),
+      el("div", { class: "sub", text: "What Kira remembers about you, with the source of each memory." }),
     ]),
     el("div", { class: "card rise" }, [
       el("div", { class: "card-head" }, [el("div", { class: "t", text: "Remembered" }), remember]),

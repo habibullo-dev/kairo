@@ -40,7 +40,7 @@ export async function render(container, api, ctx) {
           onClick: (a.has_content || a.origin_type === "orchestration") ? () => openArtifact(a) : undefined,
         }),
       )
-    : [emptyState("No artifacts yet", "Outputs Kairo files for this project appear here.")];
+    : [emptyState("No artifacts yet", "Outputs Kira creates for this project appear here.")];
 
   const runs = data.recent_runs || [];
   const runRows = runs.length

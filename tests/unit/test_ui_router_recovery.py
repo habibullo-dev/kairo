@@ -3,7 +3,7 @@
 from jarvis.ui.server import STATIC_DIR
 
 APP = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-CSS = (STATIC_DIR / "kairo.css").read_text(encoding="utf-8")
+CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")
 DAILY = (STATIC_DIR / "screens" / "daily.js").read_text(encoding="utf-8")
 SETTINGS = (STATIC_DIR / "screens" / "settings.js").read_text(encoding="utf-8")
 WORKSPACE = (STATIC_DIR / "screens" / "workspace.js").read_text(encoding="utf-8")

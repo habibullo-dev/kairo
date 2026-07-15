@@ -712,7 +712,7 @@ async function cancelLiveRun(container, api, button, liveRunId, authorityToken) 
     if (runId(S.catalog?.cancellable_run_id) === liveRunId) {
       S.catalog.cancellable_run_id = null;
     }
-    S.cancelNotice = "Kairo did not accept this stop request. The run may already be finishing; refresh to confirm.";
+    S.cancelNotice = "Kira did not accept this stop request. The run may already be finishing; refresh to confirm.";
   } else {
     S.cancelNotice = "Could not confirm the stop request. The run may still be active; try again.";
   }

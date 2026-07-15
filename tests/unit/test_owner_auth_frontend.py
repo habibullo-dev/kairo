@@ -69,7 +69,7 @@ async def test_auth_shell_is_exactly_public_and_has_no_external_dependencies(
             # Exact allowlist: neither the workstation shell nor an arbitrary auth-prefix file
             # becomes anonymous just because the login bundle is public.
             assert (await client.get("/static/app.js")).status_code == 401
-            assert (await client.get("/static/kairo.css")).status_code == 401
+            assert (await client.get("/static/kira.css")).status_code == 401
             assert (await client.get("/static/assets/kairo-favicon.svg")).status_code == 401
             assert (await client.get("/static/auth/not-real.js")).status_code == 401
 

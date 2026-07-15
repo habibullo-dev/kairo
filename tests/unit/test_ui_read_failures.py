@@ -16,7 +16,7 @@ def test_read_helper_degrades_to_null_for_screen_level_error_states() -> None:
 
 def test_daily_tasks_distinguishes_an_error_from_no_tasks() -> None:
     assert "Tasks unavailable" in DAILY
-    assert "Kairo couldn't load scheduled work right now." in DAILY
+    assert "Kira couldn't load scheduled work right now." in DAILY
 
 
 def test_header_and_settings_explain_partial_read_failures() -> None:

@@ -157,7 +157,7 @@ class AuthManager:
 
     The token is minted once per process and printed once (Task 9).  A browser exchanges it for
     an opaque session id.  Production supplies ``session_store_path`` so only a digest + expiry
-    survives an ordinary Kairo restart; tests and bare app construction remain in-memory by
+    survives an ordinary Kira restart; tests and bare app construction remain in-memory by
     default.  Raw session ids and the launch token are never written to disk.
     """
 

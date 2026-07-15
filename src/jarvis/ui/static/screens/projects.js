@@ -456,12 +456,12 @@ function openProjectReset(project, api) {
       el("h2", { class: "dialog-title", text: "Start this project fresh" }),
       el("p", {
         class: "dialog-message",
-        text: "Kairo will archive the current workspace and keep its history for audit. The new workspace starts without its chats, memory, tasks, reports, or pending actions.",
+        text: "Kira will archive the current workspace and keep its history for audit. The new workspace starts without its chats, memory, tasks, reports, or pending actions.",
       }),
       projectField("Type the exact project name", confirmation, project.name),
       projectField("Owner password", password, "Required again for this destructive action."),
       el("label", { class: "project-edit-field" }, [
-        el("span", { class: "project-edit-label" }, [retain, " Keep repository links so Kairo can relearn the project"]),
+        el("span", { class: "project-edit-label" }, [retain, " Keep repository links so Kira can relearn the project"]),
       ]),
       error,
       el("div", { class: "dialog-actions" }, [cancel, submit]),
@@ -497,7 +497,7 @@ function openProjectReset(project, api) {
         steppedUp = await api.stepUp(password.value);
       } catch {
         steppedUp = {
-          ok: false, data: { message: "Password verification could not reach Kairo." },
+          ok: false, data: { message: "Kira couldn't verify the password." },
         };
       }
       password.value = "";
@@ -518,7 +518,12 @@ function openProjectReset(project, api) {
           `/api/projects/${encodeURIComponent(project.id)}/reset`, resetRequest,
         );
       } catch {
-        result = { ok: false, data: { message: "Project reset could not reach Kairo." } };
+        result = {
+          ok: false,
+          data: {
+            message: "Kira couldn't confirm whether the project reset completed. Refresh Projects before trying again.",
+          },
+        };
       }
       if (activeProjectReset !== owner) return;
       owner.operationPending = false;

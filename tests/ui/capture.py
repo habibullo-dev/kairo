@@ -38,9 +38,9 @@ from jarvis.ui.screenshots import (
 # paint so initTheme() applies the requested theme (merged over the defaults).
 _THEME_STORAGE_KEY = "kira:appearance"
 _CSP_PROBE_INIT = """
-window.__kairoCspViolations = [];
+window.__kiraCspViolations = [];
 document.addEventListener("securitypolicyviolation", (event) => {
-  window.__kairoCspViolations.push({
+  window.__kiraCspViolations.push({
     directive: event.effectiveDirective || event.violatedDirective || "unknown",
     blocked: event.blockedURI || "inline",
     source: event.sourceFile || "document",
@@ -98,11 +98,11 @@ async def _run(base: str, token: str, out_dir: Path, screens: list[tuple[str, st
                         metrics = await page.evaluate(OVERLAP_PROBE_JS)
                         for v in analyze_overlap(metrics):
                             problems.append(f"[{theme} {width}w {screen}/{state}] {v}")
-                        violations = await page.evaluate("window.__kairoCspViolations || []")
+                        violations = await page.evaluate("window.__kiraCspViolations || []")
                         # reload() above creates a fresh document today, but clear explicitly so a
                         # future navigation optimization cannot attribute one screen's violation
                         # to every later screen in the same capture page.
-                        await page.evaluate("window.__kairoCspViolations = []")
+                        await page.evaluate("window.__kiraCspViolations = []")
                         for violation in violations:
                             problems.append(
                                 f"[{theme} {width}w {screen}/{state}] CSP "
@@ -124,7 +124,7 @@ async def _run(base: str, token: str, out_dir: Path, screens: list[tuple[str, st
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Kairo screenshot DoD harness (browser extra).")
+    ap = argparse.ArgumentParser(description="Kira screenshot DoD harness (browser extra).")
     ap.add_argument("--base", default="http://127.0.0.1:8787", help="running UI base URL")
     ap.add_argument("--token", required=True, help="the one-shot launch token")
     ap.add_argument("--out", default="data/screenshots", help="output dir (gitignored)")

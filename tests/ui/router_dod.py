@@ -240,7 +240,7 @@ async def _assert_never_settling_initial_render_times_out_and_retries(
             """async () => {
               const { api } = await import('/static/app.js');
               const originalVoiceStatus = api.voiceStatus.bind(api);
-              window.__KAIRO_INITIAL_ROUTE_READ_TIMEOUT_MS__ = 60;
+              window.__KIRA_INITIAL_ROUTE_READ_TIMEOUT_MS__ = 60;
               window.__stallInitialVoiceStatus = true;
               window.__initialVoiceStatusReads = 0;
               api.voiceStatus = () => {
@@ -3663,8 +3663,8 @@ async def _assert_global_runner_control_is_truthful_and_single_flight(
         )
         await page.wait_for_function(
             """() => document.getElementById('st-runner').textContent
-                === 'Kairo is working in this chat'
-              && document.getElementById('daily-now-lead')?.textContent === 'Kairo is working'
+                === 'Kira is working in this chat'
+              && document.getElementById('daily-now-lead')?.textContent === 'Kira is working'
               && !document.getElementById('st-stop').classList.contains('is-hidden')
               && !document.getElementById('st-resume').classList.contains('is-hidden')"""
         )

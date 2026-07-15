@@ -1,4 +1,4 @@
-// Kairo Workstation — shell core (Phase 8). WS + router + status + the approval flow.
+// Kira Workstation — shell core (Phase 8). WS + router + status + the approval flow.
 // Carries NO safety logic: it renders and clicks. All enforcement is server-side (the nonce
 // is minted only over the live socket after the modal is shown; the server validates every
 // resolve). Per-screen rendering lives in ./screens/*.js.
@@ -258,7 +258,7 @@ export const api = {
     const url = URL.createObjectURL(await r.blob());
     const link = document.createElement("a");
     link.href = url;
-    link.download = filename || "kairo-output";
+    link.download = filename || "kira-output";
     link.hidden = true;
     document.body.appendChild(link);
     link.click();
@@ -532,7 +532,7 @@ function handleMessage(msg) {
     if (workspaceId) {
       writeStored("session", WORKSPACE_KEY, workspaceId);
       // Unlike appearance preferences, workspace routing must not become stale on a same-tab
-      // rollback to a cached Kairo shell. Keep the exact compatibility alias synchronized.
+      // rollback to a legacy shell. Keep the exact compatibility alias synchronized.
       writeStored("session", LEGACY_WORKSPACE_KEY, workspaceId);
     } else {
       removeStored("session", [WORKSPACE_KEY, LEGACY_WORKSPACE_KEY]);
@@ -876,26 +876,26 @@ function onApproval(msg) {
 
 function approvalCopy(next) {
   const tool = String(next.tool || "").toLowerCase();
-  if (tool === "gmail_create_draft") return ["Gmail", "Kairo wants to create a Gmail draft."];
-  if (tool === "gmail_update_draft") return ["Gmail", "Kairo wants to update a Gmail draft."];
-  if (tool.includes("gmail")) return ["Gmail", "Kairo wants to read Gmail."];
-  if (tool === "calendar_create_event") return ["Calendar", "Kairo wants to create a calendar event."];
-  if (tool === "calendar_update_event") return ["Calendar", "Kairo wants to update a calendar event."];
-  if (tool === "calendar_cancel_event") return ["Calendar", "Kairo wants to cancel a calendar event."];
-  if (tool.includes("calendar")) return ["Calendar", "Kairo wants to read your calendar."];
-  if (tool === "drive_create_doc") return ["Google Drive", "Kairo wants to create a Google Doc."];
-  if (tool === "drive_update_doc") return ["Google Drive", "Kairo wants to update a Google Doc."];
-  if (tool.includes("drive") || tool.includes("doc")) return ["Google Drive", "Kairo wants to read Google Drive."];
-  if (tool === "write_file") return ["Files", "Kairo wants to write a local file."];
-  if (tool === "send_notification") return ["Notifications", "Kairo wants to send a notification."];
+  if (tool === "gmail_create_draft") return ["Gmail", "Kira wants to create a Gmail draft."];
+  if (tool === "gmail_update_draft") return ["Gmail", "Kira wants to update a Gmail draft."];
+  if (tool.includes("gmail")) return ["Gmail", "Kira wants to read Gmail."];
+  if (tool === "calendar_create_event") return ["Calendar", "Kira wants to create a calendar event."];
+  if (tool === "calendar_update_event") return ["Calendar", "Kira wants to update a calendar event."];
+  if (tool === "calendar_cancel_event") return ["Calendar", "Kira wants to cancel a calendar event."];
+  if (tool.includes("calendar")) return ["Calendar", "Kira wants to read your calendar."];
+  if (tool === "drive_create_doc") return ["Google Drive", "Kira wants to create a Google Doc."];
+  if (tool === "drive_update_doc") return ["Google Drive", "Kira wants to update a Google Doc."];
+  if (tool.includes("drive") || tool.includes("doc")) return ["Google Drive", "Kira wants to read Google Drive."];
+  if (tool === "write_file") return ["Files", "Kira wants to write a local file."];
+  if (tool === "send_notification") return ["Notifications", "Kira wants to send a notification."];
   if (tool.includes("shell") || tool.includes("terminal") || tool.includes("command")) {
-    return ["Terminal", "Kairo wants to use your terminal."];
+    return ["Terminal", "Kira wants to use your terminal."];
   }
-  if (tool === "web_search") return ["Web", "Kairo wants to search the web."];
-  if (tool.includes("web")) return ["Web", "Kairo wants to access a website."];
-  if (tool.includes("file") || tool.includes("directory")) return ["Files", "Kairo wants to access local files."];
+  if (tool === "web_search") return ["Web", "Kira wants to search the web."];
+  if (tool.includes("web")) return ["Web", "Kira wants to access a website."];
+  if (tool.includes("file") || tool.includes("directory")) return ["Files", "Kira wants to access local files."];
   const label = String(next.tool || "an action").replace(/[_-]+/g, " ");
-  return [label, `Kairo wants to use ${label}.`];
+  return [label, `Kira wants to use ${label}.`];
 }
 
 function setApprovalControlsEnabled(enabled) {
@@ -1020,7 +1020,7 @@ function showTopApproval() {
   next.nonce = null;
   const [label, request] = approvalCopy(next);
   document.getElementById("ap-kind").textContent =
-    next.kind === "voice" ? "Confirm on screen (voice)" : "Kairo needs your approval";
+    next.kind === "voice" ? "Confirm on screen (voice)" : "Kira needs your approval";
   document.getElementById("ap-tool").textContent = label;
   document.getElementById("ap-request").textContent = request;
   document.getElementById("ap-details").open = false;
@@ -1088,7 +1088,7 @@ async function resolveApproval(action) {
   } catch {
     _approvalResolving.delete(did);
     if (state.pending.get(did) !== p) return;
-    await recoverApproval(p, "Not confirmed because Kairo could not reach the approval service.");
+    await recoverApproval(p, "Not confirmed because Kira could not reach the approval service.");
     return;
   }
   _approvalResolving.delete(did);
@@ -1541,7 +1541,7 @@ function scopedRouteApi(container, generation, context, signal) {
 // runnerStatus() that do not use scoped get(). One timer owns the render; post-mount callbacks are
 // outside this promise and retain their existing unbounded/action-specific behavior.
 function boundedInitialRouteRender(result, controller) {
-  const configuredTimeout = Number(globalThis.__KAIRO_INITIAL_ROUTE_READ_TIMEOUT_MS__);
+  const configuredTimeout = Number(globalThis.__KIRA_INITIAL_ROUTE_READ_TIMEOUT_MS__);
   const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
     ? configuredTimeout : INITIAL_ROUTE_READ_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
@@ -1603,7 +1603,7 @@ function renderRouteFailure(container, error) {
   heading.tabIndex = -1;
   heading.textContent = `${routeLabel()} couldn't open`;
   const detail = document.createElement("p");
-  detail.textContent = "Kairo couldn't load this screen. Check the connection and try again.";
+  detail.textContent = "Kira couldn't load this screen. Check the connection and try again.";
   const actions = document.createElement("div");
   actions.className = "route-state-actions";
   const retry = document.createElement("button");
@@ -1621,7 +1621,7 @@ function renderRouteFailure(container, error) {
   failure.append(heading, detail, actions);
   container.appendChild(failure);
   // Keep provider/data detail out of the UI, while retaining the local exception for developers.
-  console.error(`Kairo failed to render ${state.route}`, error);
+  console.error(`Kira failed to render ${state.route}`, error);
   requestAnimationFrame(() => { if (heading.isConnected) heading.focus(); });
 }
 
@@ -1834,12 +1834,12 @@ function renderRunnerState() {
   const setText = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
   const setClass = (id, c) => { const el = document.getElementById(id); if (el) el.className = c; };
   const dotClass = "runner-dot" + (busy ? " busy" : "");
-  let runnerText = "Kairo is idle";
+  let runnerText = "Kira is idle";
   if (operation?.action === "pause") runnerText = "Stopping all chats and pausing schedules";
   else if (operation?.action === "resume") runnerText = "Resuming schedules";
   else if (!facts.statusCurrent) runnerText = "Runner status is unavailable";
-  else if (facts.currentTurnBusy) runnerText = "Kairo is working in this chat";
-  else if (facts.globalTurnBusy) runnerText = "Kairo is working in another chat";
+  else if (facts.currentTurnBusy) runnerText = "Kira is working in this chat";
+  else if (facts.globalTurnBusy) runnerText = "Kira is working in another chat";
   else if (facts.backgroundBusy) runnerText = "Scheduled work is running";
   else if (facts.paused) runnerText = "Schedules are paused";
   else if (s.runner_available === false) runnerText = "Schedules are unavailable";
@@ -1864,7 +1864,7 @@ function renderRunnerState() {
   // Daily's quiet briefing line (if mounted) shares the settled runner state, but Chat remains
   // the only place to send a message. Keep this copy/format aligned with Daily's initial render.
   if (document.getElementById("daily-now-lead")) {
-    let lead = "Kairo is idle";
+    let lead = "Kira is idle";
     let desc = "Your briefing is up to date.";
     if (operation?.action === "pause") {
       lead = "Stopping all chats";
@@ -1876,12 +1876,12 @@ function renderRunnerState() {
       lead = "Runner status is unavailable";
       desc = facts.workActive
         ? "Last known work may still be running. Stop all remains available."
-        : "Kairo will retry automatically.";
+        : "Kira will retry automatically.";
     } else if (facts.currentTurnBusy) {
-      lead = "Kairo is working";
+      lead = "Kira is working";
       desc = "Progress is available in Chat.";
     } else if (facts.globalTurnBusy) {
-      lead = "Kairo is working in another chat";
+      lead = "Kira is working in another chat";
       desc = "That chat's progress is available in Chat.";
     } else if (facts.backgroundBusy) {
       lead = "Scheduled work is running";

@@ -1,4 +1,4 @@
-// Daily — Kairo's calm briefing. Chat owns conversation and actions; Daily only orients the
+// Daily — Kira's calm briefing. Chat owns conversation and actions; Daily only orients the
 // person toward the day, their current project, and the one thing needing attention.
 import { showToast } from "../ui/feedback.js";
 import { money, relTime } from "../ui/format.js";
@@ -43,7 +43,7 @@ export function render(container, api) {
         <div id="daily-pending"></div>
         <section class="daily-status" id="daily-status">
           <span class="runner-dot" id="daily-now-dot"></span>
-          <div><strong id="daily-now-lead">Kairo is idle</strong><span id="daily-now-desc">Nothing needs your attention right now.</span></div>
+          <div><strong id="daily-now-lead">Kira is idle</strong><span id="daily-now-desc">Nothing needs your attention right now.</span></div>
           <span class="daily-cost" id="daily-cost-today">—</span>
         </section>
         <section class="daily-grid">
@@ -106,7 +106,7 @@ async function refreshBriefing(container, api) {
         || !authorityIsCurrent(api, operation.authorityToken)) return;
     if (!result.ok) {
       const busy = result.status === 409 || result.data?.message === "busy";
-      showToast(busy ? "Kairo is already working. Try refreshing the briefing shortly." : "Briefing refresh failed.", "error");
+      showToast(busy ? "Kira is already working. Try refreshing the briefing shortly." : "Briefing refresh failed.", "error");
       return;
     }
     showToast("Briefing refreshed.");
@@ -189,7 +189,7 @@ function renderPending(container, api) {
     const card = document.createElement("div");
     card.className = "daily-active rise";
     const text = document.createElement("span");
-    text.textContent = "Kairo is working in this chat.";
+    text.textContent = "Kira is working in this chat.";
     const link = document.createElement("a");
     link.href = "#chat";
     link.textContent = "Open chat →";
@@ -211,18 +211,18 @@ function renderStatus(container, api) {
   const desc = container.querySelector("#daily-now-desc");
   const dot = container.querySelector("#daily-now-dot");
   const cost = container.querySelector("#daily-cost-today");
-  let leadText = "Kairo is idle";
+  let leadText = "Kira is idle";
   let descText = "Your briefing is up to date.";
   if (!statusCurrent) {
     leadText = "Runner status is unavailable";
     descText = busy
       ? "Last known work may still be running. Stop all remains available."
-      : "Kairo will retry automatically.";
+      : "Kira will retry automatically.";
   } else if (currentBusy) {
-    leadText = "Kairo is working";
+    leadText = "Kira is working";
     descText = "Progress is available in Chat.";
   } else if (globalBusy) {
-    leadText = "Kairo is working in another chat";
+    leadText = "Kira is working in another chat";
     descText = "That chat's progress is available in Chat.";
   } else if (backgroundBusy) {
     leadText = "Scheduled work is running";
@@ -278,8 +278,8 @@ function renderProjectAssessment(container, api, assessment) {
   const copy = {
     disabled: "Automatic project assessment is off.",
     unavailable: "Automatic project assessment is unavailable.",
-    queued: "Kairo queued a read-only assessment of this project.",
-    running: "Kairo is updating this project's read-only assessment.",
+    queued: "Kira queued a read-only assessment of this project.",
+    running: "Kira is updating this project's read-only assessment.",
     failed: "The latest project assessment could not complete.",
     idle: "No current assessment. Import or finalize the project to refresh it.",
   };
@@ -370,7 +370,7 @@ async function fillBriefing(container, api) {
   );
   if (!data) {
     clear(host);
-    host.appendChild(emptyState("Briefing unavailable", "Open Chat while Kairo refreshes this overview.", [["Continue chat", "#chat"]]));
+    host.appendChild(emptyState("Briefing unavailable", "Open Chat while Kira refreshes this overview.", [["Continue chat", "#chat"]]));
     return;
   }
   clear(host);
@@ -402,12 +402,12 @@ async function fillToday(container, api) {
   if (revision !== tasksReadRevision || !renderIsCurrent(container, api)) return;
   clear(host);
   if (tasks === null) {
-    host.appendChild(emptyState("Tasks unavailable", "Kairo couldn't load scheduled work right now."));
+    host.appendChild(emptyState("Tasks unavailable", "Kira couldn't load scheduled work right now."));
     return;
   }
   const active = Array.isArray(tasks) ? tasks.filter((task) => task.status === "active").slice(0, 4) : [];
   if (!active.length) {
-    host.appendChild(emptyState("No next tasks", "Create a task when you want Kairo to keep something on the radar.", [["Create task", "#tasks"]]));
+    host.appendChild(emptyState("No next tasks", "Create a task when you want Kira to keep something on the radar.", [["Create task", "#tasks"]]));
     return;
   }
   for (const task of active) {

@@ -1,4 +1,4 @@
-/* Kairo Workstation — obsidian theme, refined (Phase 8).
+/* Kira Workstation — obsidian theme, refined (Phase 8).
    Class-based (no inline styles in the markup). Palette discipline: amber (#FFB020) is
    ATTENTION ONLY (pending approval, review, recording); cyan (#17D2FF) is identity/active;
    the rest is the obsidian ramp. Calm: Daily shows one primary attention surface at a time
@@ -135,10 +135,10 @@ a:hover { color: var(--cyan-soft); }
 ::-webkit-scrollbar-thumb { background: var(--user-bubble); border-radius: 8px; border: 3px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
 
-@keyframes kairoPulse { 0% { box-shadow: 0 0 0 0 rgba(23,210,255,0.45); } 70% { box-shadow: 0 0 0 8px rgba(23,210,255,0); } 100% { box-shadow: 0 0 0 0 rgba(23,210,255,0); } }
-@keyframes kairoAmber { 0% { box-shadow: 0 0 0 0 rgba(255,176,32,0.4); } 70% { box-shadow: 0 0 0 7px rgba(255,176,32,0); } 100% { box-shadow: 0 0 0 0 rgba(255,176,32,0); } }
-@keyframes kairoRise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes kairoSpin { to { transform: rotate(360deg); } }
+@keyframes kiraPulse { 0% { box-shadow: 0 0 0 0 rgba(23,210,255,0.45); } 70% { box-shadow: 0 0 0 8px rgba(23,210,255,0); } 100% { box-shadow: 0 0 0 0 rgba(23,210,255,0); } }
+@keyframes kiraAmber { 0% { box-shadow: 0 0 0 0 rgba(255,176,32,0.4); } 70% { box-shadow: 0 0 0 7px rgba(255,176,32,0); } 100% { box-shadow: 0 0 0 0 rgba(255,176,32,0); } }
+@keyframes kiraRise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes kiraSpin { to { transform: rotate(360deg); } }
 
 /* --- nav rail --- */
 nav.rail {
@@ -183,10 +183,10 @@ nav.rail {
 .rail .badge {
   min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--amber);
   color: var(--bg); font-size: 11px; font-weight: 700; display: none; align-items: center;
-  justify-content: center; animation: kairoAmber 2.4s ease-out infinite;
+  justify-content: center; animation: kiraAmber 2.4s ease-out infinite;
 }
 .rail .badge.show { display: flex; }
-.rail .rec-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); animation: kairoAmber 2.4s ease-out infinite; display: none; }
+.rail .rec-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); animation: kiraAmber 2.4s ease-out infinite; display: none; }
 .rail .rec-dot.show { display: block; }
 .rail .spacer { flex: 1; }
 .rail .foot { color: var(--dim); font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase; font-weight: 600; padding: 8px; }
@@ -210,7 +210,7 @@ nav.rail {
 .runner { display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap; }
 .status:not(.is-working):not(.is-paused):not(.is-controlling) .runner { display: none; }
 .runner-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #2E3B4E; }
-.runner-dot.busy { background: var(--cyan); animation: kairoPulse 2s ease-out infinite; }
+.runner-dot.busy { background: var(--cyan); animation: kiraPulse 2s ease-out infinite; }
 .runner .label { font-size: 12px; color: var(--ink-3); font-weight: 500; }
 .status .grow { flex: 1; }
 .status .voice { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); flex-shrink: 0; white-space: nowrap; }
@@ -253,7 +253,7 @@ main { grid-area: main; overflow-y: auto; overflow-x: hidden; position: relative
 .route-state p { margin: 0; max-width: 500px; font-size: 13.5px; line-height: 1.55; }
 .route-state-pulse { width: 10px; height: 10px; flex: 0 0 auto; border-radius: 50%;
   background: var(--accent); box-shadow: 0 0 18px rgba(var(--accent-rgb), .45);
-  animation: kairoPulse 1.6s ease-out infinite; }
+  animation: kiraPulse 1.6s ease-out infinite; }
 .route-failure { flex-direction: column; align-items: flex-start; }
 .route-failure h1:focus { outline: none; }
 .route-state-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 10px; }
@@ -262,7 +262,7 @@ main { grid-area: main; overflow-y: auto; overflow-x: hidden; position: relative
 @media (prefers-reduced-motion: reduce) { .route-state-pulse { animation: none; } }
 h1 { font-size: 23px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 5px; }
 .sub { color: var(--dim); font-size: 13.5px; margin-bottom: 26px; }
-.rise { animation: kairoRise .45s ease both; }
+.rise { animation: kiraRise .45s ease both; }
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px; margin-bottom: 16px; }
 .card-label { font-size: 10.5px; letter-spacing: 1.6px; text-transform: uppercase; font-weight: 600; color: var(--dim); margin-bottom: 14px; }
@@ -616,7 +616,7 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 
 /* --- approval modal (priority attention surface) --- */
 .overlay { position: fixed; inset: 0; padding: 20px; box-sizing: border-box; overflow-y: auto; background: rgba(4,7,10,0.74); backdrop-filter: blur(3px); display: none; align-items: center; justify-content: center; z-index: 120; }
-.overlay.show { display: flex; animation: kairoRise .2s ease both; }
+.overlay.show { display: flex; animation: kiraRise .2s ease both; }
 .approve-card { width: 580px; max-width: 92vw; max-height: calc(100vh - 40px); max-height: calc(100dvh - 40px); display: flex; flex-direction: column; background: var(--panel); border: 1px solid rgba(255,176,32,0.5); border-radius: 18px; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,0.6); }
 .approve-card:focus { outline: 2px solid rgba(var(--attention-rgb), .72); outline-offset: 3px; }
 .approve-card .head { flex: none; background: rgba(255,176,32,0.08); padding: 17px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 13px; }
@@ -635,7 +635,7 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
 .approve-card .waiting { flex: none; padding: 0 22px 12px; display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 11.5px; }
 .approve-card .waiting.error { color: var(--attention); }
 .approval-retry { margin-left: auto; border: 1px solid currentColor; border-radius: 7px; padding: 4px 8px; background: transparent; color: inherit; font: 650 11px var(--font); cursor: pointer; }
-.approve-card .spin { width: 12px; height: 12px; border: 2px solid var(--line-2); border-top-color: var(--cyan); border-radius: 50%; display: none; animation: kairoSpin .7s linear infinite; }
+.approve-card .spin { width: 12px; height: 12px; border: 2px solid var(--line-2); border-top-color: var(--cyan); border-radius: 50%; display: none; animation: kiraSpin .7s linear infinite; }
 .approve-card .spin.show { display: inline-block; }
 .approval-emergency { flex: none; display: flex; align-items: center; gap: 10px; padding: 0 22px 14px; color: var(--dim); font-size: 11.5px; }
 .approval-global-stop { flex: none; border: 1px solid rgba(var(--attention-rgb), .55); border-radius: 9px; padding: 8px 12px; background: rgba(var(--attention-rgb), .08); color: var(--attention); font: 700 12px var(--font); cursor: pointer; }
@@ -732,7 +732,7 @@ details.advanced[open] > summary { color: var(--ink-2); margin-bottom: 8px; }
   .service-access-choices { grid-template-columns: 1fr; }
 }
 .toast-stack { position: fixed; right: 18px; bottom: 18px; z-index: 111; display: grid; gap: 8px; width: min(340px, calc(100vw - 36px)); pointer-events: none; }
-.toast { padding: 11px 13px; border: 1px solid var(--line-strong); border-radius: 11px; background: var(--panel-strong); color: var(--ink); box-shadow: var(--shadow-soft); font: 600 12px/1.45 var(--font); animation: kairoRise .18s ease both; }
+.toast { padding: 11px 13px; border: 1px solid var(--line-strong); border-radius: 11px; background: var(--panel-strong); color: var(--ink); box-shadow: var(--shadow-soft); font: 600 12px/1.45 var(--font); animation: kiraRise .18s ease both; }
 .toast.error { border-color: rgba(var(--attention-rgb), .52); color: var(--attention); }
 
 /* --- tables/lists (Vault/Tasks/Memory/Hub/Lab) --- */
@@ -1183,7 +1183,7 @@ tr.clickable:hover td { color: var(--cyan); }
 .theme-toggle button.active { background: rgba(var(--accent-rgb), .16); color: var(--ink); }
 
 /* --- Phase 14: AI Team Office -----------------------------------------------
-   An opt-in, render-only view of a project's orchestration. Kairo's OWN visual
+   An opt-in, render-only view of a project's orchestration. Kira's OWN visual
    language — token-driven (no new theme), CSS gradients/rings only (ZERO image
    assets, no external URL/font/CDN — nothing copied from my-virtual-office). It
    inherits noir/light/neon + density/motion knobs automatically. Two layouts

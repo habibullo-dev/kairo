@@ -2,7 +2,7 @@
 pytest test (its name doesn't match ``test_*``), like ``office_dod.py``.
 
 Self-contained: seeds subgraph JSON in-process for the graph states, serves a COPY of the static dir
-+ a harness that runs the REAL ``screens/workspace/graph.js`` (+ the canvas engine + kairo.css) in
++ a harness that runs the REAL ``screens/workspace/graph.js`` (+ the canvas engine + kira.css) in
 headless chromium under REDUCED MOTION (so the deterministic layout settles and draws once — stable
 pixels), then screenshots and runs ``analyze_overlap`` (no element overflow / no horizontal scroll)
 across states x themes x viewports.
@@ -50,7 +50,7 @@ _TS = "2026-03-15T00:00:00+00:00"
 
 HARNESS = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="./kairo.css">
+<link rel="stylesheet" href="./kira.css">
 <style>html,body{height:auto!important;overflow:visible!important;display:block!important}
 #root{padding:16px}</style></head><body>
 <div id="root"></div>
@@ -99,10 +99,10 @@ async def _seed_json(static_dir: Path) -> None:
         (_TS, _TS))
     code_sources: list[tuple[int, str, str]] = []
     seed_code = [
-        ("repo/src/kairo/app.py", "from .core import runner\n"),
-        ("repo/src/kairo/core.py", "from .ui import render\n"),
-        ("repo/src/kairo/ui.py", "def render(): pass\n"),
-        ("repo/src/kairo/connectors/mail.py", "from kairo.core import runner\n"),
+        ("repo/src/atlas/app.py", "from .core import runner\n"),
+        ("repo/src/atlas/core.py", "from .ui import render\n"),
+        ("repo/src/atlas/ui.py", "def render(): pass\n"),
+        ("repo/src/atlas/connectors/mail.py", "from atlas.core import runner\n"),
     ]
     # Keep the visual harness honest for the real use case: a deep uploaded codebase must draw
     # as a dense, inspectable network rather than only proving a four-node demo. These are local
@@ -111,7 +111,7 @@ async def _seed_json(static_dir: Path) -> None:
     module_count = 120
     seed_code.extend(
         (
-            f"repo/src/kairo/modules/module_{index:03}.py",
+            f"repo/src/atlas/modules/module_{index:03}.py",
             f"from .module_{(index + 1) % module_count:03} import run\n",
         )
         for index in range(module_count)
@@ -225,7 +225,7 @@ async def main() -> int:
     try:
         static = work / "static"
         shutil.copytree(STATIC_DIR, static)
-        # Kairo's real stylesheet references local theme imagery under /static/assets.  Mirror
+        # Kira's real stylesheet references local theme imagery under /static/assets.  Mirror
         # that mount inside this otherwise root-served harness so graph captures include the same
         # local background/veil treatment as the workstation rather than noisy 404 fallbacks.
         shutil.copytree(STATIC_DIR, static / "static")

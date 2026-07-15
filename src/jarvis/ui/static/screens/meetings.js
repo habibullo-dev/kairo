@@ -40,7 +40,7 @@ function captureReceiptFor(api) {
   if (!CAPTURE_ID.test(id || "")) id = crypto.randomUUID();
   memoryReceipts.set(keys.key, id);
   // A meeting receipt is recovery state, not a preference. Dual-write it during the compatibility
-  // window so either a Kira reload or a rollback/cached Kairo page retries the exact same UUID.
+  // window so either a current reload or a rollback to a legacy page retries the exact same UUID.
   writeStored("session", keys.key, id);
   writeStored("session", keys.legacyKey, id);
   return { ...keys, id };
@@ -185,10 +185,10 @@ function applyVoiceStatus(container, status, api) {
   const privacy = container.querySelector("#mtg-privacy");
   if (privacy) {
     privacy.textContent = !status
-      ? "Provider status is unavailable. Kairo will not open the microphone until it recovers."
+      ? "Provider status is unavailable. Kira will not open the microphone until it recovers."
       : (status.stt === "openai"
-        ? "Audio is sent to the configured OpenAI transcription service. Transcript text may also be sent to configured Knowledge providers for indexing; raw audio is not retained by Kairo."
-        : "Speech-to-text runs on this workstation. Transcript text may be sent to configured Knowledge providers for indexing; raw audio is not retained by Kairo.");
+        ? "Audio is sent to the configured OpenAI transcription service. Transcript text may also be sent to configured Knowledge providers for indexing; raw audio is not retained by Kira."
+        : "Speech-to-text runs on this workstation. Transcript text may be sent to configured Knowledge providers for indexing; raw audio is not retained by Kira.");
   }
   const button = container.querySelector("#mtg-start");
   if (button) button.dataset.available = available ? "1" : "0";
@@ -251,7 +251,7 @@ export async function render(container, api) {
   }
   const loadingPrivacy = container.querySelector("#mtg-privacy");
   if (loadingPrivacy) {
-    loadingPrivacy.textContent = "Capture stays disabled until Kairo confirms the provider.";
+    loadingPrivacy.textContent = "Capture stays disabled until Kira confirms the provider.";
   }
   setPhase(container, serverPhase);
 
@@ -293,7 +293,7 @@ export async function render(container, api) {
     inFlightAuthorityToken = operationAuthorityToken;
     operationOutcome = null;
     setPhase(container, "requesting");
-    showMessage(container, "Checking for a saved result first. Kairo will show Listening only if the microphone opens.");
+    showMessage(container, "Checking for a saved result first. Kira will show Listening only if the microphone opens.");
     const title = container.querySelector("#mtg-title")?.value.trim() || "Meeting note";
     const receipt = captureReceiptFor(api);
     if (!receipt) {
@@ -301,7 +301,7 @@ export async function render(container, api) {
         inFlight = false;
         inFlightAuthorityToken = null;
       }
-      showMessage(container, "The workspace context is not ready. Wait for Kairo to reconnect.");
+      showMessage(container, "The workspace context is not ready. Wait for Kira to reconnect.");
       setPhase(container, serverPhase);
       return;
     }
@@ -345,7 +345,7 @@ export async function render(container, api) {
       const liveContainer = rememberOperationOutcome(
         api,
         operationAuthorityToken,
-        "The connection ended before Kairo could confirm whether the note was saved. Check Knowledge before capturing again.",
+        "The connection ended before Kira could confirm whether the note was saved. Check Knowledge before capturing again.",
       );
       const liveConsent = liveContainer?.querySelector("#mtg-consent");
       if (liveConsent) liveConsent.checked = false;

@@ -81,7 +81,7 @@ export function openMemoryDraft(api) {
       el("h2", { class: "dialog-title", text: "Remember something" }),
       el("p", {
         class: "dialog-message",
-        text: "Review what you want Kairo to retain. Nothing is saved until you press Save memory.",
+        text: "Review what you want Kira to retain. Nothing is saved until you press Save memory.",
       }),
       field("Memory", content, "Enter a durable fact, preference, project detail, or past event in your own words."),
       field("Type", type),

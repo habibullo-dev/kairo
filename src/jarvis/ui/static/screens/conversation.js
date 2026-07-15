@@ -187,7 +187,7 @@ export function renderConversation(host, state, { emptyHeading, emptyHint } = {}
     const heading = document.createElement("h4");
     heading.textContent = emptyHeading || "No messages yet";
     const hint = document.createElement("div");
-    hint.textContent = emptyHint || "Start a conversation with Kairo.";
+    hint.textContent = emptyHint || "Start a conversation with Kira.";
     empty.append(heading, hint);
     host.appendChild(empty);
     return;
@@ -253,7 +253,7 @@ export async function submitConversationTurn(api, input, redraw, onAdmissionChan
   try {
     result = await api.post("/api/turn", { text, expected_context: expectedContext });
   } catch {
-    result = { ok: false, status: 0, data: { message: "Kairo could not be reached." } };
+    result = { ok: false, status: 0, data: { message: "Kira could not be reached." } };
   }
   if (authorityToken !== null && typeof api.authorityIsCurrent === "function"
       && !api.authorityIsCurrent(authorityToken)) return;
@@ -271,7 +271,7 @@ export async function submitConversationTurn(api, input, redraw, onAdmissionChan
       input.focus();
       redraw();
     }
-    showToast(result.data?.message || "Kairo could not start that turn. Your draft was restored.", "error");
+    showToast(result.data?.message || "Kira could not start that turn. Your draft was restored.", "error");
     return;
   }
   // A tiny turn can complete over WebSocket before this POST response arrives. Reconcile the

@@ -79,9 +79,9 @@ export function promptDialog({ title, message, value = "", confirmLabel = "Save"
 export function dismissFeedbackDialogs() { closeDialog(null); }
 
 export function showToast(message, tone = "default") {
-  let host = document.getElementById("kairo-toasts");
+  let host = document.getElementById("kira-toasts");
   if (!host) {
-    host = el("div", { id: "kairo-toasts", class: "toast-stack", "aria-live": "polite" });
+    host = el("div", { id: "kira-toasts", class: "toast-stack", "aria-live": "polite" });
     document.body.append(host);
   }
   const toast = el("div", { class: `toast ${tone}`, role: "status", text: message });

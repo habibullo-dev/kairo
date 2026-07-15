@@ -256,7 +256,7 @@ async def list_memories(
     type_filter: str | None = None,
     project_id: object = _MEM_ANY_PROJECT,
 ) -> list[dict]:
-    """Live memories, optionally scoped to a project ("what Kairo knows about this project"
+    """Live memories, optionally scoped to a project ("what Kira knows about this project"
     = the project's own + global memories). Default is unscoped (every live memory)."""
     rows = await memory.store.all_live(project_id=project_id)
     if type_filter:
@@ -1517,7 +1517,7 @@ _GOOGLE_SCOPE_LABELS = {
     "https://www.googleapis.com/auth/gmail.readonly": "Read Gmail",
     "https://www.googleapis.com/auth/gmail.compose": "Create and update Gmail drafts",
     "https://www.googleapis.com/auth/drive.readonly": "Read Drive files",
-    "https://www.googleapis.com/auth/drive.file": "Create and update Kairo-created Docs",
+    "https://www.googleapis.com/auth/drive.file": "Create and update Kira-created Docs",
 }
 
 _PROVIDER_LABELS = {
@@ -1644,19 +1644,19 @@ def connector_hub_overview(config: Config, *, connectors: dict | None = None) ->
                     "name": "Gmail",
                     "state": google_state,
                     "can": "Read Gmail; create and update drafts.",
-                    "cannot": "Kairo cannot send email.",
+                    "cannot": "Kira cannot send email.",
                 },
                 {
                     "name": "Drive & Docs",
                     "state": google_state,
-                    "can": "Read Drive; create and update Kairo-created Docs.",
-                    "cannot": "Kairo has no broad Drive access.",
+                    "can": "Read Drive; create and update Kira-created Docs.",
+                    "cannot": "Kira has no broad Drive access.",
                 },
             ],
             "command": "uv run jarvis connect google",
             "status_command": "uv run jarvis connect status",
             "disconnect_note": (
-                "Disconnect is intentionally not a UI action. Revoke Kairo in your Google account "
+                "Disconnect is intentionally not a UI action. Revoke Kira in your Google account "
                 "permissions, then use the status command to confirm."
             ),
         },

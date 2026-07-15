@@ -7,7 +7,7 @@ HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 DAILY = (STATIC_DIR / "screens" / "daily.js").read_text(encoding="utf-8")
 CHAT = (STATIC_DIR / "screens" / "chat.js").read_text(encoding="utf-8")
 CONVERSATION = (STATIC_DIR / "screens" / "conversation.js").read_text(encoding="utf-8")
-CSS = (STATIC_DIR / "kairo.css").read_text(encoding="utf-8")
+CSS = (STATIC_DIR / "kira.css").read_text(encoding="utf-8")
 
 
 def test_chat_is_the_default_primary_route_with_a_clear_nav_entry() -> None:
@@ -93,7 +93,7 @@ def test_chat_stop_recovers_when_cancel_races_or_the_network_fails() -> None:
     assert "api.runnerStatus({ refresh: true })" in CHAT
     assert "if (runner && !runner.turn_busy) api.state.turnCancelling = false;" in CHAT
     assert "This turn has already finished." in CHAT
-    assert "Kairo couldn't stop this turn. Please try again." in CHAT
+    assert "Kira couldn't stop this turn. Please try again." in CHAT
 
 
 def test_chat_message_rendering_remains_text_only() -> None:
@@ -177,7 +177,7 @@ def test_global_runner_control_is_truthful_shared_and_reconciled() -> None:
     assert "mergeRunnerControlResponse" not in APP
     assert ".status.has-global-work #st-stop" in CSS
     assert "Schedules are paused" in DAILY
-    assert "Kairo is working in another chat" in DAILY
+    assert "Kira is working in another chat" in DAILY
 
 
 def test_chat_voice_is_review_first_and_uses_the_existing_safe_controller() -> None:
