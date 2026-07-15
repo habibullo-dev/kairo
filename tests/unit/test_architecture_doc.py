@@ -236,6 +236,8 @@ def test_architecture_pins_remote_and_dreaming_limits() -> None:
     for claim in (
         "exactly one positive decimal private `allowed_chat_id`",
         "outbound notification chat id grants no inbound authority",
+        "Every controller start discards the pending Telegram backlog",
+        "Attachment turns use a separate empty registry",
         "audits egress without logging the query",
         "never replays Telegram messages or work",
         "no more than three approved jobs may be active at once",

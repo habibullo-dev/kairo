@@ -4,6 +4,7 @@ from jarvis.ui.server import STATIC_DIR
 
 REPOSITORY_ROOT = STATIC_DIR.parents[3]
 GUIDE = (REPOSITORY_ROOT / "docs" / "KIRA-USER-GUIDE.md").read_text(encoding="utf-8")
+NORMALIZED_GUIDE = " ".join(GUIDE.split())
 README = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
 
 
@@ -37,7 +38,7 @@ def test_user_guide_describes_current_identity_auth_and_storage() -> None:
         "schema-v33",
         "not scheduled unattended",
     ):
-        assert claim in GUIDE
+        assert claim in NORMALIZED_GUIDE
 
     for legacy_brand in ("Kairo", "Cairo", "Jarvis"):
         assert legacy_brand not in GUIDE
@@ -52,6 +53,18 @@ def test_user_guide_keeps_non_negotiable_safety_claims() -> None:
         "Restore is not supported",
     ):
         assert claim in GUIDE
+
+
+def test_user_guide_pins_remote_operator_runtime_boundaries() -> None:
+    for claim in (
+        "At every controller start",
+        "only after the runtime reports the channel ready",
+        "live-search, or other egress authority",
+        "without per-query approval or semantic DLP",
+        "not as a filesystem sandbox",
+        "A write or shell call always parks the exact saved continuation",
+    ):
+        assert claim in NORMALIZED_GUIDE
 
 
 def test_readme_reports_the_current_kira_release() -> None:

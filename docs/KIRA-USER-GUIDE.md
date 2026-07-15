@@ -88,8 +88,9 @@ presence and scope names, never credential values.
 ### Telegram Remote Operator
 
 Kira can answer a deliberately bounded set of Telegram messages while the local runtime is running.
-Configure one positive private-chat ID; groups and channels are refused. After enabling the feature,
-send a fresh `/start` from that exact chat. Retained updates from before enablement are discarded.
+Configure one positive private-chat ID; groups and channels are refused. At every controller start,
+Kira discards messages retained while it was offline or disabled. Send a fresh `/start` from that
+exact chat only after the runtime reports the channel ready.
 
 The fixed read-only commands include:
 
@@ -108,11 +109,12 @@ message identifiers or full bodies to the remote model.
 Optional attachments accept one bounded image, supported document, voice note, or audio file.
 Images are validated/resized, documents use the existing sandbox, and audio is transcribed locally.
 Raw files and derived text are discarded after the turn. Attachment content is untrusted and has no
-proposal, approval, write, shell, scheduling, connector, or send authority.
+proposal, approval, write, shell, scheduling, connector, send, live-search, or other egress authority.
 
-Optional live search performs at most one bounded public query for a message. The query leaves the
-workplace and results are framed as untrusted third-party data. It cannot fetch arbitrary URLs or
-read local files, mail, memory, connectors, or project content.
+Optional live search is available only to ordinary text turns and performs at most one bounded
+public query for a message. The query leaves the workplace without per-query approval or semantic
+DLP; results are framed as untrusted third-party data. It cannot fetch arbitrary URLs or read local
+files, mail, memory, connectors, project content, or attachment content.
 
 News-PDF requests use a separate host-owned approval path. Kira first displays an `N-...` code with
 the exact date, scope, search/source/PDF limits, retention, and fixed destination. No search, model
@@ -132,10 +134,12 @@ a random expiring code. Nothing is scheduled until the displayed `/approve CODE`
 controls.
 
 An approved project job receives only `read_file`, `list_dir`, `glob_search`, `write_file`, and
-`run_shell` within its registered repository context. It receives no memory, email, connector,
-browser, sub-agent, or notification tools. A write or shell call parks the exact saved continuation
-and sends a second minimized preview. Only a new code bound to that exact tool input resumes it.
-Casual confirmation, reused/expired codes, or codes for changed input grant nothing.
+`run_shell`. Its selected active project is pinned as routing and prompt context, not as a filesystem
+sandbox; normal workspace-root path resolution, sensitive-path floors, and permission policy remain
+the enforcement boundary. It receives no memory, email, connector, browser, sub-agent, or
+notification tools. A write or shell call always parks the exact saved continuation and sends a
+second minimized preview. Only a new code bound to that exact tool input resumes it. Casual
+confirmation, reused/expired codes, or codes for changed input grant nothing.
 
 Remote Operator controls the local running process; it is not a cloud wake-up service or remote
 browser. See [`REMOTE-OPERATOR.md`](REMOTE-OPERATOR.md) for configuration details.

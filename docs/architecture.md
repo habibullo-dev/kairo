@@ -454,15 +454,18 @@ box" ledger (category + destination type only).
 **Telegram Remote Operator.** Remote control and its operator are independently off by default and
 poll only while Kira is already running locally; this is not a wake-up or cloud-hosting path. Enabling
 remote control requires exactly one positive decimal private `allowed_chat_id`. The outbound
-notification chat id grants no inbound authority. Retained backlog, duplicate/lower update ids,
-unknown chats, groups/channels, and unsupported or non-text updates cannot create work.
+notification chat id grants no inbound authority. Every controller start discards the pending
+Telegram backlog before reporting ready. Duplicate/lower update ids, unknown chats, groups/channels,
+and unsupported update shapes cannot create work; supported attachments are separately opt-in.
 
-The remote model receives no general project, shell, filesystem, connector, or approval authority.
-Its isolated registry can expose only `remote_propose_work` and, when separately opted in,
-`remote_live_search`; the structural gate denies every other tool. Live search normalizes at most 300
-characters, makes one bounded public Tavily query per fresh message, returns at most five untrusted
-results, and audits egress without logging the query. Deterministic status, project, task, job,
-briefing, inbox, and calendar reads are handled by host-owned paths instead of broadening model tools.
+The ordinary text model receives no general project, shell, filesystem, connector, or approval
+authority. Its isolated registry can expose only `remote_propose_work` and, when separately opted in,
+`remote_live_search`; the structural gate denies every other tool. Live search normalizes at most
+300 characters, makes one bounded public Tavily query per fresh message, returns at most five
+untrusted results, and audits egress without logging the query. Attachment turns use a separate
+empty registry, so document, image, and transcript content cannot influence live search.
+Deterministic status, project, task, job, briefing, inbox, and calendar reads are handled by
+host-owned paths instead of broadening model tools.
 
 The controller may keep a bounded, RAM-only recent conversation (4 delivered turns and 6,000
 characters by default) so short follow-ups are coherent; context is committed only after successful
