@@ -89,14 +89,14 @@ skills:
   mode: "shadow"
   enabled:
     - pack: core-engineering
-      version: 1.0.2
-      sha256: 71ce9f257b47d921061554686c5ded94bf8fc291f4d8ad3bb62529a87ea3ac5d
+      version: 1.0.3
+      sha256: 841ae4586ea228abe8b1fb50f53b7c9529dfcda899490274bf21bb90897b348f
     - pack: backend-implementer
-      version: 1.0.1
-      sha256: 186546ed2daeb36de0df86f54bd5cf72184345d99a34939f0964e00b35d48356
+      version: 1.0.2
+      sha256: 65d754c8cba8293efaedd2c90f1811f3336ed4f4db6fcd768f07e1c803a82f27
     - pack: architect-reviewer
-      version: 1.0.1
-      sha256: 880049980b37c2edf5af21e61306b1d64898f0a565c56bb030fcdb4027094284
+      version: 1.0.2
+      sha256: ecc92dd44c61924e5cb8bbeb38a353605c3e910e5a02e203fd0621d0278975cc
 
 modes:
   # Run modes (Phase 10): plan | approval | auto. Backend-enforced in the agent loop; never
