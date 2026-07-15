@@ -614,6 +614,16 @@ def _has_positive_finite_cost_cap(value: float | None) -> bool:
     return value is not None and math.isfinite(value) and value > 0
 
 
+def _positive_run_count(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
+
+
 def _apply_cassette(
     config: Config,
     cassette_cfg: CassetteConfig,
@@ -2371,7 +2381,9 @@ def cli(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     g = sub.add_parser("gate", help="Run scenarios and gate against baselines (default).")
-    g.add_argument("--runs", type=int, default=3, help="Runs per scenario (default 3).")
+    g.add_argument(
+        "--runs", type=_positive_run_count, default=3, help="Runs per scenario (default 3)."
+    )
     g.add_argument("--suite", default="all", choices=["core", "adversarial", "all"])
     g.add_argument("--scenario", help="Run only this scenario by name (exact).")
     g.add_argument(
@@ -2401,7 +2413,7 @@ def cli(argv: list[str] | None = None) -> int:
     r = sub.add_parser("run", help="Stage ONE suite as a chunk (no gate, no history).")
     r.add_argument("--suite", required=True, choices=["core", "adversarial", "all"])
     r.add_argument("--stage", required=True, metavar="DIR")
-    r.add_argument("--runs", type=int, default=3)
+    r.add_argument("--runs", type=_positive_run_count, default=3)
     r.add_argument("--no-judge", action="store_true")
     _add_cassette_args(r)
 
@@ -2417,12 +2429,17 @@ def cli(argv: list[str] | None = None) -> int:
         "--provider", action="append", choices=list(_SMOKE_PROVIDERS),
         help="Provider(s) to smoke (repeatable; default: all catalog providers).",
     )
-    sm.add_argument("--runs", type=int, default=1, help="Runs per smoke scenario (default 1).")
+    sm.add_argument(
+        "--runs",
+        type=_positive_run_count,
+        default=1,
+        help="Runs per smoke scenario (default 1).",
+    )
     _add_cassette_args(sm)
 
     pl = sub.add_parser("plan", help="Show projected eval cost BEFORE running (no API calls).")
     pl.add_argument("--suite", default="all", choices=["core", "adversarial", "all"])
-    pl.add_argument("--runs", type=int, default=3)
+    pl.add_argument("--runs", type=_positive_run_count, default=3)
     _add_cassette_args(pl)
 
     cab = sub.add_parser(

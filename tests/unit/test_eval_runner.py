@@ -405,6 +405,33 @@ def test_eval_plan_remains_read_only_and_does_not_acquire_reset_barrier(
     assert "projected live cost" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("runs", ["0", "-1"])
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        ["gate"],
+        ["run", "--suite", "core", "--stage", "unused-stage"],
+        ["smoke"],
+        ["plan"],
+        [],
+    ],
+)
+def test_eval_cli_rejects_nonpositive_run_counts_before_dispatch(
+    runs: str, prefix: list[str], monkeypatch, capsys
+) -> None:
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("invalid run count must fail before dispatch")
+
+    monkeypatch.setattr(runner, "load_config", unexpected)
+    monkeypatch.setattr(runner, "project_cost", unexpected)
+
+    with pytest.raises(SystemExit) as exc_info:
+        runner.cli([*prefix, "--runs", runs])
+
+    assert exc_info.value.code == 2
+    assert "argument --runs: must be a positive integer" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     ("command", "mode", "cap"),
     [
