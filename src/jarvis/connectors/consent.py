@@ -51,7 +51,7 @@ def _write_marker(data_dir: Path, locked: set[str]) -> None:
     marker = integration_consent_path(data_dir)
     payload = {
         "version": 1,
-        "reason": "reset_all_kairo_data",
+        "reason": "reset_all_kira_data",
         "locked_providers": sorted(locked),
     }
     fd, temporary = tempfile.mkstemp(prefix=f".{marker.name}.", dir=data_dir)

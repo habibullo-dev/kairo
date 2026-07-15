@@ -41,6 +41,10 @@ from jarvis.ui.owner_auth import (
 
 CONFIRMATION_PHRASE = "RESET ALL KIRA DATA"
 _COUNT_TABLES = ("owner_accounts", "projects", "sessions", "tasks", "kb_sources")
+_RESET_MANIFEST_DIRNAME = ".kira-reset-manifests"
+_LEGACY_RESET_MANIFEST_DIRNAMES = (".kairo-reset-manifests",)
+_QUARANTINE_LABEL = "kira-quarantine"
+_LEGACY_QUARANTINE_LABELS = ("kairo-quarantine",)
 
 
 class DataResetError(RuntimeError):
@@ -94,6 +98,28 @@ def _validate_safe_root(path: Path, *, config_root: Path) -> None:
         raise DataResetError(f"Refusing unsafe reset root: {path}")
 
 
+def _manifest_roots(data: Path) -> tuple[Path, ...]:
+    parent = data.resolve().parent
+    return (
+        parent / _RESET_MANIFEST_DIRNAME,
+        *(parent / name for name in _LEGACY_RESET_MANIFEST_DIRNAMES),
+    )
+
+
+def _quarantine_paths(source: Path, reset_id: str) -> tuple[Path, ...]:
+    return (
+        source.with_name(f".{source.name}.{_QUARANTINE_LABEL}-{reset_id}"),
+        *(
+            source.with_name(f".{source.name}.{label}-{reset_id}")
+            for label in _LEGACY_QUARANTINE_LABELS
+        ),
+    )
+
+
+def _path_present(path: Path) -> bool:
+    return os.path.lexists(path)
+
+
 def _planned_moves(
     config: Config, reset_id: str, *, include_external_knowledge: bool
 ) -> tuple[list[_RootMove], list[Path]]:
@@ -108,8 +134,8 @@ def _planned_moves(
     if _is_link_like(database) or database.resolve().parent != data:
         raise DataResetError("Refusing a linked database outside the Kira data root")
     _validate_safe_root(data, config_root=config_root)
-    manifest_root = data.parent / ".kairo-reset-manifests"
-    if manifest_root == data or manifest_root.is_relative_to(data):
+    manifest_roots = _manifest_roots(data)
+    if any(root == data or root.is_relative_to(data) for root in manifest_roots):
         raise DataResetError("Reset manifest storage must be outside the Kira data root")
 
     configured = {
@@ -125,10 +151,9 @@ def _planned_moves(
             continue
         if data.is_relative_to(path):
             raise DataResetError(f"Refusing {role} root that contains the Kira data root")
-        if (
-            path == manifest_root
-            or path.is_relative_to(manifest_root)
-            or manifest_root.is_relative_to(path)
+        if any(
+            path == root or path.is_relative_to(root) or root.is_relative_to(path)
+            for root in manifest_roots
         ):
             raise DataResetError(f"Refusing {role} root that overlaps reset manifest storage")
         _validate_safe_root(path, config_root=config_root)
@@ -154,15 +179,27 @@ def _planned_moves(
 
     moves: list[_RootMove] = []
     for source, roles in selected.items():
-        quarantine = source.with_name(f".{source.name}.kairo-quarantine-{reset_id}")
-        if quarantine.exists():
-            raise DataResetError(f"Reset quarantine already exists: {quarantine}")
+        quarantine, *legacy_quarantines = _quarantine_paths(source, reset_id)
+        collision = next(
+            (path for path in (quarantine, *legacy_quarantines) if _path_present(path)),
+            None,
+        )
+        if collision is not None:
+            raise DataResetError(f"Reset quarantine already exists: {collision}")
         moves.append(_RootMove(tuple(sorted(roles)), source, quarantine))
     return moves, list(dict.fromkeys(configured.values()))
 
 
 def _manifest_path(config: Config, reset_id: str) -> Path:
-    return config.data_dir.resolve().parent / ".kairo-reset-manifests" / f"{reset_id}.json"
+    roots = _manifest_roots(config.data_dir)
+    for root in roots:
+        if _path_present(root) and (_is_link_like(root) or not root.is_dir()):
+            raise DataResetError("Reset manifest storage is not a regular local directory")
+    candidates = tuple(root / f"{reset_id}.json" for root in roots)
+    collision = next((path for path in candidates if _path_present(path)), None)
+    if collision is not None:
+        raise DataResetError(f"Reset manifest already exists: {collision}")
+    return candidates[0]
 
 
 def _reset_auth_path(config: Config) -> Path:

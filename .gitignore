@@ -13,6 +13,9 @@ __pycache__/
 data/
 logs/
 .kairo-reset-manifests/
+.kira-reset-manifests/
+.*.kairo-quarantine-*/
+.*.kira-quarantine-*/
 .*.kairo-instance.lock
 .*.kira-instance.lock
 .*.kira-reset-auth.json

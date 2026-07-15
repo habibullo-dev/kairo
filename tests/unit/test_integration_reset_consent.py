@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,9 @@ def test_consent_marker_is_provider_scoped_and_invalid_content_fails_closed(
     data = tmp_path / "data"
     lock_all_integrations(data)
     assert locked_integrations(data) == LOCKED_PROVIDERS
+    assert json.loads(integration_consent_path(data).read_text(encoding="utf-8"))["reason"] == (
+        "reset_all_kira_data"
+    )
 
     unlock_integration(data, "google")
     assert not integration_is_locked(data, "google")
@@ -34,6 +38,30 @@ def test_consent_marker_is_provider_scoped_and_invalid_content_fails_closed(
     assert locked_integrations(data) == LOCKED_PROVIDERS
     with pytest.raises(ValueError, match="Unknown"):
         unlock_integration(data, "calendar")
+
+
+def test_legacy_reset_reason_remains_readable_and_rewrites_as_kira(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    integration_consent_path(data).write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "reason": "reset_all_kairo_data",
+                "locked_providers": ["google", "telegram"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert locked_integrations(data) == frozenset({"google", "telegram"})
+    unlock_integration(data, "google")
+    rewritten = json.loads(integration_consent_path(data).read_text(encoding="utf-8"))
+    assert rewritten == {
+        "version": 1,
+        "reason": "reset_all_kira_data",
+        "locked_providers": ["telegram"],
+    }
 
 
 def test_factory_does_not_expose_locked_telegram(

@@ -79,6 +79,8 @@ async def test_reset_quarantines_old_roots_bootstraps_fresh_ownerless_instance(
     source_database = config.data_dir / database_name
     source_state = (source_database.read_bytes(), source_database.stat().st_mtime_ns)
     result = await reset_all_data(config, PASSWORD)
+    assert result.manifest.parent.name == ".kira-reset-manifests"
+    assert all(".kira-quarantine-" in path.name for path in result.quarantines)
 
     assert (tmp_path / ".env").read_text(encoding="utf-8").startswith("TELEGRAM_BOT_TOKEN")
     assert (tmp_path / "config" / "settings.yaml").is_file()
@@ -116,6 +118,80 @@ async def test_reset_quarantines_old_roots_bootstraps_fresh_ownerless_instance(
     assert PASSWORD not in manifest_text and "QUARANTINED-TOKEN" not in manifest_text
 
 
+async def test_legacy_reset_artifacts_are_preserved_and_block_id_reuse(tmp_path: Path) -> None:
+    config = await _seed_instance(tmp_path)
+    reset_id = "20260715T000000Z-deadbeef"
+    legacy_quarantine = config.data_dir.with_name(
+        f".{config.data_dir.name}.kairo-quarantine-{reset_id}"
+    )
+    legacy_quarantine.mkdir()
+    (legacy_quarantine / "archive-sentinel").write_bytes(b"preserve legacy archive")
+
+    with pytest.raises(DataResetError, match="already exists"):
+        reset_module._planned_moves(
+            config,
+            reset_id,
+            include_external_knowledge=False,
+        )
+
+    legacy_manifest = tmp_path / ".kairo-reset-manifests" / f"{reset_id}.json"
+    legacy_manifest.parent.mkdir()
+    legacy_manifest.write_bytes(b'{"legacy": true}\n')
+    with pytest.raises(DataResetError, match="manifest already exists"):
+        reset_module._manifest_path(config, reset_id)
+
+    assert (legacy_quarantine / "archive-sentinel").read_bytes() == b"preserve legacy archive"
+    assert legacy_manifest.read_bytes() == b'{"legacy": true}\n'
+    assert not (tmp_path / ".kira-reset-manifests").exists()
+
+
+async def test_completed_legacy_reset_history_coexists_with_a_new_kira_reset(
+    tmp_path: Path,
+) -> None:
+    config = await _seed_instance(tmp_path)
+    legacy_manifest = tmp_path / ".kairo-reset-manifests" / "historical.json"
+    legacy_manifest.parent.mkdir()
+    legacy_manifest.write_bytes(b'{"reset_id": "historical", "status": "completed"}\n')
+    legacy_quarantine = tmp_path / ".data.kairo-quarantine-historical"
+    legacy_quarantine.mkdir()
+    (legacy_quarantine / "archive-sentinel").write_bytes(b"historical data")
+    legacy_manifest_state = (legacy_manifest.read_bytes(), legacy_manifest.stat().st_mtime_ns)
+    legacy_quarantine_state = _tree_state(legacy_quarantine)
+
+    result = await reset_all_data(config, PASSWORD)
+
+    assert (legacy_manifest.read_bytes(), legacy_manifest.stat().st_mtime_ns) == (
+        legacy_manifest_state
+    )
+    assert _tree_state(legacy_quarantine) == legacy_quarantine_state
+    assert result.manifest.parent.name == ".kira-reset-manifests"
+    assert all(".kira-quarantine-" in path.name for path in result.quarantines)
+
+
+@pytest.mark.parametrize(
+    "manifest_dirname",
+    [".kira-reset-manifests", ".kairo-reset-manifests"],
+)
+async def test_manifest_storage_remains_protected_from_reset(
+    tmp_path: Path,
+    manifest_dirname: str,
+) -> None:
+    config = await _seed_instance(tmp_path)
+    manifests = tmp_path / manifest_dirname
+    manifests.mkdir()
+    (manifests / "audit.json").write_text('{"status": "completed"}\n', encoding="utf-8")
+    config.paths.logs_dir = manifests
+
+    with pytest.raises(DataResetError, match="overlaps reset manifest storage"):
+        reset_module._planned_moves(
+            config,
+            "20260715T000000Z-feedface",
+            include_external_knowledge=False,
+        )
+
+    assert (manifests / "audit.json").read_text(encoding="utf-8") == '{"status": "completed"}\n'
+
+
 @pytest.mark.parametrize("database_name", ["kira.db", "jarvis.db"])
 async def test_wrong_password_leaves_all_roots_untouched(
     tmp_path: Path, database_name: str
@@ -145,8 +221,8 @@ async def test_wrong_password_leaves_all_roots_untouched(
         "knowledge": _tree_state(config.knowledge_dir),
     } == before
     assert (config.knowledge_dir / "project.md").is_file()
-    assert not _matching(tmp_path, ".*.kairo-quarantine-*")
-    assert not (tmp_path / ".kairo-reset-manifests").exists()
+    assert not _matching(tmp_path, ".*.kira-quarantine-*")
+    assert not (tmp_path / ".kira-reset-manifests").exists()
     throttle = json.loads(reset_module._reset_auth_path(config).read_text(encoding="utf-8"))
     assert throttle == {"failed_attempts": 1, "locked_until": None}
 
@@ -232,7 +308,7 @@ async def test_ambiguous_database_names_block_reset_without_moving_data(tmp_path
         await reset_all_data(config, PASSWORD)
 
     assert {path.name: path.read_bytes() for path in (canonical, legacy)} == before
-    assert not _matching(tmp_path, ".*.kairo-quarantine-*")
+    assert not _matching(tmp_path, ".*.kira-quarantine-*")
 
 
 async def test_live_instance_lock_leaves_every_runtime_byte_untouched(tmp_path: Path) -> None:
@@ -249,8 +325,8 @@ async def test_live_instance_lock_leaves_every_runtime_byte_untouched(tmp_path: 
         await reset_all_data(config, PASSWORD)
 
     assert {path: path.read_bytes() for path in protected} == before
-    assert not _matching(tmp_path, ".*.kairo-quarantine-*")
-    assert not (tmp_path / ".kairo-reset-manifests").exists()
+    assert not _matching(tmp_path, ".*.kira-quarantine-*")
+    assert not (tmp_path / ".kira-reset-manifests").exists()
 
 
 @pytest.mark.parametrize("database_name", ["kira.db", "jarvis.db"])
@@ -271,8 +347,8 @@ async def test_bootstrap_failure_restores_every_quarantine(
     assert not (config.data_dir / other_name).exists()
     assert (config.knowledge_dir / "project.md").read_text(encoding="utf-8") == "old knowledge"
     assert (config.logs_dir / "kairo.log").read_text(encoding="utf-8") == "old log"
-    assert not _matching(tmp_path, ".*.kairo-quarantine-*")
-    manifests = _matching(tmp_path / ".kairo-reset-manifests", "*.json")
+    assert not _matching(tmp_path, ".*.kira-quarantine-*")
+    manifests = _matching(tmp_path / ".kira-reset-manifests", "*.json")
     assert len(manifests) == 1
     assert json.loads(manifests[0].read_text(encoding="utf-8"))["status"] == "rolled_back"
 
