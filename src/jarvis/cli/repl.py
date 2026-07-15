@@ -2345,7 +2345,7 @@ async def run_ui(
                 "artifacts": config.data_dir / "artifacts",
                 "wiki": config.knowledge_dir / "wiki",  # write_page pages
                 "markdown": config.knowledge_dir / "markdown",  # meeting-note markdown
-                "evals": config.data_dir / "evals",  # eval reports (T4 lazy hook)
+                "evals": config.evals_dir,  # eval reports (T4 lazy hook)
             },
         )
         ledger = _build_cost_ledger(config, db, store.lock)

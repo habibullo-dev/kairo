@@ -569,6 +569,7 @@ def test_yaml_overrides_defaults(tmp_path: Path) -> None:
 def test_paths_resolve_absolute_under_root(tmp_path: Path) -> None:
     cfg = load_config(root=tmp_path, env_file=None)
     assert cfg.data_dir == (tmp_path / "data").resolve()
+    assert cfg.evals_dir == (tmp_path / "data" / "evals").resolve()
     assert cfg.logs_dir == (tmp_path / "logs").resolve()
 
 

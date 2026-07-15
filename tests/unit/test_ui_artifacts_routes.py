@@ -323,14 +323,14 @@ async def test_lab_overview_registers_latest_report_idempotently(tmp_path: Path)
     from jarvis.ui.readmodels import lab_overview
 
     cfg = load_config(root=tmp_path, env_file=None)
-    run_dir = cfg.data_dir / "evals" / "20260101-abc"
+    run_dir = cfg.evals_dir / "20260101-abc"
     run_dir.mkdir(parents=True)
     (run_dir / "report.md").write_text("# Eval gate\nPASS 19/19\n", encoding="utf-8")
     db = await connect(tmp_path / "lab.db")
     _OPEN.append(db)
     lock = asyncio.Lock()
     store = ArtifactStore(
-        db, lock, data_dir=cfg.data_dir, managed_roots={"evals": cfg.data_dir / "evals"}
+        db, lock, data_dir=cfg.data_dir, managed_roots={"evals": cfg.evals_dir}
     )
     out1 = await lab_overview(cfg, artifacts=store)
     out2 = await lab_overview(cfg, artifacts=store)  # second open must not double-register

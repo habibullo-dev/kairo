@@ -55,11 +55,19 @@ def test_hub_reports_presence_booleans_only(tmp_path: Path) -> None:
 
 async def test_lab_overview_reads_history_and_baselines(tmp_path: Path) -> None:
     cfg = load_config(root=tmp_path, env_file=None)
-    evals = cfg.data_dir / "evals"
+    cfg = cfg.model_copy(
+        update={"paths": cfg.paths.model_copy(update={"data_dir": Path("runtime-data")})}
+    )
+    evals = cfg.evals_dir
     evals.mkdir(parents=True)
     (evals / "history.jsonl").write_text(
         '{"git_rev":"abc","verdict":"PASS"}\n{"git_rev":"def","verdict":"PASS"}\n',
         encoding="utf-8",
+    )
+    decoy = cfg.root / "data" / "evals"
+    decoy.mkdir(parents=True)
+    (decoy / "history.jsonl").write_text(
+        '{"git_rev":"wrong-root","verdict":"FAIL"}\n', encoding="utf-8"
     )
     baselines = tmp_path / "b.yaml"
     baselines.write_text("schema_version: 1\n", encoding="utf-8")

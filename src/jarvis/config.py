@@ -749,6 +749,11 @@ class Config(BaseModel):
         return self._abs(self.paths.data_dir)
 
     @property
+    def evals_dir(self) -> Path:
+        """Canonical evaluation artifacts root under the configured runtime data directory."""
+        return self.data_dir / "evals"
+
+    @property
     def logs_dir(self) -> Path:
         return self._abs(self.paths.logs_dir)
 

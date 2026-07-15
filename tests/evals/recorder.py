@@ -4,8 +4,8 @@ Every scenario run produces a :class:`ScenarioRunRecord` (transcript, token
 breakdown, latency, iterations, tool calls, **attempts**, judge verdict); every
 gate run produces a :class:`GateRunRecord` (git rev + dirty flag, config
 fingerprint, per-scenario summary, verdict). Records persist as JSONL under a
-gitignored ``data/evals/<ts>-<rev>/`` results dir, and each gate appends one
-compact line to ``data/evals/history.jsonl`` — the cross-revision spine.
+gitignored ``<configured data_dir>/evals/<ts>-<rev>/`` results dir, and each gate appends one
+compact line to ``<configured data_dir>/evals/history.jsonl`` — the cross-revision spine.
 
 Design points that keep the signal trustworthy:
 

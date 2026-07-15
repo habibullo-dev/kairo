@@ -218,10 +218,18 @@ async def test_daily_overview_surfaces_digest_and_demo(tmp_path: Path) -> None:
 async def test_eval_freshness_stale_when_head_moved(tmp_path: Path) -> None:
     # A gated rev that differs from HEAD ⇒ stale. (Synthesised repo state + history line.)
     cfg = _cfg(tmp_path)
-    (cfg.data_dir / "evals").mkdir(parents=True, exist_ok=True)
-    (cfg.data_dir / "evals" / "history.jsonl").write_text(
+    cfg = cfg.model_copy(
+        update={"paths": cfg.paths.model_copy(update={"data_dir": Path("runtime-data")})}
+    )
+    cfg.evals_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.evals_dir / "history.jsonl").write_text(
         '{"git_rev": "oldrev", "verdict": "PASS", "timestamp": "2026-07-01T00:00:00"}\n',
         encoding="utf-8",
+    )
+    decoy = cfg.root / "data" / "evals"
+    decoy.mkdir(parents=True)
+    (decoy / "history.jsonl").write_text(
+        '{"git_rev": "newrev", "verdict": "FAIL"}\n', encoding="utf-8"
     )
     from jarvis.ui.readmodels import _eval_freshness
 

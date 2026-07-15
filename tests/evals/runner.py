@@ -91,13 +91,9 @@ from jarvis.voice import ScriptedScreenApprover, VoiceApprover, frame_transcript
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENARIOS_DIR = Path(__file__).parent / "scenarios"
-DATA_EVALS = REPO_ROOT / "data" / "evals"
-HISTORY_PATH = DATA_EVALS / "history.jsonl"
 BASELINES_PATH = Path(__file__).parent / "baselines.yaml"
 FIXTURES_PATH = Path(__file__).parent / "judge_fixtures.yaml"
 CASSETTES_PATH = Path(__file__).parent / "cassettes"  # committed model-call cassettes (replay)
-CACHE_AB_RESULTS_PATH = DATA_EVALS / "cache-ab"  # ignored, measurement-only live probe artifacts
-SKILLS_AB_RESULTS_PATH = DATA_EVALS / "skills-ab"  # ignored, metadata-only live pilot evidence
 #: E6b: the fixed clock every eval agent loop reports as "now" (via _default_now), so the
 #: time-context line in the system prompt is identical across record and replay → same key.
 EVAL_CLOCK = "2026-01-01T12:00:00+00:00"
@@ -774,7 +770,7 @@ async def run_smoke(
     return 1 if failures or unmet or attempted == 0 else 0
 
 
-def project_cost(suite: str, runs: int, mode: str) -> dict:
+def project_cost(config: Config, suite: str, runs: int, mode: str) -> dict:
     """Projected LIVE spend for an eval run, computed BEFORE running (no API calls). ``replay``
     ⇒ $0 (no live calls at all). ``record``/``live`` ⇒ the last live gate's total cost from
     history as the best real estimate (None if never run live), plus cassette coverage so the
@@ -782,7 +778,7 @@ def project_cost(suite: str, runs: int, mode: str) -> dict:
     scenarios = load_scenarios(suite)
     cached = CassetteStore(CASSETTES_PATH).count()
     cached += CassetteStore(CASSETTES_PATH / "smoke").count()
-    history = recorder.read_history(HISTORY_PATH)
+    history = recorder.read_history(config.evals_dir / "history.jsonl")
     last = history[-1] if history else None
     last_cost = (last.get("totals") or {}).get("cost_usd") if isinstance(last, dict) else None
     return {
@@ -1271,7 +1267,7 @@ async def run_cache_ab(
     loaded: LoadedScenario,
     runs: int,
     max_cost_usd: float,
-    results_root: Path = CACHE_AB_RESULTS_PATH,
+    results_root: Path | None = None,
     inner_factory: Callable[[Config], LLMClient] | None = None,
 ) -> tuple[int, dict, Path]:
     """Measure Fable cache-off vs cache-on without mutating normal eval state or runtime config.
@@ -1289,6 +1285,8 @@ async def run_cache_ab(
     if max_cost_usd <= 0:
         raise ValueError("cache-ab requires a positive shared --max-cost-usd cap")
     _validate_cache_ab_scenario(loaded)
+    if results_root is None:
+        results_root = config.evals_dir / "cache-ab"
 
     pricing = load_pricing(config.root / "config" / "pricing.yaml")
     if pricing.cost("anthropic", CACHE_AB_MODEL, Usage(input_tokens=1)) is None:
@@ -1643,7 +1641,7 @@ async def run_skills_ab(
     *,
     runs: int,
     max_cost_usd: float,
-    results_root: Path = SKILLS_AB_RESULTS_PATH,
+    results_root: Path | None = None,
     inner_factory: Callable[[Config], LLMClient] | None = None,
     probe_runner: Callable[..., object] | None = None,
 ) -> tuple[int, dict, Path]:
@@ -1659,6 +1657,8 @@ async def run_skills_ab(
         raise ValueError("skills-ab requires at least three runs per arm")
     if max_cost_usd <= 0:
         raise ValueError("skills-ab requires a positive shared --max-cost-usd cap")
+    if results_root is None:
+        results_root = config.evals_dir / "skills-ab"
     pricing = load_pricing(config.root / "config" / "pricing.yaml")
     if pricing.cost("anthropic", SKILLS_AB_MODEL, Usage(input_tokens=1)) is None:
         raise ValueError(f"skills-ab model {SKILLS_AB_MODEL} is unpriced in config/pricing.yaml")
@@ -1842,7 +1842,7 @@ async def run_all(
     )
 
     ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-    results = recorder.results_dir(DATA_EVALS, recorder.git_rev(), ts=ts)
+    results = recorder.results_dir(config.evals_dir, recorder.git_rev(), ts=ts)
     all_records: list[ScenarioRunRecord] = []
     for loaded in scenarios:
         recs = await run_scenario(
@@ -1919,7 +1919,8 @@ async def finalize_gate(
 
     # Gate against the committed baselines, using the PRIOR history for the two-
     # consecutive FLAKY promotion (read before this run is appended).
-    history = recorder.read_history(HISTORY_PATH)
+    history_path = config.evals_dir / "history.jsonl"
+    history = recorder.read_history(history_path)
     baselines = report.load_baselines(BASELINES_PATH)
     outcome = report.gate(
         all_records,
@@ -1950,7 +1951,7 @@ async def finalize_gate(
     )
     recorder.write_records(results, all_records)
     recorder.write_gate(results, gate_rec)
-    recorder.append_history(HISTORY_PATH, gate_rec)
+    recorder.append_history(history_path, gate_rec)
 
     compare_lines: list[str] = []
     if compare_rev:
@@ -2005,10 +2006,10 @@ async def finalize_gate(
 CHUNK_SUITES: tuple[str, ...] = ("core", "adversarial")
 
 
-def staging_dir(rev: str) -> Path:
+def staging_dir(config: Config, rev: str) -> Path:
     """Per-revision staging dir, so re-invoking at the same commit RESUMES (skips
     already-staged chunks) and a new commit starts fresh."""
-    return DATA_EVALS / f"_chunked-{rev}"
+    return config.evals_dir / f"_chunked-{rev}"
 
 
 def _chunk_records_path(stage: Path, suite: str) -> Path:
@@ -2243,7 +2244,7 @@ async def aggregate_staged(
         print(f"cannot aggregate: {exc}")
         return 2
     ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-    results = recorder.results_dir(DATA_EVALS, recorder.git_rev(), ts=ts)
+    results = recorder.results_dir(config.evals_dir, recorder.git_rev(), ts=ts)
     return await finalize_gate(
         config,
         all_records,
@@ -2543,7 +2544,8 @@ def cli(argv: list[str] | None = None) -> int:
 
     if args.cmd == "plan":
         mode = "live" if args.live else ("record" if args.record else "replay")
-        _print_plan(project_cost(args.suite, args.runs, mode))
+        config = load_config()
+        _print_plan(project_cost(config, args.suite, args.runs, mode))
         return 0
 
     if args.cmd == "cache-ab":
@@ -2649,7 +2651,7 @@ def cli(argv: list[str] | None = None) -> int:
             return 1
 
     if args.cmd == "aggregate":
-        # Network-offline, but finalization writes reports and history under data/evals.
+        # Network-offline, but finalization writes reports and history under config.evals_dir.
         config = load_config()
         try:
             with reset_sensitive_writer(config):
@@ -2695,7 +2697,7 @@ def cli(argv: list[str] | None = None) -> int:
         cassette_cfg = _cassette_config_from_args(args)
         config = _load_for_suites(scenarios, cassette_mode=cassette_cfg.mode)
         client_factory, judge_client = _prepare_suite_clients(config, args, scenarios)
-        stage = Path(args.stage) if args.stage else staging_dir(recorder.git_rev())
+        stage = Path(args.stage) if args.stage else staging_dir(config, recorder.git_rev())
         try:
             with reset_sensitive_writer(config):
                 return asyncio.run(

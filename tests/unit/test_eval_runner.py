@@ -418,14 +418,24 @@ def test_cache_ab_cli_requires_explicit_finite_live_cap(cap: str | None, capsys)
 
 
 def test_eval_plan_remains_read_only_and_does_not_acquire_reset_barrier(
-    monkeypatch, capsys
+    tmp_path: Path, monkeypatch, capsys
 ) -> None:
     def unexpected_barrier(_config):
         raise AssertionError("read-only planning must not acquire the reset writer barrier")
 
     monkeypatch.setattr(runner, "reset_sensitive_writer", unexpected_barrier)
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    config = config.model_copy(
+        update={"paths": config.paths.model_copy(update={"data_dir": tmp_path / "runtime-data"})}
+    )
+    config.evals_dir.mkdir(parents=True)
+    (config.evals_dir / "history.jsonl").write_text(
+        '{"schema_version":1,"totals":{"cost_usd":1.25}}\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(runner, "load_config", lambda *args, **kwargs: config)
     assert runner.cli(["plan", "--suite", "core", "--runs", "1", "--live"]) == 0
-    assert "projected live cost" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "projected live cost" in output and "$1.2500" in output
 
 
 @pytest.mark.parametrize("runs", ["0", "-1"])
@@ -697,11 +707,14 @@ async def test_cache_ab_isolates_arms_and_leaves_runtime_eval_state_unchanged(
     tmp_path: Path, monkeypatch
 ) -> None:
     config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    config = config.model_copy(
+        update={"paths": config.paths.model_copy(update={"data_dir": tmp_path / "runtime-data"})}
+    )
     loaded = next(item for item in runner.load_scenarios("core") if item.name == "file_summary")
     settings_before = (runner.REPO_ROOT / "config" / "settings.yaml").read_text(encoding="utf-8")
-    history = tmp_path / "history.jsonl"
+    history = config.evals_dir / "history.jsonl"
+    history.parent.mkdir(parents=True)
     history.write_text('{"historical": true}\n', encoding="utf-8")
-    monkeypatch.setattr(runner, "HISTORY_PATH", history)
     flags: list[bool] = []
     models: list[str] = []
 
@@ -735,7 +748,6 @@ async def test_cache_ab_isolates_arms_and_leaves_runtime_eval_state_unchanged(
         loaded=loaded,
         runs=3,
         max_cost_usd=5.0,
-        results_root=tmp_path / "cache-ab",
     )
 
     assert exit_code == 0 and result["outcome"] == "PASS"
@@ -746,6 +758,7 @@ async def test_cache_ab_isolates_arms_and_leaves_runtime_eval_state_unchanged(
         encoding="utf-8"
     ) == settings_before
     assert history.read_text(encoding="utf-8") == '{"historical": true}\n'
+    assert report_path.is_relative_to(config.evals_dir / "cache-ab")
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["measurement_only"] is True and report["does_not_activate_caching"] is True
     assert report["arms"][0]["usage"]["cache_read_input_tokens"] == 0
@@ -803,6 +816,9 @@ async def test_skills_ab_uses_ephemeral_active_copies_and_writes_metadata_only(
     tmp_path: Path,
 ) -> None:
     config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    config = config.model_copy(
+        update={"paths": config.paths.model_copy(update={"data_dir": tmp_path / "runtime-data"})}
+    )
     settings_before = (runner.REPO_ROOT / "config" / "settings.yaml").read_text(encoding="utf-8")
     seen: list[tuple[str, bool]] = []
 
@@ -832,7 +848,6 @@ async def test_skills_ab_uses_ephemeral_active_copies_and_writes_metadata_only(
         config,
         runs=3,
         max_cost_usd=5.0,
-        results_root=tmp_path / "skills-ab",
         inner_factory=lambda _cfg: FakeClient([]),
         probe_runner=fake_probe,
     )
@@ -847,6 +862,7 @@ async def test_skills_ab_uses_ephemeral_active_copies_and_writes_metadata_only(
     assert (runner.REPO_ROOT / "config" / "settings.yaml").read_text(
         encoding="utf-8"
     ) == settings_before
+    assert report_path.is_relative_to(config.evals_dir / "skills-ab")
     report_text = report_path.read_text(encoding="utf-8")
     report = json.loads(report_text)
     assert report["measurement_only"] is True

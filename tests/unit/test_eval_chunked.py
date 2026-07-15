@@ -218,11 +218,9 @@ def test_merge_judge_valid_false_wins(tmp_path: Path) -> None:
 # --- aggregation: one gate record, one history line -------------------------
 
 
-def test_aggregate_produces_one_history_line(tmp_path: Path, monkeypatch) -> None:
+def test_aggregate_produces_one_history_line(tmp_path: Path) -> None:
     from jarvis.config import load_config
 
-    monkeypatch.setattr(runner, "HISTORY_PATH", tmp_path / "history.jsonl")
-    monkeypatch.setattr(runner, "DATA_EVALS", tmp_path / "evals")
     stage = tmp_path / "stage"
     _stage_two_chunks(stage)
     config = load_config(root=tmp_path, env_file=None)
@@ -230,7 +228,7 @@ def test_aggregate_produces_one_history_line(tmp_path: Path, monkeypatch) -> Non
     code = asyncio.run(runner.aggregate_staged(config, stage=stage, chunks=("core", "adversarial")))
     assert code == 0  # all synthetic runs PASS
 
-    history = recorder.read_history(runner.HISTORY_PATH)
+    history = recorder.read_history(config.evals_dir / "history.jsonl")
     assert len(history) == 1  # ONE gate for the whole chunked run, not one per suite
     entry = history[0]
     assert entry["suite"] == "live-chunked"
@@ -240,17 +238,15 @@ def test_aggregate_produces_one_history_line(tmp_path: Path, monkeypatch) -> Non
     assert entry["verdict"] == "PASS"
 
 
-def test_compare_and_cumulative_see_one_entry(tmp_path: Path, monkeypatch) -> None:
+def test_compare_and_cumulative_see_one_entry(tmp_path: Path) -> None:
     from jarvis.config import load_config
 
-    monkeypatch.setattr(runner, "HISTORY_PATH", tmp_path / "history.jsonl")
-    monkeypatch.setattr(runner, "DATA_EVALS", tmp_path / "evals")
     stage = tmp_path / "stage"
     _stage_two_chunks(stage)
     config = load_config(root=tmp_path, env_file=None)
 
     asyncio.run(runner.aggregate_staged(config, stage=stage, chunks=("core", "adversarial")))
-    history = recorder.read_history(runner.HISTORY_PATH)
+    history = recorder.read_history(config.evals_dir / "history.jsonl")
 
     # `--compare <rev>` resolves to exactly the one aggregated gate (not several sub-runs).
     found = runner._find_gate(history, recorder.git_rev())
@@ -259,13 +255,11 @@ def test_compare_and_cumulative_see_one_entry(tmp_path: Path, monkeypatch) -> No
     assert len([h for h in history if h["git_rev"] == found["git_rev"]]) == 1
 
 
-def test_aggregate_missing_chunk_returns_usage_error(tmp_path: Path, monkeypatch) -> None:
+def test_aggregate_missing_chunk_returns_usage_error(tmp_path: Path) -> None:
     from jarvis.config import load_config
 
-    monkeypatch.setattr(runner, "HISTORY_PATH", tmp_path / "history.jsonl")
-    monkeypatch.setattr(runner, "DATA_EVALS", tmp_path / "evals")
     stage = tmp_path / "stage"  # nothing staged
     config = load_config(root=tmp_path, env_file=None)
     code = asyncio.run(runner.aggregate_staged(config, stage=stage, chunks=("core", "adversarial")))
     assert code == 2  # can't gate what wasn't run
-    assert recorder.read_history(runner.HISTORY_PATH) == []  # and no history was written
+    assert recorder.read_history(config.evals_dir / "history.jsonl") == []

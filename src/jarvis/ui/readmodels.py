@@ -2228,7 +2228,7 @@ async def _repo_states(config: Config) -> list[dict]:
 
 
 def _eval_freshness(config: Config, repos: list[dict]) -> dict:
-    history = _read_history(config.data_dir / "evals" / "history.jsonl")
+    history = _read_history(config.evals_dir / "history.jsonl")
     last = history[-1] if history else None
     head = next((r["state"]["head_rev"] for r in repos if r["path"] == "." and r["state"]), None)
     last_rev = last.get("git_rev") if last else None
@@ -2446,7 +2446,7 @@ async def lab_overview(
     rendered report — all file reads, view-only. Running evals stays a terminal ritual. The
     single latest report is registered (idempotently, by its run-dir name) as an artifact so it
     surfaces in the Library — forward-only: the current latest only, never a backfill of history."""
-    evals_dir = config.data_dir / "evals"
+    evals_dir = config.evals_dir
     history = _read_history(evals_dir / "history.jsonl")
     bpath = baselines_path or (config.root / "tests" / "evals" / "baselines.yaml")
     baselines = bpath.read_text(encoding="utf-8") if bpath.exists() else None
