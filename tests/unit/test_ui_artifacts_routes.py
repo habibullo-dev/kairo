@@ -325,7 +325,16 @@ async def test_lab_overview_registers_latest_report_idempotently(tmp_path: Path)
     cfg = load_config(root=tmp_path, env_file=None)
     run_dir = cfg.evals_dir / "20260101-abc"
     run_dir.mkdir(parents=True)
-    (run_dir / "report.md").write_text("# Eval gate\nPASS 19/19\n", encoding="utf-8")
+    secret = "sk-ant-abcdefghijklmnopqrstuvwxyz123456"
+    (run_dir / "report.md").write_text(
+        f"# Eval gate\nPASS 19/19\napi_key={secret}\n", encoding="utf-8"
+    )
+    raw_canary = "RAW-RECORD-CANARY"
+    transcript_canary = "RAW-TRANSCRIPT-CANARY"
+    (run_dir / "records.jsonl").write_text(raw_canary, encoding="utf-8")
+    transcripts = run_dir / "transcripts"
+    transcripts.mkdir()
+    (transcripts / "turn.json").write_text(transcript_canary, encoding="utf-8")
     db = await connect(tmp_path / "lab.db")
     _OPEN.append(db)
     lock = asyncio.Lock()
@@ -334,7 +343,11 @@ async def test_lab_overview_registers_latest_report_idempotently(tmp_path: Path)
     )
     out1 = await lab_overview(cfg, artifacts=store)
     out2 = await lab_overview(cfg, artifacts=store)  # second open must not double-register
-    assert "PASS 19/19" in out1["latest_report"] and "PASS 19/19" in out2["latest_report"]
+    assert "PASS 19/19" in out1["latest_report"]["preview"]
+    assert "PASS 19/19" in out2["latest_report"]["preview"]
+    assert out1["latest_report"]["redacted"] is True
+    assert secret not in str(out1)
+    assert raw_canary not in str(out1) and transcript_canary not in str(out1)
     evals = [a for a in await store.list() if a.kind == "eval_report"]
     assert len(evals) == 1 and evals[0].origin_id == "20260101-abc"
 
@@ -344,4 +357,4 @@ async def test_lab_overview_registers_latest_report_idempotently(tmp_path: Path)
         db, lock, data_dir=cfg.data_dir, managed_roots={"artifacts": cfg.data_dir / "artifacts"}
     )
     out3 = await lab_overview(cfg, artifacts=store2)
-    assert "PASS 19/19" in out3["latest_report"]
+    assert "PASS 19/19" in out3["latest_report"]["preview"]

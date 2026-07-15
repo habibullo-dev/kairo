@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from jarvis.intelligence.report import recommendation_studio_prefill
+from jarvis.knowledge.secrets import scan_text
 from jarvis.memory.store import ANY_PROJECT as _MEM_ANY_PROJECT
 from jarvis.persistence.fts import ANY_PROJECT as _ANY_PROJECT
 from jarvis.reporting.repo import RepoReader
@@ -95,6 +96,7 @@ _EVAL_SMALL_LIVE_COMMAND = (
     "uv run kira eval gate --suite core --scenario permission_denied --runs 1 "
     "--no-judge --live --max-cost-usd 1.00"
 )
+_EVAL_REPORT_PREVIEW_BYTES = 64 * 1024
 _PROJECT_REPORT_COVERAGE = frozenset(
     {
         "files_total",
@@ -2427,16 +2429,67 @@ def _read_history(history_path: Path) -> list[dict]:
     return out
 
 
-def _latest_report_path(evals_dir: Path) -> Path | None:
-    if not evals_dir.exists():
+def _latest_eval_report(evals_dir: Path) -> tuple[str, Path] | None:
+    """Return the newest direct-child report that resolves inside ``evals_dir``."""
+    try:
+        root = evals_dir.resolve(strict=True)
+        if not root.is_dir():
+            return None
+        children = list(evals_dir.iterdir())
+    except OSError:
         return None
-    reports = sorted(evals_dir.glob("*/report.md"))
-    return reports[-1] if reports else None
+    reports: list[tuple[str, Path]] = []
+    for child in children:
+        try:
+            if not child.is_dir():
+                continue
+            report = (child / "report.md").resolve(strict=True)
+            relative = report.relative_to(root)
+            if (
+                not report.is_file()
+                or len(relative.parts) != 2
+                or relative.parts[0].casefold() != child.name.casefold()
+                or relative.name != "report.md"
+            ):
+                continue
+        except (OSError, ValueError):
+            continue
+        reports.append((child.name, report))
+    return max(reports, key=lambda item: item[0]) if reports else None
 
 
-def _latest_report(evals_dir: Path) -> str | None:
-    path = _latest_report_path(evals_dir)
-    return path.read_text(encoding="utf-8") if path is not None else None
+def _complete_line_prefix(raw: bytes, cap: int) -> tuple[bytes, bool]:
+    if len(raw) <= cap:
+        return raw, False
+    prefix = raw[:cap]
+    newline = prefix.rfind(b"\n")
+    return (prefix[: newline + 1] if newline >= 0 else b""), True
+
+
+def _eval_report_preview(config: Config, report_path: Path, run_id: str) -> dict | None:
+    """Read one confined, bounded, UTF-8 report and redact credential-shaped text."""
+    try:
+        root = config.evals_dir.resolve(strict=True)
+        path = report_path.resolve(strict=True)
+        if not root.is_dir() or not path.is_file() or not path.is_relative_to(root):
+            return None
+        cap = max(1, min(config.limits.max_read_bytes, _EVAL_REPORT_PREVIEW_BYTES))
+        with path.open("rb") as report_file:
+            raw = report_file.read(cap + 1)
+        bounded, file_truncated = _complete_line_prefix(raw, cap)
+        text = bounded.decode("utf-8")
+        scan = scan_text(text)
+        redacted_bytes = scan.redacted_text.encode("utf-8")
+        final_bytes, redaction_truncated = _complete_line_prefix(redacted_bytes, cap)
+        preview = final_bytes.decode("utf-8")
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return {
+        "run_id": run_id,
+        "preview": preview,
+        "truncated": file_truncated or redaction_truncated,
+        "redacted": scan.suspected,
+    }
 
 
 async def lab_overview(
@@ -2444,30 +2497,34 @@ async def lab_overview(
 ) -> dict:
     """Eval history (one gate per line), the committed baselines contract, and the latest
     rendered report — all file reads, view-only. Running evals stays a terminal ritual. The
-    single latest report is registered (idempotently, by its run-dir name) as an artifact so it
-    surfaces in the Library — forward-only: the current latest only, never a backfill of history."""
+    single latest report is exposed only as a confined, bounded, redacted plain-text preview and
+    registered (idempotently, by its run-dir name) as an artifact so it surfaces in the Library —
+    forward-only: the current latest only, never a backfill of history."""
     evals_dir = config.evals_dir
     history = _read_history(evals_dir / "history.jsonl")
     bpath = baselines_path or (config.root / "tests" / "evals" / "baselines.yaml")
     baselines = bpath.read_text(encoding="utf-8") if bpath.exists() else None
-    latest_path = _latest_report_path(evals_dir)
-    if artifacts is not None and latest_path is not None:
+    latest = _latest_eval_report(evals_dir)
+    latest_report = (
+        _eval_report_preview(config, latest[1], latest[0]) if latest is not None else None
+    )
+    if artifacts is not None and latest is not None and latest_report is not None:
+        run_id, latest_path = latest
         # Fail-soft: artifact bookkeeping must never break the (read-only) Lab view.
         with contextlib.suppress(Exception):
             await artifacts.register(
                 origin_type="eval_report",
-                origin_id=latest_path.parent.name,  # "<ts>-<rev>" — stable identity
+                origin_id=run_id,  # "<ts>-<rev>" — stable identity
                 kind="eval_report",
-                title=f"Eval gate {latest_path.parent.name}",
+                title=f"Eval gate {run_id}",
                 created_by="system",
                 local_path=latest_path,
             )
-    report_text = latest_path.read_text(encoding="utf-8") if latest_path is not None else None
     return {
         "history": history[-50:],
         "gate_runs": len(history),
         "baselines": baselines,
-        "latest_report": report_text,
+        "latest_report": latest_report,
         "replay_command": _EVAL_REPLAY_COMMAND,
         "live_command": _EVAL_SMALL_LIVE_COMMAND,
         "note": (

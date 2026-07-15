@@ -128,11 +128,22 @@ def test_debug_css_only_toggles_visibility() -> None:
 
 def test_lab_renders_backend_owned_safe_eval_commands() -> None:
     lab = (STATIC / "screens" / "lab.js").read_text(encoding="utf-8")
+    css = (STATIC / "kira.css").read_text(encoding="utf-8")
     assert '${esc(lab.replay_command || "")}' in lab
     assert '${esc(lab.live_command || "")}' in lab
     assert "Keyless replay · recommended first" in lab
     assert "Small live scenario · may spend" in lab
     assert "live-chunked" not in lab
+    assert '${esc(report.preview || "")}' in lab
+    assert '${esc(report.run_id || "")}' in lab
+    assert 'tabindex="0" aria-label="Latest eval gate summary"' in lab
+    assert "Human-readable report only. Raw records and transcripts are not loaded." in lab
+    assert "Potential credential-shaped text was hidden." in lab
+    assert "Preview capped for responsiveness." in lab
+    assert "No report yet" in lab and "Start with the keyless replay command below." in lab
+    assert "markdownToHtml" not in lab
+    assert ".lab-report-preview { max-height:" in css
+    assert ".lab-report-preview:focus-visible" in css
 
 
 def test_project_assessment_surfaces_are_read_only_and_escape_model_text() -> None:

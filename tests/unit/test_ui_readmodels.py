@@ -22,6 +22,7 @@ from jarvis.scheduler.store import TaskStore
 from jarvis.ui.auth import SESSION_COOKIE, AuthManager
 from jarvis.ui.readmodels import (
     UiServices,
+    _eval_report_preview,
     hub_status,
     lab_overview,
     list_memories,
@@ -81,6 +82,36 @@ async def test_lab_overview_reads_history_and_baselines(tmp_path: Path) -> None:
     assert "spend stop threshold" in lab["note"]
     assert "partial signal, not full closeout evidence" in lab["note"]
     assert "jarvis" not in lab["note"].lower()
+
+
+def test_eval_report_preview_is_confined_redacted_and_bounded(tmp_path: Path) -> None:
+    cfg = load_config(root=tmp_path, env_file=None)
+    cfg = cfg.model_copy(
+        update={"limits": cfg.limits.model_copy(update={"max_read_bytes": 128})}
+    )
+    run_dir = cfg.evals_dir / "20260716-safe"
+    run_dir.mkdir(parents=True)
+    secret = "sk-ant-abcdefghijklmnopqrstuvwxyz123456"
+    report = run_dir / "report.md"
+    report.write_text(f"# Summary\napi_key={secret}\n" + ("row\n" * 100), encoding="utf-8")
+
+    preview = _eval_report_preview(cfg, report, run_dir.name)
+    assert preview is not None
+    assert preview["run_id"] == run_dir.name
+    assert preview["redacted"] is True and preview["truncated"] is True
+    assert secret not in preview["preview"] and "[REDACTED_SECRET:" in preview["preview"]
+    assert len(preview["preview"].encode("utf-8")) <= 128
+    assert preview["preview"].endswith("\n")
+
+    outside = tmp_path / "outside" / "report.md"
+    outside.parent.mkdir()
+    outside.write_text("outside", encoding="utf-8")
+    assert _eval_report_preview(cfg, outside, "outside") is None
+
+    malformed = cfg.evals_dir / "20260716-bad" / "report.md"
+    malformed.parent.mkdir()
+    malformed.write_bytes(b"\xff\xfe")
+    assert _eval_report_preview(cfg, malformed, malformed.parent.name) is None
 
 
 # --- DB-backed read models + mutations --------------------------------------
