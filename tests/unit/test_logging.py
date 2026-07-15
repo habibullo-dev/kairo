@@ -36,7 +36,7 @@ def _read_gzip_events(path: Path) -> list[dict]:
 
 def test_configure_returns_dated_path(tmp_path: Path) -> None:
     path = configure_logging(tmp_path / "logs", date="2026-07-06")
-    assert path.name == "jarvis-2026-07-06.jsonl"
+    assert path.name == "kira-2026-07-06.jsonl"
     assert path.parent.is_dir()
 
 
@@ -107,11 +107,11 @@ def test_rotation_keeps_complete_json_lines_and_caps_compressed_backups(tmp_path
     for sequence in range(4):
         get_logger("test").info("audit", sequence=sequence, payload="x" * 256)
 
-    oldest_surviving = path.with_name("jarvis-2026-07-06.2.jsonl.gz")
-    newer_archive = path.with_name("jarvis-2026-07-06.1.jsonl.gz")
+    oldest_surviving = path.with_name("kira-2026-07-06.2.jsonl.gz")
+    newer_archive = path.with_name("kira-2026-07-06.1.jsonl.gz")
     assert oldest_surviving.is_file()
     assert newer_archive.is_file()
-    assert not path.with_name("jarvis-2026-07-06.3.jsonl.gz").exists()
+    assert not path.with_name("kira-2026-07-06.3.jsonl.gz").exists()
     events = (
         _read_gzip_events(oldest_surviving) + _read_gzip_events(newer_archive) + _read_events(path)
     )
@@ -123,7 +123,7 @@ def test_rotation_failure_reopens_the_live_log_and_keeps_writing(
 ) -> None:
     path = configure_logging(tmp_path / "logs", date="2026-07-06", max_bytes=320)
     get_logger("test").info("before_lock", payload="x" * 256)
-    prior_archive = path.with_name("jarvis-2026-07-06.1.jsonl.gz")
+    prior_archive = path.with_name("kira-2026-07-06.1.jsonl.gz")
     with gzip.open(prior_archive, "wt", encoding="utf-8") as handle:
         handle.write('{"event":"preserved_archive"}\n')
     original_unlink = Path.unlink
@@ -150,12 +150,12 @@ def test_date_rollover_reopens_a_new_active_log(
 
     get_logger("test").info("next_day")
 
-    second = first.with_name("jarvis-2026-07-07.jsonl")
+    second = first.with_name("kira-2026-07-07.jsonl")
     assert second.is_file()
     assert [event["event"] for event in _read_events(second)] == ["next_day"]
 
 
-def test_retention_removes_only_expired_recognized_jarvis_logs(tmp_path: Path) -> None:
+def test_retention_removes_expired_kira_and_legacy_logs_only(tmp_path: Path) -> None:
     logs = tmp_path / "logs"
     logs.mkdir()
     expired = logs / "jarvis-2026-07-07.jsonl"
@@ -163,17 +163,70 @@ def test_retention_removes_only_expired_recognized_jarvis_logs(tmp_path: Path) -
     expired_compressed = logs / "jarvis-2026-07-08.1.jsonl.gz"
     with gzip.open(expired_compressed, "wt", encoding="utf-8") as handle:
         handle.write('{"event":"old"}\n')
-    retained = logs / "jarvis-2026-07-09.jsonl"
-    retained.write_text('{"event":"recent"}\n', encoding="utf-8")
+    expired_kira = logs / "kira-2026-07-07.jsonl"
+    expired_kira.write_text('{"event":"old"}\n', encoding="utf-8")
+    expired_kira_compressed = logs / "kira-2026-07-08.2.jsonl.gz"
+    with gzip.open(expired_kira_compressed, "wt", encoding="utf-8") as handle:
+        handle.write('{"event":"old"}\n')
+    retained_legacy = logs / "jarvis-2026-07-09.jsonl"
+    retained_legacy.write_text('{"event":"recent"}\n', encoding="utf-8")
+    retained_kira = logs / "kira-2026-07-09.1.jsonl.gz"
+    with gzip.open(retained_kira, "wt", encoding="utf-8") as handle:
+        handle.write('{"event":"recent"}\n')
     unrelated = logs / "keep-me.txt"
     unrelated.write_text("not a Jarvis log", encoding="utf-8")
+    lookalikes = [
+        logs / "KIRA-2026-07-05.jsonl",
+        logs / "kairo-2026-07-07.jsonl",
+        logs / "kira-2026-02-30.jsonl",
+        logs / "kira-2026-07-07.0.jsonl.gz",
+        logs / "kira-2026-07-07.1.jsonl",
+        logs / "kira-2026-07-07.jsonl.gz",
+        logs / "kira-2026-07-07.1.jsonl.gz.tmp",
+        logs / "jarvis-2026-07-07.jsonl.bak",
+    ]
+    for lookalike in lookalikes:
+        lookalike.write_bytes(f"preserve:{lookalike.name}".encode())
+    matching_directory = logs / "jarvis-2026-07-07.9.jsonl.gz"
+    matching_directory.mkdir()
+    lookalike_before = {path: path.read_bytes() for path in lookalikes}
 
     configure_logging(logs, date="2026-07-10", retention_days=2)
 
     assert not expired.exists()
     assert not expired_compressed.exists()
-    assert retained.exists()
+    assert not expired_kira.exists()
+    assert not expired_kira_compressed.exists()
+    assert retained_legacy.exists()
+    assert retained_kira.exists()
     assert unrelated.exists()
+    assert {path: path.read_bytes() for path in lookalikes} == lookalike_before
+    assert matching_directory.is_dir()
+
+
+def test_new_writer_preserves_legacy_ladder_while_rotating_kira_logs(tmp_path: Path) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    legacy = logs / "jarvis-2026-07-06.jsonl"
+    legacy.write_text('{"event":"legacy"}\n', encoding="utf-8")
+    for index in (1, 2):
+        with gzip.open(
+            logs / f"jarvis-2026-07-06.{index}.jsonl.gz",
+            "wt",
+            encoding="utf-8",
+        ) as handle:
+            handle.write(f'{{"event":"legacy-{index}"}}\n')
+    legacy_before = {path.name: path.read_bytes() for path in logs.glob("jarvis-2026-07-06*")}
+
+    canonical = configure_logging(logs, date="2026-07-06", max_bytes=320, backup_count=2)
+    for sequence in range(3):
+        get_logger("test").info("canonical", sequence=sequence, payload="x" * 256)
+
+    assert canonical.name == "kira-2026-07-06.jsonl"
+    assert (logs / "kira-2026-07-06.1.jsonl.gz").is_file()
+    assert {
+        path.name: path.read_bytes() for path in logs.glob("jarvis-2026-07-06*")
+    } == legacy_before
 
 
 def test_tool_inputs_and_secrets_are_redacted_from_production_jsonl(tmp_path: Path) -> None:

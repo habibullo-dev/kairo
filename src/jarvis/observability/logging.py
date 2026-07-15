@@ -1,7 +1,7 @@
 """Structured logging + per-turn trace correlation.
 
 Every model call, tool call, permission decision, and error is emitted as one
-JSON object per line to ``logs/jarvis-YYYY-MM-DD.jsonl`` — a machine-parseable
+JSON object per line to ``logs/kira-YYYY-MM-DD.jsonl`` — a machine-parseable
 audit trail. User-facing rendering is the REPL's job (task 8); this module is the
 record of what actually happened, not the UI.
 
@@ -51,8 +51,14 @@ _SENSITIVE_KEY_PARTS = frozenset(
         "locals",
     }
 )
+CANONICAL_LOG_PREFIX = "kira"
+LEGACY_LOG_PREFIXES = ("jarvis",)
+READABLE_LOG_PREFIXES = (*LEGACY_LOG_PREFIXES, CANONICAL_LOG_PREFIX)
+_LOG_PREFIX_PATTERN = "|".join(re.escape(prefix) for prefix in READABLE_LOG_PREFIXES)
 _LOG_FILE_PATTERN = re.compile(
-    r"jarvis-(?P<day>\d{4}-\d{2}-\d{2})(?:\.\d+)?\.jsonl(?:\.gz)?$"
+    rf"(?P<prefix>{_LOG_PREFIX_PATTERN})-"
+    rf"(?P<day>[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}})"
+    rf"(?:\.jsonl|\.(?P<index>[1-9][0-9]*)\.jsonl\.gz)\Z"
 )
 _INLINE_SECRET_PATTERN = re.compile(
     r"(?ix)"
@@ -84,8 +90,7 @@ def _redact_value(value: Any, *, key: object | None = None) -> Any:
         return "[REDACTED]"
     if isinstance(value, Mapping):
         return {
-            str(item_key): _redact_value(item, key=item_key)
-            for item_key, item in value.items()
+            str(item_key): _redact_value(item, key=item_key) for item_key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
         return [_redact_value(item) for item in value]
@@ -108,6 +113,20 @@ def _redact_sensitive_fields(_logger: object, _method: str, event_dict: dict) ->
     if event_dict.get("event") == "tool_call" and "input" in event_dict:
         redacted["input"] = _tool_input_shape(event_dict["input"])
     return redacted
+
+
+def parse_log_filename(name: str) -> tuple[str, str, int | None] | None:
+    """Parse an exact canonical or legacy structured-log filename."""
+    match = _LOG_FILE_PATTERN.fullmatch(name)
+    if match is None:
+        return None
+    day = match.group("day")
+    try:
+        _dt.date.fromisoformat(day)
+    except ValueError:
+        return None
+    raw_index = match.group("index")
+    return match.group("prefix"), day, int(raw_index) if raw_index is not None else None
 
 
 class _RotatingJsonlSink:
@@ -140,10 +159,10 @@ class _RotatingJsonlSink:
         return self._fixed_day or _dt.datetime.now().strftime("%Y-%m-%d")
 
     def _path_for(self, day: str) -> Path:
-        return self.logs_dir / f"jarvis-{day}.jsonl"
+        return self.logs_dir / f"{CANONICAL_LOG_PREFIX}-{day}.jsonl"
 
     def _archive_path(self, index: int) -> Path:
-        return self.logs_dir / f"jarvis-{self._day}.{index}.jsonl.gz"
+        return self.logs_dir / f"{CANONICAL_LOG_PREFIX}-{self._day}.{index}.jsonl.gz"
 
     def _open_active(self) -> None:
         self.path = self._path_for(self._day)
@@ -160,13 +179,11 @@ class _RotatingJsonlSink:
         current = _dt.date.fromisoformat(self._day)
         cutoff = current - _dt.timedelta(days=self.retention_days - 1)
         for candidate in self.logs_dir.iterdir():
-            match = _LOG_FILE_PATTERN.fullmatch(candidate.name)
-            if match is None or not candidate.is_file():
+            parsed = parse_log_filename(candidate.name)
+            if parsed is None or not candidate.is_file():
                 continue
-            try:
-                log_day = _dt.date.fromisoformat(match.group("day"))
-            except ValueError:
-                continue
+            _prefix, day, _index = parsed
+            log_day = _dt.date.fromisoformat(day)
             if log_day < cutoff:
                 with contextlib.suppress(OSError):
                     candidate.unlink()

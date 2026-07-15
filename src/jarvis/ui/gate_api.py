@@ -9,9 +9,10 @@ from __future__ import annotations
 import datetime as _dt
 import gzip
 import json
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from jarvis.observability.logging import READABLE_LOG_PREFIXES, parse_log_filename
 
 if TYPE_CHECKING:
     from jarvis.permissions.gate import PermissionGate
@@ -34,8 +35,6 @@ AUDIT_EVENTS = frozenset(
     }
 )
 
-_ROTATED_LOG_PATTERN = re.compile(r"jarvis-(?P<day>\d{4}-\d{2}-\d{2})\.(?P<index>\d+)\.jsonl\.gz$")
-
 
 def policy_snapshot(gate: PermissionGate) -> dict:
     """A JSON-safe, read-only view of the active policy (defaults, per-tool decisions, the
@@ -47,16 +46,33 @@ def read_today_audit(logs_dir: Path, *, limit: int = 200, date: str | None = Non
     """Return today's audit lines relevant to the Gate (most recent last), capped at
     ``limit``. Rotated gzip segments are included before the live JSONL file, so a busy
     day's evidence does not disappear from the Gate. A missing log set yields ``[]``."""
+    if limit <= 0:
+        return []
     day = date or _dt.datetime.now().strftime("%Y-%m-%d")
-    archived: list[tuple[int, Path]] = []
-    for candidate in logs_dir.glob(f"jarvis-{day}.*.jsonl.gz"):
-        match = _ROTATED_LOG_PATTERN.fullmatch(candidate.name)
-        if match is not None and match.group("day") == day:
-            archived.append((int(match.group("index")), candidate))
-    paths = [path for _index, path in sorted(archived, reverse=True)]
-    live = logs_dir / f"jarvis-{day}.jsonl"
-    if live.exists():
-        paths.append(live)
+    by_prefix: dict[str, list[tuple[int | None, Path]]] = {
+        prefix: [] for prefix in READABLE_LOG_PREFIXES
+    }
+    try:
+        candidates = list(logs_dir.iterdir())
+    except OSError:
+        return []
+    for candidate in candidates:
+        parsed = parse_log_filename(candidate.name)
+        if parsed is None or not candidate.is_file():
+            continue
+        prefix, candidate_day, index = parsed
+        if candidate_day == day:
+            by_prefix[prefix].append((index, candidate))
+
+    paths: list[Path] = []
+    # Legacy files were written before canonical Kira files during an in-place upgrade. Within
+    # each family a larger archive index is older, followed by the live segment.
+    for prefix in READABLE_LOG_PREFIXES:
+        archived = [
+            (index, candidate) for index, candidate in by_prefix[prefix] if index is not None
+        ]
+        paths.extend(path for _index, path in sorted(archived, reverse=True))
+        paths.extend(candidate for index, candidate in by_prefix[prefix] if index is None)
 
     out: list[dict] = []
     for path in paths:
