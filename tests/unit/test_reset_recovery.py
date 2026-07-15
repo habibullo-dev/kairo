@@ -22,6 +22,7 @@ from jarvis.persistence.reset_recovery import (
     RESET_MANIFEST_DIRNAME,
     RESET_RETIRED_LOCATOR_SUFFIX,
     ResetRecoveryError,
+    directory_identity,
     find_pending_reset,
     interrupted_reset_diagnostic,
     manifest_locator_payload,
@@ -192,7 +193,19 @@ def _startup_outcome(
     return diagnostic, recovered, None
 
 
-async def test_sibling_instance_ignores_pending_manifest_for_other_data_root(
+def _replace_directory_with_symlink(source: Path, target: Path) -> Path:
+    """Retarget one real temporary ancestor, restoring it when links are unavailable."""
+    parked = source.with_name(f"{source.name}-original")
+    source.rename(parked)
+    try:
+        source.symlink_to(target, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        parked.rename(source)
+        pytest.skip("Directory symlinks are unavailable on this test host")
+    return parked
+
+
+async def test_sibling_instance_remains_blocked_without_stable_ownership_identity(
     tmp_path: Path,
 ) -> None:
     shared = tmp_path / "shared-state"
@@ -214,17 +227,7 @@ async def test_sibling_instance_ignores_pending_manifest_for_other_data_root(
         if path.is_file()
     }
 
-    diagnostic = interrupted_reset_diagnostic(config_b)
-    recovery_error: ResetRecoveryError | None = None
-    recovered: bool | None = None
-    try:
-        with (
-            ResetBarrier(config_b.data_dir) as barrier,
-            InstanceLock(config_b.data_dir) as lock,
-        ):
-            recovered = recover_interrupted_reset(config_b, barrier, lock)
-    except ResetRecoveryError as exc:
-        recovery_error = exc
+    diagnostic, recovered, recovery_error = _startup_outcome(config_b)
 
     assert case_a.manifest.read_bytes() == manifest_before
     assert locator_a.read_bytes() == locator_before
@@ -234,9 +237,9 @@ async def test_sibling_instance_ignores_pending_manifest_for_other_data_root(
         for path in case_a.move.quarantine.rglob("*")
         if path.is_file()
     } == quarantine_before
-    assert diagnostic is None
-    assert recovery_error is None
-    assert recovered is False
+    assert diagnostic is not None and diagnostic.startswith("blocked (")
+    assert recovery_error is not None
+    assert recovered is None
 
 
 async def test_same_data_root_with_changed_config_anchor_remains_blocked(
@@ -326,7 +329,67 @@ async def test_sibling_with_overlapping_auxiliary_root_remains_blocked(
     assert (case_a.move.source / "old-sentinel.txt").is_file()
 
 
-async def test_config_equal_to_data_parent_proves_locator_free_disjoint_sibling(
+@pytest.mark.parametrize("shared_role", ["logs", "knowledge"])
+async def test_sibling_with_physically_aliased_auxiliary_root_remains_blocked(
+    tmp_path: Path,
+    shared_role: str,
+) -> None:
+    shared = tmp_path / "shared-state"
+    workspace_a = tmp_path / "workspace-a"
+    workspace_a.mkdir()
+    case_a = await _pending_case(workspace_a, external_data_root=shared / "data-a")
+    alias_parent = tmp_path / "alias-parent"
+    external_source = alias_parent / f"{shared_role}-a"
+    external_source.mkdir(parents=True)
+    (external_source / "a-sentinel.txt").write_text("A original", encoding="utf-8")
+    external_quarantine = quarantine_paths(external_source, case_a.reset_id)[0]
+    case_a.payload["roots"][0]["roles"].remove(shared_role)
+    case_a.payload["roots"].append(
+        {
+            "roles": [shared_role],
+            "source": str(external_source.resolve()),
+            "quarantine": str(external_quarantine),
+            "source_identity": directory_identity(
+                external_source,
+                label="Foreign auxiliary root",
+            ).payload(),
+        }
+    )
+    reset_module._write_manifest(case_a.manifest, case_a.payload)
+    locator_a = _publish_locator(case_a)
+
+    target_parent = tmp_path / "workspace-b-auxiliary"
+    target_role = target_parent / f"{shared_role}-a"
+    target_role.mkdir(parents=True)
+    (target_role / "b-sentinel.txt").write_text("B current", encoding="utf-8")
+    parked_alias = _replace_directory_with_symlink(alias_parent, target_parent)
+    config_b = _config_for_data(tmp_path / "workspace-b", shared / "data-b")
+    if shared_role == "logs":
+        config_b.paths.logs_dir = target_role
+    else:
+        config_b.knowledge.dir = target_role
+    (config_b.data_dir / "b-data-sentinel.txt").write_text("B data", encoding="utf-8")
+    manifest_before = case_a.manifest.read_bytes()
+    locator_before = locator_a.read_bytes()
+    b_role_before = (target_role / "b-sentinel.txt").read_bytes()
+    assert external_source.resolve() == target_role.resolve()
+
+    diagnostic, recovered, error = _startup_outcome(config_b)
+
+    assert diagnostic is not None and diagnostic.startswith("blocked (")
+    assert recovered is None
+    assert error is not None
+    assert case_a.manifest.read_bytes() == manifest_before
+    assert locator_a.read_bytes() == locator_before
+    assert (target_role / "b-sentinel.txt").read_bytes() == b_role_before
+    assert (config_b.data_dir / "b-data-sentinel.txt").read_text(encoding="utf-8") == "B data"
+    assert (parked_alias / f"{shared_role}-a" / "a-sentinel.txt").read_text(
+        encoding="utf-8"
+    ) == "A original"
+    assert not external_quarantine.exists()
+
+
+async def test_config_equal_to_data_parent_remains_blocked_as_ambiguous_relocation(
     tmp_path: Path,
 ) -> None:
     shared = tmp_path / "shared-state"
@@ -340,9 +403,9 @@ async def test_config_equal_to_data_parent_proves_locator_free_disjoint_sibling(
 
     diagnostic, recovered, error = _startup_outcome(config_b)
 
-    assert diagnostic is None
-    assert recovered is False
-    assert error is None
+    assert diagnostic is not None and diagnostic.startswith("blocked (")
+    assert recovered is None
+    assert error is not None
     assert case_a.manifest.read_bytes() == manifest_before
     assert (case_a.move.quarantine / "old-sentinel.txt").is_file()
 

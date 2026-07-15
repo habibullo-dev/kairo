@@ -73,10 +73,6 @@ class ResetRecoveryError(RuntimeError):
     """An interrupted reset is unsafe or ambiguous and requires operator attention."""
 
 
-class _ForeignResetManifest(ResetRecoveryError):
-    """A valid reset record is proven to belong to a disjoint sibling instance."""
-
-
 @dataclass(frozen=True)
 class DirectoryIdentity:
     device: int
@@ -403,82 +399,6 @@ def _validate_timestamp(value: object) -> None:
         raise ResetRecoveryError("Interrupted reset has an invalid creation time")
 
 
-def _paths_overlap(first: Path, second: Path) -> bool:
-    return first == second or first.is_relative_to(second) or second.is_relative_to(first)
-
-
-def _is_proven_foreign_sibling_reset(
-    config: Config,
-    path: Path,
-    payload: dict[str, Any],
-    *,
-    reset_id: str,
-    config_root: Path,
-    current: dict[str, Path],
-    roots: list[RecoveryRoot],
-    absent_roots: list[AbsentRoot],
-) -> bool:
-    """Recognize only a fully validated, disjoint sibling-instance reset record."""
-    current_config_root = config.root.resolve()
-    data_root = next(root.source for root in roots if "data" in root.roles)
-    current_data = current["data"]
-    if config_root == current_config_root or data_root == current_data:
-        return False
-    if os.path.normcase(data_root.name) == os.path.normcase(current_data.name):
-        return False
-    if data_root.parent != current_data.parent or path.parent.parent != current_data.parent:
-        return False
-    if path.parent.name != RESET_MANIFEST_DIRNAME:
-        return False
-    if path != data_root.parent / RESET_MANIFEST_DIRNAME / f"{reset_id}.json":
-        return False
-
-    proof_paths = [path]
-    if config_root != data_root.parent:
-        locator = config_root / RESET_MANIFEST_DIRNAME / f"{reset_id}{RESET_LOCATOR_SUFFIX}"
-        try:
-            if (
-                _optional_directory_identity(
-                    locator.parent,
-                    label="Foreign reset locator storage",
-                )
-                is None
-            ):
-                return False
-            physical_locator_parent = canonical_local_path(
-                locator.parent,
-                label="Foreign reset locator storage",
-                must_exist=True,
-                reject_final_link=True,
-            )
-            located_path, located_payload, _locator_payload = _read_manifest_locator(
-                locator, {path: payload}
-            )
-        except ResetRecoveryError:
-            return False
-        if located_path != path or located_payload != payload:
-            return False
-        proof_paths.extend((locator, physical_locator_parent / locator.name))
-    elif path.parent.parent != config_root:
-        return False
-
-    recovery_paths = list(proof_paths)
-    for root in roots:
-        recovery_paths.extend((root.source, root.quarantine, root.failed_fresh(reset_id)))
-    for root in absent_roots:
-        recovery_paths.extend((root.source, root.failed_fresh(reset_id)))
-    current_roots = tuple(current.values())
-    if any(
-        _paths_overlap(recovery_path, current_root)
-        for recovery_path in recovery_paths
-        for current_root in current_roots
-    ):
-        return False
-    return not any(
-        _paths_overlap(recovery_path, current_config_root) for recovery_path in recovery_paths
-    )
-
-
 def _validate_pending(
     config: Config,
     path: Path,
@@ -586,21 +506,11 @@ def _validate_pending(
         for second in combined[index + 1 :]
     ):
         raise ResetRecoveryError("Interrupted reset has overlapping root records")
-    if _is_proven_foreign_sibling_reset(
-        config,
-        path,
-        payload,
-        reset_id=reset_id,
-        config_root=config_root,
-        current=current,
-        roots=roots,
-        absent_roots=absent_roots,
-    ):
-        raise _ForeignResetManifest("Reset manifest belongs to a disjoint sibling instance")
     if config_root != config.root.resolve():
         raise ResetRecoveryError(
-            "Interrupted reset belongs to a different workspace location; operator recovery "
-            "is required"
+            "Interrupted reset belongs to a different workspace location or a relocated "
+            "workspace; reset manifest format v2 cannot prove independent instance ownership, "
+            "so operator recovery is required"
         )
     for root in roots:
         if root.source not in {current[role] for role in root.roles}:
@@ -831,24 +741,19 @@ def _discover_reset_state_unlocked(
                 )
         if status == "in_progress":
             candidates.append((path, payload))
-    validated_candidates: list[PendingReset] = []
-    for path, payload in candidates:
-        try:
-            validated_candidates.append(
-                _validate_pending(
-                    config,
-                    path,
-                    payload,
-                    locators=tuple(sorted(locator_paths.get(path, set()))),
-                )
-            )
-        except _ForeignResetManifest:
-            continue
-    if len(validated_candidates) > 1:
+    if len(candidates) > 1:
         raise ResetRecoveryError(
             "Multiple interrupted resets were found; operator recovery is required"
         )
-    pending = validated_candidates[0] if validated_candidates else None
+    pending: PendingReset | None = None
+    if candidates:
+        path, payload = candidates[0]
+        pending = _validate_pending(
+            config,
+            path,
+            payload,
+            locators=tuple(sorted(locator_paths.get(path, set()))),
+        )
     terminal_locators = tuple(
         (locator, locator_payloads[locator])
         for manifest, payload in records.items()
