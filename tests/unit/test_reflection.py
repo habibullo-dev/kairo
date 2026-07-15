@@ -169,6 +169,10 @@ async def test_reflect_uses_forced_tool_call(tmp_path: Path) -> None:
         assert call["tool_choice"] == {"type": "tool", "name": "save_memories"}
         assert call["tools"][0]["name"] == "save_memories"
         assert call["model"] == "claude-sonnet-5"
+        assert "assistant Kira" in call["system"]
+        assert "Kira's own verified actions" in call["system"]
+        assert "Jarvis" not in call["system"]
+        assert "Kairo" not in call["system"]
     finally:
         await svc.store.db.close()
 
@@ -188,7 +192,7 @@ async def test_reflect_stores_extracted_memories_with_provenance(tmp_path: Path)
                 "source_seq_end": 1,
                 "evidence_summary": "user said so",
             },
-            {"type": "fact", "content": "The project is called Jarvis."},
+            {"type": "fact", "content": "The project is called Kira."},
         ]
         results = await reflect(
             transcript=_exchange(), session_id=sid, service=svc, client=_save(memories), model="m"
@@ -197,7 +201,7 @@ async def test_reflect_stores_extracted_memories_with_provenance(tmp_path: Path)
         live = await svc.store.all_live()
         assert {m.content for m in live} == {
             "The user's favorite editor is Neovim.",
-            "The project is called Jarvis.",
+            "The project is called Kira.",
         }
         nvim = next(m for m in live if "Neovim" in m.content)
         assert nvim.source == "reflection"
