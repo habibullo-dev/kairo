@@ -10,10 +10,12 @@ import pytest
 from PIL import Image
 
 from jarvis.config import TelegramRemoteAttachmentsConfig
+from jarvis.remote import attachments as attachments_module
 from jarvis.remote.attachments import (
     RemoteAttachment,
     RemoteAttachmentError,
     RemoteAttachmentProcessor,
+    prepare_image,
 )
 from jarvis.voice.protocols import Transcript
 
@@ -29,7 +31,18 @@ class _Transcriber:
         return Transcript(text=self.text, is_final=True)
 
 
-def _processor(tmp_path: Path, *, transcriber=None, max_chars: int = 50_000):
+class _FailingTranscriber:
+    async def transcribe_file(self, _path: Path) -> Transcript:
+        raise ValueError("decoder failed")
+
+
+def _processor(
+    tmp_path: Path,
+    *,
+    transcriber=None,
+    max_chars: int = 50_000,
+    image_preparer=None,
+):
     return RemoteAttachmentProcessor(
         config=TelegramRemoteAttachmentsConfig(
             enabled=True,
@@ -40,6 +53,7 @@ def _processor(tmp_path: Path, *, transcriber=None, max_chars: int = 50_000):
         pdf_converter="markitdown",
         convert_timeout_seconds=5,
         transcriber=transcriber,  # type: ignore[arg-type]
+        image_preparer=image_preparer,
     )
 
 
@@ -140,3 +154,64 @@ async def test_audio_duration_and_unknown_document_type_fail_before_parsing(
             b"MZ",
         )
     assert not (tmp_path / "staging").exists()
+
+
+async def test_attachment_processing_failures_use_canonical_kira_branding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_image(_raw: bytes, _max_bytes: int) -> tuple[bytes, str]:
+        raise ValueError("decoder failed")
+
+    image_processor = _processor(tmp_path / "image", image_preparer=fail_image)
+    with pytest.raises(RemoteAttachmentError, match="Kira could not read that image"):
+        await image_processor.prepare(
+            RemoteAttachment(
+                kind="image",
+                file_id="image",
+                file_name="image.png",
+                media_type="image/png",
+            ),
+            b"invalid",
+        )
+    with pytest.raises(RemoteAttachmentError, match="Kira could not read that image"):
+        prepare_image(b"not an image", 5_000_000)
+
+    async def fail_conversion(*_args, **_kwargs):
+        raise attachments_module.ConversionError("converter failed")
+
+    monkeypatch.setattr(attachments_module, "convert_file_sandboxed", fail_conversion)
+    document_processor = _processor(tmp_path / "document")
+    with pytest.raises(
+        RemoteAttachmentError,
+        match="Kira could not read that document: converter failed",
+    ):
+        await document_processor.prepare(
+            RemoteAttachment(
+                kind="document",
+                file_id="document",
+                file_name="notes.txt",
+                media_type="text/plain",
+            ),
+            b"content",
+        )
+
+    audio = RemoteAttachment(
+        kind="voice",
+        file_id="voice",
+        file_name="voice.ogg",
+        media_type="audio/ogg",
+        duration_seconds=1,
+    )
+    failing_audio = _processor(tmp_path / "failing-audio", transcriber=_FailingTranscriber())
+    with pytest.raises(RemoteAttachmentError, match="Kira could not transcribe that audio"):
+        await failing_audio.prepare(audio, b"OGG")
+
+    empty_audio = _processor(tmp_path / "empty-audio", transcriber=_Transcriber(""))
+    with pytest.raises(RemoteAttachmentError, match="Kira could not hear any speech"):
+        await empty_audio.prepare(audio, b"OGG")
+
+    remaining_files = await asyncio.to_thread(
+        lambda: [path for path in tmp_path.rglob("*") if path.is_file()]
+    )
+    assert remaining_files == []

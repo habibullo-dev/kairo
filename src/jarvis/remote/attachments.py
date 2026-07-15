@@ -80,7 +80,7 @@ class RemoteAttachmentProcessor:
         except RemoteAttachmentError:
             raise
         except Exception as exc:  # decoder diagnostics are not useful over Telegram
-            raise RemoteAttachmentError("Kairo could not read that image.") from exc
+            raise RemoteAttachmentError("Kira could not read that image.") from exc
         question = caption.strip() or "Describe this image and explain the important details."
         return PreparedRemoteAttachment(
             [
@@ -122,7 +122,7 @@ class RemoteAttachmentProcessor:
                 timeout_seconds=self.convert_timeout_seconds,
             )
         except ConversionError as exc:
-            raise RemoteAttachmentError(f"Kairo could not read that document: {exc}") from exc
+            raise RemoteAttachmentError(f"Kira could not read that document: {exc}") from exc
         finally:
             staged.unlink(missing_ok=True)
         text = converted.markdown.strip()
@@ -161,12 +161,12 @@ class RemoteAttachmentProcessor:
         except RuntimeError as exc:
             raise RemoteAttachmentError(str(exc)) from exc
         except Exception as exc:
-            raise RemoteAttachmentError("Kairo could not transcribe that audio.") from exc
+            raise RemoteAttachmentError("Kira could not transcribe that audio.") from exc
         finally:
             staged.unlink(missing_ok=True)
         text = transcript.text.strip()
         if not text:
-            raise RemoteAttachmentError("Kairo could not hear any speech in that audio.")
+            raise RemoteAttachmentError("Kira could not hear any speech in that audio.")
         if attachment.kind == "voice" and not caption.strip():
             question = "Answer the question or request in the transcript."
         else:
@@ -196,7 +196,7 @@ def prepare_image(raw: bytes, max_bytes: int) -> tuple[bytes, str]:
         from PIL import Image, ImageOps, UnidentifiedImageError
     except ImportError as exc:  # Pillow is provided by the document conversion dependency
         raise RemoteAttachmentError(
-            "Image support is not installed on this Kairo instance."
+            "Image support is not installed on this Kira instance."
         ) from exc
     try:
         with Image.open(io.BytesIO(raw)) as opened:
@@ -210,7 +210,7 @@ def prepare_image(raw: bytes, max_bytes: int) -> tuple[bytes, str]:
     except RemoteAttachmentError:
         raise
     except (UnidentifiedImageError, OSError) as exc:
-        raise RemoteAttachmentError("Kairo could not read that image.") from exc
+        raise RemoteAttachmentError("Kira could not read that image.") from exc
 
     image.thumbnail((_MAX_IMAGE_EDGE, _MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
     output = io.BytesIO()
