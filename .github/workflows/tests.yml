@@ -34,3 +34,9 @@ jobs:
         run: uv run mypy
       - name: Unit tests (keyless)
         run: uv run pytest -q
+      - name: Install Chromium headless shell
+        if: runner.os == 'Linux'
+        run: uv run --locked --extra browser playwright install --with-deps --only-shell chromium
+      - name: Verify themed startup and preloader
+        if: runner.os == 'Linux'
+        run: uv run --locked --extra browser python tests/ui/startup_dod.py
