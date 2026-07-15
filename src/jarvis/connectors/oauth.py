@@ -182,7 +182,8 @@ class _RedirectHandler(http.server.BaseHTTPRequestHandler):
         self.server.captured_state = (query.get("state") or [None])[0]  # type: ignore[attr-defined]
         body = (
             b"<html><body style='font-family:sans-serif'>"
-            b"<h3>Kairo is connected.</h3><p>You can close this tab.</p></body></html>"
+            b"<h3>Authorization received.</h3>"
+            b"<p>Return to Kira to finish connecting. You can close this tab.</p></body></html>"
         )
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")

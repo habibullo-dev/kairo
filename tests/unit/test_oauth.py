@@ -146,6 +146,9 @@ async def test_loopback_server_captures_code_and_state() -> None:
         async with httpx.AsyncClient() as c:
             resp = await c.get(f"{redirect_uri}/?code=abc&state=xyz")
         assert resp.status_code == 200
+        assert "Return to Kira to finish connecting." in resp.text
+        assert "Kairo" not in resp.text
+        assert "is connected" not in resp.text.lower()
         code, state = await serve
     assert code == "abc" and state == "xyz"
 
