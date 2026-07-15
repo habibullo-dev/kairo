@@ -99,11 +99,14 @@ uv run kira --version
 uv run pytest -q
 uv run ruff check .
 uv run kira eval gate       # keyless cassette replay; $0 by default
-uv run kira eval gate --live --runs 1 --max-cost-usd 1.00
+uv run kira eval plan --suite core
+uv run kira eval gate --suite core --record --runs 1 --max-cost-usd 5
 ```
 
-`--live` calls providers and records cassettes. `--record` fills only missing cassettes. Always use
-an explicit hard cap for live work; bare `kira eval gate` is the deterministic replay gate.
+`--record` reuses cassette hits and calls providers only for misses; `--live` bypasses hits. Paid
+modes require an explicit positive metered-LLM stop threshold. That threshold is not a hard billing
+ceiling and excludes embedding/web charges. Bare `kira eval gate` is deterministic replay; see the
+[eval cost guide](docs/evals-cost-control.md) before any paid run.
 
 ## Models and cost controls
 
