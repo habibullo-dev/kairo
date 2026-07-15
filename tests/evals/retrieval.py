@@ -287,7 +287,7 @@ async def run_retrieval(config, *, top_k: int = 8) -> int:
 
     # Memory corpus (doc == memory; id via the `source` field).
     mem_golden = load_golden("memory.yaml")
-    mem_db = Path(tempfile.mkdtemp(prefix="jarvis-ret-mem-")) / "memory.db"
+    mem_db = Path(tempfile.mkdtemp(prefix="kira-ret-mem-")) / "memory.db"
     mem_store = MemoryStore(await connect(mem_db))
     await seed_memory(mem_store, embedder, mem_golden["documents"])
     mem_results = await evaluate_golden(
@@ -300,7 +300,7 @@ async def run_retrieval(config, *, top_k: int = 8) -> int:
 
     # KB corpus (doc -> chunks; id via source_title, unreviewed included after seeding).
     kb_golden = load_golden("kb.yaml")
-    kb_root = Path(tempfile.mkdtemp(prefix="jarvis-ret-kb-"))
+    kb_root = Path(tempfile.mkdtemp(prefix="kira-ret-kb-"))
     kb_config = config.model_copy(update={"root": kb_root})
     kb_store = KnowledgeStore(await connect(kb_root / "kira.db"))
     knowledge = KnowledgeService(
@@ -318,7 +318,7 @@ async def run_retrieval(config, *, top_k: int = 8) -> int:
 
 
 def main() -> None:
-    argparse.ArgumentParser(description="Jarvis retrieval evals (live Voyage).").parse_args()
+    argparse.ArgumentParser(description="Kira retrieval evals (live Voyage).").parse_args()
     try:
         config = load_config()
     except ConfigError as exc:

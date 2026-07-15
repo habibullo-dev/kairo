@@ -74,7 +74,7 @@ def test_safe_shot_name_is_a_clean_png() -> None:
 
 def test_summarize_a11y_handles_empty_and_tree() -> None:
     assert "no accessibility tree" in _summarize_a11y(None)
-    tree = {"role": "WebArea", "name": "Kairo", "children": [{"role": "button", "children": []}]}
+    tree = {"role": "WebArea", "name": "Kira", "children": [{"role": "button", "children": []}]}
     assert "2 nodes" in _summarize_a11y(tree) and "WebArea" in _summarize_a11y(tree)
 
 

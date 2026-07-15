@@ -174,7 +174,7 @@ def test_retention_removes_expired_kira_and_legacy_logs_only(tmp_path: Path) -> 
     with gzip.open(retained_kira, "wt", encoding="utf-8") as handle:
         handle.write('{"event":"recent"}\n')
     unrelated = logs / "keep-me.txt"
-    unrelated.write_text("not a Jarvis log", encoding="utf-8")
+    unrelated.write_text("not a Kira log", encoding="utf-8")
     lookalikes = [
         logs / "KIRA-2026-07-05.jsonl",
         logs / "kairo-2026-07-07.jsonl",

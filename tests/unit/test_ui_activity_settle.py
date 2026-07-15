@@ -1,7 +1,7 @@
 """Daily activity settles after a denied gated turn (Phase 8 refinement bugfix).
 
 Repro: submit a gated action → deny it → the modal closes, the Gate clears, the denial
-message appears, but the Daily current-activity card lingered on "Kairo is working" while the
+message appears, but the Daily current-activity card lingered on "Kira is working" while the
 status bar already said idle. Root cause: the card read a stale ``state.runner`` (only the
 4s poll refreshed it). Fix: settle ``turn_busy`` on ``turn_completed`` and write BOTH surfaces
 from one ``renderRunnerState()`` reading the same state.

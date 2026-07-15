@@ -1250,7 +1250,7 @@ async def run_cache_ab(
     create_inner = inner_factory or _default_client_factory
     arms: list[dict] = []
 
-    with tempfile.TemporaryDirectory(prefix="jarvis-cache-ab-") as temp_root:
+    with tempfile.TemporaryDirectory(prefix="kira-cache-ab-") as temp_root:
         for arm, enabled in (("off", False), ("on", True)):
             arm_config = config.model_copy(
                 update={
@@ -1473,7 +1473,7 @@ async def _run_skill_probe(
     probe: SkillProbe,
 ) -> SkillProbeRecord:
     """Run one scoped production ``SubAgentService`` child against a disposable fixture."""
-    workdir = Path(tempfile.mkdtemp(prefix="jarvis-skills-ab-"))
+    workdir = Path(tempfile.mkdtemp(prefix="kira-skills-ab-"))
     sessions: SessionStore | None = None
     try:
         source_path = workdir / "src" / "widget.py"
@@ -1622,7 +1622,7 @@ async def run_skills_ab(
     arm_costs: dict[str, float] = {"off": 0.0, "active": 0.0}
     arm_schedule: list[list[str]] = []
 
-    with tempfile.TemporaryDirectory(prefix="jarvis-skills-ab-catalog-") as catalog_root:
+    with tempfile.TemporaryDirectory(prefix="kira-skills-ab-catalog-") as catalog_root:
         catalogs = {
             "off": _off_catalog(config),
             "active": _evaluation_catalog(config, Path(catalog_root)),

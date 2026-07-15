@@ -1,6 +1,6 @@
 """CLI wiring for the workstation (Phase 8, Task 9) — the composition contract.
 
-Like test_voice_cli, the point is the *composition*, not I/O: `jarvis --ui` builds the app
+Like test_voice_cli, the point is the *composition*, not I/O: `kira --ui` builds the app
 from the REPL's collaborators with the UI approver seams — the turn loop's approver is the
 UIApprover, the REPL's gate is shared, the turn lock is shared (so a UI turn can't interleave
 a background job), and the read/mutate services are wired. Keyless: a FakeClient REPL, no DB.

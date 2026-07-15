@@ -78,13 +78,13 @@ async def _client(tmp_path: Path):
 async def test_reset_requires_exact_name_and_creates_active_successor(tmp_path: Path) -> None:
     async with _client(tmp_path) as (client, app, projects, _owner):
         project_id = await projects.store.create(
-            name="Kairo", repos=["C:/src/kairo"], settings={"label": "Coding"}
+            name="Kira", repos=["C:/src/kira"], settings={"label": "Coding"}
         )
         await projects.activate(project_id)
 
         mismatch = await client.post(
             f"/api/projects/{project_id}/reset",
-            json={"confirmation": "kairo", "retain_repositories": True},
+            json={"confirmation": "kira", "retain_repositories": True},
             headers=ORIGIN,
         )
         assert mismatch.status_code == 400
@@ -92,21 +92,21 @@ async def test_reset_requires_exact_name_and_creates_active_successor(tmp_path: 
 
         reset = await client.post(
             f"/api/projects/{project_id}/reset",
-            json={"confirmation": "Kairo", "retain_repositories": True},
+            json={"confirmation": "Kira", "retain_repositories": True},
             headers=ORIGIN,
         )
         assert reset.status_code == 200 and reset.json()["ok"] is True
         successor_id = reset.json()["successor_project_id"]
         assert (await projects.store.get(project_id)).status == "archived"
         successor = await projects.store.get(successor_id)
-        assert successor is not None and successor.repos == ("C:/src/kairo",)
+        assert successor is not None and successor.repos == ("C:/src/kira",)
         assert projects.current().project_id == successor_id
         assert app.state.session.switches == [successor_id]
 
 
 async def test_reset_rejects_non_fresh_login_session(tmp_path: Path) -> None:
     async with _client(tmp_path) as (client, _app, projects, owner):
-        project_id = await projects.store.create(name="Kairo")
+        project_id = await projects.store.create(name="Kira")
         logged_in = await owner.login("habib", PASSWORD)
         assert logged_in is not None
         await owner.db.execute(
@@ -118,7 +118,7 @@ async def test_reset_rejects_non_fresh_login_session(tmp_path: Path) -> None:
 
         response = await client.post(
             f"/api/projects/{project_id}/reset",
-            json={"confirmation": "Kairo", "retain_repositories": False},
+            json={"confirmation": "Kira", "retain_repositories": False},
             headers=ORIGIN,
         )
         assert response.status_code == 403
@@ -128,7 +128,7 @@ async def test_reset_rejects_non_fresh_login_session(tmp_path: Path) -> None:
 
 async def test_reset_rejects_a_stale_same_context_revision_after_aba(tmp_path: Path) -> None:
     async with _client(tmp_path) as (client, app, projects, _owner):
-        project_a = await projects.store.create(name="Kairo")
+        project_a = await projects.store.create(name="Kira")
         project_b = await projects.store.create(name="Other")
         connections = ConnectionManager(clock=lambda: 0.0)
         sessions = SessionStore(projects.store.db, projects.store.lock)
@@ -177,7 +177,7 @@ async def test_reset_rejects_a_stale_same_context_revision_after_aba(tmp_path: P
         }
         response = await client.post(
             f"/api/projects/{project_a}/reset",
-            json={"confirmation": "Kairo", "retain_repositories": False},
+            json={"confirmation": "Kira", "retain_repositories": False},
             headers=stale_headers,
         )
         assert response.status_code == 409

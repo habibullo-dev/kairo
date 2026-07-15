@@ -25,9 +25,9 @@ def _base() -> list[PromptSection]:
     return [
         _sec(SectionKind.MEMORY_RECALL, "recall: last week you..."),
         _sec(SectionKind.TOOL_SCHEMAS, "tools: read_file, calendar_create_event"),
-        _sec(SectionKind.SYSTEM_CONTRACT, "You are Kairo. Safety contract..."),
+        _sec(SectionKind.SYSTEM_CONTRACT, "You are Kira. Safety contract..."),
         _sec(SectionKind.USER_TURN, "what's on my calendar?"),
-        _sec(SectionKind.PROJECT_POLICY, "project Kairo: local-first"),
+        _sec(SectionKind.PROJECT_POLICY, "project Kira: local-first"),
         _sec(SectionKind.SERVICE_CATALOG, "services: semgrep, gitleaks"),
         _sec(SectionKind.TEAM_PROFILES, "teams: research, frontend"),
         _sec(SectionKind.CURRENT_TIME, "2026-07-08T22:00"),
@@ -45,7 +45,7 @@ def test_orders_stable_first_then_volatile_canonically() -> None:
     assert stable_seen == [k for k in STABLE_ORDER if k in stable_seen]
     assert volatile_seen == [k for k in VOLATILE_ORDER if k in volatile_seen]
     # the stable text leads; the user turn is NOT in the stable prefix
-    assert out.stable_text.startswith("You are Kairo")
+    assert out.stable_text.startswith("You are Kira")
     assert "what's on my calendar" not in out.stable_text
     assert "what's on my calendar" in out.volatile_text
 

@@ -20,7 +20,7 @@ from jarvis.models.prompt_layout import PromptSection, SectionKind, assemble
 def _prompt(sensitive: bool = False):
     return assemble(
         [
-            PromptSection(SectionKind.SYSTEM_CONTRACT, "You are Kairo. Safety contract."),
+            PromptSection(SectionKind.SYSTEM_CONTRACT, "You are Kira. Safety contract."),
             PromptSection(SectionKind.TOOL_SCHEMAS, "tools: read_file"),
             PromptSection(
                 SectionKind.PROJECT_POLICY, "private project detail", sensitive=sensitive

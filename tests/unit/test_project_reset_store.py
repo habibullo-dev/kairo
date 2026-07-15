@@ -32,11 +32,11 @@ async def test_reset_archives_history_and_creates_clean_successor(
     projects, sessions = await _stores(tmp_path)
     try:
         predecessor_id = await projects.create(
-            name="Kairo",
+            name="Kira",
             description="Agent workstation",
             color="#123456",
             icon="K",
-            repos=["C:/src/kairo"],
+            repos=["C:/src/kira"],
             settings={"label": "Coding", "services": ["filesystem"], "private": "drop-me"},
         )
         await projects.set_pinned(predecessor_id, True)
@@ -52,16 +52,16 @@ async def test_reset_archives_history_and_creates_clean_successor(
         assert predecessor is not None and predecessor.status == "archived"
         assert predecessor.archived_at == result.created_at
         assert successor is not None and successor.status == "active"
-        assert successor.slug == "kairo-2"
+        assert successor.slug == "kira-2"
         assert (successor.name, successor.description, successor.color, successor.icon) == (
-            "Kairo",
+            "Kira",
             "Agent workstation",
             "#123456",
             "K",
         )
         assert successor.pinned is True
         assert successor.settings == {"label": "Coding", "services": ["filesystem"]}
-        assert successor.repos == (("C:/src/kairo",) if retain_repositories else ())
+        assert successor.repos == (("C:/src/kira",) if retain_repositories else ())
         assert (await sessions.get_meta(old_session_id)).project_id == predecessor_id
         assert await sessions.list_sessions(project_id=result.successor_id) == []
         event = await (

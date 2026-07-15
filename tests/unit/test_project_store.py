@@ -39,7 +39,7 @@ def test_slugify() -> None:
 async def test_create_and_get(tmp_path: Path) -> None:
     store = await _store(tmp_path)
     pid = await store.create(
-        name="Kairo Web",
+        name="Kira Web",
         description="the UI",
         color="#3b82f6",
         icon="globe",
@@ -48,12 +48,12 @@ async def test_create_and_get(tmp_path: Path) -> None:
     )
     p = await store.get(pid)
     assert isinstance(p, Project)
-    assert p.name == "Kairo Web" and p.slug == "kairo-web" and p.status == "active"
+    assert p.name == "Kira Web" and p.slug == "kira-web" and p.status == "active"
     assert p.description == "the UI" and p.color == "#3b82f6" and p.icon == "globe"
     assert p.repos == ("/repo/a",)
     assert p.settings == {"model_routes": {"planner": "x"}}
     assert p.archived_at is None
-    assert await store.get_by_slug("kairo-web") == p
+    assert await store.get_by_slug("kira-web") == p
 
 
 async def test_get_missing_returns_none(tmp_path: Path) -> None:

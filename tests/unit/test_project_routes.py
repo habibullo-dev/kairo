@@ -67,12 +67,12 @@ def _hdr(auth: AuthManager, *, post: bool = False) -> dict[str, str]:
 async def test_create_list_and_select(tmp_path: Path) -> None:
     client, app, auth, projects = await _client(tmp_path)
     # create
-    r = client.post("/api/projects", json={"name": "Kairo Web"}, headers=_hdr(auth, post=True))
+    r = client.post("/api/projects", json={"name": "Kira Web"}, headers=_hdr(auth, post=True))
     assert r.status_code == 200 and r.json()["ok"] is True
     pid = r.json()["id"]
     # list shows it, active is still global
     data = client.get("/api/projects", headers=_hdr(auth)).json()
-    assert any(p["id"] == pid and p["name"] == "Kairo Web" for p in data["projects"])
+    assert any(p["id"] == pid and p["name"] == "Kira Web" for p in data["projects"])
     assert data["active_project_id"] is None
     # select it → service active + session switched to a fresh conversation
     r = client.post("/api/projects/select", json={"project_id": pid}, headers=_hdr(auth, post=True))

@@ -1,5 +1,5 @@
 """No external assets in the Office (Phase 14 M2). CSP already blocks off-origin fetches; this is
-belt-and-braces AND the AGPL-clean attestation: the Office is Kairo's OWN token-driven visual
+belt-and-braces AND the AGPL-clean attestation: the Office is Kira's OWN token-driven visual
 language — no code, CSS, image, font, or CDN copied from my-virtual-office (AGPL). The office JS and
 the Phase 14 CSS block must reference no external URL / protocol-relative host / @import / remote
 asset — only same-origin hashes/paths and CSS tokens + gradients."""

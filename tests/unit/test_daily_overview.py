@@ -92,7 +92,7 @@ async def test_daily_project_assessment_lifecycle_is_compact_and_freshness_bound
     db = await connect(tmp_path / "daily-intelligence.db")
     _OPEN.append(db)
     lock = asyncio.Lock()
-    project_id = await ProjectStore(db, lock).create(name="Kairo")
+    project_id = await ProjectStore(db, lock).create(name="Kira")
     knowledge = KnowledgeStore(db, lock)
     graph = GraphStore(db, lock)
     jobs = AnalysisJobStore(db, lock)

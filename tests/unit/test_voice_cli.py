@@ -1,6 +1,6 @@
 """CLI wiring for the voice interface (Phase 7, Task 8).
 
-The point of these tests is the *composition contract*, not I/O: `jarvis --voice` builds
+The point of these tests is the *composition contract*, not I/O: `kira --voice` builds
 a voice turn from the REPL's own collaborators, but with the safety-critical seams swapped
 in — the injected approver is a ``VoiceApprover`` that escalates to an on-screen
 ``TerminalScreenApprover`` (never voice), the output is the calm ``VoiceRenderer``, and the

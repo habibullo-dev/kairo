@@ -32,7 +32,7 @@ async def _stores(tmp_path: Path):
     db = await connect(tmp_path / "intelligence.db")
     _OPEN.append(db)
     lock = asyncio.Lock()
-    project_id = await ProjectStore(db, lock).create(name="Kairo")
+    project_id = await ProjectStore(db, lock).create(name="Kira")
     return db, AnalysisJobStore(db, lock), ProjectReportStore(db, lock), project_id
 
 

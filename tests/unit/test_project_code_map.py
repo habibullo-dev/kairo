@@ -8,9 +8,9 @@ from jarvis.graph.code_dependencies import SourceHead, local_import_pairs
 def test_python_imports_resolve_from_the_uploaded_source_root() -> None:
     pairs = local_import_pairs(
         [
-            SourceHead(1, "repo/src/kairo/app.py", "from .core import runner\nimport kairo.util"),
-            SourceHead(2, "repo/src/kairo/core.py", "def runner(): pass"),
-            SourceHead(3, "repo/src/kairo/util.py", "pass"),
+            SourceHead(1, "repo/src/kira/app.py", "from .core import runner\nimport kira.util"),
+            SourceHead(2, "repo/src/kira/core.py", "def runner(): pass"),
+            SourceHead(3, "repo/src/kira/util.py", "pass"),
         ]
     )
     assert pairs == [(1, 2), (1, 3)]

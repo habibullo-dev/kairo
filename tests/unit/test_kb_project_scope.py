@@ -92,22 +92,22 @@ async def test_project_query_includes_only_its_local_import_metadata(tmp_path: P
     svc = await _svc(tmp_path)
     await svc.ingest(
         text="alpha unique-query-token\nfrom .core import runner",
-        title="repo/src/kairo/app.py",
+        title="repo/src/kira/app.py",
         project_id=1,
     )
     await svc.ingest(
         text="CORE-DEPENDENCY-CANARY\ndef runner(): pass",
-        title="repo/src/kairo/core.py",
+        title="repo/src/kira/core.py",
         project_id=1,
     )
     await svc.ingest(
         text="beta unique-query-token\nfrom .core import runner",
-        title="other/src/kairo/app.py",
+        title="other/src/kira/app.py",
         project_id=2,
     )
     await svc.ingest(
         text="PROJECT-B-DEPENDENCY-CANARY\ndef runner(): pass",
-        title="other/src/kairo/core.py",
+        title="other/src/kira/core.py",
         project_id=2,
     )
     await rebuild(GraphStore(svc.store.db, svc.store.lock))
@@ -116,10 +116,10 @@ async def test_project_query_includes_only_its_local_import_metadata(tmp_path: P
     # neighbor core.py, without retrieving the equivalent Project B module.
     project_a = await svc.query("alpha unique-query-token", top_k=1, project_id=1)
     assert "Project dependency metadata" in project_a
-    assert "repo/src/kairo/app.py imports repo/src/kairo/core.py" in project_a
+    assert "repo/src/kira/app.py imports repo/src/kira/core.py" in project_a
     assert "Direct dependency excerpts" in project_a
     assert "CORE-DEPENDENCY-CANARY" in project_a
-    assert "other/src/kairo/app.py" not in project_a
+    assert "other/src/kira/app.py" not in project_a
     assert "PROJECT-B-DEPENDENCY-CANARY" not in project_a
 
 

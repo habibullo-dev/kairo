@@ -132,7 +132,7 @@ async def test_rewrites_exact_legacy_marker_and_canonicalizes_it(tmp_path: Path)
 @pytest.mark.parametrize(
     "marker_yaml",
     (
-        "generated_by: Kairo-graph",
+        "generated_by: Kira-graph",
         "generated_by: kairo-graph-extra",
         "generated_by:\n  - kairo-graph",
     ),

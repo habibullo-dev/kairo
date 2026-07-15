@@ -125,9 +125,9 @@ async def test_rebuild_derives_resolved_local_code_imports_only(tmp_path: Path) 
     store, _ = await _seed(tmp_path)
     source_ids: dict[str, int] = {}
     for title, text in (
-        ("repo/src/kairo/app.py", "from .core import runner\n"),
-        ("repo/src/kairo/core.py", "def runner(): pass\n"),
-        ("repo/src/kairo/other.py", "import external_package\n"),
+        ("repo/src/kira/app.py", "from .core import runner\n"),
+        ("repo/src/kira/core.py", "def runner(): pass\n"),
+        ("repo/src/kira/other.py", "import external_package\n"),
     ):
         cur = await store.db.execute(
             "INSERT INTO kb_sources (kind, origin, title, content_hash, raw_path, markdown_path, "
@@ -153,8 +153,8 @@ async def test_rebuild_derives_resolved_local_code_imports_only(tmp_path: Path) 
     assert counts["imports"] == 1
     assert [(edge.src_id, edge.dst_id, edge.trust_class) for edge in imports] == [
         (
-            str(source_ids["repo/src/kairo/app.py"]),
-            str(source_ids["repo/src/kairo/core.py"]),
+            str(source_ids["repo/src/kira/app.py"]),
+            str(source_ids["repo/src/kira/core.py"]),
             "reviewed",
         )
     ]
@@ -162,14 +162,14 @@ async def test_rebuild_derives_resolved_local_code_imports_only(tmp_path: Path) 
     assert code_map["view"] == "dependencies"
     assert [(edge["src"], edge["dst"]) for edge in code_map["edges"]] == [
         (
-            f"source:{source_ids['repo/src/kairo/app.py']}",
-            f"source:{source_ids['repo/src/kairo/core.py']}",
+            f"source:{source_ids['repo/src/kira/app.py']}",
+            f"source:{source_ids['repo/src/kira/core.py']}",
         )
     ]
-    assert {node["community"] for node in code_map["nodes"]} == {"kairo"}
+    assert {node["community"] for node in code_map["nodes"]} == {"kira"}
     deep_tree = await subgraph(store, 1, depth=6)
     node_ids = {node["id"] for node in deep_tree["nodes"]}
-    assert f"source:{source_ids['repo/src/kairo/app.py']}" in node_ids
+    assert f"source:{source_ids['repo/src/kira/app.py']}" in node_ids
 
 
 async def test_derived_edge_uses_source_row_created_at(tmp_path: Path) -> None:

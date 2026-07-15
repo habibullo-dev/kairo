@@ -56,7 +56,7 @@ async def _fixture(tmp_path: Path):
     _OPEN.append(db)
     lock = asyncio.Lock()
     project_store = ProjectStore(db, lock)
-    project_id = await project_store.create(name="Kairo")
+    project_id = await project_store.create(name="Kira")
     project_service = ProjectService(project_store)
     await project_service.activate(project_id)
     knowledge = KnowledgeStore(db, lock)

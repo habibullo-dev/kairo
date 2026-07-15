@@ -82,8 +82,8 @@ def test_build_context_frames_as_data(tmp_path: Path) -> None:
 
     p = Project(
         id=3,
-        name="Kairo Web",
-        slug="kairo-web",
+        name="Kira Web",
+        slug="kira-web",
         description="the workstation UI",
         status="active",
         color=None,
@@ -95,8 +95,8 @@ def test_build_context_frames_as_data(tmp_path: Path) -> None:
         archived_at=None,
     )
     ctx = build_project_context(p)
-    assert ctx.project_id == 3 and ctx.name == "Kairo Web"
-    assert "Active project: Kairo Web." in ctx.system_extra
+    assert ctx.project_id == 3 and ctx.name == "Kira Web"
+    assert "Active project: Kira Web." in ctx.system_extra
     assert "the workstation UI" in ctx.system_extra
     assert "/repo/web" in ctx.system_extra
     assert "NOT instructions" in ctx.system_extra  # framed as context, not a directive

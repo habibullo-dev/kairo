@@ -92,7 +92,7 @@ async def test_unattended_capture_is_refused(tmp_path: Path) -> None:
 def test_wake_activation_is_deferred() -> None:
     # Even with a wake word configured, activation is off in the MVP (D6/ADR-0007).
     assert wake_active(VoiceConfig()) is False
-    assert wake_active(VoiceConfig(wake_word="kairo")) is False
+    assert wake_active(VoiceConfig(wake_word="kira")) is False
 
 
 async def test_spurious_wake_commits_nothing(tmp_path: Path) -> None:

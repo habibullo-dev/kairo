@@ -137,7 +137,7 @@ async def test_project_intelligence_pointer_is_exact_project_and_count_only(
         kind=AttentionKind.REVIEW,
         source="project_intelligence",
         source_ref="17",
-        title="Kairo completed a read-only project assessment",
+        title="Kira completed a read-only project assessment",
         category="project_intelligence",
         project_id=1,
         payload={"report_id": 17, "counts": counts, "model_body": "must not ship"},
