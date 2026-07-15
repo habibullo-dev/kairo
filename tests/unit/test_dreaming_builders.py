@@ -80,6 +80,8 @@ async def test_job_produces_one_untrusted_proposal_via_toolless_summary(tmp_path
     # the summarize call was TOOL-LESS and used the Haiku default (nightly doesn't escalate)
     call = client.calls[-1]
     assert call["tools"] == [] and call["model"] == "claude-haiku-4-5-20251001"
+    assert "You are Kira's nightly/periodic reviewer." in call["system"]
+    assert "Kairo" not in call["system"]
     # collected material was framed untrusted
     assert "untrusted" in call["messages"][-1]["content"]
     assert res.proposal_id == p.id and res.cost_usd is not None and not res.halted

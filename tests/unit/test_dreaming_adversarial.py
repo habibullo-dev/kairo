@@ -106,7 +106,7 @@ async def test_dreaming_never_self_approves_or_resolves(tmp_path: Path) -> None:
 def test_urgent_push_never_leaks_a_sensitive_title() -> None:
     # Even with a sensitive item, the push is composed from COUNTS, never titles/subjects/bodies.
     push = minimized_push({"approval": 1, "review": 2})
-    assert push == "Kairo · 3 need you: 1 approval, 2 reviews"
+    assert push == "Kira · 3 need you: 1 approval, 2 reviews"
     for leak in ("salary", "boss@", "http", "password", "re:"):
         assert leak not in push
 

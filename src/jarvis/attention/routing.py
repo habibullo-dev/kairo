@@ -4,7 +4,7 @@ per rule, so the matrix is one table under test.
 
 Safety pins:
 * **Minimized, body-free pushes.** A push is composed from open-item COUNTS BY KIND only
-  ("Kairo · 3 need you: 2 approvals, 1 proposal") — never an item title, email subject, task body,
+  ("Kira · 3 need you: 2 approvals, 1 proposal") — never an item title, email subject, task body,
   or any payload. An email subject can therefore never leak to Telegram/Kakao.
 * **Opt-in egress.** Every priority's channel list defaults to empty, so nothing is ever pushed
   until that priority is deliberately enabled (and its notifier configured).
@@ -80,19 +80,19 @@ def route_notification(
 
 def minimized_push(counts: dict[str, int], *, cap: int = 280) -> str:
     """The ONLY text that goes off-box for an urgent push: counts by kind, no titles/bodies. E.g.
-    ``"Kairo · 3 need you: 2 approvals, 1 proposal"``. An email subject / task body can never
+    ``"Kira · 3 need you: 2 approvals, 1 proposal"``. An email subject / task body can never
     appear here — the push is derived purely from how MANY items of each kind are open."""
     safe_counts = _validated_counts(counts)
     total = sum(safe_counts.values())
     if total <= 0:
-        return "Kairo · nothing waiting"
+        return "Kira · nothing waiting"
     parts = [
         f"{n} {kind}{'s' if n != 1 else ''}"
         for kind, n in sorted(safe_counts.items())
         if n > 0
     ]
     need = "needs" if total == 1 else "need"
-    return f"Kairo · {total} {need} you: {', '.join(parts)}"[:cap]
+    return f"Kira · {total} {need} you: {', '.join(parts)}"[:cap]
 
 
 def _validated_counts(counts: dict[str, int]) -> dict[str, int]:

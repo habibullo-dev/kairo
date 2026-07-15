@@ -79,14 +79,18 @@ def test_quiet_hours_wrap_midnight() -> None:
 # --- minimized push: counts only, never a body -----------------------------
 def test_minimized_push_is_counts_only() -> None:
     text = minimized_push({"approval": 2, "proposal": 1})
-    assert text == "Kairo · 3 need you: 2 approvals, 1 proposal"
+    assert text == "Kira · 3 need you: 2 approvals, 1 proposal"
+
+
+def test_minimized_push_empty_state_uses_kira_brand() -> None:
+    assert minimized_push({}) == "Kira · nothing waiting"
 
 
 def test_minimized_push_never_contains_item_content() -> None:
     # Even if a caller somehow had sensitive titles, the push is derived ONLY from counts — the
     # function takes counts, not items, so a subject/body cannot appear by construction.
     text = minimized_push({"alert": 1})
-    assert text == "Kairo · 1 needs you: 1 alert"
+    assert text == "Kira · 1 needs you: 1 alert"
     assert "@" not in text and "http" not in text  # no address/URL could ever be here
 
 
@@ -139,7 +143,7 @@ async def test_router_sends_minimized_only_for_urgent_enabled(tmp_path: Path) ->
     d = await router.notify(priority="urgent", project_id=None,
                             open_counts={"approval": 2, "alert": 1}, hour=12)
     assert d.channels == ("telegram",)
-    assert n.sent == ["Kairo · 3 need you: 1 alert, 2 approvals"]  # counts only (sorted), no bodies
+    assert n.sent == ["Kira · 3 need you: 1 alert, 2 approvals"]  # counts only (sorted), no bodies
     # A normal item keeps its legacy digest-only behavior until explicitly enabled.
     await router.notify(priority="normal", project_id=None, open_counts={"approval": 1}, hour=12)
     assert len(n.sent) == 1
@@ -153,7 +157,7 @@ async def test_router_deduplicates_bypassed_config_channel_entries(tmp_path: Pat
     await NotificationRouter(cfg, _FakeConnectors(n)).notify(
         priority="urgent", project_id=None, open_counts={"approval": 1}, hour=12
     )
-    assert n.sent == ["Kairo · 1 needs you: 1 approval"]
+    assert n.sent == ["Kira · 1 needs you: 1 approval"]
 
 
 async def test_default_config_never_pushes_fatigue_safe(tmp_path: Path) -> None:
@@ -176,7 +180,7 @@ async def test_post_commit_helper_reads_counts_not_attention_content(tmp_path: P
     n = _FakeNotifier()
     router = NotificationRouter(cfg, _FakeConnectors(n))
     await notify_open_attention_item(router, _FakeAttention(), 11)
-    assert n.sent == ["Kairo · 2 need you: 2 approvals"]
+    assert n.sent == ["Kira · 2 need you: 2 approvals"]
 
 
 async def test_count_helper_cannot_receive_a_title_or_payload(tmp_path: Path) -> None:
@@ -191,7 +195,7 @@ async def test_count_helper_cannot_receive_a_title_or_payload(tmp_path: Path) ->
         counts={"approval": 1},
         now=dt.datetime(2026, 7, 13, 12),
     )
-    assert n.sent == ["Kairo · 1 needs you: 1 approval"]
+    assert n.sent == ["Kira · 1 needs you: 1 approval"]
 
 
 class _BrokenNotifier:
