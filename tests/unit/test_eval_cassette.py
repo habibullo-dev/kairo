@@ -247,7 +247,7 @@ async def test_live_calls_through_even_on_hit(tmp_path: Path) -> None:
 
 
 async def test_cost_cap_aborts_when_exceeded(tmp_path: Path) -> None:
-    # Each call ~ (1000*0.14 + 1000*0.28)/1e6 = $0.00042; cap tiny so the 2nd guard trips.
+    # Each call costs ~$0.42. The second starts below $0.50, then crosses the threshold on charge.
     big = Usage(input_tokens=1_000_000, output_tokens=1_000_000)  # ~$0.42 per call
     inner = _Inner(
         [
@@ -262,7 +262,8 @@ async def test_cost_cap_aborts_when_exceeded(tmp_path: Path) -> None:
     )
     await client.create(**_REQ)  # ~$0.42 spent, under $0.50
     with pytest.raises(CostCapExceeded):
-        await client.create(**_REQ)  # guard_before_call sees spent >= cap ⇒ abort
+        await client.create(**_REQ)
+    assert inner.calls == 2  # threshold is checked after this already-started paid call completes
 
 
 async def test_cost_cap_unpriced_model_fails_closed(tmp_path: Path) -> None:
@@ -279,6 +280,7 @@ async def test_cost_cap_unpriced_model_fails_closed(tmp_path: Path) -> None:
     )
     with pytest.raises(CostCapExceeded, match="unpriced"):
         await client.create(**_REQ)
+    assert inner.calls == 1  # pricing is known only after the provider returns its resolved model
 
 
 async def test_no_cap_does_not_track(tmp_path: Path) -> None:

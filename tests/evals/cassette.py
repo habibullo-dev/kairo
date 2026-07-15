@@ -36,8 +36,8 @@ class CassetteMissError(RuntimeError):
 
 
 class CostCapExceeded(RuntimeError):
-    """A live/record run reached its ``--max-cost-usd`` hard cap (or hit an unpriced model under
-    a cap, which cannot be measured). The run aborts rather than spend unbounded/untracked."""
+    """A live/record run crossed its metered-LLM spend stop threshold, or completed a call whose
+    model was unpriced. The threshold stops later calls; it is not a prepaid provider ceiling."""
 
 
 def _canonical(obj: object) -> str:
@@ -239,7 +239,7 @@ def wrap_web_tool(tool: object, *, store: CassetteStore, mode: Mode) -> None:
 
 
 class CostCap:
-    """Tracks cumulative LIVE spend against a hard cap. Inactive when ``max_usd`` is None."""
+    """Tracks completed metered LLM spend against a stop threshold."""
 
     def __init__(self, max_usd: float | None, pricing: PricingTable) -> None:
         self.max_usd = max_usd
@@ -247,8 +247,12 @@ class CostCap:
         self.spent = 0.0
 
     def guard_before_call(self) -> None:
-        """Refuse to START another live call if already at/over the cap (bounds the overshoot to
-        at most one in-flight call)."""
+        """Refuse a new live call once recorded completed-call spend is at/over the threshold.
+
+        A call that starts below the threshold can cross it when charged, and concurrent calls
+        that already passed this guard may also finish. This is deliberately not described as a
+        prepaid ceiling.
+        """
         if self.max_usd is not None and self.spent >= self.max_usd:
             raise CostCapExceeded(
                 f"cost cap ${self.max_usd:.2f} reached (spent ${self.spent:.4f}) — aborting before "
@@ -343,7 +347,7 @@ class CassetteClient:
                 f"no cassette for {self.provider}/{model} (scenario {self.scenario!r}, call "
                 f"#{self._seq}); run with --record (or --live) to record it. key={key[:12]}"
             )
-        # record / live: make the real call under the cost cap, then persist.
+        # record / live: make the real call under the LLM spend stop threshold, then persist.
         if self.cost_cap is not None:
             self.cost_cap.guard_before_call()
         assert self.inner is not None, "live/record mode needs a real inner client"
@@ -403,9 +407,9 @@ def wrap(
     cost_cap: CostCap | None = None,
     scenario: str = "",
 ) -> CassetteClient:
-    """Build a CassetteClient for ``inner`` per ``cfg`` (shared ``cost_cap`` across clients so one
-    cap bounds the whole run). ``signature`` should be computed from config so it is identical
-    across record and replay; it defaults to introspecting ``inner`` when present."""
+    """Build a CassetteClient for ``inner`` per ``cfg`` (one shared completed-LLM-spend tracker
+    across clients). ``signature`` should be computed from config so it is identical across
+    record and replay; it defaults to introspecting ``inner`` when present."""
     return CassetteClient(
         inner,
         provider=provider,

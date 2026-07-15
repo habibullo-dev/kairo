@@ -430,12 +430,112 @@ def test_eval_plan_remains_read_only_and_does_not_acquire_reset_barrier(
     )
     config.evals_dir.mkdir(parents=True)
     (config.evals_dir / "history.jsonl").write_text(
-        '{"schema_version":1,"totals":{"cost_usd":1.25}}\n', encoding="utf-8"
+        '{"schema_version":1,"suite":"core","runs_per_scenario":3,'
+        '"totals":{"cost_usd":1.25}}\n',
+        encoding="utf-8",
     )
     monkeypatch.setattr(runner, "load_config", lambda *args, **kwargs: config)
-    assert runner.cli(["plan", "--suite", "core", "--runs", "1", "--live"]) == 0
+    assert (
+        runner.cli(
+            [
+                "plan",
+                "--suite",
+                "core",
+                "--runs",
+                "1",
+                "--live",
+                "--max-cost-usd",
+                "2",
+            ]
+        )
+        == 0
+    )
     output = capsys.readouterr().out
-    assert "projected live cost" in output and "$1.2500" in output
+    assert "last recorded gate modeled cost: $1.2500" in output
+    assert "(suite=core runs=3)" in output
+    assert "historical modeled cost is not a spend forecast" in output
+    assert "incremental API spend (live): unknown before provider calls" in output
+    assert "requested LLM stop threshold: $2.00" in output
+    assert "already-started calls can cross it" in output
+    assert "excludes Voyage/Tavily charges" in output
+    assert "repository-wide inventory, not selected-suite coverage" in output
+    assert "projected" not in output and "last live gate" not in output
+
+
+def test_eval_plan_cassette_inventory_buckets_are_disjoint(tmp_path: Path, monkeypatch) -> None:
+    cassettes = tmp_path / "cassettes"
+    for relative in (
+        "root.json",
+        "embeddings/embedding.json",
+        "web/search.json",
+        "smoke/provider.json",
+        "future/new-kind.json",
+    ):
+        path = cassettes / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(runner, "CASSETTES_PATH", cassettes)
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    config = config.model_copy(
+        update={"paths": config.paths.model_copy(update={"data_dir": tmp_path / "runtime-data"})}
+    )
+
+    plan = runner.plan_eval(config, "core", 1, "replay", None)
+
+    assert plan["cassette_counts"] == {
+        "llm": 1,
+        "embeddings": 1,
+        "web": 1,
+        "smoke": 1,
+        "other": 1,
+    }
+    assert sum(plan["cassette_counts"].values()) == plan["cassette_files_total"] == 5
+
+
+def test_eval_plan_rejects_overlapping_cassette_inventory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cassettes = tmp_path / "cassettes"
+    cassettes.mkdir()
+    (cassettes / "root.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(runner, "CASSETTES_PATH", cassettes)
+    original_count = runner.CassetteStore.count
+
+    def overlapping_count(store) -> int:
+        if store.dir == cassettes / "embeddings":
+            return 1
+        return original_count(store)
+
+    monkeypatch.setattr(runner.CassetteStore, "count", overlapping_count)
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+
+    with pytest.raises(ValueError, match="cassette inventory categories overlap"):
+        runner.plan_eval(config, "core", 1, "replay", None)
+
+
+def test_eval_plan_labels_a_replay_threshold_as_ignored(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    config = config.model_copy(
+        update={"paths": config.paths.model_copy(update={"data_dir": tmp_path / "runtime-data"})}
+    )
+    monkeypatch.setattr(runner, "load_config", lambda *args, **kwargs: config)
+
+    assert runner.cli(["plan", "--max-cost-usd", "0"]) == 0
+    assert "supplied --max-cost-usd is ignored in replay mode" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("cap", ["0", "-1", "nan", "inf"])
+def test_eval_plan_rejects_an_invalid_supplied_threshold_before_config(
+    cap: str, monkeypatch, capsys
+) -> None:
+    def unexpected_config(*_args, **_kwargs):
+        raise AssertionError("invalid plan threshold must fail before config loading")
+
+    monkeypatch.setattr(runner, "load_config", unexpected_config)
+    assert runner.cli(["plan", "--live", "--max-cost-usd", cap]) == 2
+    assert "must be positive and finite" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("runs", ["0", "-1"])
@@ -456,7 +556,7 @@ def test_eval_cli_rejects_nonpositive_run_counts_before_dispatch(
         raise AssertionError("invalid run count must fail before dispatch")
 
     monkeypatch.setattr(runner, "load_config", unexpected)
-    monkeypatch.setattr(runner, "project_cost", unexpected)
+    monkeypatch.setattr(runner, "plan_eval", unexpected)
 
     with pytest.raises(SystemExit) as exc_info:
         runner.cli([*prefix, "--runs", runs])

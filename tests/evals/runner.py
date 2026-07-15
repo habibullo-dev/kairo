@@ -770,14 +770,20 @@ async def run_smoke(
     return 1 if failures or unmet or attempted == 0 else 0
 
 
-def project_cost(config: Config, suite: str, runs: int, mode: str) -> dict:
-    """Projected LIVE spend for an eval run, computed BEFORE running (no API calls). ``replay``
-    ⇒ $0 (no live calls at all). ``record``/``live`` ⇒ the last live gate's total cost from
-    history as the best real estimate (None if never run live), plus cassette coverage so the
-    human sees how much of the suite is already cached (free to replay)."""
+def plan_eval(config: Config, suite: str, runs: int, mode: str, max_cost_usd: float | None) -> dict:
+    """Describe a proposed eval without pretending historical modeled cost is a forecast."""
     scenarios = load_scenarios(suite)
-    cached = CassetteStore(CASSETTES_PATH).count()
-    cached += CassetteStore(CASSETTES_PATH / "smoke").count()
+    cassette_counts = {
+        "llm": CassetteStore(CASSETTES_PATH).count(),
+        "embeddings": CassetteStore(CASSETTES_PATH / "embeddings").count(),
+        "web": CassetteStore(CASSETTES_PATH / "web").count(),
+        "smoke": CassetteStore(CASSETTES_PATH / "smoke").count(),
+    }
+    cassette_total = len(list(CASSETTES_PATH.rglob("*.json"))) if CASSETTES_PATH.is_dir() else 0
+    classified_total = sum(cassette_counts.values())
+    if classified_total > cassette_total:
+        raise ValueError("cassette inventory categories overlap")
+    cassette_counts["other"] = cassette_total - classified_total
     history = recorder.read_history(config.evals_dir / "history.jsonl")
     last = history[-1] if history else None
     last_cost = (last.get("totals") or {}).get("cost_usd") if isinstance(last, dict) else None
@@ -786,24 +792,55 @@ def project_cost(config: Config, suite: str, runs: int, mode: str) -> dict:
         "suite": suite,
         "scenarios": len(scenarios),
         "runs": runs,
-        "cassettes_cached": cached,
-        "last_gate_cost_usd": last_cost,
-        "projected_live_usd": 0.0 if mode == "replay" else last_cost,
+        "max_cost_usd": max_cost_usd,
+        "cassette_counts": cassette_counts,
+        "cassette_files_total": cassette_total,
+        "last_recorded_gate": (
+            {
+                "modeled_cost_usd": last_cost,
+                "suite": last.get("suite"),
+                "runs": last.get("runs_per_scenario"),
+            }
+            if isinstance(last, dict)
+            else None
+        ),
     }
 
 
 def _print_plan(p: dict) -> None:
     print(f"[plan] suite={p['suite']} runs={p['runs']} mode={p['mode']}")
-    print(f"[plan] scenarios={p['scenarios']}  cassettes_cached={p['cassettes_cached']}")
-    lc = p["last_gate_cost_usd"]
-    lc_s = f"${lc:.4f}" if lc is not None else "never run live"
-    print(f"[plan] last live gate cost: {lc_s}")
-    if p["mode"] == "replay":
-        print("[plan] projected live cost: $0.00 (keyless replay — no API calls)")
+    counts = p["cassette_counts"]
+    print(
+        f"[plan] scenarios={p['scenarios']}  cassette_files_on_disk="
+        f"{p['cassette_files_total']} (llm={counts['llm']} embeddings={counts['embeddings']} "
+        f"web={counts['web']} smoke={counts['smoke']} other={counts['other']})"
+    )
+    print("[plan] cassette count is repository-wide inventory, not selected-suite coverage")
+    reference = p["last_recorded_gate"]
+    if reference is None:
+        print("[plan] last recorded gate modeled cost: unavailable")
     else:
-        pj = p["projected_live_usd"]
-        est = f"${pj:.4f}" if pj is not None else "unknown (no prior live gate to estimate from)"
-        print(f"[plan] projected live cost (~{p['mode']}): {est}")
+        cost = reference["modeled_cost_usd"]
+        cost_text = f"${cost:.4f}" if isinstance(cost, int | float) else "unavailable"
+        print(
+            f"[plan] last recorded gate modeled cost: {cost_text} "
+            f"(suite={reference['suite'] or '?'} runs={reference['runs'] or '?'})"
+        )
+    print("[plan] history does not record mode; historical modeled cost is not a spend forecast")
+    if p["mode"] == "replay":
+        print("[plan] incremental API spend: $0.00 (keyless replay; cassette misses fail closed)")
+        if p["max_cost_usd"] is not None:
+            print("[plan] supplied --max-cost-usd is ignored in replay mode")
+    else:
+        print(f"[plan] incremental API spend ({p['mode']}): unknown before provider calls")
+        cap = p["max_cost_usd"]
+        cap_text = f"${cap:.2f}" if isinstance(cap, int | float) else "not supplied to plan"
+        print(f"[plan] requested LLM stop threshold: {cap_text}")
+        print(
+            "[plan] execution requires a positive finite cap; it covers metered LLM calls only, "
+            "is not a prepaid ceiling because already-started calls can cross it, and excludes "
+            "Voyage/Tavily charges"
+        )
 
 
 def _add_cassette_args(p: object) -> None:
@@ -819,7 +856,7 @@ def _add_cassette_args(p: object) -> None:
     )
     p.add_argument(
         "--max-cost-usd", type=float, default=None, metavar="USD",
-        help="Hard cap on live spend for this run (aborts when exceeded).",
+        help="Metered LLM spend stop threshold; already-started calls can cross it.",
     )
 
 
@@ -2461,7 +2498,7 @@ def cli(argv: list[str] | None = None) -> int:
     )
     _add_cassette_args(sm)
 
-    pl = sub.add_parser("plan", help="Show projected eval cost BEFORE running (no API calls).")
+    pl = sub.add_parser("plan", help="Show eval scope and known spend facts (no API calls).")
     pl.add_argument("--suite", default="all", choices=["core", "adversarial", "all"])
     pl.add_argument("--runs", type=_positive_run_count, default=3)
     _add_cassette_args(pl)
@@ -2482,7 +2519,7 @@ def cli(argv: list[str] | None = None) -> int:
         type=float,
         default=None,
         metavar="USD",
-        help="Required shared hard cap across cache-off and cache-on arms.",
+        help="Required shared metered-LLM spend stop threshold across both cache arms.",
     )
 
     sab = sub.add_parser(
@@ -2496,10 +2533,19 @@ def cli(argv: list[str] | None = None) -> int:
         type=float,
         default=None,
         metavar="USD",
-        help="Required shared hard cap across both arms and all isolated sub-agent probes.",
+        help="Required shared metered-LLM spend stop threshold across both skill arms.",
     )
 
     args = parser.parse_args(argv)
+
+    if (
+        args.cmd == "plan"
+        and (args.live or args.record)
+        and args.max_cost_usd is not None
+        and not _has_positive_finite_cost_cap(args.max_cost_usd)
+    ):
+        print("[plan] --max-cost-usd must be positive and finite; no call was made")
+        return 2
 
     if (
         args.cmd in {"gate", "run"}
@@ -2545,7 +2591,7 @@ def cli(argv: list[str] | None = None) -> int:
     if args.cmd == "plan":
         mode = "live" if args.live else ("record" if args.record else "replay")
         config = load_config()
-        _print_plan(project_cost(config, args.suite, args.runs, mode))
+        _print_plan(plan_eval(config, args.suite, args.runs, mode, args.max_cost_usd))
         return 0
 
     if args.cmd == "cache-ab":
