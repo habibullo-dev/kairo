@@ -50,9 +50,9 @@ async def inbox_status(connectors: ConnectorRegistry | None) -> str:
     try:
         summary = await gmail.unread_inbox_summary(client)
     except ConnectorError as exc:
-        return f"Kairo could not check Gmail: {exc.user_message}"
+        return f"Kira could not check Gmail: {exc.user_message}"
     except Exception:
-        return "Kairo could not check Gmail right now. Please try again or use local Kairo."
+        return "Kira could not check Gmail right now. Please try again or use Kira locally."
     if summary.unread_estimate is None:
         return "Inbox: Gmail did not provide an unread count."
     return f"Inbox: about {summary.unread_estimate} unread message(s)."
@@ -121,7 +121,7 @@ async def _bound_inbox_followup(
     bound = message_ids[:_REMOTE_INBOX_MAX_MESSAGES]
     if not bound:
         return InboxWorkspaceResult(
-            "That inbox selection is empty. Ask Kairo to show the inbox again."
+            "That inbox selection is empty. Ask Kira to show the inbox again."
         )
     if mode == "detail":
         if item_index is None or item_index < 1 or item_index > len(bound):
@@ -157,11 +157,11 @@ async def _bound_inbox_followup(
             )
     except ConnectorError as exc:
         return InboxWorkspaceResult(
-            f"Kairo could not read that Gmail selection: {exc.user_message}", message_ids=bound
+            f"Kira could not read that Gmail selection: {exc.user_message}", message_ids=bound
         )
     except Exception:
         return InboxWorkspaceResult(
-            "Kairo could not summarize that Gmail selection right now.", message_ids=bound
+            "Kira could not summarize that Gmail selection right now.", message_ids=bound
         )
 
     scope = f" matching {display_filter}" if display_filter else ""
@@ -215,10 +215,10 @@ async def inbox_today_view(
     try:
         messages = await gmail.search(client, query=query, max_results=cap)
     except ConnectorError as exc:
-        return InboxWorkspaceResult(f"Kairo could not check Gmail: {exc.user_message}")
+        return InboxWorkspaceResult(f"Kira could not check Gmail: {exc.user_message}")
     except Exception:
         return InboxWorkspaceResult(
-            "Kairo could not check Gmail right now. Please try again or use local Kairo."
+            "Kira could not check Gmail right now. Please try again or use Kira locally."
         )
     if not messages:
         if display_filter:
@@ -299,9 +299,9 @@ async def calendar_status(
             max_results=50,
         )
     except ConnectorError as exc:
-        return f"Kairo could not check Calendar: {exc.user_message}"
+        return f"Kira could not check Calendar: {exc.user_message}"
     except Exception:
-        return "Kairo could not check Calendar right now. Please try again or use local Kairo."
+        return "Kira could not check Calendar right now. Please try again or use Kira locally."
     if summary.event_count == 0:
         return "Calendar: no events in the next 24 hours."
     count = f"{summary.event_count}+" if summary.has_more else str(summary.event_count)

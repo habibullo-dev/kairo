@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 
-from jarvis.connectors.base import ConnectorRegistry
+from jarvis.connectors.base import ConnectorError, ConnectorRegistry
 from jarvis.remote.workspace import (
     calendar_status,
     inbox_status,
@@ -113,6 +113,15 @@ class _InboxGoogle:
         }
 
 
+class _FailingGoogle:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def get_json(self, _url: str, *, params: dict | None = None) -> dict:
+        del params
+        raise self.error
+
+
 async def test_inbox_status_uses_one_count_only_listing_without_message_fetches() -> None:
     google = _Google()
     reply = await inbox_status(ConnectorRegistry(google=google))
@@ -208,3 +217,56 @@ async def test_calendar_status_excludes_event_content_from_telegram_reply() -> N
     assert reply == "Calendar: 1 event(s) in the next 24 hours. Next starts today at 10:30."
     assert "Sensitive" not in reply and "Private" not in reply and "owner@example.com" not in reply
     assert len(google.calls) == 1
+
+
+async def test_workspace_connector_errors_use_canonical_kira_branding() -> None:
+    connectors = ConnectorRegistry(
+        google=_FailingGoogle(ConnectorError("google", user_message="Reconnect Google."))
+    )
+    assert await inbox_status(connectors) == "Kira could not check Gmail: Reconnect Google."
+    inbox = await inbox_today_view(connectors, now=dt.datetime(2026, 7, 13, tzinfo=dt.UTC))
+    assert inbox.text == "Kira could not check Gmail: Reconnect Google."
+    followup = await inbox_today_view(
+        connectors,
+        now=dt.datetime(2026, 7, 13, tzinfo=dt.UTC),
+        mode="detail",
+        item_index=1,
+        message_ids=("m1",),
+    )
+    assert followup.text == "Kira could not read that Gmail selection: Reconnect Google."
+    assert await calendar_status(
+        connectors,
+        calendar_id="primary",
+        now=dt.datetime(2026, 7, 13, tzinfo=dt.UTC),
+    ) == "Kira could not check Calendar: Reconnect Google."
+
+
+async def test_workspace_unexpected_errors_and_empty_selection_use_kira_branding() -> None:
+    connectors = ConnectorRegistry(google=_FailingGoogle(RuntimeError("provider failed")))
+    assert await inbox_status(connectors) == (
+        "Kira could not check Gmail right now. Please try again or use Kira locally."
+    )
+    inbox = await inbox_today_view(connectors, now=dt.datetime(2026, 7, 13, tzinfo=dt.UTC))
+    assert inbox.text == (
+        "Kira could not check Gmail right now. Please try again or use Kira locally."
+    )
+    followup = await inbox_today_view(
+        connectors,
+        now=dt.datetime(2026, 7, 13, tzinfo=dt.UTC),
+        mode="detail",
+        item_index=1,
+        message_ids=("m1",),
+    )
+    assert followup.text == "Kira could not summarize that Gmail selection right now."
+    empty = await inbox_today_view(
+        ConnectorRegistry(google=_InboxGoogle()),
+        now=dt.datetime(2026, 7, 13, tzinfo=dt.UTC),
+        mode="summarize_each",
+        message_ids=(),
+    )
+    assert empty.text == "That inbox selection is empty. Ask Kira to show the inbox again."
+    assert await calendar_status(
+        connectors,
+        calendar_id="primary",
+        now=dt.datetime(2026, 7, 13, tzinfo=dt.UTC),
+    ) == "Kira could not check Calendar right now. Please try again or use Kira locally."
