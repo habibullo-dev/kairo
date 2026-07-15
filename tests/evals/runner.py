@@ -610,7 +610,11 @@ def _cassette_config_from_args(args: object) -> CassetteConfig:
 
 
 def _apply_cassette(
-    config: Config, cassette_cfg: CassetteConfig, judge_client: LLMClient | None
+    config: Config,
+    cassette_cfg: CassetteConfig,
+    judge_client: LLMClient | None,
+    *,
+    judge_required: bool | None = None,
 ) -> tuple[Callable[[Config], LLMClient], LLMClient | None]:
     """Wrap the scenario/loop factory + judge client in the cassette layer, sharing ONE cost cap
     across the whole run. In replay mode the inner (live) client is never built (``inner=None``),
@@ -629,8 +633,11 @@ def _apply_cassette(
             signature=sig, cost_cap=cap,
         )
 
-    wrapped_judge = judge_client
-    if judge_client is not None:
+    needs_judge = judge_client is not None if judge_required is None else judge_required
+    wrapped_judge = None
+    if needs_judge:
+        if not replay and judge_client is None:
+            raise ValueError("a live/record eval judge requires a live client")
         judge_inner = None if replay else judge_client
         wrapped_judge = cassette_wrap(
             judge_inner, provider="anthropic", cfg=cassette_cfg, pricing=pricing,
@@ -2280,9 +2287,11 @@ def _required_keys(scenarios: list[LoadedScenario]) -> tuple[str, ...]:
     return tuple(required)
 
 
-def _load_for_suites(scenarios: list[LoadedScenario]) -> Config:
+def _load_for_suites(scenarios: list[LoadedScenario], *, cassette_mode: str) -> Config:
+    """Load structural config for replay; require real provider keys only for network modes."""
     try:
-        return load_config(require=_required_keys(scenarios))
+        required = () if cassette_mode == "replay" else _required_keys(scenarios)
+        return load_config(require=required)
     except ConfigError as exc:
         print(f"Configuration error: {exc}")
         sys.exit(1)
@@ -2299,6 +2308,29 @@ def _build_judge_client(
         effort=config.limits.effort,
         max_retries=config.limits.max_retries,
         thinking=False,
+    )
+
+
+def _prepare_suite_clients(
+    config: Config,
+    args: object,
+    scenarios: list[LoadedScenario],
+) -> tuple[Callable[[Config], LLMClient], LLMClient | None]:
+    """Compose replay without constructing any live client; compose live/record normally."""
+    cassette_cfg = _cassette_config_from_args(args)
+    judge_required = not getattr(args, "no_judge", False) and any(
+        scenario.data.get("judge") for scenario in scenarios
+    )
+    judge_client = (
+        _build_judge_client(config, no_judge=False, scenarios=scenarios)
+        if judge_required and cassette_cfg.mode != "replay"
+        else None
+    )
+    return _apply_cassette(
+        config,
+        cassette_cfg,
+        judge_client,
+        judge_required=judge_required,
     )
 
 
@@ -2557,11 +2589,9 @@ def cli(argv: list[str] | None = None) -> int:
 
     if args.cmd == "run":
         scenarios = load_scenarios(args.suite)
-        config = _load_for_suites(scenarios)
-        judge_client = _build_judge_client(config, no_judge=args.no_judge, scenarios=scenarios)
-        client_factory, judge_client = _apply_cassette(
-            config, _cassette_config_from_args(args), judge_client
-        )
+        cassette_cfg = _cassette_config_from_args(args)
+        config = _load_for_suites(scenarios, cassette_mode=cassette_cfg.mode)
+        client_factory, judge_client = _prepare_suite_clients(config, args, scenarios)
         try:
             with reset_sensitive_writer(config):
                 return asyncio.run(
@@ -2582,11 +2612,9 @@ def cli(argv: list[str] | None = None) -> int:
     # gate (single-process, or the chunked profile)
     if getattr(args, "profile", None) == "live-chunked":
         scenarios = load_scenarios("all")
-        config = _load_for_suites(scenarios)
-        judge_client = _build_judge_client(config, no_judge=args.no_judge, scenarios=scenarios)
-        client_factory, judge_client = _apply_cassette(
-            config, _cassette_config_from_args(args), judge_client
-        )
+        cassette_cfg = _cassette_config_from_args(args)
+        config = _load_for_suites(scenarios, cassette_mode=cassette_cfg.mode)
+        client_factory, judge_client = _prepare_suite_clients(config, args, scenarios)
         stage = Path(args.stage) if args.stage else staging_dir(recorder.git_rev())
         try:
             with reset_sensitive_writer(config):
@@ -2610,11 +2638,9 @@ def cli(argv: list[str] | None = None) -> int:
     scenarios = load_scenarios(args.suite)
     if args.only:  # narrow the key requirements + judge client to the filtered set
         scenarios = [s for s in scenarios if s.name.startswith(args.only)]
-    config = _load_for_suites(scenarios)
-    judge_client = _build_judge_client(config, no_judge=args.no_judge, scenarios=scenarios)
-    client_factory, judge_client = _apply_cassette(
-        config, _cassette_config_from_args(args), judge_client
-    )
+    cassette_cfg = _cassette_config_from_args(args)
+    config = _load_for_suites(scenarios, cassette_mode=cassette_cfg.mode)
+    client_factory, judge_client = _prepare_suite_clients(config, args, scenarios)
     try:
         with reset_sensitive_writer(config):
             return asyncio.run(

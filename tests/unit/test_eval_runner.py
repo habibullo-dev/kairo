@@ -12,6 +12,7 @@ import json
 import shutil
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 from tests.evals import recorder, runner
 from tests.evals.runner import RunObservation, evaluate, make_approver
@@ -44,6 +45,41 @@ def test_load_scenarios_tags_core_suite() -> None:
     assert all(ls.hash for ls in core)  # provenance hash computed per scenario
     # adversarial scenarios are a separate suite, never returned under "core"
     assert not any(ls.name.startswith("inj_") for ls in core)
+
+
+def test_suite_config_requires_provider_keys_only_for_network_modes(monkeypatch) -> None:
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    seen: list[tuple[str, ...]] = []
+
+    def fake_load_config(*, require=()):
+        seen.append(tuple(require))
+        return config
+
+    monkeypatch.setattr(runner, "load_config", fake_load_config)
+    scenarios = runner.load_scenarios("all")
+
+    assert runner._load_for_suites(scenarios, cassette_mode="replay") is config
+    assert runner._load_for_suites(scenarios, cassette_mode="record") is config
+    assert seen == [(), runner._required_keys(scenarios)]
+
+
+def test_replay_wraps_required_judge_without_constructing_live_client(monkeypatch) -> None:
+    config = runner.load_config(root=runner.REPO_ROOT, env_file=None)
+    scenarios = [
+        scenario for scenario in runner.load_scenarios("core") if scenario.data.get("judge")
+    ]
+
+    def unexpected_live_judge(*_args, **_kwargs):
+        raise AssertionError("replay must not construct a live judge client")
+
+    monkeypatch.setattr(runner, "_build_judge_client", unexpected_live_judge)
+    _factory, judge = runner._prepare_suite_clients(
+        config,
+        SimpleNamespace(live=False, record=False, max_cost_usd=None, no_judge=False),
+        scenarios,
+    )
+
+    assert judge is not None
 
 
 # --- the pin: attempts catch what names miss -------------------------------
