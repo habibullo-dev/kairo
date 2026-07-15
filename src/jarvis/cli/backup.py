@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from jarvis.persistence.backup import BackupError, create_backup, verify_backup
@@ -10,7 +11,15 @@ from jarvis.persistence.backup import BackupError, create_backup, verify_backup
 
 def backup_cli(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        prog="kira backup", description="Create or verify a local, secret-excluding Kira backup."
+        prog="kira backup",
+        description=(
+            "Create or verify a private Kira backup that excludes known credential stores, "
+            "configuration, logs, and sensitive filenames."
+        ),
+        epilog=(
+            "Backups can still contain private or secret user-authored content. Protect them as "
+            "private data. Verification is read-only; restore is not supported."
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("create", help="Create a timestamped backup under data/backups/.")
@@ -20,19 +29,27 @@ def backup_cli(argv: list[str]) -> int:
 
     try:
         if args.command == "create":
-            from jarvis.config import load_config
+            from jarvis.config import ConfigError, load_config
 
-            config = load_config()
-            config.ensure_dirs()
+            try:
+                config = load_config()
+            except ConfigError as exc:
+                print(f"Kira backup configuration error: {exc}", file=sys.stderr)
+                return 1
             path = create_backup(config.data_dir)
-            print(f"Backup created: {path}")
+            print(f"Kira backup created: {path}")
             return 0
         result = verify_backup(Path(args.backup))
+        format_label = (
+            "legacy backup format v1"
+            if result["schema_version"] == 1
+            else f"Kira backup format v{result['schema_version']}"
+        )
         print(
-            f"Backup verified: {result['backup']} "
-            f"(schema v{result['database_user_version']}, {result['files']} files)"
+            f"Kira backup verified: {result['backup']} ({format_label}; database schema "
+            f"v{result['database_user_version']}; {result['files']} files)"
         )
         return 0
     except BackupError as exc:
-        print(f"Backup error: {exc}")
+        print(f"Kira backup error: {exc}", file=sys.stderr)
         return 1
