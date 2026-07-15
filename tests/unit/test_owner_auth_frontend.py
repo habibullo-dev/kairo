@@ -54,8 +54,15 @@ async def test_auth_shell_is_exactly_public_and_has_no_external_dependencies(
 
             css = await client.get("/static/auth/auth.css")
             script = await client.get("/static/auth/auth.js")
-            favicon = await client.get("/static/assets/kairo-favicon.svg")
-            assert css.status_code == script.status_code == favicon.status_code == 200
+            favicon = await client.get("/static/assets/kira-favicon.svg")
+            brand_mark = await client.get("/static/assets/kira-mark-on-dark.svg")
+            assert (
+                css.status_code
+                == script.status_code
+                == favicon.status_code
+                == brand_mark.status_code
+                == 200
+            )
             assert "app.js" not in script.text
             assert "location.replace(\"/\")" in script.text
 
@@ -63,6 +70,7 @@ async def test_auth_shell_is_exactly_public_and_has_no_external_dependencies(
             # becomes anonymous just because the login bundle is public.
             assert (await client.get("/static/app.js")).status_code == 401
             assert (await client.get("/static/kairo.css")).status_code == 401
+            assert (await client.get("/static/assets/kairo-favicon.svg")).status_code == 401
             assert (await client.get("/static/auth/not-real.js")).status_code == 401
 
             enrolled = await client.post(

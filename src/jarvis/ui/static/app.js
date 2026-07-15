@@ -1471,6 +1471,13 @@ let activeRouteKey = null;
 let activeRouteController = null;
 let navigationGeneration = 0;
 const ROUTE_RENDER_STALE = Symbol("route-render-stale");
+let kiraAppReadySignaled = false;
+
+function signalKiraAppReady() {
+  if (kiraAppReadySignaled) return;
+  kiraAppReadySignaled = true;
+  document.dispatchEvent(new Event("kira:app-ready"));
+}
 
 function routeKey() {
   // A route rendered under another server-owned workspace/session is a different surface even if
@@ -1693,6 +1700,7 @@ function renderRoute({ reset = false } = {}) {
     container.append(h, sub, link);
     container.setAttribute("aria-busy", "false");
     if (activeRouteController === controller) activeRouteController = null;
+    signalKiraAppReady();
     return Promise.resolve();
   }
   // Own-property lookup only: state.route is hash-derived, so "#__proto__" etc. must fall
@@ -1707,6 +1715,7 @@ function renderRoute({ reset = false } = {}) {
       if (activeRouteController === controller) activeRouteController = null;
       if (generation === routeRenderGeneration && container.isConnected) {
         renderRouteFailure(container, error);
+        signalKiraAppReady();
       }
       return Promise.resolve();
     }
@@ -1718,6 +1727,7 @@ function renderRoute({ reset = false } = {}) {
       if (activeRouteController === controller) activeRouteController = null;
       if (generation === routeRenderGeneration && container.isConnected) {
         container.setAttribute("aria-busy", "false");
+        signalKiraAppReady();
       }
       return Promise.resolve();
     }
@@ -1731,6 +1741,7 @@ function renderRoute({ reset = false } = {}) {
         if (generation === routeRenderGeneration && container.isConnected) {
           if (shellLoading?.isConnected) shellLoading.remove();
           container.setAttribute("aria-busy", "false");
+          signalKiraAppReady();
         }
       },
       (error) => {
@@ -1744,6 +1755,7 @@ function renderRoute({ reset = false } = {}) {
         if (generation === routeRenderGeneration && container.isConnected) {
           if (timedOut) container = replaceRouteContainer(container);
           renderRouteFailure(container, error);
+          signalKiraAppReady();
         }
       },
     );
@@ -1761,6 +1773,7 @@ function renderRoute({ reset = false } = {}) {
   container.append(h, sub);
   container.setAttribute("aria-busy", "false");
   if (activeRouteController === controller) activeRouteController = null;
+  signalKiraAppReady();
   return Promise.resolve();
 }
 

@@ -105,7 +105,7 @@ def test_static_assets_served_and_gated(tmp_path: Path) -> None:
     client, auth = _client(tmp_path)
     for path in (
         "/static/kairo.css", "/static/app.js", "/static/screens/gate.js",
-        "/static/assets/kairo-v2-bg-noir.jpg",
+        "/static/assets/kira-workspace-bg-noir.jpg",
     ):
         assert client.get(path).status_code == 401, path  # no session ⇒ refused
         r = client.get(path, headers=_cookie(auth))

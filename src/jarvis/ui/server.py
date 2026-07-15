@@ -136,7 +136,8 @@ _OWNER_OPEN_PATHS = frozenset(
         "/auth/recover",
         "/static/auth/auth.css",
         "/static/auth/auth.js",
-        "/static/assets/kairo-favicon.svg",
+        "/static/assets/kira-favicon.svg",
+        "/static/assets/kira-mark-on-dark.svg",
     }
 )
 

@@ -1,0 +1,192 @@
+/* Decorative Kira startup mark. It never owns focus, scrolling, pointer input, or app inertness. */
+.kira-preloader {
+  --kira-preloader-ready: 1;
+  --kira-preloader-background: #060a0f;
+  --kira-preloader-foreground: #f4fbff;
+  --kira-preloader-grid: rgba(244, 251, 255, 0.045);
+  --kira-preloader-glow: rgba(32, 185, 176, 0.22);
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 44%, var(--kira-preloader-glow), transparent 31rem),
+    var(--kira-preloader-background);
+  color: var(--kira-preloader-foreground);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 160ms ease, visibility 160ms linear;
+}
+
+.kira-preloader[hidden] { display: none; }
+
+:root[data-theme="light"] .kira-preloader {
+  --kira-preloader-background: #f4f7f5;
+  --kira-preloader-foreground: #050708;
+  --kira-preloader-grid: rgba(5, 7, 8, 0.05);
+  --kira-preloader-glow: rgba(32, 185, 176, 0.14);
+}
+
+:root[data-theme="neon"] .kira-preloader {
+  --kira-preloader-background: #020507;
+  --kira-preloader-foreground: #66ffcc;
+  --kira-preloader-grid: rgba(102, 255, 204, 0.055);
+  --kira-preloader-glow: rgba(0, 210, 200, 0.16);
+}
+
+:root[data-kira-boot="pending"] .kira-preloader:not([hidden]) {
+  opacity: 1;
+  visibility: visible;
+}
+
+.kira-preloader::before {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background:
+    linear-gradient(var(--kira-preloader-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--kira-preloader-grid) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: radial-gradient(circle at center, #000 20%, transparent 72%);
+}
+
+.kira-preloader__stage {
+  position: relative;
+  display: grid;
+  width: min(76vw, 76vh, 26rem);
+  aspect-ratio: 1;
+  place-items: center;
+  perspective: 75rem;
+}
+
+.kira-preloader__square {
+  position: absolute;
+  inset: 12%;
+  border: 2px solid currentColor;
+  opacity: 0;
+  transform-origin: center;
+  box-shadow: 0 0 1.2rem var(--kira-preloader-glow), inset 0 0 0.7rem var(--kira-preloader-glow);
+}
+
+.kira-preloader__square--outer {
+  animation:
+    kira-preloader-square-enter 520ms cubic-bezier(.16, 1, .3, 1) 20ms both,
+    kira-preloader-square-turn 1800ms cubic-bezier(.65, 0, .35, 1) 360ms both;
+}
+
+.kira-preloader__square--inner {
+  inset: 18%;
+  border-width: 1px;
+  animation: kira-preloader-square-inner 1900ms cubic-bezier(.65, 0, .35, 1) 180ms both;
+}
+
+.kira-preloader__logo {
+  position: relative;
+  z-index: 2;
+  width: 72%;
+  overflow: visible;
+  filter: drop-shadow(0 0 1.5rem var(--kira-preloader-glow));
+}
+
+.kira-preloader__letter,
+.kira-preloader__final {
+  fill: currentColor;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.kira-preloader__letter { opacity: 0; }
+.kira-preloader__letter--k { animation: kira-preloader-letter-build 520ms cubic-bezier(.16, 1, .3, 1) 100ms both; }
+.kira-preloader__letter--i { animation: kira-preloader-letter-build 520ms cubic-bezier(.16, 1, .3, 1) 390ms both; }
+.kira-preloader__letter--r { animation: kira-preloader-letter-build 520ms cubic-bezier(.16, 1, .3, 1) 680ms both; }
+.kira-preloader__letter--a { animation: kira-preloader-letter-build 520ms cubic-bezier(.16, 1, .3, 1) 970ms both; }
+
+.kira-preloader__final {
+  opacity: 0;
+  animation:
+    kira-preloader-final-lock 560ms cubic-bezier(.16, 1, .3, 1) 1320ms both,
+    kira-preloader-final-pulse 900ms ease-in-out 1780ms infinite;
+}
+
+.kira-preloader__scan {
+  position: absolute;
+  z-index: 3;
+  top: 22%;
+  right: 18%;
+  left: 18%;
+  height: 2px;
+  background: currentColor;
+  opacity: 0;
+  box-shadow: 0 0 1.25rem var(--kira-preloader-glow);
+  animation: kira-preloader-scan 1600ms cubic-bezier(.65, 0, .35, 1) 260ms both;
+}
+
+.kira-preloader__caption {
+  position: absolute;
+  bottom: 4%;
+  margin: 0;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.67rem;
+  font-weight: 750;
+  letter-spacing: 0.18em;
+  opacity: 0.58;
+  animation: kira-preloader-caption 700ms ease 980ms both;
+}
+
+@keyframes kira-preloader-letter-build {
+  0% { opacity: 0; transform: translateZ(-13rem) scale(.2) rotateY(-95deg) rotateZ(-12deg); filter: blur(.9rem); }
+  52% { opacity: 1; transform: translateZ(2rem) scale(1.12) rotateY(8deg) rotateZ(2deg); filter: blur(0); }
+  100% { opacity: 1; transform: translateZ(0) scale(1) rotateY(0) rotateZ(0); }
+}
+
+@keyframes kira-preloader-final-lock {
+  from { opacity: 0; transform: scale(.88); filter: blur(.45rem); }
+  to { opacity: 1; transform: scale(1); filter: blur(0); }
+}
+
+@keyframes kira-preloader-final-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.045); }
+}
+
+@keyframes kira-preloader-square-enter {
+  from { opacity: 0; transform: scale(.28) rotate(45deg); }
+  to { opacity: .8; transform: scale(1) rotate(0); }
+}
+
+@keyframes kira-preloader-square-turn {
+  0% { transform: rotate(0) scale(1); }
+  50% { transform: rotate(90deg) scale(.82); }
+  100% { transform: rotate(180deg) scale(.94); }
+}
+
+@keyframes kira-preloader-square-inner {
+  0% { opacity: 0; transform: scale(1.4) rotate(-45deg); }
+  24% { opacity: .32; }
+  100% { opacity: 0; transform: scale(.48) rotate(180deg); }
+}
+
+@keyframes kira-preloader-scan {
+  0% { opacity: 0; transform: translateY(0) scaleX(.2); }
+  12%, 88% { opacity: .55; }
+  100% { opacity: 0; transform: translateY(14rem) scaleX(1); }
+}
+
+@keyframes kira-preloader-caption {
+  from { opacity: 0; transform: translateY(.35rem); }
+  to { opacity: .58; transform: translateY(0); }
+}
+
+@media (max-width: 32.5rem) {
+  .kira-preloader__stage { width: min(90vw, 80vh); }
+  .kira-preloader__logo { width: 76%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kira-preloader { display: none !important; }
+}
+
+:root.reduce-motion .kira-preloader { display: none !important; }

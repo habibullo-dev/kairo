@@ -6,9 +6,9 @@ CSS = (STATIC_DIR / "kairo.css").read_text(encoding="utf-8")
 ASSETS = STATIC_DIR / "assets"
 
 THEME_BACKGROUNDS = {
-    "light": "kairo-v2-bg-light.jpg",
-    "noir": "kairo-v2-bg-noir.jpg",
-    "neon": "kairo-v2-bg-neon.jpg",
+    "light": "kira-workspace-bg-light.jpg",
+    "noir": "kira-workspace-bg-noir.jpg",
+    "neon": "kira-workspace-bg-neon.jpg",
 }
 
 

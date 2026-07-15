@@ -7,13 +7,29 @@ import { readMigrated, writeStored } from "./storage.js";
 const KEY = "kira:appearance";
 const LEGACY_KEYS = ["kairo:appearance"];
 export const THEMES = ["noir", "light", "neon"];
+const DENSITIES = ["comfortable", "compact"];
+const LAYOUTS = ["focused", "expanded"];
+const MOTION = ["on", "off"];
 const DEFAULTS = { theme: "noir", density: "comfortable", layout: "focused", motion: "on", accent: "" };
 
 let state = { ...DEFAULTS };
 
+function normalize(candidate) {
+  const source = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ? candidate : {};
+  return {
+    theme: THEMES.includes(source.theme) ? source.theme : DEFAULTS.theme,
+    density: DENSITIES.includes(source.density) ? source.density : DEFAULTS.density,
+    layout: LAYOUTS.includes(source.layout) ? source.layout : DEFAULTS.layout,
+    motion: MOTION.includes(source.motion) ? source.motion : DEFAULTS.motion,
+    accent: typeof source.accent === "string" && /^#[0-9a-f]{6}$/i.test(source.accent)
+      ? source.accent : DEFAULTS.accent,
+  };
+}
+
 function load() {
   try {
-    return { ...DEFAULTS, ...(JSON.parse(readMigrated("local", KEY, LEGACY_KEYS) || "{}") || {}) };
+    return normalize(JSON.parse(readMigrated("local", KEY, LEGACY_KEYS) || "{}"));
   } catch {
     return { ...DEFAULTS };
   }
@@ -52,7 +68,7 @@ export function get() {
 }
 
 export function set(patch) {
-  state = { ...state, ...patch };
+  state = normalize({ ...state, ...patch });
   save();
   apply();
   // Notify any appearance indicator (the status-bar toggle AND the Settings screen) so two

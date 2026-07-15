@@ -63,11 +63,10 @@ body::before {
 }
 
 .brand-mark {
-  width: 1rem;
-  height: 1rem;
-  border: 1px solid var(--green);
-  border-radius: 50%;
-  box-shadow: 0 0 1.3rem rgba(84, 240, 173, 0.65), inset 0 0 0 3px #07110d;
+  width: 2rem;
+  height: 2rem;
+  background: center / contain no-repeat url("/static/assets/kira-mark-on-dark.svg");
+  filter: drop-shadow(0 0 0.8rem rgba(84, 240, 173, 0.42));
 }
 
 .identity-copy { max-width: 44rem; }

@@ -59,6 +59,43 @@ async def _handshake(
     )
 
 
+async def _assert_startup_ready_waits_for_current_terminal_route(
+    browser: object, base: str
+) -> None:
+    context = await browser.new_context(viewport={"width": 1024, "height": 768})
+    await context.add_init_script(
+        """(() => {
+          window.__kiraReadyEvents = 0;
+          document.addEventListener('kira:app-ready', () => {
+            window.__kiraReadyEvents += 1;
+          });
+        })();"""
+    )
+    page = await context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        await page.goto(f"{base}/__wb.html?state=router&theme=noir", wait_until="load")
+        await page.wait_for_function("window.__READY__ === true")
+        assert await page.evaluate("window.__kiraReadyEvents") == 0
+        assert await page.locator("#screen").get_attribute("aria-busy") == "true"
+
+        await _handshake(page)
+        await page.wait_for_function(
+            "document.getElementById('screen').getAttribute('aria-busy') === 'false' "
+            "&& window.__kiraReadyEvents === 1"
+        )
+
+        # Later same-authority handshakes remain ordinary application work. The
+        # startup handoff is a one-shot signal, not a generic render-complete event.
+        await _handshake(page)
+        await page.wait_for_timeout(100)
+        assert await page.evaluate("window.__kiraReadyEvents") == 1
+        assert errors == []
+    finally:
+        await context.close()
+
+
 async def _defer_get(page: object, path: str) -> None:
     await page.evaluate(
         """async path => {
@@ -3968,6 +4005,10 @@ async def main() -> int:
                 try:
                     base = f"http://127.0.0.1:{port}"
                     checks = [
+                        (
+                            "startup ready handoff",
+                            _assert_startup_ready_waits_for_current_terminal_route,
+                        ),
                         ("pending route", _assert_pending_route_is_fail_closed),
                         ("same-route newest read", _assert_newest_same_route_read_wins),
                         ("chat draft refresh", _assert_same_workspace_refresh_preserves_chat_draft),
