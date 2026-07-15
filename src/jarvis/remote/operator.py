@@ -127,7 +127,7 @@ def _row_to_proposal(row: tuple) -> RemoteProposal:
 
 
 class RemoteOperatorStore:
-    """Proposal/token persistence on Kairo's shared SQLite connection and lock."""
+    """Proposal/token persistence on Kira's shared SQLite connection and lock."""
 
     def __init__(self, db: aiosqlite.Connection, lock: asyncio.Lock) -> None:
         self.db = db
@@ -488,7 +488,7 @@ class RemoteProposalParams(BaseModel):
     project: str | None = Field(
         default=None,
         max_length=120,
-        description="An existing Kairo project id, slug, or exact name; never a filesystem path.",
+        description="An existing Kira project id, slug, or exact name; never a filesystem path.",
     )
     schedule_kind: Literal["immediate", "once", "interval", "cron"] = "immediate"
     schedule_spec: str = Field(
@@ -594,7 +594,7 @@ class RemoteProposalGate:
 class RemoteProposalTool(Tool):
     name = "remote_propose_work"
     description = (
-        "Prepare one owner-requested Kairo job or reminder for Telegram approval. This only "
+        "Prepare one owner-requested Kira job or reminder for Telegram approval. This only "
         "stores a proposal; it never schedules, executes, opens, writes, or approves anything."
     )
     Params = RemoteProposalParams
@@ -628,7 +628,7 @@ class RemoteProposalTool(Tool):
         if reference is None:
             return None
         if self.projects is None:
-            raise ValueError("Projects are unavailable. Use local Kairo to configure one.")
+            raise ValueError("Projects are unavailable. Use Kira locally to configure one.")
         projects = await self.projects.list(status="active")
         normalized = reference.casefold().lstrip("#")
         matches = [
@@ -793,7 +793,7 @@ class RemoteOperatorService:
         for proposal in await self.store.approved_without_task():
             failed = await self.store.mark_failed(
                 proposal.id,
-                "Kairo restarted before the approved proposal was durably bound to a task",
+                "Kira restarted before the approved proposal was durably bound to a task",
             )
             if failed:
                 await self._safe_send(
@@ -839,10 +839,10 @@ class RemoteOperatorService:
 
     async def projects_text(self) -> str:
         if self.projects is None:
-            return "Projects are unavailable on this Kairo instance."
+            return "Projects are unavailable on this Kira instance."
         projects = await self.projects.list(status="active")
         if not projects:
-            return "No active Kairo projects. Create and link a project on the local workstation."
+            return "No active Kira projects. Create and link a project on the local workstation."
         lines = ["Registered project aliases:"]
         for project in projects[:20]:
             lines.append(f"{project.slug} — {project.name} ({len(project.repos)} linked repo(s))")
@@ -906,7 +906,7 @@ class RemoteOperatorService:
         verb = "approved" if resolution == "approve" else "denied"
         return (
             f"Tool request {verb} for task #{pending.task_id}. "
-            "Kairo is processing the saved continuation."
+            "Kira is processing the saved continuation."
         )
 
     async def _queue_proposal(self, proposal: RemoteProposal) -> str:
@@ -944,14 +944,14 @@ class RemoteOperatorService:
         if not await self.store.mark_queued(proposal.id, task.id):
             await self.tasks.cancel(task.id)
             await self.store.mark_failed(proposal.id, "could not bind the scheduled task")
-            return "Kairo could not bind the approved proposal safely; the task was cancelled."
+            return "Kira could not bind the approved proposal safely; the task was cancelled."
         self.runner.kick()
         queued = await self.store.get(proposal.id)
         if queued is not None:
             self._start_monitor(queued)
         return (
             f"Approved and queued remote proposal #{proposal.id} as task #{task.id}. "
-            "Kairo will send milestones and request separate approval for risky tools."
+            "Kira will send milestones and request separate approval for risky tools."
         )
 
     async def _resume_parked(

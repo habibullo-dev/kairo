@@ -68,7 +68,7 @@ class _SearchSource(Tool):
 
 def _service(
     store: RemoteOperatorStore,
-    projects: ProjectStore,
+    projects: ProjectStore | None,
     tasks: TaskStore,
     runner: _Runner,
     *,
@@ -82,6 +82,48 @@ def _service(
         runner=runner,  # type: ignore[arg-type]
         sender=sender,
     )
+
+
+async def test_operator_model_and_project_copy_uses_canonical_kira_branding(
+    tmp_path: Path,
+) -> None:
+    schema = RemoteProposalParams.model_json_schema()
+    assert "existing Kira project" in schema["properties"]["project"]["description"]
+    assert "owner-requested Kira job" in RemoteProposalTool.description
+    assert "Kairo" not in RemoteProposalTool.description
+
+    db, store, projects, tasks = await _stores(tmp_path)
+    runner = _Runner()
+    unavailable = _service(store, None, tasks, runner)
+    empty = _service(store, projects, tasks, runner)
+    try:
+        assert await unavailable.projects_text() == (
+            "Projects are unavailable on this Kira instance."
+        )
+        assert await empty.projects_text() == (
+            "No active Kira projects. Create and link a project on the local workstation."
+        )
+
+        tool = RemoteProposalTool(
+            store=store,
+            projects=None,
+            config=TelegramRemoteOperatorConfig(enabled=True),
+        )
+        tool.begin_turn()
+        result = await tool.run(
+            RemoteProposalParams(
+                kind="job",
+                title="Inspect project",
+                instruction="Inspect the configured project.",
+                project="missing",
+            )
+        )
+        assert getattr(result, "is_error", False)
+        assert "Use Kira locally" in str(result)
+    finally:
+        await unavailable.stop()
+        await empty.stop()
+        await db.close()
 
 
 async def test_proposal_code_is_hashed_single_use_and_bound_to_immutable_proposal(
@@ -273,7 +315,7 @@ async def test_service_approval_queues_remote_origin_without_local_session_prove
     runner = _Runner()
     service = _service(store, projects, tasks, runner)
     try:
-        project_id = await projects.create(name="Jarvis", repos=[str(tmp_path)])
+        project_id = await projects.create(name="Kira", repos=[str(tmp_path)])
         authorization = await store.create_proposal(
             kind="job",
             title="Repair frontend wiring",
@@ -299,11 +341,46 @@ async def test_service_approval_queues_remote_origin_without_local_session_prove
         assert task.status == "active"
         assert runner.kicks == 1
         assert "Approved and queued" in reply
+        assert "Kira will send milestones" in reply and "Kairo" not in reply
 
         cancelled = await service.cancel(str(queued.id))
         assert "Cancelled remote job" in cancelled
         assert (await store.get(queued.id)).state == "cancelled"  # type: ignore[union-attr]
         assert (await tasks.get(task.id)).status == "cancelled"  # type: ignore[union-attr]
+    finally:
+        await service.stop()
+        await db.close()
+
+
+async def test_service_bind_failure_uses_canonical_kira_branding(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db, store, projects, tasks = await _stores(tmp_path)
+    runner = _Runner()
+    service = _service(store, projects, tasks, runner)
+
+    async def reject_binding(_proposal_id: int, _task_id: int) -> bool:
+        return False
+
+    monkeypatch.setattr(store, "mark_queued", reject_binding)
+    try:
+        authorization = await store.create_proposal(
+            kind="job",
+            title="Reject unsafe binding",
+            instruction="Do not run without a durable proposal binding.",
+            project_id=None,
+            schedule_kind="immediate",
+            schedule_spec="",
+            status_interval_minutes=0,
+            proposal_ttl_minutes=30,
+            approval_ttl_minutes=15,
+        )
+        reply = await service.resolve(authorization.approval_code, resolution="approve")
+        assert reply == "Kira could not bind the approved proposal safely; the task was cancelled."
+        failed = await store.get(authorization.proposal.id)
+        assert failed is not None and failed.state == "failed" and failed.task_id is None
+        assert runner.kicks == 0
     finally:
         await service.stop()
         await db.close()
@@ -379,7 +456,9 @@ async def test_service_start_closes_interrupted_approval_and_cancels_unbound_tas
 
         proposal = await store.get(authorization.proposal.id)
         assert proposal is not None and proposal.state == "failed" and proposal.task_id is None
-        assert proposal.error is not None and "restarted" in proposal.error
+        assert proposal.error == (
+            "Kira restarted before the approved proposal was durably bound to a task"
+        )
         assert (await tasks.get(orphan_task_id)).status == "cancelled"  # type: ignore[union-attr]
         assert await store.active_count() == 0
         assert runner.kicks == 1
@@ -447,6 +526,7 @@ async def test_service_parked_approval_resumes_only_the_saved_run(tmp_path: Path
         await asyncio.wait_for(runner.resumed_event.wait(), timeout=1)
 
         assert "approved" in reply
+        assert "Kira is processing the saved continuation." in reply
         assert runner.resumed == [(run_id, "approve")]
         assert sent == []
     finally:
