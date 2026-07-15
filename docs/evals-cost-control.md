@@ -1,124 +1,190 @@
-# Eval cost control — when to use which mode
+# Eval cost control — choose the safest mode
 
-Kairo proves quality mostly **without burning real tokens**. Live API calls are reserved for
-adapter fidelity and final checkpoint confidence. This is the cost ladder, cheapest first.
+Kira proves most quality without network calls. Live providers are reserved for adapter checks,
+cassette refreshes, and deliberate phase-closeout gates. Start with the cheapest useful tier and
+move upward only when the lower tier cannot answer the question.
 
-## The ladder (cheapest → most expensive)
+## Before you run
 
-| Tier | Command | Cost | API key? | Use it for |
-|---|---|---|---|---|
-| 1. Keyless unit tests | `uv run pytest -q` | $0 | no | Structure/logic/safety pins — the bulk of correctness. Always green before anything else. |
-| 2. Replay eval (DEFAULT) | `uv run jarvis eval gate --suite core` | $0 | no | Re-proving eval scenarios from committed cassettes. Deterministic, keyless. Fails closed if a cassette is missing. |
-| 3. Provider smoke bench | `uv run jarvis eval smoke --provider deepseek --live` | ≤ $3 (cap) | yes (that provider) | A 2-scenario liveness check that a provider's client + auth + parsing work. 1 run, cost-capped. |
-| 4. Record cassettes | `uv run jarvis eval gate --suite core --record --max-cost-usd 5` | one-time, capped | yes | Fill/refresh the cassette cache after a scenario or prompt change, so tier 2 stays free. |
-| 5. Full judged live gate | `uv run jarvis eval gate --profile live-chunked --live` | real $ | yes | **Phase-closeout only** (ADR-0005). The authoritative judged verdict before shipping a phase. |
+`kira eval plan` is read-only: it makes no API calls and does not acquire Kira's exclusive writer
+lock, so it may run while the workspace is open.
 
-**See the cost before you run:** `uv run jarvis eval plan --suite core [--live]` prints the
-projected spend (replay = $0; live = estimated from the last live gate) and how many cassettes
-are already cached. The Daily screen shows the same note under the eval chip.
+Every other eval command acquires the reset-sensitive writer lock, including `gate`, `run`, and
+`smoke` even in keyless replay mode, offline `aggregate`, and the live `cache-ab` and `skills-ab`
+probes. Stop the Kira UI, Kira terminal/REPL, and any other Kira writer before running one of those
+commands.
 
-## Modes (the `--live` / `--record` flags)
+## Cost ladder
 
-Every `gate` / `run` / `smoke` invocation runs in one of three modes:
+| Tier | Command | Incremental API spend | API key? | Use it for |
+|---|---|---:|---|---|
+| 1. Unit tests | `uv run pytest -q` | $0 | no | Structure, logic, and safety checks. Keep this green first. |
+| 2. Eval plan | `uv run kira eval plan --suite core` | $0 | no | Scope, cassette inventory, and known spend facts. It is not a forecast. |
+| 3. Replay gate | `uv run kira eval gate --suite core` | $0 | no | Deterministic, keyless replay from committed cassettes. Misses fail closed. |
+| 4. Provider smoke | `uv run kira eval smoke --provider deepseek --live --max-cost-usd 3` | unknown in advance | yes | Two tiny requests that check provider auth, client construction, and parsing. |
+| 5. Record misses | `uv run kira eval gate --suite core --record --max-cost-usd 5` | unknown in advance | yes | Reuse hits and fill missing cassettes after a scenario or prompt change. |
+| 6. Judged live gate | `uv run kira eval gate --profile live-chunked --live --max-cost-usd BUDGET` | unknown in advance | yes | Deliberate phase closeout under an owner-selected LLM stop threshold. |
 
-- **replay** (default, no flag): each model call is served from a committed cassette. A **miss
-  fails closed** — it never silently calls the API; it prints the exact `--record` command.
-  Keyless and $0.
-- **`--record`**: cassette hits are reused; misses make a real (capped) call and are recorded.
-  This is the cheap way to fill the cache after a change — only the *new* calls cost money.
-- **`--live`**: always calls the real API (and re-records), for fidelity. Use for the closeout
-  gate and provider smoke checks.
+Replace `BUDGET` with a positive finite USD value chosen before the run. It is a stop threshold,
+not a promise that the provider bill will remain below that number.
 
-`--max-cost-usd USD` is a hard cap on any live/record run: it aborts before the next call once
-the cap is reached, and an unpriced model under a cap fails closed (an unmeasurable spend is not
-allowed). Smoke defaults to a $3 cap.
+## What `plan` tells you
 
-## Fable cache A/B probe — measurement only
-
-Use the explicit live probe only when you want evidence for Fable prompt caching. It runs one
-ordinary core scenario three or more times with caching off, then with caching on, under one shared
-hard cap:
+Choose the mode you intend to run:
 
 ```powershell
-uv run jarvis eval cache-ab --live --max-cost-usd 5 --runs 3
+uv run kira eval plan --suite core
+uv run kira eval plan --suite core --record --max-cost-usd 5
+uv run kira eval plan --suite all --live --max-cost-usd 10
 ```
 
-The probe writes a metadata-only report under ignored `data/evals/cache-ab/`; it does **not** edit
-`config/settings.yaml`, change routing, append eval history, alter committed cassettes, or enable
-caching in production. Both arms must pass the scenario's existing deterministic checks. The off
-arm must report zero cache tokens; the on arm must show a write and a later read. Otherwise it
-returns `NOT_ELIGIBLE` (non-zero) rather than implying a saving that did not happen.
+The plan prints:
 
-At the current architecture this result is expected to be useful: the ordinary stable prefix may
-be too small for provider caching, and Fable orchestration head calls do not yet use the cache seam.
-A passing probe is evidence only—not authorization to switch the runtime flag. Any production
-activation remains a separate owner decision and requires the normal safety evaluation review.
+- the selected suite, run count, mode, and scenario count;
+- repository-wide cassette files grouped as LLM, embedding, web, smoke, and other;
+- the last recorded gate's modeled cost, suite, and run count as historical context only;
+- `$0` incremental API spend for replay, or `unknown before provider calls` for record/live;
+- the supplied metered-LLM stop threshold and its exclusions for record/live.
 
-## Fable skill-pack A/B — sub-agent quality evidence only
+Cassette inventory is not selected-suite coverage. Gate history does not record replay, record,
+or live mode, so its last modeled cost is not a spend forecast. A replay plan ignores any supplied
+`--max-cost-usd` value because replay never calls a provider.
 
-Use this only to decide whether the hash-pinned, Fable-authored pilot packs deserve human review
-for activation. It runs both an architecture-review probe and an isolated writer-repair probe
-through the real `SubAgentService` path, alternating no-skill and active-pack arms under one hard
-cap. Each arm runs at least three times; the writer can edit only a disposable fixture.
+## Modes and spend control
+
+`gate`, `run`, and `smoke` support three mutually exclusive modes. `plan` only describes one of
+those modes; it does not execute it. `cache-ab` and `skills-ab` are live-only, while `aggregate`
+is network-offline.
+
+- **Replay** (default): cassette-wrapped LLM, embedding, and web calls use committed values. A
+  miss raises an error; it never silently falls through to a provider.
+- **Record** (`--record`): existing LLM, embedding, and web hits are reused. Only misses call a
+  provider and are recorded.
+- **Live** (`--live`): hits are bypassed and providers are called. A priced LLM response that keeps
+  cumulative spend at or below the threshold is recorded. If charging a completed response pushes
+  spend above the threshold, the charge raises before `store.put`, so that crossing response is not
+  persisted. An unpriced resolved response likewise raises before persistence.
+
+Cost authorization is command-specific:
+
+- `gate` and `run` require an explicit positive finite `--max-cost-usd` in record/live mode.
+- `smoke` defaults to `3` in record/live mode; pass it explicitly in reviewed commands.
+- `cache-ab` and `skills-ab` require both `--live` and a positive finite threshold.
+
+The threshold is shared by the metered LLM clients created in one CLI process. Kira checks already
+completed LLM spend before starting the next call, then prices a response after it returns. A call
+that starts below the threshold can cross it; Kira then raises before persisting that response or
+starting another metered call. Concurrent calls already past the check can also finish. The
+threshold excludes Voyage embedding and Tavily/web charges and is not a provider-side billing
+ceiling.
+
+An unpriced resolved model can be detected only after its response arrives, so that completed call
+cannot be prevented. Each CLI process starts a new threshold counter. Resuming a chunked gate in a
+new invocation therefore starts a new counter; operators must track cumulative spend across
+invocations separately.
+
+## Gate, chunk, and artifact behavior
+
+The default artifact root is `data/evals`; a custom `paths.data_dir` changes it to
+`<configured data_dir>/evals` everywhere.
+
+- A completed gate writes `<configured data_dir>/evals/<timestamp>-<rev>/` and appends one line to
+  `<configured data_dir>/evals/history.jsonl`.
+- `run` stages one suite and writes no gate or history entry.
+- `aggregate` merges completed chunks into one gate and one history line.
+- The default chunk stage is `<configured data_dir>/evals/_chunked-<rev>`.
+- At the same revision, chunk resume skips completed scenarios and chunks. A new revision gets a
+  new default stage.
+- `--profile live-chunked` does not accept `--suite`, `--scenario`, or `--only` narrowing.
+- `--compare REV` uses the newest local history entry whose revision begins with `REV`.
+- `--propose-baselines` prints YAML suggestions; it never edits `baselines.yaml`.
+- Every completed gate saves `report.md`; `--report` also prints it to the terminal.
+
+The full judged live profile may need multiple invocations. Record the threshold and actual
+provider charges for every invocation rather than treating the per-process counter as a cumulative
+budget.
+
+## Fable cache A/B probe
+
+Use this measurement-only probe when deciding whether Fable prompt caching deserves follow-up:
 
 ```powershell
-uv run jarvis eval skills-ab --live --max-cost-usd 10 --runs 3
+uv run kira eval cache-ab --live --max-cost-usd 5 --runs 3
 ```
 
-The active arm uses a temporary, re-hashed copy of the configured packs, so shadow packs can be
-tested without touching their on-disk status or `settings.yaml`. The report under ignored
-`data/evals/skills-ab/` contains only deterministic rubric scores, costs, arm order, and pinned
-pack manifests—never prompts, compiled skill text, or child reports. `PASS` means the active arm
-scored higher on these probes with every configured pack covered; it still **does not** enable
-skills. `NO_MEASURED_IMPROVEMENT`, incomplete coverage, cap failures, or any failed arm mean keep
-the production mode in `shadow` and revise the packs or benchmark before requesting activation.
+Both arms share one metered-LLM spend stop threshold. The report is written to
+`<configured data_dir>/evals/cache-ab/<timestamp>-<rev>/report.json`. The probe does not edit
+`config/settings.yaml`, change routing, append gate history, alter committed cassettes, or enable
+caching in production.
 
-## Cassettes
+Both arms must pass the existing deterministic checks. The off arm must report zero cache tokens;
+the on arm must show a write followed by a read. Otherwise the probe returns `NOT_ELIGIBLE`
+instead of implying a saving. `PASS` is evidence for human review, not authorization to change a
+production flag.
 
-A cassette is a committed JSON file under `tests/evals/cassettes/` (smoke: `.../smoke/`) holding
-one model **response** (assistant content + token usage), keyed by a hash of the full request
-(provider + client config + system + messages + tools + max_tokens + tool_choice + temperature).
-They are the same trust class as a scenario fixture — model output, no secret ever enters a
-cassette, and the key hash is not reversible.
+## Fable skill-pack A/B probe
 
-**Record once, replay free.** After adding or changing a scenario/prompt:
+Use this measurement-only probe to compare the configured shadow packs with no-skill behavior:
 
 ```powershell
-# fill only the missing/changed cassettes (existing ones are reused), capped:
-uv run jarvis eval gate --suite core --record --max-cost-usd 5
-# commit the new cassettes so CI + teammates replay for free:
-git add tests/evals/cassettes && git commit -m "evals: record cassettes for <change>"
+uv run kira eval skills-ab --live --max-cost-usd 10 --runs 3
 ```
 
-Replay is deterministic because eval tools run over temp-dir fixtures, so each call's messages
-reproduce given the prior cached responses. If a tool becomes non-deterministic, its downstream
-cassettes miss and the run fails closed (a signal to re-record, never a silent live call).
+Both arms and both probes share one metered-LLM spend stop threshold. The report is written to
+`<configured data_dir>/evals/skills-ab/<timestamp>-<rev>/report.json`. The active arm uses a
+temporary re-hashed copy of configured packs, so the probe does not change on-disk activation or
+`config/settings.yaml` and does not append gate history.
 
-## Rules
+The report contains deterministic rubric scores, modeled LLM costs, arm order, and pinned pack
+manifests—not prompts, compiled pack text, or child reports. `PASS` means the active arm scored
+higher on these probes with every configured pack covered; activation still requires separate
+human review. Any other outcome keeps production in shadow mode.
 
-- The **default is keyless replay** — a bare `jarvis eval gate` costs $0 and needs no key.
-- A missing cassette in replay mode is a **hard failure**, never an implicit live call.
-- **Live is explicit** (`--live`/`--record`) and **capped** (`--max-cost-usd`).
-- The **full judged live gate stays the phase-closeout ritual** (ADR-0005) — it is no longer the
-  default invocation, only the deliberate one.
-- Cassettes are committed; recording is a dedicated, reviewed commit like a baseline ratchet.
+## Cassettes and data handling
 
-## Core replay coverage — verified keyless (2026-07-08)
+Committed cassette data lives under `tests/evals/cassettes/`:
 
-After E6a (external-service cassettes) + E6b (frozen eval clock + scheduler clock + seeded-task
-clock), a bare `uv run jarvis eval gate --suite core` replays **19/19 scenarios keyless/$0**.
+- direct JSON files hold LLM responses and token usage;
+- `embeddings/` and `web/` hold cached external values;
+- `smoke/` holds provider-smoke LLM responses.
 
-Proof: replay run with **invalid** `ANTHROPIC_API_KEY` / `VOYAGE_API_KEY` / `TAVILY_API_KEY`
-(any live LLM/Voyage/Tavily/web call would auth-fail) → **GATE PASS, 19/19**. Every model,
-embedding, and web call is served from a committed cassette; a cassette miss fails closed.
+The cassette key is a one-way hash of the request determinant, but that hash does not sanitize the
+stored response or external value. Model output and web results can contain sensitive text. Never
+record secrets or private production data, inspect cassette diffs before committing, and treat
+committed cassette bodies as repository-visible test data.
 
-| External call type | cached by | replays keyless? |
+After an approved scenario or prompt change:
+
+```powershell
+# Reuse hits and fill only misses under a metered-LLM stop threshold.
+uv run kira eval gate --suite core --record --max-cost-usd 5
+
+# Review every body before staging repository-visible fixtures.
+git diff -- tests/evals/cassettes
+git add tests/evals/cassettes
+```
+
+Replay remains deterministic because eval tools use controlled fixtures and a frozen eval clock.
+If a request changes, its downstream cassette misses and the run fails closed, signaling that an
+explicit reviewed refresh is required.
+
+## Historical keyless proof — 2026-07-08
+
+On the 2026-07-08 snapshot, the core gate replayed 19/19 scenarios with deliberately invalid
+Anthropic, Voyage, and Tavily credentials: **GATE PASS, 19/19**, with `$0` incremental API spend.
+That proved every then-current LLM, embedding, and web request came from a cassette because any
+network fallback would have failed authentication.
+
+This is dated snapshot evidence, not a claim that today's request hashes were freshly verified.
+The final Kira identity/prompt cutover changes LLM request hashes; re-record under a finite
+threshold, rerun the invalid-key replay proof, and refresh this section as one reviewed milestone.
+
+| External call type | Replay wrapper | Keyless on the dated snapshot? |
 |---|---|---|
-| LLM (main loop, sub-agents, judge, unattended jobs) | CassetteClient | ✅ all |
-| Voyage embeddings (kb_*, memory_*, underquery_*) | CassetteEmbedder | ✅ all |
-| Tavily / web (web_research, delegate_*, kb_web_ingest) | wrap_web_tool | ✅ all |
-| Scheduler timing (schedule_via_tool, unattended_*) | frozen `utc_now` + seed clock | ✅ all |
+| LLM main loop, sub-agents, judge, and unattended jobs | `CassetteClient` | yes |
+| Voyage knowledge and memory embeddings | `CassetteEmbedder` | yes |
+| Tavily/web research and ingest | `wrap_web_tool` | yes |
+| Scheduler timing | frozen eval and seed clocks | yes |
 
-Estimated replay cost: **$0** (no live calls). A `--record`/`--live` refresh of the full core
-suite costs a few $ (LLM-dominated), one-time, under the `--max-cost-usd` cap. The full judged
-**live** gate remains the phase-closeout ritual.
+Replay incremental API spend is `$0`. Record/live spend is unknown before provider calls, can
+cross the LLM threshold, and may also include embedding or web charges outside that threshold.
