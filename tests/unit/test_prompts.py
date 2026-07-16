@@ -10,6 +10,11 @@ from kira.core.prompts import (
 )
 
 
+def test_default_identity_is_kira() -> None:
+    assert DEFAULT_IDENTITY.startswith("You are Kira,")
+    assert "Jarvis" not in DEFAULT_IDENTITY
+
+
 def test_shared_collaboration_guidance_is_always_present() -> None:
     primary = build_system()
     delegated = build_system(subagent=True)

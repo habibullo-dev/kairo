@@ -1,7 +1,7 @@
 """Keep current source documentation on the Kira identity.
 
-Legacy names remain only where changing the text would erase migration history, describe an
-intentional compatibility boundary, or invalidate the separately reviewed model-prompt baseline.
+Legacy names remain only where changing the text would erase migration history or describe an
+intentional compatibility boundary.
 """
 
 from __future__ import annotations
@@ -13,14 +13,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = ROOT / "src" / "kira"
+EVAL_SCENARIO_ROOT = ROOT / "tests" / "evals" / "scenarios"
 LEGACY_PRODUCT_NAME = re.compile(r"\b(?:Kairo|Cairo|Jarvis)\b")
 LEGACY_MODULE_TARGET = re.compile(r"\bjarvis\.(?!db(?:\b|-))")
 
 ALLOWED_LEGACY_LINES = {
-    (
-        "core/prompts.py",
-        "You are Jarvis, a precise, capable agentic assistant running on the user's machine.",
-    ),
     (
         "persistence/instance_lock.py",
         "Kira acquires the legacy Kairo lock first and the canonical Kira lock second. "
@@ -68,6 +65,16 @@ def test_knowledge_front_matter_constant_uses_kira_name() -> None:
 
     assert "JARVIS_KEYS" not in wiki_source
     assert "KIRA_KEYS" in wiki_source
+
+
+def test_current_eval_scenarios_use_kira_identity() -> None:
+    stale: list[str] = []
+    for path in EVAL_SCENARIO_ROOT.rglob("*.yaml"):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if LEGACY_PRODUCT_NAME.search(line):
+                stale.append(f"{path.relative_to(ROOT).as_posix()}:{number}:{line.strip()}")
+
+    assert stale == []
 
 
 def test_python_package_namespace_is_kira_only() -> None:
